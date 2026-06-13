@@ -41,13 +41,11 @@ def get_page_stats():
 def fix_permalink(url):
     if not url:
         return url
-    # Замінюємо числовий ID сторінки на slug
     url = re.sub(
         r'https://www\.facebook\.com/\d+/posts/(\d+)',
         lambda m: f"https://www.facebook.com/{FACEBOOK_PAGE_SLUG}/posts/{m.group(1)}",
         url
     )
-    # Виправляємо відносні URL рілзів
     if url.startswith("/reel/"):
         url = "https://www.facebook.com" + url
     return url
@@ -56,7 +54,7 @@ def get_top_posts():
     since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
-        "fields": "id,message,permalink_url,reactions.summary(true),comments.summary(true),created_time",
+        "fields": "id,message,permalink_url,reactions.summary(true),comments.summary(true),shares,created_time",
         "since": since,
         "access_token": FACEBOOK_PAGE_TOKEN,
         "limit": 100
@@ -67,21 +65,25 @@ def get_top_posts():
         return [], 0
 
     all_posts = data.get("data", [])
-    total = len(all_posts)
-    for p in all_posts:
-        likes = p.get("likes", {}).get("summary", {}).get("total_count", 0)
+    # Фільтруємо тільки пости з посиланням на сайт (не рілзи)
+    posts = [p for p in all_posts if "nikvesti.com" in (p.get("message") or "")]
+    total = len(posts)
+
+    for p in posts:
+        reactions = p.get("reactions", {}).get("summary", {}).get("total_count", 0)
         comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
-        p["engagement"] = likes + comments
+        shares = p.get("shares", {}).get("count", 0)
+        p["engagement"] = reactions + comments + shares
         p["permalink_url"] = fix_permalink(p.get("permalink_url", ""))
 
-    all_posts.sort(key=lambda x: x["engagement"], reverse=True)
-    return all_posts[:5], total
+    posts.sort(key=lambda x: x["engagement"], reverse=True)
+    return posts[:5], total
 
 def get_top_reels():
     since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/video_reels"
     params = {
-        "fields": "id,description,permalink_url,likes.summary(true),comments.summary(true),created_time",
+        "fields": "id,description,permalink_url,reactions.summary(true),comments.summary(true),created_time",
         "since": since,
         "access_token": FACEBOOK_PAGE_TOKEN,
         "limit": 100
@@ -93,10 +95,11 @@ def get_top_reels():
 
     all_reels = data.get("data", [])
     total = len(all_reels)
+
     for r in all_reels:
-        likes = r.get("likes", {}).get("summary", {}).get("total_count", 0)
+        reactions = r.get("reactions", {}).get("summary", {}).get("total_count", 0)
         comments = r.get("comments", {}).get("summary", {}).get("total_count", 0)
-        r["engagement"] = likes + comments
+        r["engagement"] = reactions + comments
         r["permalink_url"] = fix_permalink(r.get("permalink_url", ""))
 
     all_reels.sort(key=lambda x: x["engagement"], reverse=True)
@@ -142,8 +145,9 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
     posts_text = ""
     top_authors = []
     for i, p in enumerate(top_posts):
-        likes = p.get("reactions", {}).get("summary", {}).get("total_count", 0)
+        reactions = p.get("reactions", {}).get("summary", {}).get("total_count", 0)
         comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
+        shares = p.get("shares", {}).get("count", 0)
         link = p.get("permalink_url", "")
         title = short_message(p.get("message", ""))
         article_url = extract_url_from_message(p.get("message", ""))
@@ -151,15 +155,15 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
         if author and author not in top_authors:
             top_authors.append(author)
         author_text = f"\n      👤 {author}" if author else ""
-        posts_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments}{author_text}\n'
+        posts_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{reactions} 💬{comments} 🔄{shares}{author_text}\n'
 
     reels_text = ""
     for i, r in enumerate(top_reels):
-        likes = r.get("reactions", {}).get("summary", {}).get("total_count", 0)
+        reactions = r.get("reactions", {}).get("summary", {}).get("total_count", 0)
         comments = r.get("comments", {}).get("summary", {}).get("total_count", 0)
         link = r.get("permalink_url", "")
         title = short_message(r.get("description", ""))
-        reels_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments}\n'
+        reels_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{reactions} 💬{comments}\n'
 
     text = (
         f"📘 Facebook МикВісті ({week_start} — {week_end}):\n\n"
