@@ -6,6 +6,7 @@ TEAM_TELEGRAM = {
     "Катерина Середа": "@sereda_ka",
     "Юлія Бойченко": "@boichenko13",
     "Аліса Мелікадамян": "@lislislisalisa",
+    "Світлана Іванченко": "@Lana_PRpolka",
     "Альона Коханчук": "@Aliona_Banu",
     "Аліна Квітко": "@Aliniskv",
     "Марія Хаміцевич": '<a href="tg://user?id=846178524">Марія</a>',
