@@ -8,6 +8,33 @@ FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
 FACEBOOK_PAGE_SLUG = "nikvesti"
 
+MONTHS_UK = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+    "січень": 1, "лютий": 2, "березень": 3, "квітень": 4,
+    "травень": 5, "червень": 6, "липень": 7, "серпень": 8,
+    "вересень": 9, "жовтень": 10, "листопад": 11, "грудень": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+    "jun": 6, "jul": 7, "aug": 8, "sep": 9,
+    "oct": 10, "nov": 11, "dec": 12,
+}
+
+def parse_month_arg(args):
+    if not args:
+        return None, None
+    month_str = args[0].lower()
+    month_num = MONTHS_UK.get(month_str)
+    if not month_num:
+        return None, None
+    now = datetime.now()
+    year = now.year if month_num <= now.month else now.year - 1
+    from calendar import monthrange
+    last_day = monthrange(year, month_num)[1]
+    start = datetime(year, month_num, 1)
+    end = datetime(year, month_num, last_day, 23, 59, 59)
+    return start, end
+
 def get_page_followers():
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}"
     params = {
@@ -50,15 +77,18 @@ def fix_permalink(url):
         url = "https://www.facebook.com" + url
     return url
 
-def get_top_posts():
-    since = int((datetime.now() - timedelta(days=7)).timestamp())
+def get_top_posts(since_ts=None, until_ts=None):
+    if since_ts is None:
+        since_ts = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
         "fields": "id,message,permalink_url,reactions.summary(true),comments.summary(true),shares,created_time",
-        "since": since,
+        "since": since_ts,
         "access_token": FACEBOOK_PAGE_TOKEN,
         "limit": 100
     }
+    if until_ts:
+        params["until"] = until_ts
     response = requests.get(url, params=params)
     data = response.json()
     if "error" in data:
@@ -100,8 +130,12 @@ def get_reel_insights(reel_id):
     except:
         return 0, 0, 0
 
-def get_top_reels():
-    since_dt = (datetime.now(tz=timezone.utc) - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+def get_top_reels(since_dt=None):
+    if since_dt is None:
+        since_dt = (datetime.now(tz=timezone.utc) - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    elif since_dt.tzinfo is None:
+        since_dt = since_dt.replace(tzinfo=timezone.utc)
+
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/video_reels"
     params = {
         "fields": "id,description,permalink_url,created_time",
@@ -168,9 +202,13 @@ def short_message(message, words=5):
         return message
     return " ".join(w[:words]) + "..."
 
-def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_reels):
-    week_end = datetime.now().strftime("%d.%m.%Y")
-    week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
+def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_reels, period_label=None):
+    if period_label:
+        header = f"📘 Facebook МикВісті ({period_label}):\n\n"
+    else:
+        week_end = datetime.now().strftime("%d.%m.%Y")
+        week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
+        header = f"📘 Facebook МикВісті ({week_start} — {week_end}):\n\n"
 
     followers = stats.get("page_follows", page.get("followers_count", "н/д"))
     fans = page.get("fan_count", "н/д")
@@ -200,7 +238,7 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
         reels_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{reactions} 💬{comments} 🔄{shares}\n'
 
     text = (
-        f"📘 Facebook МикВісті ({week_start} — {week_end}):\n\n"
+        header +
         f"👥 Підписників: {followers}\n"
         f"❤️ Фанів: {fans}\n\n"
         f"📊 Статистика за тиждень:\n"
@@ -217,11 +255,24 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
 
 async def facebook_handler(update, context):
     try:
+        args = context.args
+        start_dt, end_dt = parse_month_arg(args)
+
         page = get_page_followers()
         stats = get_page_stats()
-        top_posts, total_posts = get_top_posts()
-        top_reels, total_reels = get_top_reels()
-        text, _ = build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_reels)
+
+        if start_dt:
+            since_ts = int(start_dt.timestamp())
+            until_ts = int(end_dt.timestamp())
+            period_label = start_dt.strftime("%B %Y")
+            top_posts, total_posts = get_top_posts(since_ts, until_ts)
+            top_reels, total_reels = get_top_reels(start_dt)
+        else:
+            period_label = None
+            top_posts, total_posts = get_top_posts()
+            top_reels, total_reels = get_top_reels()
+
+        text, _ = build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_reels, period_label)
         await update.message.reply_text(
             text,
             parse_mode="HTML",
