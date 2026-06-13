@@ -29,23 +29,32 @@ def get_instagram_stats():
         stats[item["name"]] = item.get("total_value", {}).get("value", 0)
     return stats
 
-def get_followers_week_ago():
-    since = int((datetime.now() - timedelta(days=8)).timestamp())
-    until = int((datetime.now() - timedelta(days=7)).timestamp())
+def get_follows_week():
+    since = int((datetime.now() - timedelta(days=7)).timestamp())
+    until = int(datetime.now().timestamp())
     url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/insights"
     params = {
-        "metric": "follower_count",
+        "metric": "follows_and_unfollows",
         "period": "day",
         "metric_type": "total_value",
+        "breakdown": "follow_type",
         "since": since,
         "until": until,
         "access_token": INSTAGRAM_TOKEN
     }
     data = requests.get(url, params=params).json()
     try:
-        return data["data"][0]["total_value"]["value"]
+        follows = 0
+        unfollows = 0
+        for day in data["data"]:
+            for result in day["total_value"]["breakdowns"][0]["results"]:
+                if result["dimension_values"][0] == "FOLLOWER":
+                    follows += result["value"]
+                elif result["dimension_values"][0] == "NON_FOLLOWER":
+                    unfollows += result["value"]
+        return follows, unfollows
     except:
-        return None
+        return None, None
 
 def get_top_media():
     since = int((datetime.now() - timedelta(days=7)).timestamp())
@@ -100,10 +109,11 @@ async def instagram_handler(update, context):
         counts = get_media_counts()
 
         followers_now = profile.get("followers_count", 0)
-        followers_prev = get_followers_week_ago()
-        if followers_prev is not None:
-            diff_val = followers_now - followers_prev
-            diff = f"+{diff_val}" if diff_val >= 0 else str(diff_val)
+        follows, unfollows = get_follows_week()
+        if follows is not None:
+            net = follows - unfollows
+            diff = f"+{net}" if net >= 0 else str(net)
+            diff += f" (↑{follows} ↓{unfollows})"
         else:
             diff = "н/д"
 
@@ -140,4 +150,4 @@ async def instagram_handler(update, context):
             disable_web_page_preview=True
         )
     except Exception as e:
-        await update.message.reply_text(f"❌ Помилка Instagram: {e}")
+        await update.message.reply_text(f"❌
