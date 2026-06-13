@@ -1,6 +1,7 @@
 import os
 import requests
 from datetime import datetime, timedelta
+from handlers.helpers import parse_month_arg
 
 INSTAGRAM_TOKEN = os.environ.get("INSTAGRAM_TOKEN")
 INSTAGRAM_USER_ID = "17841400860799899"
@@ -29,9 +30,11 @@ def get_instagram_stats():
         stats[item["name"]] = item.get("total_value", {}).get("value", 0)
     return stats
 
-def get_follows_week():
-    since = int((datetime.now() - timedelta(days=7)).timestamp())
-    until = int(datetime.now().timestamp())
+def get_follows_week(since=None, until=None):
+    if since is None:
+        since = int((datetime.now() - timedelta(days=7)).timestamp())
+    if until is None:
+        until = int(datetime.now().timestamp())
     url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/insights"
     params = {
         "metric": "follows_and_unfollows",
@@ -56,8 +59,9 @@ def get_follows_week():
     except:
         return None, None
 
-def get_top_media():
-    since = int((datetime.now() - timedelta(days=7)).timestamp())
+def get_top_media(since=None):
+    if since is None:
+        since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/media"
     params = {
         "fields": "id,media_type,permalink,like_count,comments_count,caption,timestamp",
@@ -74,8 +78,9 @@ def get_top_media():
     media.sort(key=lambda x: x["engagement"], reverse=True)
     return media[:5]
 
-def get_media_counts():
-    since = int((datetime.now() - timedelta(days=7)).timestamp())
+def get_media_counts(since=None):
+    if since is None:
+        since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/media"
     params = {
         "fields": "media_type",
@@ -103,23 +108,35 @@ def short_caption(caption, words=5):
 
 async def instagram_handler(update, context):
     try:
+        args = context.args
+        start_dt, end_dt, period_label = parse_month_arg(args)
+
         profile = get_instagram_profile()
-        stats = get_instagram_stats()
-        top_media = get_top_media()
-        counts = get_media_counts()
-
         followers_now = profile.get("followers_count", 0)
-        follows, unfollows = get_follows_week()
-        if follows is not None:
-            net = follows - unfollows
-            diff = f"+{net}" if net >= 0 else str(net)
-            diff += f" (↑{follows} ↓{unfollows})"
+
+        if start_dt:
+            since_ts = int(start_dt.timestamp())
+            until_ts = int(end_dt.timestamp())
+            follows, unfollows = get_follows_week(since_ts, until_ts)
+            top_media = get_top_media(since_ts)
+            counts = get_media_counts(since_ts)
+            header = f"📱 Instagram МикВісті ({period_label}):\n\n"
         else:
-            diff = "н/д"
+            follows, unfollows = get_follows_week()
+            top_media = get_top_media()
+            counts = get_media_counts()
+            week_end = datetime.now().strftime("%d.%m.%Y")
+            week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
+            header = f"📱 Instagram МикВісті ({week_start} — {week_end}):\n\n"
+            header += f"👥 Підписники: {followers_now}"
+            if follows is not None:
+                net = follows - unfollows
+                diff = f"+{net}" if net >= 0 else str(net)
+                diff += f" (↑{follows} ↓{unfollows})"
+                header += f" ({diff} за тиждень)"
+            header += "\n\n"
 
-        week_end = datetime.now().strftime("%d.%m.%Y")
-        week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
-
+        stats = get_instagram_stats()
         photos = counts.get("IMAGE", 0)
         reels = counts.get("VIDEO", 0)
         carousels = counts.get("CAROUSEL_ALBUM", 0)
@@ -134,17 +151,20 @@ async def instagram_handler(update, context):
             title = short_caption(m.get("caption", ""))
             top_text += f'  {i+1}. {media_type} <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments}\n'
 
-        await update.message.reply_text(
-            f"📱 Instagram МикВісті ({week_start} — {week_end}):\n\n"
-            f"👥 Підписники: {followers_now} ({diff} за тиждень)\n\n"
-            f"За тиждень опубліковано {total_posts} матеріалів:\n"
+        text = (
+            header +
+            f"За період опубліковано {total_posts} матеріалів:\n"
             f"  📸 Постів: {photos + carousels}\n"
             f"  🎬 Рілзів: {reels}\n\n"
             f"📊 Статистика:\n"
             f"  👁 Охоплення: {stats.get('reach', 'н/д')}\n"
             f"  🤝 Взаємодії: {stats.get('total_interactions', 'н/д')}\n"
             f"  👤 Залучені акаунти: {stats.get('accounts_engaged', 'н/д')}\n\n"
-            f"🔥 Топ-5 публікацій тижня:\n{top_text}",
+            f"🔥 Топ-5 публікацій:\n{top_text}"
+        )
+
+        await update.message.reply_text(
+            text,
             parse_mode="HTML",
             disable_web_page_preview=True
         )
@@ -183,22 +203,22 @@ async def send_weekly_instagram_report(bot, chat_id):
             comments = m.get("comments_count", 0)
             link = m.get("permalink", "")
             title = short_caption(m.get("caption", ""))
-            top_text += f'  {i+1}. {media_type} <a href="{link}">{title}</a> — ❤️{likes} 💬{comments}\n'
+            top_text += f'  {i+1}. {media_type} <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments}\n'
 
         ai_comment = await generate_instagram_weekly_comment(stats, follows, unfollows, total_posts, reels)
 
         text = (
             ai_comment + "\n\n"
-            + f"📱 Instagram МикВісті ({week_start} — {week_end}):\n\n"
-            + f"👥 Підписники: {followers_now} ({diff} за тиждень)\n\n"
-            + f"За тиждень опубліковано {total_posts} матеріалів:\n"
-            + f"  📸 Постів: {photos + carousels}\n"
-            + f"  🎬 Рілзів: {reels}\n\n"
-            + f"📊 Статистика:\n"
-            + f"  👁 Охоплення: {stats.get('reach', 'н/д')}\n"
-            + f"  🤝 Взаємодії: {stats.get('total_interactions', 'н/д')}\n"
-            + f"  👤 Залучені акаунти: {stats.get('accounts_engaged', 'н/д')}\n\n"
-            + f"🔥 Топ-5 публікацій тижня:\n{top_text}"
+            f"📱 Instagram МикВісті ({week_start} — {week_end}):\n\n"
+            f"👥 Підписники: {followers_now} ({diff} за тиждень)\n\n"
+            f"За тиждень опубліковано {total_posts} матеріалів:\n"
+            f"  📸 Постів: {photos + carousels}\n"
+            f"  🎬 Рілзів: {reels}\n\n"
+            f"📊 Статистика:\n"
+            f"  👁 Охоплення: {stats.get('reach', 'н/д')}\n"
+            f"  🤝 Взаємодії: {stats.get('total_interactions', 'н/д')}\n"
+            f"  👤 Залучені акаунти: {stats.get('accounts_engaged', 'н/д')}\n\n"
+            f"🔥 Топ-5 публікацій:\n{top_text}"
         )
 
         await bot.send_message(
