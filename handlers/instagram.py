@@ -7,7 +7,7 @@ INSTAGRAM_USER_ID = "17841400860799899"
 def get_instagram_stats():
     url = f"https://graph.instagram.com/v19.0/{INSTAGRAM_USER_ID}/insights"
     params = {
-        "metric": "reach,profile_views,follower_count,total_interactions",
+        "metric": "reach,total_interactions,accounts_engaged,profile_views",
         "period": "day",
         "access_token": INSTAGRAM_TOKEN
     }
