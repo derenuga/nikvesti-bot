@@ -101,6 +101,50 @@ def short_caption(caption, words=5):
         return caption
     return " ".join(w[:words]) + "..."
 
+async def send_weekly_instagram_report(bot, chat_id):
+    from handlers.ai_messages import generate_instagram_weekly_comment
+    try:
+        profile = get_instagram_profile()
+        stats = get_instagram_stats()
+        top_media = get_top_media()
+        counts = get_media_counts()
+
+        followers_now = profile.get("followers_count", 0)
+        follows, unfollows = get_follows_week()
+        if follows is not None:
+            net = follows - unfollows
+            diff = f"+{net}" if net >= 0 else str(net)
+            diff += f" (↑{follows} ↓{unfollows})"
+        else:
+            follows, unfollows, net, diff = 0, 0, 0, "н/д"
+
+        photos = counts.get("IMAGE", 0)
+        reels = counts.get("VIDEO", 0)
+        carousels = counts.get("CAROUSEL_ALBUM", 0)
+        total_posts = photos + reels + carousels
+
+        week_end = datetime.now().strftime("%d.%m.%Y")
+        week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
+
+        top_text = ""
+        for i, m in enumerate(top_media):
+            media_type = {"IMAGE": "📸", "VIDEO": "🎬", "CAROUSEL_ALBUM": "🗂"}.get(m.get("media_type"), "📄")
+            likes = m.get("like_count", 0)
+            comments = m.get("comments_count", 0)
+            link = m.get("permalink", "")
+            title = short_caption(m.get("caption", ""))
+            top_text += f'  {i+1}. {media_type} <a href="{link}">{title}</a> — ❤️ {likes} 💬 {comments}\n'
+
+        ai_comment = await generate_instagram_weekly_comment(stats, follows, unfollows, total_posts, reels)
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"{ai_comment}\n\n"
+                f"📱 Instagram МикВісті ({week_start} — {week_end}):\n\n"
+                f"👥 Підписники: {followers_now} ({diff} за тиждень)\n\n"
+                f"За тиждень опубліковано
+
 async def instagram_handler(update, context):
     try:
         profile = get_instagram_profile()
