@@ -4,6 +4,7 @@ from handlers.google_analytics import analytics_handler
 from handlers.scheduler import setup_scheduler, send_daily_report, check_email
 from handlers.instagram import instagram_handler, send_weekly_instagram_report
 from handlers.facebook import facebook_handler, send_weekly_facebook_report
+from handlers.morning import morning_handler
 
 TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -11,7 +12,7 @@ CHAT_ID = os.environ.get("CHAT_ID")
 async def start(update, context):
     await update.message.reply_text(
         "Привіт! Я помічник редакції МикВісті 👋\n"
-        "Команди:\n/start — привітання\n/status — перевірка\n/analytics — статистика сайту\n/report — звіт в групу\n/checkmail — перевірити пошту\n/instagram — статистика Instagram\n/igreport — тижневий Instagram звіт в групу\n/facebook — статистика Facebook\n/fbreport — тижневий Facebook звіт в групу"
+        "Команди:\n/start — привітання\n/status — перевірка\n/analytics — статистика сайту\n/report — звіт в групу\n/checkmail — перевірити пошту\n/instagram — статистика Instagram\n/igreport — тижневий Instagram звіт в групу\n/facebook — статистика Facebook\n/fbreport — тижневий Facebook звіт в групу\n/morning — ранкове привітання"
     )
 
 async def status(update, context):
@@ -47,6 +48,7 @@ def main():
     app.add_handler(CommandHandler("igreport", igreport))
     app.add_handler(CommandHandler("facebook", facebook_handler))
     app.add_handler(CommandHandler("fbreport", fbreport))
+    app.add_handler(CommandHandler("morning", morning_handler))
     print("Bot started...")
     app.run_polling()
 
