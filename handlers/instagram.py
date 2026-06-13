@@ -1,5 +1,6 @@
 import os
 import requests
+from datetime import datetime, timedelta
 
 INSTAGRAM_TOKEN = os.environ.get("INSTAGRAM_TOKEN")
 INSTAGRAM_USER_ID = "17841400860799899"
@@ -7,8 +8,8 @@ INSTAGRAM_USER_ID = "17841400860799899"
 def get_instagram_stats():
     url = f"https://graph.instagram.com/v19.0/{INSTAGRAM_USER_ID}/insights"
     params = {
-        "metric": "reach,total_interactions,accounts_engaged,profile_views",
-        "period": "day",
+        "metric": "reach,total_interactions,accounts_engaged",
+        "period": "week",
         "access_token": INSTAGRAM_TOKEN
     }
     response = requests.get(url, params=params)
@@ -23,7 +24,7 @@ def get_instagram_stats():
 
     return stats
 
-def get_instagram_followers():
+def get_instagram_profile():
     url = f"https://graph.instagram.com/v19.0/{INSTAGRAM_USER_ID}"
     params = {
         "fields": "followers_count,media_count",
@@ -39,16 +40,12 @@ def get_instagram_followers():
 
 async def instagram_handler(update, context):
     try:
-        followers = get_instagram_followers()
+        profile = get_instagram_profile()
         stats = get_instagram_stats()
 
+        week_end = datetime.now().strftime("%d.%m.%Y")
+        week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
+
         await update.message.reply_text(
-            f"📱 Instagram МикВісті:\n\n"
-            f"👥 Підписники: {followers.get('followers_count', 'н/д')}\n"
-            f"📸 Публікацій: {followers.get('media_count', 'н/д')}\n"
-            f"👁 Взаємодії (день): {stats.get('reach', 'н/д')}\n"
-            f"📊 Покази (день): {stats.get('impressions', 'н/д')}\n"
-            f"🔍 Перегляди профілю: {stats.get('profile_views', 'н/д')}"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Помилка Instagram: {e}")
+            f"📱 Instagram МикВісті ({week_start} — {week_end}):\n\n"
+            f"👥 Підписники:
