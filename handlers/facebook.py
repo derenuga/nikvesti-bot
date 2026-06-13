@@ -37,29 +37,38 @@ def get_page_stats():
             stats[item["name"]] = values[-1]["value"]
     return stats
 
-def get_top_posts():
+def get_posts_and_reels():
     since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
         "fields": "id,message,permalink_url,likes.summary(true),comments.summary(true),shares,created_time",
         "since": since,
         "access_token": FACEBOOK_PAGE_TOKEN,
-        "limit": 50
+        "limit": 100
     }
     response = requests.get(url, params=params)
     data = response.json()
     if "error" in data:
-        return []
+        return [], []
 
-    posts = data.get("data", [])
-    for p in posts:
+    all_posts = data.get("data", [])
+    posts = []
+    reels = []
+
+    for p in all_posts:
         likes = p.get("likes", {}).get("summary", {}).get("total_count", 0)
         comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
         shares = p.get("shares", {}).get("count", 0)
         p["engagement"] = likes + comments + shares
+        message = p.get("message", "") or ""
+        if "nikvesti.com" in message:
+            posts.append(p)
+        else:
+            reels.append(p)
 
     posts.sort(key=lambda x: x["engagement"], reverse=True)
-    return posts[:5]
+    reels.sort(key=lambda x: x["engagement"], reverse=True)
+    return posts[:5], reels[:5]
 
 def extract_url_from_message(message):
     if not message:
@@ -95,7 +104,7 @@ async def facebook_handler(update, context):
     try:
         page = get_page_followers()
         stats = get_page_stats()
-        top_posts = get_top_posts()
+        top_posts, top_reels = get_posts_and_reels()
 
         week_end = datetime.now().strftime("%d.%m.%Y")
         week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
@@ -103,26 +112,41 @@ async def facebook_handler(update, context):
         followers = stats.get("page_follows", page.get("followers_count", "н/д"))
         fans = page.get("fan_count", "н/д")
 
-        top_text = ""
+        posts_text = ""
         for i, p in enumerate(top_posts):
             likes = p.get("likes", {}).get("summary", {}).get("total_count", 0)
             comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
-            shares = p.get("shares", {}).get("count", 0)
             link = p.get("permalink_url", "")
             title = short_message(p.get("message", ""))
             article_url = extract_url_from_message(p.get("message", ""))
             author = get_author_from_url(article_url) if article_url else None
-            author_text = f" ✍️ {author}" if author else ""
-            top_text += f'  {i+1}. <a href="{link}">{title}</a>{author_text}\n      ❤️{likes} 💬{comments} 🔄{shares}\n'
+            author_text = f"\n      👤 {author}" if author else ""
+            posts_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments}{author_text}\n'
 
-        await update.message.reply_text(
+        reels_text = ""
+        for i, p in enumerate(top_reels):
+            likes = p.get("likes", {}).get("summary", {}).get("total_count", 0)
+            comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
+            link = p.get("permalink_url", "")
+            title = short_message(p.get("message", ""))
+            reels_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments}\n'
+
+        text = (
             f"📘 Facebook МикВісті ({week_start} — {week_end}):\n\n"
             f"👥 Підписників: {followers}\n"
             f"❤️ Фанів: {fans}\n\n"
             f"📊 Статистика за тиждень:\n"
             f"  👁 Охоплення: {stats.get('page_impressions_unique', 'н/д')}\n"
             f"  🤝 Взаємодії: {stats.get('page_post_engagements', 'н/д')}\n\n"
-            f"🔥 Топ-5 публікацій тижня:\n{top_text}",
+        )
+
+        if posts_text:
+            text += f"🔥 Топ-5 публікацій тижня:\n{posts_text}\n"
+        if reels_text:
+            text += f"🎬 Топ-5 рілзів тижня:\n{reels_text}"
+
+        await update.message.reply_text(
+            text,
             parse_mode="HTML",
             disable_web_page_preview=True
         )
