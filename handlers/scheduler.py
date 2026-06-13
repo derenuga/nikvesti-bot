@@ -1,19 +1,13 @@
 import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from handlers.google_analytics import analytics_handler
+from handlers.google_analytics import get_ga4_client, get_stats, get_top_pages, BASE_URL
+from handlers.gmail import get_unread_emails, get_oldest_unread_hours
+from handlers.ai_messages import generate_email_reminder
+from datetime import datetime, timedelta
 
 CHAT_ID = os.environ.get("CHAT_ID")
 
 async def send_daily_report(bot):
-    from datetime import datetime, timedelta
-    import json
-    from google.analytics.data_v1beta import BetaAnalyticsDataClient
-    from google.analytics.data_v1beta.types import RunReportRequest, DateRange, Metric, Dimension, OrderBy
-    from google.oauth2 import service_account
-    from handlers.google_analytics import get_ga4_client, get_stats, get_top_pages, BASE_URL
-
-    GA4_PROPERTY_ID = os.environ.get("GA4_PROPERTY_ID")
-
     client = get_ga4_client()
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     day_before = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
@@ -45,8 +39,15 @@ async def send_daily_report(bot):
         disable_web_page_preview=True
     )
 
-def setup_scheduler(bot):
-    scheduler = AsyncIOScheduler(timezone="Europe/Kiev")
-    scheduler.add_job(send_daily_report, "cron", hour=9, minute=0, args=[bot])
-    scheduler.start()
-    return scheduler
+async def check_email(bot, time_of_day):
+    try:
+        emails = get_unread_emails()
+        if not emails:
+            return
+        hours = get_oldest_unread_hours(emails)
+        if hours < 1:
+            return
+        message = await generate_email_reminder(emails, hours, time_of_day)
+        await bot.send_message(chat_id=CHAT_ID, text=message)
+    except Exception as e:
+        print(f"Помилка перевірки
