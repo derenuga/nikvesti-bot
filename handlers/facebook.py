@@ -1,6 +1,8 @@
 import os
+import re
 import requests
 from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
@@ -59,6 +61,28 @@ def get_top_posts():
     posts.sort(key=lambda x: x["engagement"], reverse=True)
     return posts[:5]
 
+def extract_url_from_message(message):
+    if not message:
+        return None
+    urls = re.findall(r'https?://nikvesti\.com/\S+', message)
+    return urls[0] if urls else None
+
+def get_author_from_url(url):
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code != 200:
+            return None
+        soup = BeautifulSoup(response.text, "html.parser")
+        author_tag = soup.find("meta", attrs={"name": "author"})
+        if author_tag:
+            return author_tag.get("content")
+        author_tag = soup.find("meta", property="article:author")
+        if author_tag:
+            return author_tag.get("content")
+        return None
+    except:
+        return None
+
 def short_message(message, words=5):
     if not message:
         return "без тексту"
@@ -86,7 +110,10 @@ async def facebook_handler(update, context):
             shares = p.get("shares", {}).get("count", 0)
             link = p.get("permalink_url", "")
             title = short_message(p.get("message", ""))
-            top_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments} 🔄{shares}\n'
+            article_url = extract_url_from_message(p.get("message", ""))
+            author = get_author_from_url(article_url) if article_url else None
+            author_text = f" ✍️ {author}" if author else ""
+            top_text += f'  {i+1}. <a href="{link}">{title}</a>{author_text}\n      ❤️{likes} 💬{comments} 🔄{shares}\n'
 
         await update.message.reply_text(
             f"📘 Facebook МикВісті ({week_start} — {week_end}):\n\n"
