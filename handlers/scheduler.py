@@ -1,10 +1,12 @@
 import os
+import random
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from handlers.google_analytics import get_ga4_client, get_stats, get_top_pages, BASE_URL
 from handlers.gmail import get_unread_emails, get_oldest_unread_hours
 from handlers.ai_messages import generate_email_reminder
 from handlers.instagram import send_weekly_instagram_report
 from handlers.facebook import send_weekly_facebook_report
+from handlers.morning import send_morning_message
 from datetime import datetime, timedelta
 
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -61,6 +63,13 @@ async def weekly_instagram(bot):
 async def weekly_facebook(bot):
     await send_weekly_facebook_report(bot, CHAT_ID)
 
+async def morning_greeting(bot):
+    now = datetime.now()
+    # Пропускаємо вихідні (5=субота, 6=неділя)
+    if now.weekday() >= 5:
+        return
+    await send_morning_message(bot, CHAT_ID)
+
 def setup_scheduler(bot):
     scheduler = AsyncIOScheduler(timezone="Europe/Kiev")
     scheduler.add_job(send_daily_report, "cron", hour=9, minute=0, args=[bot])
@@ -68,5 +77,6 @@ def setup_scheduler(bot):
     scheduler.add_job(check_email, "cron", hour=16, minute=50, args=[bot, "evening"])
     scheduler.add_job(weekly_instagram, "cron", day_of_week="sun", hour=18, minute=0, args=[bot])
     scheduler.add_job(weekly_facebook, "cron", day_of_week="sun", hour=15, minute=0, args=[bot])
+    scheduler.add_job(morning_greeting, "cron", hour=8, minute=random.randint(0, 30), args=[bot])
     scheduler.start()
     return scheduler
