@@ -3,7 +3,7 @@ import re
 import requests
 from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
-from handlers.helpers import parse_month_arg
+from handlers.helpers import parse_month_arg, get_author_from_url
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
