@@ -33,3 +33,22 @@ def parse_month_arg(args):
     end = datetime(year, month_num, last_day, 23, 59, 59)
     label = f"{MONTHS_UA[month_num]} {year}"
     return start, end, label
+
+import requests
+from bs4 import BeautifulSoup
+
+def get_author_from_url(url):
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code != 200:
+            return None
+        soup = BeautifulSoup(response.text, "html.parser")
+        author_tag = soup.find("meta", attrs={"name": "author"})
+        if author_tag:
+            return author_tag.get("content")
+        author_tag = soup.find("meta", property="article:author")
+        if author_tag:
+            return author_tag.get("content")
+        return None
+    except:
+        return None
