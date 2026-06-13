@@ -132,7 +132,7 @@ async def instagram_handler(update, context):
             comments = m.get("comments_count", 0)
             link = m.get("permalink", "")
             title = short_caption(m.get("caption", ""))
-            top_text += f'  {i+1}. {media_type} <a href="{link}">{title}</a> — ❤️{likes} 💬{comments}\n'
+            top_text += f'  {i+1}. {media_type} <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments}\n'
 
         await update.message.reply_text(
             f"📱 Instagram МикВісті ({week_start} — {week_end}):\n\n"
