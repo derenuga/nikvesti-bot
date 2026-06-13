@@ -79,7 +79,7 @@ def get_top_posts():
     return posts[:5], total
 
 def get_top_reels():
-    since_dt = datetime.now(tz=timezone.utc) - timedelta(days=7)
+    since_dt = (datetime.now(tz=timezone.utc) - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/video_reels"
     params = {
         "fields": "id,description,permalink_url,likes.summary(true),comments.summary(true),created_time",
