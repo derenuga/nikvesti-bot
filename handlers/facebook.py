@@ -56,7 +56,7 @@ def get_top_posts():
     since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
-        "fields": "id,message,permalink_url,likes.summary(true),comments.summary(true),created_time",
+        "fields": "id,message,permalink_url,reactions.summary(true),comments.summary(true),created_time",
         "since": since,
         "access_token": FACEBOOK_PAGE_TOKEN,
         "limit": 100
@@ -142,7 +142,7 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
     posts_text = ""
     top_authors = []
     for i, p in enumerate(top_posts):
-        likes = p.get("likes", {}).get("summary", {}).get("total_count", 0)
+        likes = p.get("reactions", {}).get("summary", {}).get("total_count", 0)
         comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
         link = p.get("permalink_url", "")
         title = short_message(p.get("message", ""))
