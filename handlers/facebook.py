@@ -8,7 +8,7 @@ FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
 def get_page_followers():
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}"
     params = {
-        "fields": "fan_count,followers_count",
+        "fields": "fan_count,followers_count,name",
         "access_token": FACEBOOK_PAGE_TOKEN
     }
     response = requests.get(url, params=params)
@@ -16,11 +16,11 @@ def get_page_followers():
     if "error" in data:
         raise Exception(data["error"]["message"])
     return data
-    
+
 def get_page_stats():
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/insights"
     params = {
-        "metric": "page_impressions_unique,page_post_engagements,page_fan_adds_unique",
+        "metric": "page_impressions_unique,page_post_engagements,page_follows",
         "period": "week",
         "access_token": FACEBOOK_PAGE_TOKEN
     }
@@ -76,8 +76,8 @@ async def facebook_handler(update, context):
         week_end = datetime.now().strftime("%d.%m.%Y")
         week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
 
+        followers = stats.get("page_follows", page.get("followers_count", "н/д"))
         fans = page.get("fan_count", "н/д")
-        followers = page.get("followers_count", "н/д")
 
         top_text = ""
         for i, p in enumerate(top_posts):
@@ -93,9 +93,8 @@ async def facebook_handler(update, context):
             f"👥 Підписників: {followers}\n"
             f"❤️ Фанів: {fans}\n\n"
             f"📊 Статистика за тиждень:\n"
-            f"  👁 Покази: {stats.get('page_impressions', 'н/д')}\n"
-            f"  🌍 Охоплення: {stats.get('page_reach', 'н/д')}\n"
-            f"  🤝 Залучені: {stats.get('page_engaged_users', 'н/д')}\n\n"
+            f"  👁 Охоплення: {stats.get('page_impressions_unique', 'н/д')}\n"
+            f"  🤝 Взаємодії: {stats.get('page_post_engagements', 'н/д')}\n\n"
             f"🔥 Топ-5 публікацій тижня:\n{top_text}",
             parse_mode="HTML",
             disable_web_page_preview=True
