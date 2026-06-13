@@ -150,4 +150,4 @@ async def instagram_handler(update, context):
             disable_web_page_preview=True
         )
     except Exception as e:
-        await update.message.reply_text(f"❌
+        await update.message.reply_text(f"❌ Помилка Instagram: {e}")
