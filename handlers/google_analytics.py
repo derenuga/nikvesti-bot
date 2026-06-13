@@ -4,6 +4,7 @@ from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, DateRange, Metric, Dimension, OrderBy
 from google.oauth2 import service_account
 import os
+from handlers.helpers import parse_month_arg
 
 GA4_PROPERTY_ID = os.environ.get("GA4_PROPERTY_ID")
 GA4_CREDENTIALS = os.environ.get("GA4_CREDENTIALS")
@@ -58,32 +59,54 @@ def get_top_pages(client, start_date, end_date):
 
 async def analytics_handler(update, context):
     try:
+        args = context.args
+        start_dt, end_dt, period_label = parse_month_arg(args)
+
         client = get_ga4_client()
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        day_before = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
-        yesterday_label = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
 
-        users, sessions, pageviews = get_stats(client, yesterday, yesterday)
-        u2, s2, p2 = get_stats(client, day_before, day_before)
+        if start_dt:
+            start_date = start_dt.strftime("%Y-%m-%d")
+            end_date = end_dt.strftime("%Y-%m-%d")
+            users, sessions, pageviews = get_stats(client, start_date, end_date)
+            top_pages = get_top_pages(client, start_date, end_date)
+            top_text = "\n".join([
+                f'  {i+1}. <a href="{BASE_URL}{path}">{title}</a> — {views}'
+                for i, (path, title, views) in enumerate(top_pages)
+            ])
+            await update.message.reply_text(
+                f"📊 Статистика МикВісті ({period_label}):\n\n"
+                f"👥 Користувачі: {users}\n"
+                f"🔄 Сесії: {sessions}\n"
+                f"📄 Перегляди: {pageviews}\n\n"
+                f"🔥 Топ-5 статей:\n{top_text}",
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+        else:
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            day_before = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+            yesterday_label = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
 
-        def diff(a, b):
-            d = a - b
-            return f"+{d}" if d > 0 else str(d)
+            users, sessions, pageviews = get_stats(client, yesterday, yesterday)
+            u2, s2, p2 = get_stats(client, day_before, day_before)
 
-        top_pages = get_top_pages(client, yesterday, yesterday)
-        top_text = "\n".join([
-            f'  {i+1}. <a href="{BASE_URL}{path}">{title}</a> — {views}'
-            for i, (path, title, views) in enumerate(top_pages)
-        ])
+            def diff(a, b):
+                d = a - b
+                return f"+{d}" if d > 0 else str(d)
 
-        await update.message.reply_text(
-            f"📊 Статистика МикВісті за вчора ({yesterday_label}):\n\n"
-            f"👥 Користувачі: {users} ({diff(users, u2)})\n"
-            f"🔄 Сесії: {sessions} ({diff(sessions, s2)})\n"
-            f"📄 Перегляди: {pageviews} ({diff(pageviews, p2)})\n\n"
-            f"🔥 Топ-5 статей:\n{top_text}",
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
+            top_pages = get_top_pages(client, yesterday, yesterday)
+            top_text = "\n".join([
+                f'  {i+1}. <a href="{BASE_URL}{path}">{title}</a> — {views}'
+                for i, (path, title, views) in enumerate(top_pages)
+            ])
+            await update.message.reply_text(
+                f"📊 Статистика МикВісті за вчора ({yesterday_label}):\n\n"
+                f"👥 Користувачі: {users} ({diff(users, u2)})\n"
+                f"🔄 Сесії: {sessions} ({diff(sessions, s2)})\n"
+                f"📄 Перегляди: {pageviews} ({diff(pageviews, p2)})\n\n"
+                f"🔥 Топ-5 статей:\n{top_text}",
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
     except Exception as e:
         await update.message.reply_text(f"❌ Помилка: {e}")
