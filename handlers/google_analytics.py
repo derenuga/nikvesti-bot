@@ -82,7 +82,8 @@ async def analytics_handler(update, context):
             f"🔄 Сесії: {sessions} ({diff(sessions, s2)})\n"
             f"📄 Перегляди: {pageviews} ({diff(pageviews, p2)})\n\n"
             f"🔥 Топ-5 статей:\n{top_text}",
-            parse_mode="HTML"
+            parse_mode="HTML",
+            disable_web_page_preview=True
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Помилка: {e}")
