@@ -80,11 +80,10 @@ def get_top_posts():
     return posts[:5], total
 
 def get_top_reels():
-    since = int((datetime.now() - timedelta(days=7)).timestamp())
+    since = datetime.now() - timedelta(days=7)
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/video_reels"
     params = {
-        "fields": "id,description,permalink_url,reactions.summary(true),comments.summary(true),created_time",
-        "since": since,
+        "fields": "id,description,permalink_url,likes.summary(true),comments.summary(true),created_time",
         "access_token": FACEBOOK_PAGE_TOKEN,
         "limit": 100
     }
@@ -94,16 +93,27 @@ def get_top_reels():
         return [], 0
 
     all_reels = data.get("data", [])
-    total = len(all_reels)
 
+    # Фільтруємо по даті вручну
+    week_reels = []
     for r in all_reels:
-        reactions = r.get("reactions", {}).get("summary", {}).get("total_count", 0)
+        created = r.get("created_time", "")
+        if created:
+            from datetime import timezone
+            created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            since_aware = since.replace(tzinfo=timezone.utc)
+            if created_dt >= since_aware:
+                week_reels.append(r)
+
+    total = len(week_reels)
+    for r in week_reels:
+        likes = r.get("likes", {}).get("summary", {}).get("total_count", 0)
         comments = r.get("comments", {}).get("summary", {}).get("total_count", 0)
-        r["engagement"] = reactions + comments
+        r["engagement"] = likes + comments
         r["permalink_url"] = fix_permalink(r.get("permalink_url", ""))
 
-    all_reels.sort(key=lambda x: x["engagement"], reverse=True)
-    return all_reels[:5], total
+    week_reels.sort(key=lambda x: x["engagement"], reverse=True)
+    return week_reels[:5], total
 
 def extract_url_from_message(message):
     if not message:
@@ -144,9 +154,9 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
 
     posts_text = ""
     top_authors = []
-    for i, p in enumerate(top_posts):
-        reactions = p.get("reactions", {}).get("summary", {}).get("total_count", 0)
-        comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
+    for i, r in enumerate(top_reels):
+        likes = r.get("likes", {}).get("summary", {}).get("total_count", 0)
+        comments = r.get("comments", {}).get("summary", {}).get("total_count", 0)
         shares = p.get("shares", {}).get("count", 0)
         link = p.get("permalink_url", "")
         title = short_message(p.get("message", ""))
