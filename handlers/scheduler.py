@@ -25,17 +25,18 @@ async def send_daily_report(bot):
     top_pages = get_top_pages(client, yesterday, yesterday)
     top_text = "\n".join([
         f'  {i+1}. <a href="{BASE_URL}{path}">{title}</a> — {views}'
-        for i, (path, title, views) in enumerate(top_pages)
+        + (f'\n      👤 {author}' if author else '')
+        for i, (path, title, views, author) in enumerate(top_pages)
     ])
 
     await bot.send_message(
         chat_id=CHAT_ID,
         text=(
-            f"Статистика МикВісті за вчора ({yesterday_label}):\n\n"
-            f"Користувачі: {users} ({diff(users, u2)})\n"
-            f"Сесії: {sessions} ({diff(sessions, s2)})\n"
-            f"Перегляди: {pageviews} ({diff(pageviews, p2)})\n\n"
-            f"Топ-5 статей:\n{top_text}"
+            f"📊 Статистика МикВісті за вчора ({yesterday_label}):\n\n"
+            f"👥 Користувачі: {users} ({diff(users, u2)})\n"
+            f"🔄 Сесії: {sessions} ({diff(sessions, s2)})\n"
+            f"📄 Перегляди: {pageviews} ({diff(pageviews, p2)})\n\n"
+            f"🔥 Топ-5 статей:\n{top_text}"
         ),
         parse_mode="HTML",
         disable_web_page_preview=True
