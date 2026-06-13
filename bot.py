@@ -3,6 +3,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler
 from handlers.google_analytics import analytics_handler
 from handlers.scheduler import setup_scheduler, send_daily_report, check_email
 from handlers.instagram import instagram_handler, send_weekly_instagram_report
+from handlers.facebook import facebook_handler
 
 TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -10,7 +11,7 @@ CHAT_ID = os.environ.get("CHAT_ID")
 async def start(update, context):
     await update.message.reply_text(
         "Привіт! Я помічник редакції МикВісті 👋\n"
-        "Команди:\n/start — привітання\n/status — перевірка\n/analytics — статистика сайту\n/report — звіт в групу\n/checkmail — перевірити пошту\n/instagram — статистика Instagram\n/igreport — тижневий Instagram звіт в групу"
+        "Команди:\n/start — привітання\n/status — перевірка\n/analytics — статистика сайту\n/report — звіт в групу\n/checkmail — перевірити пошту\n/instagram — статистика Instagram\n/igreport — тижневий Instagram звіт в групу\n/facebook — статистика Facebook"
     )
 
 async def status(update, context):
@@ -40,6 +41,7 @@ def main():
     app.add_handler(CommandHandler("checkmail", checkmail))
     app.add_handler(CommandHandler("instagram", instagram_handler))
     app.add_handler(CommandHandler("igreport", igreport))
+    app.add_handler(CommandHandler("facebook", facebook_handler))
     print("Bot started...")
     app.run_polling()
 
