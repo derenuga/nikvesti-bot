@@ -4,7 +4,7 @@ from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, DateRange, Metric, Dimension, OrderBy
 from google.oauth2 import service_account
 import os
-from handlers.helpers import parse_month_arg
+from handlers.helpers import parse_month_arg, get_author_from_url
 
 GA4_PROPERTY_ID = os.environ.get("GA4_PROPERTY_ID")
 GA4_CREDENTIALS = os.environ.get("GA4_CREDENTIALS")
@@ -56,7 +56,8 @@ def get_top_pages(client, start_date, end_date):
             continue
         if not (path.startswith("/news") or path.startswith("/articles") or path.startswith("/blog")):
             continue
-        results.append((path, title, views))
+        author = get_author_from_url(BASE_URL + path)
+        results.append((path, title, views, author))
         if len(results) == 5:
             break
     return results
@@ -75,7 +76,8 @@ async def analytics_handler(update, context):
             top_pages = get_top_pages(client, start_date, end_date)
             top_text = "\n".join([
                 f'  {i+1}. <a href="{BASE_URL}{path}">{title}</a> — {views}'
-                for i, (path, title, views) in enumerate(top_pages)
+                + (f'\n      👤 {author}' if author else '')
+                for i, (path, title, views, author) in enumerate(top_pages)
             ])
             await update.message.reply_text(
                 f"📊 Статистика МикВісті ({period_label}):\n\n"
@@ -101,7 +103,8 @@ async def analytics_handler(update, context):
             top_pages = get_top_pages(client, yesterday, yesterday)
             top_text = "\n".join([
                 f'  {i+1}. <a href="{BASE_URL}{path}">{title}</a> — {views}'
-                for i, (path, title, views) in enumerate(top_pages)
+                + (f'\n      👤 {author}' if author else '')
+                for i, (path, title, views, author) in enumerate(top_pages)
             ])
             await update.message.reply_text(
                 f"📊 Статистика МикВісті за вчора ({yesterday_label}):\n\n"
