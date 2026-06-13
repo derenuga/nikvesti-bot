@@ -155,7 +155,7 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
 
     reels_text = ""
     for i, r in enumerate(top_reels):
-        likes = r.get("likes", {}).get("summary", {}).get("total_count", 0)
+        likes = r.get("reactions", {}).get("summary", {}).get("total_count", 0)
         comments = r.get("comments", {}).get("summary", {}).get("total_count", 0)
         link = r.get("permalink_url", "")
         title = short_message(r.get("description", ""))
