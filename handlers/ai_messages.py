@@ -3,6 +3,40 @@ import os
 
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
+async def generate_instagram_weekly_comment(stats, follows, unfollows, total_posts, reels):
+    net = follows - unfollows if follows and unfollows else 0
+    
+    prompt = f"""Ти помічник редакції новинного сайту МикВісті. Напиши короткий неформальний коментар до тижневого звіту Instagram в Telegram-чат редакції.
+
+Дані за тиждень:
+- Нових підписників: +{net} (прийшло {follows}, пішло {unfollows})
+- Охоплення: {stats.get('reach', 0)}
+- Взаємодії: {stats.get('total_interactions', 0)}
+- Публікацій: {total_posts}, з них рілзів: {reels}
+
+Команда Instagram:
+- @mskvn1 (Ліза) — керує всім СММ напрямком
+- @Imira_91 (Іміра) — розвиває Instagram
+- Сергій (монтажер рілзів)
+
+Вимоги:
+- Українська мова
+- 3-5 речень максимум
+- Неформальний живий тон
+- Оціни як пройшов тиждень — добре чи є куди рости
+- Подякуй команді, згадай @mskvn1, @Imira_91 і Сергія (без тегу, просто на ім'я)
+- Можна 1-2 емодзі
+- НЕ починай з "Шановні колеги"
+
+Напиши тільки текст, нічого більше."""
+
+    message = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=300,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return message.content[0].text
+
 async def generate_email_reminder(emails, hours, time_of_day):
     senders = list(set([e["sender"].split("<")[0].strip() for e in emails[:5]]))
     senders_text = ", ".join(senders)
