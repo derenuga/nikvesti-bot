@@ -7,7 +7,7 @@ INSTAGRAM_USER_ID = "17841400860799899"
 def get_instagram_stats():
     url = f"https://graph.instagram.com/v19.0/{INSTAGRAM_USER_ID}/insights"
     params = {
-        "metric": "reach,impressions,profile_views,follower_count",
+        "metric": "reach,profile_views,follower_count,total_interactions",
         "period": "day",
         "access_token": INSTAGRAM_TOKEN
     }
@@ -46,7 +46,7 @@ async def instagram_handler(update, context):
             f"📱 Instagram МикВісті:\n\n"
             f"👥 Підписники: {followers.get('followers_count', 'н/д')}\n"
             f"📸 Публікацій: {followers.get('media_count', 'н/д')}\n"
-            f"👁 Охоплення (день): {stats.get('reach', 'н/д')}\n"
+            f"👁 Взаємодії (день): {stats.get('reach', 'н/д')}\n"
             f"📊 Покази (день): {stats.get('impressions', 'н/д')}\n"
             f"🔍 Перегляди профілю: {stats.get('profile_views', 'н/д')}"
         )
