@@ -3,37 +3,11 @@ import re
 import requests
 from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
+from handlers.helpers import parse_month_arg
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
 FACEBOOK_PAGE_SLUG = "nikvesti"
-
-MONTHS_UK = {
-    "january": 1, "february": 2, "march": 3, "april": 4,
-    "may": 5, "june": 6, "july": 7, "august": 8,
-    "september": 9, "october": 10, "november": 11, "december": 12,
-    "січень": 1, "лютий": 2, "березень": 3, "квітень": 4,
-    "травень": 5, "червень": 6, "липень": 7, "серпень": 8,
-    "вересень": 9, "жовтень": 10, "листопад": 11, "грудень": 12,
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
-    "jun": 6, "jul": 7, "aug": 8, "sep": 9,
-    "oct": 10, "nov": 11, "dec": 12,
-}
-
-def parse_month_arg(args):
-    if not args:
-        return None, None
-    month_str = args[0].lower()
-    month_num = MONTHS_UK.get(month_str)
-    if not month_num:
-        return None, None
-    now = datetime.now()
-    year = now.year if month_num <= now.month else now.year - 1
-    from calendar import monthrange
-    last_day = monthrange(year, month_num)[1]
-    start = datetime(year, month_num, 1)
-    end = datetime(year, month_num, last_day, 23, 59, 59)
-    return start, end
 
 def get_page_followers():
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}"
@@ -208,10 +182,13 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
     else:
         week_end = datetime.now().strftime("%d.%m.%Y")
         week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
-        header = f"📘 Facebook МикВісті ({week_start} — {week_end}):\n\n"
-
-    followers = stats.get("page_follows", page.get("followers_count", "н/д"))
-    fans = page.get("fan_count", "н/д")
+        followers = stats.get("page_follows", page.get("followers_count", "н/д"))
+        fans = page.get("fan_count", "н/д")
+        header = (
+            f"📘 Facebook МикВісті ({week_start} — {week_end}):\n\n"
+            f"👥 Підписників: {followers}\n"
+            f"❤️ Фанів: {fans}\n\n"
+        )
 
     posts_text = ""
     top_authors = []
@@ -239,24 +216,22 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
 
     text = (
         header +
-        f"👥 Підписників: {followers}\n"
-        f"❤️ Фанів: {fans}\n\n"
-        f"📊 Статистика за тиждень:\n"
+        f"📊 Статистика:\n"
         f"  👁 Охоплення: {stats.get('page_impressions_unique', 'н/д')}\n"
         f"  🤝 Взаємодії: {stats.get('page_post_engagements', 'н/д')}\n\n"
     )
 
     if posts_text:
-        text += f"🔥 Топ-5 публікацій тижня (з {total_posts}):\n{posts_text}\n"
+        text += f"🔥 Топ-5 публікацій (з {total_posts}):\n{posts_text}\n"
     if reels_text:
-        text += f"🎬 Топ-5 рілзів тижня (з {total_reels}):\n{reels_text}"
+        text += f"🎬 Топ-5 рілзів (з {total_reels}):\n{reels_text}"
 
     return text, top_authors
 
 async def facebook_handler(update, context):
     try:
         args = context.args
-        start_dt, end_dt = parse_month_arg(args)
+        start_dt, end_dt, period_label = parse_month_arg(args)
 
         page = get_page_followers()
         stats = get_page_stats()
@@ -264,7 +239,6 @@ async def facebook_handler(update, context):
         if start_dt:
             since_ts = int(start_dt.timestamp())
             until_ts = int(end_dt.timestamp())
-            period_label = start_dt.strftime("%B %Y")
             top_posts, total_posts = get_top_posts(since_ts, until_ts)
             top_reels, total_reels = get_top_reels(start_dt)
         else:
