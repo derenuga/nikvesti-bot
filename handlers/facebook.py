@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
+FACEBOOK_PAGE_SLUG = "nikvesti"
 
 def get_page_followers():
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}"
@@ -37,11 +38,25 @@ def get_page_stats():
             stats[item["name"]] = values[-1]["value"]
     return stats
 
-def get_posts_and_reels():
+def fix_permalink(url):
+    if not url:
+        return url
+    # Замінюємо числовий ID сторінки на slug
+    url = re.sub(
+        r'https://www\.facebook\.com/\d+/posts/(\d+)',
+        lambda m: f"https://www.facebook.com/{FACEBOOK_PAGE_SLUG}/posts/{m.group(1)}",
+        url
+    )
+    # Виправляємо відносні URL рілзів
+    if url.startswith("/reel/"):
+        url = "https://www.facebook.com" + url
+    return url
+
+def get_top_posts():
     since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
-        "fields": "id,message,permalink_url,likes.summary(true),comments.summary(true),shares,created_time",
+        "fields": "id,message,permalink_url,likes.summary(true),comments.summary(true),created_time",
         "since": since,
         "access_token": FACEBOOK_PAGE_TOKEN,
         "limit": 100
@@ -49,26 +64,43 @@ def get_posts_and_reels():
     response = requests.get(url, params=params)
     data = response.json()
     if "error" in data:
-        return [], []
+        return [], 0
 
     all_posts = data.get("data", [])
-    posts = []
-    reels = []
-
+    total = len(all_posts)
     for p in all_posts:
         likes = p.get("likes", {}).get("summary", {}).get("total_count", 0)
         comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
-        shares = p.get("shares", {}).get("count", 0)
-        p["engagement"] = likes + comments + shares
-        message = p.get("message", "") or ""
-        if "nikvesti.com" in message:
-            posts.append(p)
-        else:
-            reels.append(p)
+        p["engagement"] = likes + comments
+        p["permalink_url"] = fix_permalink(p.get("permalink_url", ""))
 
-    posts.sort(key=lambda x: x["engagement"], reverse=True)
-    reels.sort(key=lambda x: x["engagement"], reverse=True)
-    return posts[:5], reels[:5]
+    all_posts.sort(key=lambda x: x["engagement"], reverse=True)
+    return all_posts[:5], total
+
+def get_top_reels():
+    since = int((datetime.now() - timedelta(days=7)).timestamp())
+    url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/video_reels"
+    params = {
+        "fields": "id,description,permalink_url,likes.summary(true),comments.summary(true),created_time",
+        "since": since,
+        "access_token": FACEBOOK_PAGE_TOKEN,
+        "limit": 100
+    }
+    response = requests.get(url, params=params)
+    data = response.json()
+    if "error" in data:
+        return [], 0
+
+    all_reels = data.get("data", [])
+    total = len(all_reels)
+    for r in all_reels:
+        likes = r.get("likes", {}).get("summary", {}).get("total_count", 0)
+        comments = r.get("comments", {}).get("summary", {}).get("total_count", 0)
+        r["engagement"] = likes + comments
+        r["permalink_url"] = fix_permalink(r.get("permalink_url", ""))
+
+    all_reels.sort(key=lambda x: x["engagement"], reverse=True)
+    return all_reels[:5], total
 
 def extract_url_from_message(message):
     if not message:
@@ -100,7 +132,7 @@ def short_message(message, words=5):
         return message
     return " ".join(w[:words]) + "..."
 
-def build_facebook_report(page, stats, top_posts, top_reels):
+def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_reels):
     week_end = datetime.now().strftime("%d.%m.%Y")
     week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
 
@@ -122,11 +154,11 @@ def build_facebook_report(page, stats, top_posts, top_reels):
         posts_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments}{author_text}\n'
 
     reels_text = ""
-    for i, p in enumerate(top_reels):
-        likes = p.get("likes", {}).get("summary", {}).get("total_count", 0)
-        comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
-        link = p.get("permalink_url", "")
-        title = short_message(p.get("message", ""))
+    for i, r in enumerate(top_reels):
+        likes = r.get("likes", {}).get("summary", {}).get("total_count", 0)
+        comments = r.get("comments", {}).get("summary", {}).get("total_count", 0)
+        link = r.get("permalink_url", "")
+        title = short_message(r.get("description", ""))
         reels_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments}\n'
 
     text = (
@@ -139,9 +171,9 @@ def build_facebook_report(page, stats, top_posts, top_reels):
     )
 
     if posts_text:
-        text += f"🔥 Топ-5 публікацій тижня:\n{posts_text}\n"
+        text += f"🔥 Топ-5 публікацій тижня (з {total_posts}):\n{posts_text}\n"
     if reels_text:
-        text += f"🎬 Топ-5 рілзів тижня:\n{reels_text}"
+        text += f"🎬 Топ-5 рілзів тижня (з {total_reels}):\n{reels_text}"
 
     return text, top_authors
 
@@ -149,8 +181,9 @@ async def facebook_handler(update, context):
     try:
         page = get_page_followers()
         stats = get_page_stats()
-        top_posts, top_reels = get_posts_and_reels()
-        text, _ = build_facebook_report(page, stats, top_posts, top_reels)
+        top_posts, total_posts = get_top_posts()
+        top_reels, total_reels = get_top_reels()
+        text, _ = build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_reels)
         await update.message.reply_text(
             text,
             parse_mode="HTML",
@@ -164,11 +197,9 @@ async def send_weekly_facebook_report(bot, chat_id):
     try:
         page = get_page_followers()
         stats = get_page_stats()
-        top_posts, top_reels = get_posts_and_reels()
-        report_text, top_authors = build_facebook_report(page, stats, top_posts, top_reels)
-
-        total_posts = len(top_posts)
-        total_reels = len(top_reels)
+        top_posts, total_posts = get_top_posts()
+        top_reels, total_reels = get_top_reels()
+        report_text, top_authors = build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_reels)
 
         ai_comment = await generate_facebook_weekly_comment(stats, top_authors, total_posts, total_reels)
 
