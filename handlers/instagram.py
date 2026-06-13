@@ -48,4 +48,12 @@ async def instagram_handler(update, context):
 
         await update.message.reply_text(
             f"📱 Instagram МикВісті ({week_start} — {week_end}):\n\n"
-            f"👥 Підписники:
+            f"👥 Підписники: {profile.get('followers_count', 'н/д')}\n"
+            f"📸 Публікацій: {profile.get('media_count', 'н/д')}\n\n"
+            f"За тиждень:\n"
+            f"👁 Охоплення: {stats.get('reach', 'н/д')}\n"
+            f"🤝 Взаємодії: {stats.get('total_interactions', 'н/д')}\n"
+            f"👤 Залучені акаунти: {stats.get('accounts_engaged', 'н/д')}"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка Instagram: {e}")
