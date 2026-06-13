@@ -64,10 +64,6 @@ async def weekly_facebook(bot):
     await send_weekly_facebook_report(bot, CHAT_ID)
 
 async def morning_greeting(bot):
-    now = datetime.now()
-    # Пропускаємо вихідні (5=субота, 6=неділя)
-    if now.weekday() >= 5:
-        return
     await send_morning_message(bot, CHAT_ID)
 
 def setup_scheduler(bot):
