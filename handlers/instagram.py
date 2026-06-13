@@ -11,19 +11,17 @@ def get_instagram_profile():
         "fields": "followers_count,media_count",
         "access_token": INSTAGRAM_TOKEN
     }
-    response = requests.get(url, params=params)
-    return response.json()
+    return requests.get(url, params=params).json()
 
 def get_instagram_stats():
     url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/insights"
     params = {
-        "metric": "reach,views,total_interactions,accounts_engaged,follower_count",
+        "metric": "reach,views,total_interactions,accounts_engaged",
         "period": "week",
         "metric_type": "total_value",
         "access_token": INSTAGRAM_TOKEN
     }
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = requests.get(url, params=params).json()
     if "error" in data:
         raise Exception(data["error"]["message"])
     stats = {}
@@ -31,24 +29,39 @@ def get_instagram_stats():
         stats[item["name"]] = item.get("total_value", {}).get("value", 0)
     return stats
 
+def get_followers_week_ago():
+    since = int((datetime.now() - timedelta(days=8)).timestamp())
+    until = int((datetime.now() - timedelta(days=7)).timestamp())
+    url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/insights"
+    params = {
+        "metric": "follower_count",
+        "period": "day",
+        "metric_type": "total_value",
+        "since": since,
+        "until": until,
+        "access_token": INSTAGRAM_TOKEN
+    }
+    data = requests.get(url, params=params).json()
+    try:
+        return data["data"][0]["total_value"]["value"]
+    except:
+        return None
+
 def get_top_media():
     since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/media"
     params = {
-        "fields": "id,media_type,permalink,like_count,comments_count,timestamp",
+        "fields": "id,media_type,permalink,like_count,comments_count,caption,timestamp",
         "since": since,
         "access_token": INSTAGRAM_TOKEN,
         "limit": 50
     }
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = requests.get(url, params=params).json()
     if "error" in data:
         return []
-
     media = data.get("data", [])
     for m in media:
         m["engagement"] = m.get("like_count", 0) + m.get("comments_count", 0)
-
     media.sort(key=lambda x: x["engagement"], reverse=True)
     return media[:5]
 
@@ -61,8 +74,7 @@ def get_media_counts():
         "access_token": INSTAGRAM_TOKEN,
         "limit": 100
     }
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = requests.get(url, params=params).json()
     if "error" in data:
         return {}
     counts = {"IMAGE": 0, "VIDEO": 0, "CAROUSEL_ALBUM": 0}
@@ -72,6 +84,14 @@ def get_media_counts():
             counts[t] += 1
     return counts
 
+def short_caption(caption, words=5):
+    if not caption:
+        return "без підпису"
+    w = caption.split()
+    if len(w) <= words:
+        return caption
+    return " ".join(w[:words]) + "..."
+
 async def instagram_handler(update, context):
     try:
         profile = get_instagram_profile()
@@ -79,17 +99,21 @@ async def instagram_handler(update, context):
         top_media = get_top_media()
         counts = get_media_counts()
 
+        followers_now = profile.get("followers_count", 0)
+        followers_prev = get_followers_week_ago()
+        if followers_prev is not None:
+            diff_val = followers_now - followers_prev
+            diff = f"+{diff_val}" if diff_val >= 0 else str(diff_val)
+        else:
+            diff = "н/д"
+
         week_end = datetime.now().strftime("%d.%m.%Y")
         week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
 
-        followers = profile.get("followers_count", 0)
-        followers_change = stats.get("follower_count", 0)
-        diff = f"+{followers_change}" if followers_change >= 0 else str(followers_change)
-
-        posts = counts.get("IMAGE", 0)
+        photos = counts.get("IMAGE", 0)
         reels = counts.get("VIDEO", 0)
         carousels = counts.get("CAROUSEL_ALBUM", 0)
-        total_posts = posts + reels + carousels
+        total_posts = photos + reels + carousels
 
         top_text = ""
         for i, m in enumerate(top_media):
@@ -97,13 +121,14 @@ async def instagram_handler(update, context):
             likes = m.get("like_count", 0)
             comments = m.get("comments_count", 0)
             link = m.get("permalink", "")
-            top_text += f"  {i+1}. {media_type} <a href=\"{link}\">переглянути</a> — ❤️ {likes} 💬 {comments}\n"
+            title = short_caption(m.get("caption", ""))
+            top_text += f'  {i+1}. {media_type} <a href="{link}">{title}</a> — ❤️ {likes} 💬 {comments}\n'
 
         await update.message.reply_text(
             f"📱 Instagram МикВісті ({week_start} — {week_end}):\n\n"
-            f"👥 Підписники: {followers} ({diff} за тиждень)\n\n"
+            f"👥 Підписники: {followers_now} ({diff} за тиждень)\n\n"
             f"За тиждень опубліковано {total_posts} матеріалів:\n"
-            f"  📸 Постів: {posts}\n"
+            f"  📸 Фото: {photos}\n"
             f"  🎬 Рілзів: {reels}\n"
             f"  🗂 Каруселей: {carousels}\n\n"
             f"📊 Статистика:\n"
