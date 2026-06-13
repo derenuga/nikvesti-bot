@@ -42,7 +42,7 @@ def get_top_pages(client, start_date, end_date):
         ],
         metrics=[Metric(name="screenPageViews")],
         order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
-        limit=10,
+        limit=30,
     )
     response = client.run_report(request)
     results = []
