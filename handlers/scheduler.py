@@ -29,11 +29,11 @@ async def send_daily_report(bot):
     await bot.send_message(
         chat_id=CHAT_ID,
         text=(
-            f"📊 Статистика МикВісті за вчора ({yesterday_label}):\n\n"
-            f"👥 Користувачі: {users} ({diff(users, u2)})\n"
-            f"🔄 Сесії: {sessions} ({diff(sessions, s2)})\n"
-            f"📄 Перегляди: {pageviews} ({diff(pageviews, p2)})\n\n"
-            f"🔥 Топ-5 статей:\n{top_text}"
+            f"Статистика МикВісті за вчора ({yesterday_label}):\n\n"
+            f"Користувачі: {users} ({diff(users, u2)})\n"
+            f"Сесії: {sessions} ({diff(sessions, s2)})\n"
+            f"Перегляди: {pageviews} ({diff(pageviews, p2)})\n\n"
+            f"Топ-5 статей:\n{top_text}"
         ),
         parse_mode="HTML",
         disable_web_page_preview=True
@@ -50,4 +50,12 @@ async def check_email(bot, time_of_day):
         message = await generate_email_reminder(emails, hours, time_of_day)
         await bot.send_message(chat_id=CHAT_ID, text=message)
     except Exception as e:
-        print(f"Помилка перевірки
+        print("Помилка перевірки пошти: " + str(e))
+
+def setup_scheduler(bot):
+    scheduler = AsyncIOScheduler(timezone="Europe/Kiev")
+    scheduler.add_job(send_daily_report, "cron", hour=9, minute=0, args=[bot])
+    scheduler.add_job(check_email, "cron", hour=13, minute=0, args=[bot, "afternoon"])
+    scheduler.add_job(check_email, "cron", hour=16, minute=50, args=[bot, "evening"])
+    scheduler.start()
+    return scheduler
