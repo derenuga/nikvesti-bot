@@ -78,11 +78,33 @@ def get_top_posts():
     posts.sort(key=lambda x: x["engagement"], reverse=True)
     return posts[:5], total
 
+def get_reel_insights(reel_id):
+    try:
+        url = f"https://graph.facebook.com/v19.0/{reel_id}/video_insights"
+        params = {
+            "metric": "post_video_social_actions,post_video_likes_by_reaction_type",
+            "access_token": FACEBOOK_PAGE_TOKEN
+        }
+        response = requests.get(url, params=params)
+        data = response.json()
+        reactions = 0
+        shares = 0
+        comments = 0
+        for item in data.get("data", []):
+            if item["name"] == "post_video_likes_by_reaction_type":
+                reactions = sum(item["values"][0]["value"].values())
+            elif item["name"] == "post_video_social_actions":
+                shares = item["values"][0]["value"].get("SHARE", 0)
+                comments = item["values"][0]["value"].get("COMMENT", 0)
+        return reactions, comments, shares
+    except:
+        return 0, 0, 0
+
 def get_top_reels():
     since_dt = (datetime.now(tz=timezone.utc) - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/video_reels"
     params = {
-        "fields": "id,description,permalink_url,likes.summary(true),comments.summary(true),created_time",
+        "fields": "id,description,permalink_url,created_time",
         "access_token": FACEBOOK_PAGE_TOKEN,
         "limit": 25
     }
@@ -104,10 +126,13 @@ def get_top_reels():
             pass
 
     total = len(week_reels)
+
     for r in week_reels:
-        likes = r.get("likes", {}).get("summary", {}).get("total_count", 0)
-        comments = r.get("comments", {}).get("summary", {}).get("total_count", 0)
-        r["engagement"] = likes + comments
+        reactions, comments, shares = get_reel_insights(r["id"])
+        r["reactions"] = reactions
+        r["comments_count"] = comments
+        r["shares_count"] = shares
+        r["engagement"] = reactions + comments + shares
         r["permalink_url"] = fix_permalink(r.get("permalink_url", ""))
 
     week_reels.sort(key=lambda x: x["engagement"], reverse=True)
@@ -167,11 +192,12 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
 
     reels_text = ""
     for i, r in enumerate(top_reels):
-        likes = r.get("likes", {}).get("summary", {}).get("total_count", 0)
-        comments = r.get("comments", {}).get("summary", {}).get("total_count", 0)
+        reactions = r.get("reactions", 0)
+        comments = r.get("comments_count", 0)
+        shares = r.get("shares_count", 0)
         link = r.get("permalink_url", "")
         title = short_message(r.get("description", ""))
-        reels_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments}\n'
+        reels_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{reactions} 💬{comments} 🔄{shares}\n'
 
     text = (
         f"📘 Facebook МикВісті ({week_start} — {week_end}):\n\n"
