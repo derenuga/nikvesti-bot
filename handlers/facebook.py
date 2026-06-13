@@ -84,7 +84,7 @@ def get_top_reels():
     params = {
         "fields": "id,description,permalink_url,likes.summary(true),comments.summary(true),created_time",
         "access_token": FACEBOOK_PAGE_TOKEN,
-        "limit": 100
+        "limit": 25
     }
     response = requests.get(url, params=params)
     data = response.json()
