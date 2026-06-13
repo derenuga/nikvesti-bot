@@ -6,10 +6,11 @@ INSTAGRAM_TOKEN = os.environ.get("INSTAGRAM_TOKEN")
 INSTAGRAM_USER_ID = "17841400860799899"
 
 def get_instagram_stats():
-    url = f"https://graph.instagram.com/v19.0/{INSTAGRAM_USER_ID}/insights"
+    url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/insights"
     params = {
-        "metric": "reach,total_interactions,accounts_engaged",
+        "metric": "reach,views,total_interactions,accounts_engaged",
         "period": "week",
+        "metric_type": "total_value",
         "access_token": INSTAGRAM_TOKEN
     }
     response = requests.get(url, params=params)
@@ -20,7 +21,7 @@ def get_instagram_stats():
 
     stats = {}
     for item in data.get("data", []):
-        stats[item["name"]] = item["values"][-1]["value"]
+        stats[item["name"]] = item.get("total_value", {}).get("value", "н/д")
 
     return stats
 
