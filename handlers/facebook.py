@@ -1,7 +1,7 @@
 import os
 import re
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
@@ -65,7 +65,6 @@ def get_top_posts():
         return [], 0
 
     all_posts = data.get("data", [])
-    # Фільтруємо тільки пости з посиланням на сайт (не рілзи)
     posts = [p for p in all_posts if "nikvesti.com" in (p.get("message") or "")]
     total = len(posts)
 
@@ -80,7 +79,7 @@ def get_top_posts():
     return posts[:5], total
 
 def get_top_reels():
-    since = datetime.now() - timedelta(days=7)
+    since_dt = datetime.now(tz=timezone.utc) - timedelta(days=7)
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/video_reels"
     params = {
         "fields": "id,description,permalink_url,likes.summary(true),comments.summary(true),created_time",
@@ -94,16 +93,15 @@ def get_top_reels():
 
     all_reels = data.get("data", [])
 
-    # Фільтруємо по даті вручну
     week_reels = []
     for r in all_reels:
         created = r.get("created_time", "")
-        if created:
-            from datetime import timezone
+        try:
             created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-            since_aware = since.replace(tzinfo=timezone.utc)
-            if created_dt >= since_aware:
+            if created_dt >= since_dt:
                 week_reels.append(r)
+        except:
+            pass
 
     total = len(week_reels)
     for r in week_reels:
@@ -154,9 +152,9 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
 
     posts_text = ""
     top_authors = []
-    for i, r in enumerate(top_reels):
-        likes = r.get("likes", {}).get("summary", {}).get("total_count", 0)
-        comments = r.get("comments", {}).get("summary", {}).get("total_count", 0)
+    for i, p in enumerate(top_posts):
+        reactions = p.get("reactions", {}).get("summary", {}).get("total_count", 0)
+        comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
         shares = p.get("shares", {}).get("count", 0)
         link = p.get("permalink_url", "")
         title = short_message(p.get("message", ""))
@@ -169,11 +167,11 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
 
     reels_text = ""
     for i, r in enumerate(top_reels):
-        reactions = r.get("reactions", {}).get("summary", {}).get("total_count", 0)
+        likes = r.get("likes", {}).get("summary", {}).get("total_count", 0)
         comments = r.get("comments", {}).get("summary", {}).get("total_count", 0)
         link = r.get("permalink_url", "")
         title = short_message(r.get("description", ""))
-        reels_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{reactions} 💬{comments}\n'
+        reels_text += f'  {i+1}. <a href="{link}">{title}</a>\n      ❤️{likes} 💬{comments}\n'
 
     text = (
         f"📘 Facebook МикВісті ({week_start} — {week_end}):\n\n"
