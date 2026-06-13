@@ -42,7 +42,7 @@ def get_top_pages(client, start_date, end_date):
         ],
         metrics=[Metric(name="screenPageViews")],
         order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
-        limit=30,
+        limit=50,
     )
     response = client.run_report(request)
     results = []
@@ -50,7 +50,11 @@ def get_top_pages(client, start_date, end_date):
         path = row.dimension_values[0].value
         title = row.dimension_values[1].value
         views = int(row.metric_values[0].value)
-            if path in ("/", "", "/ru", "/en") or "archive" in path or not (path.startswith("/news") or path.startswith("/articles") or path.startswith("/blog")):
+        if path in ("/", "", "/ru", "/en"):
+            continue
+        if "archive" in path:
+            continue
+        if not (path.startswith("/news") or path.startswith("/articles") or path.startswith("/blog")):
             continue
         results.append((path, title, views))
         if len(results) == 5:
