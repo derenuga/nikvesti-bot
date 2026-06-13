@@ -16,11 +16,11 @@ def get_page_followers():
     if "error" in data:
         raise Exception(data["error"]["message"])
     return data
-
+    
 def get_page_stats():
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/insights"
     params = {
-        "metric": "page_impressions,page_reach,page_engaged_users",
+        "metric": "page_impressions_unique,page_post_engagements,page_fan_adds_unique",
         "period": "week",
         "access_token": FACEBOOK_PAGE_TOKEN
     }
