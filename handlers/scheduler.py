@@ -1,5 +1,5 @@
 import os
-import random
+import anthropic
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from handlers.google_analytics import get_ga4_client, get_stats, get_top_pages, BASE_URL
 from handlers.gmail import get_unread_emails, get_oldest_unread_hours
@@ -66,13 +66,51 @@ async def weekly_facebook(bot):
 async def morning_greeting(bot):
     await send_morning_message(bot, CHAT_ID)
 
-def setup_scheduler(bot):
+async def check_channel_silence(bot, last_channel_post_time):
+    try:
+        now = datetime.now()
+
+        # Тільки в робочі дні
+        if now.weekday() >= 5:
+            return
+
+        # Тільки з 10 до 18
+        if now.hour < 10 or now.hour >= 18:
+            return
+
+        last_post = last_channel_post_time.get("time")
+        if not last_post:
+            return
+
+        silence_hours = (now - last_post).total_seconds() / 3600
+
+        if silence_hours >= 2:
+            anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+            message = anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=200,
+                messages=[{"role": "user", "content": f"""Ти — Лис Микита, бот редакції МикВісті.
+Канал @nikvesti мовчить вже {int(silence_hours)} годин(и).
+Напиши коротке (2-3 речення) обережне нагадування редакції українською мовою.
+Запитай чи немає новини для публікації, або запропонуй знайти якусь національну подію.
+Неформальний тон, без тиску. Можна 1 емодзі."""}]
+            )
+            text = message.content[0].text
+            await bot.send_message(chat_id=CHAT_ID, text=text)
+    except Exception as e:
+        print("Помилка перевірки мовчання каналу: " + str(e))
+
+def setup_scheduler(bot, last_channel_post_time=None):
+    if last_channel_post_time is None:
+        last_channel_post_time = {"time": datetime.now()}
+
     scheduler = AsyncIOScheduler(timezone="Europe/Kiev")
     scheduler.add_job(send_daily_report, "cron", hour=9, minute=0, args=[bot])
     scheduler.add_job(check_email, "cron", hour=13, minute=0, args=[bot, "afternoon"])
     scheduler.add_job(check_email, "cron", hour=16, minute=50, args=[bot, "evening"])
     scheduler.add_job(weekly_instagram, "cron", day_of_week="sun", hour=18, minute=0, args=[bot])
     scheduler.add_job(weekly_facebook, "cron", day_of_week="sun", hour=15, minute=0, args=[bot])
-    scheduler.add_job(morning_greeting, "cron", hour=8, minute=random.randint(0, 30), args=[bot])
+    scheduler.add_job(morning_greeting, "cron", hour=8, minute=15, args=[bot])
+    scheduler.add_job(check_channel_silence, "cron", minute="*/30", args=[bot, last_channel_post_time])
     scheduler.start()
     return scheduler
