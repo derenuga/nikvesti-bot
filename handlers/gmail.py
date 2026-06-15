@@ -10,7 +10,7 @@ GMAIL_PASSWORD = os.environ.get("GMAIL_PASSWORD")
 def get_unread_emails():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(GMAIL_USER, GMAIL_PASSWORD)
-    mail.select("inbox")
+    mail.select("inbox", readonly=True)
 
     _, messages = mail.search(None, "UNSEEN")
     email_ids = messages[0].split()
