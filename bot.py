@@ -1,11 +1,13 @@
 import os
 from datetime import datetime
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, MessageReactionHandler, filters
 from handlers.google_analytics import analytics_handler
 from handlers.scheduler import setup_scheduler, send_daily_report, check_email
 from handlers.instagram import instagram_handler, send_weekly_instagram_report
 from handlers.facebook import facebook_handler, send_weekly_facebook_report
 from handlers.morning import morning_handler, send_morning_message
+from handlers.prozorro import check_prozorro_tenders
+from handlers.reactions import handle_message_reaction
 
 TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -20,7 +22,7 @@ async def channel_post_handler(update, context):
 async def start(update, context):
     await update.message.reply_text(
         "Привіт! Я помічник редакції МикВісті 👋\n"
-        "Команди:\n/start — привітання\n/status — перевірка\n/analytics — статистика сайту\n/report — звіт в групу\n/checkmail — перевірити пошту\n/instagram — статистика Instagram\n/igreport — тижневий Instagram звіт в групу\n/facebook — статистика Facebook\n/fbreport — тижневий Facebook звіт в групу\n/morning — ранкове привітання"
+        "Команди:\n/start — привітання\n/status — перевірка\n/analytics — статистика сайту\n/report — звіт в групу\n/checkmail — перевірити пошту\n/instagram — статистика Instagram\n/igreport — тижневий Instagram звіт в групу\n/facebook — статистика Facebook\n/fbreport — тижневий Facebook звіт в групу\n/morning — ранкове привітання\n/prozorro — перевірити тендери Прозорро"
     )
 
 async def status(update, context):
@@ -45,6 +47,10 @@ async def fbreport(update, context):
 async def morning_handler_cmd(update, context):
     await morning_handler(update, context)
 
+async def prozorro_check(update, context):
+    await check_prozorro_tenders(context.bot)
+    await update.message.reply_text("Перевірив Прозорро!")
+
 async def post_init(application):
     setup_scheduler(application.bot, last_channel_post_time)
 
@@ -60,9 +66,11 @@ def main():
     app.add_handler(CommandHandler("facebook", facebook_handler))
     app.add_handler(CommandHandler("fbreport", fbreport))
     app.add_handler(CommandHandler("morning", morning_handler))
+    app.add_handler(CommandHandler("prozorro", prozorro_check))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
+    app.add_handler(MessageReactionHandler(handle_message_reaction))
     print("Bot started...")
-    app.run_polling(allowed_updates=["message", "channel_post"])
+    app.run_polling(allowed_updates=["message", "channel_post", "message_reaction"])
 
 if __name__ == "__main__":
     main()
