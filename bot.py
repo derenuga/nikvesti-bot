@@ -8,6 +8,7 @@ from handlers.facebook import facebook_handler, send_weekly_facebook_report
 from handlers.morning import morning_handler, send_morning_message
 from handlers.prozorro import check_prozorro_tenders, diagnose_offset_jump, confirm_offset_jump
 from handlers.reactions import handle_message_reaction
+from handlers import storage
 
 TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -70,6 +71,17 @@ async def prozorro_confirm_jump(update, context):
     offset = await confirm_offset_jump(days_ago)
     await update.message.reply_text(f"Offset збережено: {offset}")
 
+async def prozorro_reset_tender(update, context):
+    if not context.args:
+        await update.message.reply_text("Використання: /prozorro_reset_tender UA-2026-...")
+        return
+    tender_id = context.args[0]
+    success = storage.reset_tender_taken(tender_id)
+    if success:
+        await update.message.reply_text(f"Тендер {tender_id} розблоковано — можна ставити реакцію знову.")
+    else:
+        await update.message.reply_text(f"Тендер {tender_id} не знайдено в storage.")
+
 async def post_init(application):
     setup_scheduler(application.bot, last_channel_post_time)
 
@@ -88,6 +100,7 @@ def main():
     app.add_handler(CommandHandler("prozorro", prozorro_check))
     app.add_handler(CommandHandler("prozorro_test_jump", prozorro_test_jump))
     app.add_handler(CommandHandler("prozorro_confirm_jump", prozorro_confirm_jump))
+    app.add_handler(CommandHandler("prozorro_reset_tender", prozorro_reset_tender))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
     print("Bot started...")
