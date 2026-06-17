@@ -66,6 +66,37 @@ def _write_state(state):
     os.replace(tmp_path, STATE_PATH)
 
 
+def get_seen_tender_ids():
+    """Повертає set усіх вже відісланих tender_id одним читанням файлу."""
+    with _lock:
+        state = _read_state()
+        return set(state["tenders"].keys())
+
+
+def bulk_save(new_tenders, new_offset=None):
+    """
+    Зберігає одразу кілька нових тендерів і offset ОДНИМ записом файлу.
+    new_tenders: список dict {tender_id, message_id, title, amount, buyer, sent_at}
+    """
+    with _lock:
+        state = _read_state()
+        for t in new_tenders:
+            tender_id = t["tender_id"]
+            state["tenders"][tender_id] = {
+                "message_id": t["message_id"],
+                "sent_at": t["sent_at"],
+                "title": t["title"],
+                "amount": t["amount"],
+                "buyer": t["buyer"],
+                "taken_by": None,
+                "taken_at": None,
+            }
+            state["message_to_tender"][str(t["message_id"])] = tender_id
+        if new_offset:
+            state["offset"] = new_offset
+        _write_state(state)
+
+
 def get_offset():
     with _lock:
         return _read_state().get("offset")
