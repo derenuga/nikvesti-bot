@@ -7,6 +7,7 @@ from handlers.ai_messages import generate_email_reminder
 from handlers.instagram import send_weekly_instagram_report
 from handlers.facebook import send_weekly_facebook_report
 from handlers.morning import send_morning_message
+from handlers.prozorro import check_prozorro_tenders
 from datetime import datetime, timedelta
 
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -63,6 +64,9 @@ async def weekly_instagram(bot):
 async def weekly_facebook(bot):
     await send_weekly_facebook_report(bot, CHAT_ID)
 
+async def check_prozorro(bot):
+    await check_prozorro_tenders(bot)
+
 async def morning_greeting(bot):
     await send_morning_message(bot, CHAT_ID)
 
@@ -112,5 +116,6 @@ def setup_scheduler(bot, last_channel_post_time=None):
     scheduler.add_job(weekly_facebook, "cron", day_of_week="sun", hour=15, minute=0, args=[bot])
     scheduler.add_job(morning_greeting, "cron", hour=8, minute=15, args=[bot])
     scheduler.add_job(check_channel_silence, "cron", minute="*/30", args=[bot, last_channel_post_time])
+    scheduler.add_job(check_prozorro, "cron", minute=0, args=[bot])
     scheduler.start()
     return scheduler
