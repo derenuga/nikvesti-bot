@@ -19,14 +19,17 @@
 Дедублікація: кожен tender_id обробляється і шлеться лише один раз
 (перевірка через storage.is_tender_seen).
 
-Примітка про холодний старт: при першому запуску offset порожній, і стрічка
-може містити дуже старі записи зміни на самому початку. MAX_PAGES_PER_RUN
-дозволяє за кілька годинних прогонів (або кілька ручних /prozorro)
-поступово "наздогнати" поточний момент.
+КРИТИЧНО ВАЖЛИВО: bot.py працює на asyncio event loop. Усі мережеві запити
+через requests (синхронна бібліотека) виконуються в окремому потоці через
+asyncio.to_thread / run_in_executor, інакше один довгий цикл (наприклад
+обробка 1000 тендерів на одній сторінці при холодному старті) повністю
+заблокує бота — він не відповідатиме НІ на одну команду, поки цикл не
+завершиться. Це сталось на практиці й виправлено цією версією файлу.
 """
 
 import os
 import asyncio
+import time
 from datetime import datetime
 
 import requests
@@ -37,16 +40,19 @@ API_BASE = "https://public-api.prozorro.gov.ua/api/2.5"
 TARGET_REGION = "Миколаївська область"
 MIN_AMOUNT = 1_000_000
 
-MAX_LIMIT = 1000          # максимальний розмір сторінки, який підтримує API
-MAX_PAGES_PER_RUN = 20     # запобіжник, щоб один прогон не тривав вічно
-PAGE_DELAY_SECONDS = 1     # пауза між сторінками, щоб не спамити API
+MAX_LIMIT = 100            # розмір сторінки для регулярних прогонів
+MAX_PAGES_PER_RUN = 5       # запобіжник на один виклик /prozorro чи cron-тик
+MAX_DETAIL_REQUESTS_PER_RUN = 300  # запобіжник на кількість детальних запитів (найдорожча частина)
+PAGE_DELAY_SECONDS = 1      # пауза між сторінками, щоб не спамити API
 
 PROZORRO_CHAT_ID = os.environ.get("PROZORRO_CHAT_ID")
 
 
-def _fetch_tender_page(offset=None):
+# ---------- Синхронні функції (виконуються в окремому потоці через to_thread) ----------
+
+def _fetch_tender_page_sync(offset=None, limit=MAX_LIMIT):
     """Повертає (список id-тендерів на цій сторінці, новий offset, чи сторінка непорожня)."""
-    params = {"limit": MAX_LIMIT}
+    params = {"limit": limit}
     if offset:
         params["offset"] = offset
 
@@ -60,7 +66,7 @@ def _fetch_tender_page(offset=None):
     return ids, next_offset, len(items) > 0
 
 
-def _fetch_tender_details(tender_id):
+def _fetch_tender_details_sync(tender_id):
     """Повертає повний об'єкт тендера, або None при помилці/відсутності."""
     try:
         response = requests.get(f"{API_BASE}/tenders/{tender_id}", timeout=30)
@@ -70,6 +76,20 @@ def _fetch_tender_details(tender_id):
     except requests.RequestException:
         return None
 
+
+# ---------- Асинхронні обгортки ----------
+
+async def _fetch_tender_page(offset=None, limit=MAX_LIMIT):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch_tender_page_sync, offset, limit)
+
+
+async def _fetch_tender_details(tender_id):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch_tender_details_sync, tender_id)
+
+
+# ---------- Фільтрація і форматування (швидкі, без I/O — лишаються синхронними) ----------
 
 def _matches_criteria(tender):
     procuring_entity = tender.get("procuringEntity") or {}
@@ -113,12 +133,14 @@ def _escape_html(text):
     )
 
 
+# ---------- Основна логіка ----------
+
 async def _process_tender_id(bot, tender_id):
     """Перевіряє один тендер і шле повідомлення, якщо підходить. Повертає True, якщо відіслано."""
     if storage.is_tender_seen(tender_id):
         return False
 
-    tender = _fetch_tender_details(tender_id)
+    tender = await _fetch_tender_details(tender_id)
     if not tender:
         return False
 
@@ -157,10 +179,12 @@ async def check_prozorro_tenders(bot):
         pages_fetched = 0
 
         for page_num in range(MAX_PAGES_PER_RUN):
-            tender_ids, next_offset, has_data = _fetch_tender_page(offset)
+            tender_ids, next_offset, has_data = await _fetch_tender_page(offset)
             pages_fetched += 1
 
             for tender_id in tender_ids:
+                if total_checked >= MAX_DETAIL_REQUESTS_PER_RUN:
+                    break
                 total_checked += 1
                 sent = await _process_tender_id(bot, tender_id)
                 if sent:
@@ -170,8 +194,7 @@ async def check_prozorro_tenders(bot):
                 offset = next_offset
                 storage.set_offset(offset)
 
-            if not has_data:
-                # Дійшли до кінця стрічки — наздогнали поточний момент
+            if not has_data or total_checked >= MAX_DETAIL_REQUESTS_PER_RUN:
                 break
 
             await asyncio.sleep(PAGE_DELAY_SECONDS)
@@ -185,22 +208,22 @@ async def check_prozorro_tenders(bot):
         print("Помилка перевірки Прозорро: " + str(e))
 
 
+# ---------- Діагностика штучного offset ----------
+
 def build_artificial_offset(days_ago):
     """
     Конструює штучний offset на основі timestamp "N днів тому".
     Формат offset у Prozorro: {unix_timestamp}.{лот}.{хеш}.
-    Хеш-частину підставляємо нульовою — це експериментально, можливо API
-    її ігнорує або перегенерує. Якщо API поверне помилку — підхід не працює.
+    Хеш-частину підставляємо нульовою — це експериментально.
     """
-    import time
     target_ts = time.time() - (days_ago * 86400)
     return f"{target_ts:.6f}.0.0000000000000000000000000000000"
 
 
 async def diagnose_offset_jump(bot, chat_id, days_ago=14):
     """
-    Діагностична перевірка: пробує штучний offset, НЕ зберігає його в storage.
-    Виводить результат прямо в чат, щоб одразу побачити, чи підхід працює.
+    Діагностична перевірка: пробує штучний offset з МАЛЕНЬКИМ лімітом (5),
+    щоб гарантовано не зависнути. НЕ зберігає offset в storage.
     """
     artificial_offset = build_artificial_offset(days_ago)
 
@@ -208,15 +231,14 @@ async def diagnose_offset_jump(bot, chat_id, days_ago=14):
     report_lines.append(f"Offset: <code>{artificial_offset}</code>")
 
     try:
-        ids, next_offset, has_data = _fetch_tender_page(artificial_offset)
-        report_lines.append(f"Статус: успіх (HTTP 200)")
+        ids, next_offset, has_data = await _fetch_tender_page(artificial_offset, limit=5)
+        report_lines.append("Статус: успіх (HTTP 200)")
         report_lines.append(f"Записів повернуто: {len(ids)}")
 
         if ids:
-            # Перевіримо дати кількох тендерів, щоб зрозуміти, де ми опинились
             sample_dates = []
             for tender_id in ids[:3]:
-                tender = _fetch_tender_details(tender_id)
+                tender = await _fetch_tender_details(tender_id)
                 if tender:
                     sample_dates.append(tender.get("dateModified", "н/д"))
             report_lines.append("Приклади dateModified: " + ", ".join(sample_dates))
@@ -225,8 +247,8 @@ async def diagnose_offset_jump(bot, chat_id, days_ago=14):
 
         report_lines.append(f"\nНаступний offset: <code>{next_offset}</code>")
         report_lines.append(
-            "\nЯкщо дати вище виглядають правильно (близько обраного періоду) — "
-            "підтвердіть, і ми збережемо offset для регулярних прогонів."
+            "\nЯкщо дати вище виглядають правильно — підтвердіть командою "
+            "/prozorro_confirm_jump, і ми збережемо offset для регулярних прогонів."
         )
 
     except requests.exceptions.HTTPError as e:
@@ -247,4 +269,3 @@ async def confirm_offset_jump(days_ago=14):
     artificial_offset = build_artificial_offset(days_ago)
     storage.set_offset(artificial_offset)
     return artificial_offset
-
