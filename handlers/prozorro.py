@@ -184,3 +184,67 @@ async def check_prozorro_tenders(bot):
     except Exception as e:
         print("Помилка перевірки Прозорро: " + str(e))
 
+
+def build_artificial_offset(days_ago):
+    """
+    Конструює штучний offset на основі timestamp "N днів тому".
+    Формат offset у Prozorro: {unix_timestamp}.{лот}.{хеш}.
+    Хеш-частину підставляємо нульовою — це експериментально, можливо API
+    її ігнорує або перегенерує. Якщо API поверне помилку — підхід не працює.
+    """
+    import time
+    target_ts = time.time() - (days_ago * 86400)
+    return f"{target_ts:.6f}.0.0000000000000000000000000000000"
+
+
+async def diagnose_offset_jump(bot, chat_id, days_ago=14):
+    """
+    Діагностична перевірка: пробує штучний offset, НЕ зберігає його в storage.
+    Виводить результат прямо в чат, щоб одразу побачити, чи підхід працює.
+    """
+    artificial_offset = build_artificial_offset(days_ago)
+
+    report_lines = [f"🔬 Тест штучного offset (~{days_ago} днів тому):"]
+    report_lines.append(f"Offset: <code>{artificial_offset}</code>")
+
+    try:
+        ids, next_offset, has_data = _fetch_tender_page(artificial_offset)
+        report_lines.append(f"Статус: успіх (HTTP 200)")
+        report_lines.append(f"Записів повернуто: {len(ids)}")
+
+        if ids:
+            # Перевіримо дати кількох тендерів, щоб зрозуміти, де ми опинились
+            sample_dates = []
+            for tender_id in ids[:3]:
+                tender = _fetch_tender_details(tender_id)
+                if tender:
+                    sample_dates.append(tender.get("dateModified", "н/д"))
+            report_lines.append("Приклади dateModified: " + ", ".join(sample_dates))
+        else:
+            report_lines.append("Сторінка порожня — можливо, offset вказує за межі стрічки.")
+
+        report_lines.append(f"\nНаступний offset: <code>{next_offset}</code>")
+        report_lines.append(
+            "\nЯкщо дати вище виглядають правильно (близько обраного періоду) — "
+            "підтвердіть, і ми збережемо offset для регулярних прогонів."
+        )
+
+    except requests.exceptions.HTTPError as e:
+        report_lines.append(f"Статус: ПОМИЛКА HTTP — {e}")
+        report_lines.append("Штучний offset не прийнято API. Доведеться йти природним шляхом.")
+    except Exception as e:
+        report_lines.append(f"Статус: ПОМИЛКА — {str(e)}")
+
+    await bot.send_message(
+        chat_id=chat_id,
+        text="\n".join(report_lines),
+        parse_mode="HTML",
+    )
+
+
+async def confirm_offset_jump(days_ago=14):
+    """Зберігає штучний offset як основний — викликати тільки після успішної діагностики."""
+    artificial_offset = build_artificial_offset(days_ago)
+    storage.set_offset(artificial_offset)
+    return artificial_offset
+
