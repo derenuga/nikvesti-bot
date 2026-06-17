@@ -3,3 +3,5 @@ google-analytics-data==0.18.0
 APScheduler==3.10.4
 anthropic==0.40.0
 beautifulsoup4==4.12.3
+google-api-python-client==2.149.0
+google-auth==2.35.0
