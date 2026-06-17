@@ -33,7 +33,7 @@ import requests
 
 from handlers import storage
 
-API_BASE = "https://public-api.openprocurement.org/api/2.5"
+API_BASE = "https://public-api.prozorro.gov.ua/api/2.5"
 TARGET_REGION = "Миколаївська область"
 MIN_AMOUNT = 1_000_000
 
