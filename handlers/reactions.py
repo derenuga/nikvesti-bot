@@ -5,14 +5,18 @@
 це означає "беру в роботу". Фіксується тільки ПЕРША реакція (хто встиг раніше
 за всіх), усі наступні реакції на те саме повідомлення ігноруються.
 Скасування реакції не видаляє запис.
+
+ВАЖЛИВО: storage.mark_tender_taken (яка остаточно "закриває" тендер від
+повторних реакцій) викликається ТІЛЬКИ ПІСЛЯ успішного запису в Google Sheets.
+Якщо запис у Sheets впаде (наприклад тимчасова помилка API чи прав доступу),
+тендер залишається "відкритим" для нової спроби при наступній реакції,
+замість того щоб мовчки застрягнути в стані "взято, але без запису".
 """
 
 from datetime import datetime
 
 from handlers import storage
 from handlers.sheets import append_pickup_row
-
-PROZORRO_CHAT_ID_STR = None  # порівнюємо chat.id напряму, без жорсткої прив'язки рядка
 
 
 async def handle_message_reaction(update, context):
@@ -42,16 +46,6 @@ async def handle_message_reaction(update, context):
 
     taken_at = datetime.now()
 
-    marked = storage.mark_tender_taken(
-        tender_id=tender_id,
-        taken_by=taken_by,
-        taken_at=taken_at.isoformat(),
-    )
-
-    if not marked:
-        # Хтось встиг раніше між перевіркою is_tender_taken і цим моментом
-        return
-
     try:
         append_pickup_row(
             date_str=taken_at.strftime("%d.%m.%Y %H:%M"),
@@ -62,3 +56,12 @@ async def handle_message_reaction(update, context):
         )
     except Exception as e:
         print("Помилка запису в Google Sheets: " + str(e))
+        # НЕ позначаємо tender як "взятий" — наступна реакція спробує ще раз
+        return
+
+    # Позначаємо як взяте лише ПІСЛЯ успішного запису в Sheets
+    storage.mark_tender_taken(
+        tender_id=tender_id,
+        taken_by=taken_by,
+        taken_at=taken_at.isoformat(),
+    )
