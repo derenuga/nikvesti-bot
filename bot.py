@@ -6,7 +6,7 @@ from handlers.scheduler import setup_scheduler, send_daily_report, check_email
 from handlers.instagram import instagram_handler, send_weekly_instagram_report
 from handlers.facebook import facebook_handler, send_weekly_facebook_report
 from handlers.morning import morning_handler, send_morning_message
-from handlers.prozorro import check_prozorro_tenders
+from handlers.prozorro import check_prozorro_tenders, diagnose_offset_jump, confirm_offset_jump
 from handlers.reactions import handle_message_reaction
 
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -51,6 +51,25 @@ async def prozorro_check(update, context):
     await check_prozorro_tenders(context.bot)
     await update.message.reply_text("Перевірив Прозорро!")
 
+async def prozorro_test_jump(update, context):
+    days_ago = 14
+    if context.args:
+        try:
+            days_ago = int(context.args[0])
+        except ValueError:
+            pass
+    await diagnose_offset_jump(context.bot, update.message.chat_id, days_ago)
+
+async def prozorro_confirm_jump(update, context):
+    days_ago = 14
+    if context.args:
+        try:
+            days_ago = int(context.args[0])
+        except ValueError:
+            pass
+    offset = await confirm_offset_jump(days_ago)
+    await update.message.reply_text(f"Offset збережено: {offset}")
+
 async def post_init(application):
     setup_scheduler(application.bot, last_channel_post_time)
 
@@ -67,6 +86,8 @@ def main():
     app.add_handler(CommandHandler("fbreport", fbreport))
     app.add_handler(CommandHandler("morning", morning_handler))
     app.add_handler(CommandHandler("prozorro", prozorro_check))
+    app.add_handler(CommandHandler("prozorro_test_jump", prozorro_test_jump))
+    app.add_handler(CommandHandler("prozorro_confirm_jump", prozorro_confirm_jump))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
     print("Bot started...")
