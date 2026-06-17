@@ -176,3 +176,16 @@ def set_spreadsheet_id(spreadsheet_id):
         state = _read_state()
         state["spreadsheet_id"] = spreadsheet_id
         _write_state(state)
+
+
+def reset_tender_taken(tender_id):
+    """Скидає taken_by/taken_at назад на None — для розблокування після помилки запису в Sheets."""
+    with _lock:
+        state = _read_state()
+        tender = state["tenders"].get(tender_id)
+        if not tender:
+            return False
+        tender["taken_by"] = None
+        tender["taken_at"] = None
+        _write_state(state)
+        return True
