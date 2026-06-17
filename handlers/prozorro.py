@@ -14,17 +14,21 @@
    щоб отримати повну інформацію (сума, замовник, регіон, назва).
 3. Фільтруємо: регіон замовника = Миколаївська область, сума >= 1 млн грн.
 4. Якщо тендер підходить і ще не був відісланий раніше — формуємо і шлемо
-   повідомлення в групу, зберігаємо tender_id і message_id в storage.
+   повідомлення в групу. Усі нові тендери за прогон накопичуються в пам'яті
+   і записуються в storage ОДНИМ файловим записом наприкінці прогону —
+   це критично, бо повторні файлові читання/записи на Railway Volume на
+   кожен окремий тендер (сотні разів) самі по собі додавали суттєву
+   затримку і блокували event loop бота навіть через run_in_executor.
 
-Дедублікація: кожен tender_id обробляється і шлеться лише один раз
-(перевірка через storage.is_tender_seen).
+Дедублікація: список уже відісланих tender_id завантажується ОДНИМ читанням
+на старті прогону (storage.get_seen_tender_ids), звірка йде в пам'яті.
 
 КРИТИЧНО ВАЖЛИВО: bot.py працює на asyncio event loop. Усі мережеві запити
-через requests (синхронна бібліотека) виконуються в окремому потоці через
-asyncio.to_thread / run_in_executor, інакше один довгий цикл (наприклад
-обробка 1000 тендерів на одній сторінці при холодному старті) повністю
-заблокує бота — він не відповідатиме НІ на одну команду, поки цикл не
-завершиться. Це сталось на практиці й виправлено цією версією файлу.
+через requests (синхронна бібліотека) і всі файлові операції зі storage
+виконуються в окремому потоці через run_in_executor, інакше довгий цикл
+повністю блокує бота — він не відповідає НІ на одну команду, поки цикл
+не завершиться. Це сталось на практиці двічі (мережеві запити, потім
+файлові операції storage) і виправлено цією версією файлу.
 """
 
 import os
@@ -40,15 +44,15 @@ API_BASE = "https://public-api.prozorro.gov.ua/api/2.5"
 TARGET_REGION = "Миколаївська область"
 MIN_AMOUNT = 1_000_000
 
-MAX_LIMIT = 100            # розмір сторінки для регулярних прогонів
-MAX_PAGES_PER_RUN = 5       # запобіжник на один виклик /prozorro чи cron-тик
-MAX_DETAIL_REQUESTS_PER_RUN = 300  # запобіжник на кількість детальних запитів (найдорожча частина)
+MAX_LIMIT = 50             # розмір сторінки для регулярних прогонів
+MAX_PAGES_PER_RUN = 3       # запобіжник на один виклик /prozorro чи cron-тик
+MAX_DETAIL_REQUESTS_PER_RUN = 100  # запобіжник на кількість детальних запитів (найдорожча частина)
 PAGE_DELAY_SECONDS = 1      # пауза між сторінками, щоб не спамити API
 
 PROZORRO_CHAT_ID = os.environ.get("PROZORRO_CHAT_ID")
 
 
-# ---------- Синхронні функції (виконуються в окремому потоці через to_thread) ----------
+# ---------- Синхронні функції (виконуються в окремому потоці через run_in_executor) ----------
 
 def _fetch_tender_page_sync(offset=None, limit=MAX_LIMIT):
     """Повертає (список id-тендерів на цій сторінці, новий offset, чи сторінка непорожня)."""
@@ -77,7 +81,7 @@ def _fetch_tender_details_sync(tender_id):
         return None
 
 
-# ---------- Асинхронні обгортки ----------
+# ---------- Асинхронні обгортки над мережевими запитами ----------
 
 async def _fetch_tender_page(offset=None, limit=MAX_LIMIT):
     loop = asyncio.get_event_loop()
@@ -135,9 +139,14 @@ def _escape_html(text):
 
 # ---------- Основна логіка ----------
 
-async def _process_tender_id(bot, tender_id):
-    """Перевіряє один тендер і шле повідомлення, якщо підходить. Повертає True, якщо відіслано."""
-    if storage.is_tender_seen(tender_id):
+async def _process_tender_id(bot, tender_id, seen_ids, newly_sent):
+    """
+    Перевіряє один тендер і шле повідомлення, якщо підходить.
+    seen_ids: set вже відісланих id (звірка в пам'яті, без файлового I/O).
+    newly_sent: список, куди додається запис про новий тендер (накопичення
+    для одного фінального bulk-запису в storage наприкінці прогону).
+    """
+    if tender_id in seen_ids:
         return False
 
     tender = await _fetch_tender_details(tender_id)
@@ -156,14 +165,15 @@ async def _process_tender_id(bot, tender_id):
         disable_web_page_preview=True,
     )
 
-    storage.mark_tender_sent(
-        tender_id=real_tender_id,
-        message_id=message.message_id,
-        title=title,
-        amount=amount,
-        buyer=buyer,
-        sent_at=datetime.now().isoformat(),
-    )
+    seen_ids.add(real_tender_id)
+    newly_sent.append({
+        "tender_id": real_tender_id,
+        "message_id": message.message_id,
+        "title": title,
+        "amount": amount,
+        "buyer": buyer,
+        "sent_at": datetime.now().isoformat(),
+    })
     return True
 
 
@@ -173,39 +183,55 @@ async def check_prozorro_tenders(bot):
         return
 
     try:
-        offset = storage.get_offset()
-        total_checked = 0
-        total_sent = 0
-        pages_fetched = 0
-
-        for page_num in range(MAX_PAGES_PER_RUN):
-            tender_ids, next_offset, has_data = await _fetch_tender_page(offset)
-            pages_fetched += 1
-
-            for tender_id in tender_ids:
-                if total_checked >= MAX_DETAIL_REQUESTS_PER_RUN:
-                    break
-                total_checked += 1
-                sent = await _process_tender_id(bot, tender_id)
-                if sent:
-                    total_sent += 1
-
-            if next_offset:
-                offset = next_offset
-                storage.set_offset(offset)
-
-            if not has_data or total_checked >= MAX_DETAIL_REQUESTS_PER_RUN:
-                break
-
-            await asyncio.sleep(PAGE_DELAY_SECONDS)
-
-        print(
-            f"Прозорро: опрацьовано сторінок={pages_fetched}, "
-            f"перевірено тендерів={total_checked}, відіслано={total_sent}"
-        )
-
+        await asyncio.wait_for(_run_check_cycle(bot), timeout=120)
+    except asyncio.TimeoutError:
+        print("Прозорро: прогон перевищив 120 секунд, перервано (запобіжник від зависання)")
     except Exception as e:
         print("Помилка перевірки Прозорро: " + str(e))
+
+
+async def _run_check_cycle(bot):
+    loop = asyncio.get_event_loop()
+
+    # Одне читання стану на старті прогону
+    offset = await loop.run_in_executor(None, storage.get_offset)
+    seen_ids = await loop.run_in_executor(None, storage.get_seen_tender_ids)
+    newly_sent = []
+
+    total_checked = 0
+    total_sent = 0
+    pages_fetched = 0
+    final_offset = offset
+
+    for page_num in range(MAX_PAGES_PER_RUN):
+        tender_ids, next_offset, has_data = await _fetch_tender_page(final_offset)
+        pages_fetched += 1
+
+        for tender_id in tender_ids:
+            if total_checked >= MAX_DETAIL_REQUESTS_PER_RUN:
+                break
+            total_checked += 1
+            sent = await _process_tender_id(bot, tender_id, seen_ids, newly_sent)
+            if sent:
+                total_sent += 1
+
+        if next_offset:
+            final_offset = next_offset
+
+        if not has_data or total_checked >= MAX_DETAIL_REQUESTS_PER_RUN:
+            break
+
+        await asyncio.sleep(PAGE_DELAY_SECONDS)
+
+    # Один фінальний запис на диск за весь прогон (навіть якщо timeout — це не дійде,
+    # тому при таймауті прогрес поточного прогону втрачається, але це безпечніше,
+    # ніж дозволити боту висіти безкінечно)
+    await loop.run_in_executor(None, storage.bulk_save, newly_sent, final_offset)
+
+    print(
+        f"Прозорро: опрацьовано сторінок={pages_fetched}, "
+        f"перевірено тендерів={total_checked}, відіслано={total_sent}"
+    )
 
 
 # ---------- Діагностика штучного offset ----------
@@ -267,5 +293,6 @@ async def diagnose_offset_jump(bot, chat_id, days_ago=14):
 async def confirm_offset_jump(days_ago=14):
     """Зберігає штучний offset як основний — викликати тільки після успішної діагностики."""
     artificial_offset = build_artificial_offset(days_ago)
-    storage.set_offset(artificial_offset)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, storage.set_offset, artificial_offset)
     return artificial_offset
