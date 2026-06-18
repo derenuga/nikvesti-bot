@@ -1,160 +1,123 @@
 import os
-import random
-import requests
 import anthropic
-from datetime import datetime
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from handlers.google_analytics import get_ga4_client, get_stats, get_top_pages, BASE_URL
+from handlers.gmail import get_unread_emails, get_oldest_unread_hours
+from handlers.ai_messages import generate_email_reminder
+from handlers.instagram import send_weekly_instagram_report
+from handlers.facebook import send_weekly_facebook_report
+from handlers.morning import send_morning_message
+from handlers.prozorro import check_prozorro_tenders
+from datetime import datetime, timedelta
 
-OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+CHAT_ID = os.environ.get("CHAT_ID")
+CHANNEL_USERNAME = "nikvesti"
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+async def send_daily_report(bot):
+    client = get_ga4_client()
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    day_before = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+    yesterday_label = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
 
-# Фіксовані координати Миколаєва (НЕ змінювати на q="Mykolaiv,UA" — назва міста
-# через геокодер OpenWeatherMap не завжди резолвиться в потрібне місто і може
-# давати випадкові/застарілі дані).
-MYKOLAIV_LAT = 46.9750
-MYKOLAIV_LON = 31.9946
+    users, sessions, pageviews = get_stats(client, yesterday, yesterday)
+    u2, s2, p2 = get_stats(client, day_before, day_before)
 
+    def diff(a, b):
+        d = a - b
+        return f"+{d}" if d > 0 else str(d)
 
-def get_mykolaiv_weather():
-    """
-    Прогноз погоди на СЬОГОДНІ (а не "поточна погода о моменту запиту").
-    Використовує безкоштовний endpoint /data/2.5/forecast (крок 3 години,
-    5 днів наперед) і агрегує всі точки, що припадають на сьогоднішню дату
-    за місцевим часом, в один денний підсумок: мін/макс температура,
-    переважний опис погоди, чи очікується дощ/гроза, вологість і вітер
-    беруться як середні по дню.
-    """
-    try:
-        url = "https://api.openweathermap.org/data/2.5/forecast"
-        params = {
-            "lat": MYKOLAIV_LAT,
-            "lon": MYKOLAIV_LON,
-            "appid": OPENWEATHER_API_KEY,
-            "units": "metric",
-            "lang": "uk",
-        }
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
+    top_pages = get_top_pages(client, yesterday, yesterday)
+    top_text = "\n".join([
+        f'  {i+1}. <a href="{BASE_URL}{path}">{title}</a> — {views}'
+        + (f'\n      👤 {author}' if author else '')
+        for i, (path, title, views, author) in enumerate(top_pages)
+    ])
 
-        today = datetime.now().strftime("%Y-%m-%d")
-        today_points = [
-            p for p in data.get("list", [])
-            if p.get("dt_txt", "").startswith(today)
-        ]
-
-        # Якщо на сьогодні лишилось мало/нема точок (наприклад вже вечір),
-        # беремо найближчі доступні точки, щоб не лишитись без даних.
-        if not today_points:
-            today_points = data.get("list", [])[:4]
-
-        if not today_points:
-            return None
-
-        temps = [p["main"]["temp"] for p in today_points]
-        feels = [p["main"]["feels_like"] for p in today_points]
-        humidity = [p["main"]["humidity"] for p in today_points]
-        wind = [p["wind"]["speed"] for p in today_points]
-
-        # Переважний опис погоди — беремо найчастіший серед денних точок
-        descriptions = [p["weather"][0]["description"] for p in today_points]
-        main_description = max(set(descriptions), key=descriptions.count)
-
-        # Чи очікується дощ/гроза/снігопад протягом дня
-        rain_codes = {"rain", "thunderstorm", "snow", "drizzle"}
-        will_rain = any(p["weather"][0]["main"].lower() in rain_codes for p in today_points)
-
-        return {
-            "temp_min": round(min(temps)),
-            "temp_max": round(max(temps)),
-            "feels_like": round(sum(feels) / len(feels)),
-            "description": main_description,
-            "humidity": round(sum(humidity) / len(humidity)),
-            "wind": round(sum(wind) / len(wind)),
-            "will_rain": will_rain,
-        }
-    except Exception:
-        return None
-
-
-# Набір "фокусів" для ранкового повідомлення. Щодня обирається випадкова
-# підмножина (2-3 з них), а не всі завжди — щоб повідомлення не виглядали
-# як шаблон, що просто переписується іншими словами щоранку.
-MESSAGE_FOCUS_OPTIONS = [
-    "коротке практичне нагадування про дедлайни на сьогодні",
-    "загальне нагадування не забувати про поточні задачі і соцмережі",
-    "мотиваційна думка чи цитата, не обов'язково про журналістику",
-    "жарт пов'язаний з журналістикою або українською політикою",
-    "коротка цікава дрібничка чи факт (можна про Миколаїв, можна геть не пов'язане з роботою)",
-    "просто тепле особисте звернення без конкретних завдань — день відпочинку від нагадувань",
-    "питання до редакції (риторичне чи реальне) замість порад",
-]
-
-
-async def generate_morning_message(weather):
-    if weather:
-        if weather["temp_min"] == weather["temp_max"]:
-            temp_text = f"{weather['temp_min']}°C"
-        else:
-            temp_text = f"від {weather['temp_min']}°C до {weather['temp_max']}°C"
-
-        rain_note = "очікується дощ" if weather["will_rain"] else "без дощу"
-
-        weather_text = (
-            f"Сьогодні протягом дня температура {temp_text} "
-            f"(відчувається як {weather['feels_like']}°C), {weather['description']}, "
-            f"{rain_note}, вологість {weather['humidity']}%, вітер {weather['wind']} м/с."
-        )
-    else:
-        weather_text = "погода невідома"
-
-    # Обираємо 2-3 випадкові фокуси замість фіксованого списку з 6 пунктів щоразу
-    chosen_focus = random.sample(MESSAGE_FOCUS_OPTIONS, k=random.choice([2, 3]))
-    focus_text = "\n".join(f"- {f}" for f in chosen_focus)
-
-    prompt = f"""Ти — Лис Микита, бот редакції новинного сайту МикВісті (Миколаїв, Україна).
-
-Напиши ранкове привітання для редакції. Сьогодні {datetime.now().strftime('%A, %d.%m.%Y')}.
-
-Прогноз погоди в Миколаєві на сьогодні: {weather_text}
-
-Сьогодні повідомлення зроби НЕ за шаблоном — оберіть довільний тон і структуру.
-Обов'язково включи:
-1. Привітання (можна іносказально, але десь має прозвучати "дорога редакція")
-2. Погоду на сьогодні
-
-Додатково (вибери щось із цього, не обов'язково все і не в одному порядку щодня):
-{focus_text}
-
-Вимоги:
-- Українська мова
-- Неформальний живий тон, кожного разу інша структура і інші слова — уникай повторення фраз і конструкцій з попередніх днів
-- 4-7 речень
-- 1-3 емодзі за смаком (не обов'язково розкидані по кожному абзацу)
-- НЕ пиши кожного разу однакові фрази типу "не забувайте стежити за задачами" — це вже набридло, придумай по-новому або взагалі пропусти
-- НЕ занадто офіційно
-
-Напиши тільки текст повідомлення."""
-
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=500,
-        messages=[{"role": "user", "content": prompt}]
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text=(
+            f"📊 Статистика МикВісті за вчора ({yesterday_label}):\n\n"
+            f"👥 Користувачі: {users} ({diff(users, u2)})\n"
+            f"🔄 Сесії: {sessions} ({diff(sessions, s2)})\n"
+            f"📄 Перегляди: {pageviews} ({diff(pageviews, p2)})\n\n"
+            f"🔥 Топ-5 статей:\n{top_text}"
+        ),
+        parse_mode="HTML",
+        disable_web_page_preview=True
     )
-    return message.content[0].text
 
-async def send_morning_message(bot, chat_id):
+async def check_email(bot, time_of_day):
     try:
-        weather = get_mykolaiv_weather()
-        text = await generate_morning_message(weather)
-        await bot.send_message(chat_id=chat_id, text=text)
+        emails = get_unread_emails()
+        if not emails:
+            return
+        hours = get_oldest_unread_hours(emails)
+        if hours < 1:
+            return
+        message = await generate_email_reminder(emails, hours, time_of_day)
+        await bot.send_message(chat_id=CHAT_ID, text=message)
     except Exception as e:
-        print("Помилка ранкового повідомлення: " + str(e))
+        print("Помилка перевірки пошти: " + str(e))
 
-async def morning_handler(update, context):
+async def weekly_instagram(bot):
+    await send_weekly_instagram_report(bot, CHAT_ID)
+
+async def weekly_facebook(bot):
+    await send_weekly_facebook_report(bot, CHAT_ID)
+
+async def check_prozorro(bot):
+    await check_prozorro_tenders(bot)
+
+async def morning_greeting(bot):
+    await send_morning_message(bot, CHAT_ID)
+
+async def check_channel_silence(bot, last_channel_post_time):
     try:
-        weather = get_mykolaiv_weather()
-        text = await generate_morning_message(weather)
-        await update.message.reply_text(text)
+        now = datetime.now()
+
+        # Тільки в робочі дні
+        if now.weekday() >= 5:
+            return
+
+        # Тільки з 10 до 18
+        if now.hour < 10 or now.hour >= 18:
+            return
+
+        last_post = last_channel_post_time.get("time")
+        if not last_post:
+            return
+
+        silence_hours = (now - last_post).total_seconds() / 3600
+
+        if silence_hours >= 2:
+            anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+            message = anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=200,
+                messages=[{"role": "user", "content": f"""Ти — Лис Микита, бот редакції МикВісті.
+Телеграм-канал @{CHANNEL_USERNAME} мовчить вже {int(silence_hours)} годин(и).
+Напиши коротке (2-3 речення) обережне нагадування редакції українською мовою.
+ОБОВ'ЯЗКОВО вкажи в тексті назву каналу — @{CHANNEL_USERNAME} (саме так, з @, не пропускай і не заміняй на загальне слово "канал" без назви).
+Запитай чи немає новини для публікації, або запропонуй знайти якусь національну подію.
+Неформальний тон, без тиску. Можна 1 емодзі."""}]
+            )
+            text = message.content[0].text
+            await bot.send_message(chat_id=CHAT_ID, text=text)
     except Exception as e:
-        await update.message.reply_text("Помилка: " + str(e))
+        print("Помилка перевірки мовчання каналу: " + str(e))
+
+def setup_scheduler(bot, last_channel_post_time=None):
+    if last_channel_post_time is None:
+        last_channel_post_time = {"time": datetime.now()}
+
+    scheduler = AsyncIOScheduler(timezone="Europe/Kiev")
+    scheduler.add_job(send_daily_report, "cron", hour=9, minute=0, args=[bot])
+    scheduler.add_job(check_email, "cron", hour=13, minute=0, args=[bot, "afternoon"])
+    scheduler.add_job(check_email, "cron", hour=16, minute=50, args=[bot, "evening"])
+    scheduler.add_job(weekly_instagram, "cron", day_of_week="sun", hour=18, minute=0, args=[bot])
+    scheduler.add_job(weekly_facebook, "cron", day_of_week="sun", hour=15, minute=0, args=[bot])
+    scheduler.add_job(morning_greeting, "cron", hour=8, minute=15, args=[bot])
+    scheduler.add_job(check_channel_silence, "cron", minute="*/30", args=[bot, last_channel_post_time])
+    scheduler.add_job(check_prozorro, "cron", minute=0, args=[bot])
+    scheduler.start()
+    return scheduler
