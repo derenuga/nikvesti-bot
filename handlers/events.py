@@ -111,12 +111,28 @@ def get_today_events():
                 text = str(child).strip()
                 if text:
                     title_parts.append(text)
-            title = " ".join(title_parts)
+            raw_text = " ".join(title_parts)
 
-            # Прибираємо URL з тексту — на сторінці посилання на порядок
-            # денний/трансляцію часто йдуть прямо в тілі анонсу
-            title = re.sub(r"https?://\S+", "", title).strip()
-            title = re.sub(r"\s{2,}", " ", title)
+            # Окремо витягуємо посилання на трансляцію, якщо воно є в
+            # тексті (зазвичай позначене словами "трансляція"/"стрім"
+            # перед самим URL). Посилання на "порядок денний" та інші
+            # супутні документи НЕ беремо — нас цікавить лише трансляція.
+            stream_url = None
+            stream_match = re.search(
+                r"(?:трансляц\w*|стрім\w*)[^h]*?(https?://\S+)",
+                raw_text,
+                re.IGNORECASE,
+            )
+            if stream_match:
+                stream_url = stream_match.group(1).rstrip(".,)")
+
+            # Прибираємо всі URL з основного тексту анонсу — вони або вже
+            # витягнуті окремо (трансляція), або не потрібні (порядок денний)
+            title = re.sub(r"https?://\S+", "", raw_text).strip()
+            # Прибираємо також підписи типу "Порядок денний:" і "Посилання
+            # на трансляцію:", що лишаються без самого URL
+            title = re.sub(r"(Порядок денний|Посилання на трансляцію)\s*:?\s*$", "", title, flags=re.IGNORECASE)
+            title = re.sub(r"\s{2,}", " ", title).strip()
 
             if len(title) < 5:
                 continue
@@ -124,7 +140,7 @@ def get_today_events():
             if len(title) > 200:
                 title = title[:200].rsplit(" ", 1)[0] + "..."
 
-            events.append({"time": time_text, "title": title})
+            events.append({"time": time_text, "title": title, "stream_url": stream_url})
 
         return events
     except Exception as e:
@@ -133,7 +149,9 @@ def get_today_events():
 
 
 def format_events_for_prompt(events):
-    """Готує короткий текстовий блок подій для вставки у промпт AI."""
+    """Короткий звичайний текст подій — для вставки у промпт AI (без HTML-тегів,
+    модель сама не повинна намагатись відтворити форматування, цим займається
+    format_events_html нижче)."""
     if not events:
         return None
     lines = []
@@ -143,3 +161,31 @@ def format_events_for_prompt(events):
         else:
             lines.append(f"- {e['title']}")
     return "\n".join(lines)
+
+
+def format_events_html(events):
+    """
+    Готовий HTML-блок подій для відправки в Telegram (parse_mode="HTML"),
+    у вигляді чіткого списку "час — назва", з клікабельним посиланням на
+    трансляцію (без прев'ю — про це дбає bot.send_message(disable_web_page_preview=True)
+    на стороні викликаючого коду, тут лише сама розмітка).
+    Повертає None, якщо подій немає.
+    """
+    if not events:
+        return None
+    lines = []
+    for e in events:
+        prefix = f"🕐 {e['time']} — " if e.get("time") else "▪️ "
+        line = f"{prefix}{_escape_html(e['title'])}"
+        if e.get("stream_url"):
+            line += f' (<a href="{e["stream_url"]}">трансляція</a>)'
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _escape_html(text):
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
