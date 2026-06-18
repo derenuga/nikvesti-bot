@@ -7,6 +7,7 @@ from handlers.instagram import instagram_handler, send_weekly_instagram_report
 from handlers.facebook import facebook_handler, send_weekly_facebook_report
 from handlers.morning import morning_handler, send_morning_message
 from handlers.prozorro import check_prozorro_tenders, diagnose_offset_jump, confirm_offset_jump
+from handlers.documents import check_documents, test_documents
 from handlers.reactions import handle_message_reaction
 from handlers import storage
 
@@ -23,7 +24,13 @@ async def channel_post_handler(update, context):
 async def start(update, context):
     await update.message.reply_text(
         "Привіт! Я помічник редакції МикВісті 👋\n"
-        "Команди:\n/start — привітання\n/status — перевірка\n/analytics — статистика сайту\n/report — звіт в групу\n/checkmail — перевірити пошту\n/instagram — статистика Instagram\n/igreport — тижневий Instagram звіт в групу\n/facebook — статистика Facebook\n/fbreport — тижневий Facebook звіт в групу\n/morning — ранкове привітання\n/prozorro — перевірити тендери Прозорро"
+        "Команди:\n/start — привітання\n/status — перевірка\n/analytics — статистика сайту\n"
+        "/report — звіт в групу\n/checkmail — перевірити пошту\n"
+        "/instagram — статистика Instagram\n/igreport — тижневий Instagram звіт в групу\n"
+        "/facebook — статистика Facebook\n/fbreport — тижневий Facebook звіт в групу\n"
+        "/morning — ранкове привітання\n"
+        "/prozorro — перевірити тендери Прозорро\n"
+        "/documents — перевірити нові документи міськради"
     )
 
 async def status(update, context):
@@ -44,9 +51,6 @@ async def igreport(update, context):
 async def fbreport(update, context):
     await send_weekly_facebook_report(context.bot, CHAT_ID)
     await update.message.reply_text("Звіт Facebook надіслано в групу!")
-
-async def morning_handler_cmd(update, context):
-    await morning_handler(update, context)
 
 async def prozorro_check(update, context):
     await check_prozorro_tenders(context.bot)
@@ -82,14 +86,16 @@ async def prozorro_reset_tender(update, context):
     else:
         await update.message.reply_text(f"Тендер {tender_id} не знайдено в storage.")
 
-async def post_init(application):
-    setup_scheduler(application.bot, last_channel_post_time)
-
-from handlers.documents import check_documents
-
 async def documents_check(update, context):
     await check_documents(context.bot)
-    await update.message.reply_text("Перевірив документи!")
+    await update.message.reply_text("Перевірив документи міськради!")
+
+async def documents_test(update, context):
+    sent = await test_documents(context.bot)
+    await update.message.reply_text(f"Тестові пости надіслано в канал: {sent} джерела.")
+
+async def post_init(application):
+    setup_scheduler(application.bot, last_channel_post_time)
 
 def main():
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
@@ -103,11 +109,12 @@ def main():
     app.add_handler(CommandHandler("facebook", facebook_handler))
     app.add_handler(CommandHandler("fbreport", fbreport))
     app.add_handler(CommandHandler("morning", morning_handler))
-    app.add_handler(CommandHandler("documents", documents_check))
     app.add_handler(CommandHandler("prozorro", prozorro_check))
     app.add_handler(CommandHandler("prozorro_test_jump", prozorro_test_jump))
     app.add_handler(CommandHandler("prozorro_confirm_jump", prozorro_confirm_jump))
     app.add_handler(CommandHandler("prozorro_reset_tender", prozorro_reset_tender))
+    app.add_handler(CommandHandler("documents", documents_check))
+    app.add_handler(CommandHandler("documents_test", documents_test))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
     print("Bot started...")
