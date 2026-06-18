@@ -3,6 +3,7 @@ import random
 import requests
 import anthropic
 from datetime import datetime
+from handlers.events import get_today_events, format_events_for_prompt
 
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -122,7 +123,7 @@ MESSAGE_FORMATS = [
 ]
 
 
-async def generate_morning_message(weather):
+async def generate_morning_message(weather, events_text=None):
     if weather:
         if weather["temp_min"] == weather["temp_max"]:
             temp_text = f"{weather['temp_min']}°C"
@@ -152,11 +153,21 @@ async def generate_morning_message(weather):
     else:
         focus_text = "Сьогодні не додавай жодних додаткових тем — тримайся тільки привітання і погоди."
 
+    if events_text:
+        events_block = (
+            f"\nСьогодні в місті заплановані такі події (з календаря міської ради):\n{events_text}\n"
+            f"Згадай їх КОРОТКО (1-2 речення загалом, не переказуй кожну детально) — "
+            f"просто дай редакції знати, що сьогодні відбувається в місті, без зайвих деталей."
+        )
+    else:
+        events_block = ""
+
     prompt = f"""Ти — Лис Микита, бот редакції новинного сайту МикВісті (Миколаїв, Україна).
 
 Напиши ранкове повідомлення для редакції. Сьогодні {datetime.now().strftime('%A, %d.%m.%Y')}.
 
 Прогноз погоди в Миколаєві на сьогодні: {weather_text}
+{events_block}
 
 ФОРМАТ СЬОГОДНІ: {chosen_format['instruction']}
 
@@ -183,7 +194,9 @@ async def generate_morning_message(weather):
 async def send_morning_message(bot, chat_id):
     try:
         weather = get_mykolaiv_weather()
-        text = await generate_morning_message(weather)
+        events = get_today_events()
+        events_text = format_events_for_prompt(events)
+        text = await generate_morning_message(weather, events_text)
         await bot.send_message(chat_id=chat_id, text=text)
     except Exception as e:
         print("Помилка ранкового повідомлення: " + str(e))
@@ -191,7 +204,9 @@ async def send_morning_message(bot, chat_id):
 async def morning_handler(update, context):
     try:
         weather = get_mykolaiv_weather()
-        text = await generate_morning_message(weather)
+        events = get_today_events()
+        events_text = format_events_for_prompt(events)
+        text = await generate_morning_message(weather, events_text)
         await update.message.reply_text(text)
     except Exception as e:
         await update.message.reply_text("Помилка: " + str(e))
