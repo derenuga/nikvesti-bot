@@ -11,6 +11,7 @@ from handlers.prozorro import check_prozorro_tenders
 from datetime import datetime, timedelta
 
 CHAT_ID = os.environ.get("CHAT_ID")
+CHANNEL_USERNAME = "nikvesti"
 
 async def send_daily_report(bot):
     client = get_ga4_client()
@@ -94,8 +95,9 @@ async def check_channel_silence(bot, last_channel_post_time):
                 model="claude-sonnet-4-6",
                 max_tokens=200,
                 messages=[{"role": "user", "content": f"""Ти — Лис Микита, бот редакції МикВісті.
-Канал @nikvesti мовчить вже {int(silence_hours)} годин(и).
+Телеграм-канал @{CHANNEL_USERNAME} мовчить вже {int(silence_hours)} годин(и).
 Напиши коротке (2-3 речення) обережне нагадування редакції українською мовою.
+ОБОВ'ЯЗКОВО вкажи в тексті назву каналу — @{CHANNEL_USERNAME} (саме так, з @, не пропускай і не заміняй на загальне слово "канал" без назви).
 Запитай чи немає новини для публікації, або запропонуй знайти якусь національну подію.
 Неформальний тон, без тиску. Можна 1 емодзі."""}]
             )
