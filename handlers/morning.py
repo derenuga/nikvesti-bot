@@ -3,7 +3,7 @@ import random
 import requests
 import anthropic
 from datetime import datetime
-from handlers.events import get_today_events, format_events_for_prompt
+from handlers.events import get_today_events, format_events_for_prompt, format_events_html
 
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -155,12 +155,22 @@ async def generate_morning_message(weather, events_text=None):
 
     if events_text:
         events_block = (
-            f"\nСьогодні в місті заплановані такі події (з календаря міської ради):\n{events_text}\n"
-            f"Згадай їх КОРОТКО (1-2 речення загалом, не переказуй кожну детально) — "
-            f"просто дай редакції знати, що сьогодні відбувається в місті, без зайвих деталей."
+            f"\nКалендар анонсів міської ради на сьогодні НЕ порожній — там є подія(ї) "
+            f"(сам список подій буде доданий до повідомлення окремо, ПІСЛЯ твого тексту, "
+            f"тому НЕ переказуй і не перелічуй самі події, не вигадуй деталей про них).\n"
+            f"Можеш коротко (одне речення) з легким здивованим сарказмом відмітити, що "
+            f"пресслужба міськради цього разу таки щось внесла в календар — наче це рідкість "
+            f"(в стилі \"о, гляньте, навіть щось у календарі є\"), але формулювання щоразу інше, "
+            f"не повторюй однакові жарти. Можеш і пропустити цю тему, якщо за сьогоднішнім форматом "
+            f"це не вписується."
         )
     else:
-        events_block = ""
+        events_block = (
+            f"\nКалендар анонсів міської ради на сьогодні ПОРОЖНІЙ — пресслужба знову нічого не додала.\n"
+            f"Можеш (не обов'язково) коротко уїдливо/з сарказмом, по-журналістськи відмітити цей факт "
+            f"— у дусі холодної війни редакції з пресслужбами, які нічого не анонсують. Не груби, "
+            f"просто легка журналістська іронія. Кожного разу інше формулювання, не повторюй той самий жарт."
+        )
 
     prompt = f"""Ти — Лис Микита, бот редакції новинного сайту МикВісті (Миколаїв, Україна).
 
@@ -191,13 +201,36 @@ async def generate_morning_message(weather, events_text=None):
     )
     return message.content[0].text
 
+def _escape_html(text):
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _build_full_message(ai_text, events):
+    """Склеює AI-згенерований текст з готовим HTML-списком подій (якщо є)."""
+    events_html = format_events_html(events)
+    safe_ai_text = _escape_html(ai_text.strip())
+    if events_html:
+        return f"{safe_ai_text}\n\n{events_html}"
+    return safe_ai_text
+
+
 async def send_morning_message(bot, chat_id):
     try:
         weather = get_mykolaiv_weather()
         events = get_today_events()
         events_text = format_events_for_prompt(events)
-        text = await generate_morning_message(weather, events_text)
-        await bot.send_message(chat_id=chat_id, text=text)
+        ai_text = await generate_morning_message(weather, events_text)
+        full_text = _build_full_message(ai_text, events)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=full_text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
     except Exception as e:
         print("Помилка ранкового повідомлення: " + str(e))
 
@@ -206,7 +239,12 @@ async def morning_handler(update, context):
         weather = get_mykolaiv_weather()
         events = get_today_events()
         events_text = format_events_for_prompt(events)
-        text = await generate_morning_message(weather, events_text)
-        await update.message.reply_text(text)
+        ai_text = await generate_morning_message(weather, events_text)
+        full_text = _build_full_message(ai_text, events)
+        await update.message.reply_text(
+            full_text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
     except Exception as e:
         await update.message.reply_text("Помилка: " + str(e))
