@@ -6,29 +6,35 @@
    список {id, dateModified} тендерів, що з'явились/змінились з минулого разу,
    і новий offset для наступного запиту (інкрементальне опитування).
    Стрічка йде сторінками по MAX_LIMIT записів; ми гортаємо сторінки одна
-   за одною (з невеликою паузою між запитами, як радить документація API),
-   поки не "наздоганяємо" поточний момент (порожня відповідь) або поки не
-   досягнемо MAX_PAGES_PER_RUN за один запуск — щоб не зависнути назавжди
-   при першому холодному старті, коли offset ще не збережений.
+   за одною, поки не "наздоганяємо" поточний момент (порожня відповідь) або
+   поки не досягнемо MAX_PAGES_PER_RUN за один запуск.
 2. Для кожного нового id робимо окремий запит /api/2.5/tenders/{id},
-   щоб отримати повну інформацію (сума, замовник, регіон, назва).
+   щоб отримати повну інформацію (сума, замовник, регіон, назва). Ці
+   детальні запити виконуються ПАРАЛЕЛЬНО, обмежено через Semaphore
+   (MAX_CONCURRENT_DETAIL_REQUESTS одночасних запитів), а не по черзі —
+   це критично для швидкості, бо офіційний фід Прозорро не підтримує
+   фільтрацію за регіоном/сумою на рівні запиту (лише повний перелік
+   змін за датою), і при загальнодержавному обсязі ~7500+ записів змін
+   на добу послідовна обробка по 100-150 за годину НІКОЛИ не наздоганяє
+   поточний момент — приріст системи завжди більший за швидкість читання.
 3. Фільтруємо: регіон замовника = Миколаївська область, сума >= 1 млн грн.
 4. Якщо тендер підходить і ще не був відісланий раніше — формуємо і шлемо
    повідомлення в групу. Усі нові тендери за прогон накопичуються в пам'яті
-   і записуються в storage ОДНИМ файловим записом наприкінці прогону —
-   це критично, бо повторні файлові читання/записи на Railway Volume на
-   кожен окремий тендер (сотні разів) самі по собі додавали суттєву
-   затримку і блокували event loop бота навіть через run_in_executor.
+   і записуються в storage ОДНИМ файловим записом наприкінці прогону.
 
 Дедублікація: список уже відісланих tender_id завантажується ОДНИМ читанням
 на старті прогону (storage.get_seen_tender_ids), звірка йде в пам'яті.
 
+ВАЖЛИВО ПРО ШВИДКІСТЬ НАЗДОГАНЯННЯ: після кожного прогону в лог пишеться
+фактична дата dateModified останнього обробленого запису. Це дозволяє
+бачити РЕАЛЬНУ швидкість прогресу (а не орієнтовну з екстраполяції) і
+підкручувати MAX_DETAIL_REQUESTS_PER_RUN/MAX_CONCURRENT_DETAIL_REQUESTS
+на основі фактів.
+
 КРИТИЧНО ВАЖЛИВО: bot.py працює на asyncio event loop. Усі мережеві запити
 через requests (синхронна бібліотека) і всі файлові операції зі storage
 виконуються в окремому потоці через run_in_executor, інакше довгий цикл
-повністю блокує бота — він не відповідає НІ на одну команду, поки цикл
-не завершиться. Це сталось на практиці двічі (мережеві запити, потім
-файлові операції storage) і виправлено цією версією файлу.
+повністю блокує бота.
 """
 
 import os
@@ -44,10 +50,13 @@ API_BASE = "https://public-api.prozorro.gov.ua/api/2.5"
 TARGET_REGION = "Миколаївська область"
 MIN_AMOUNT = 1_000_000
 
-MAX_LIMIT = 50             # розмір сторінки для регулярних прогонів
-MAX_PAGES_PER_RUN = 3       # запобіжник на один виклик /prozorro чи cron-тик
-MAX_DETAIL_REQUESTS_PER_RUN = 100  # запобіжник на кількість детальних запитів (найдорожча частина)
-PAGE_DELAY_SECONDS = 1      # пауза між сторінками, щоб не спамити API
+MAX_LIMIT = 1000                       # розмір сторінки списку id (максимум, що підтримує API)
+MAX_PAGES_PER_RUN = 5                  # скільки сторінок списку обробляємо за один прогон
+MAX_DETAIL_REQUESTS_PER_RUN = 1500     # скільки детальних запитів робимо за один прогон (головний обсяг)
+MAX_CONCURRENT_DETAIL_REQUESTS = 12    # скільки детальних запитів виконуємо ОДНОЧАСНО (паралельно)
+PAGE_DELAY_SECONDS = 0.5               # пауза між сторінками списку
+
+RUN_TIMEOUT_SECONDS = 600              # запобіжник від зависання: максимум 10 хв на весь прогон
 
 PROZORRO_CHAT_ID = os.environ.get("PROZORRO_CHAT_ID")
 
@@ -139,42 +148,27 @@ def _escape_html(text):
 
 # ---------- Основна логіка ----------
 
-async def _process_tender_id(bot, tender_id, seen_ids, newly_sent):
+async def _fetch_and_filter_tender(tender_id, seen_ids, semaphore):
     """
-    Перевіряє один тендер і шле повідомлення, якщо підходить.
-    seen_ids: set вже відісланих id (звірка в пам'яті, без файлового I/O).
-    newly_sent: список, куди додається запис про новий тендер (накопичення
-    для одного фінального bulk-запису в storage наприкінці прогону).
+    Завантажує деталі тендера (з обмеженням паралельності через semaphore)
+    і повертає tender dict, якщо він новий і підходить під критерії,
+    інакше None. НЕ виконує побічних дій (відправку повідомлень, запис
+    у storage) — це робиться окремо, послідовно, після збору всіх
+    результатів, щоб уникнути конкурентних записів у Telegram/storage.
     """
     if tender_id in seen_ids:
-        return False
+        return None
 
-    tender = await _fetch_tender_details(tender_id)
+    async with semaphore:
+        tender = await _fetch_tender_details(tender_id)
+
     if not tender:
-        return False
+        return None
 
     if not _matches_criteria(tender):
-        return False
+        return None
 
-    text, real_tender_id, title, amount, buyer = _format_message(tender)
-
-    message = await bot.send_message(
-        chat_id=PROZORRO_CHAT_ID,
-        text=text,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
-
-    seen_ids.add(real_tender_id)
-    newly_sent.append({
-        "tender_id": real_tender_id,
-        "message_id": message.message_id,
-        "title": title,
-        "amount": amount,
-        "buyer": buyer,
-        "sent_at": datetime.now().isoformat(),
-    })
-    return True
+    return tender
 
 
 async def check_prozorro_tenders(bot):
@@ -183,15 +177,16 @@ async def check_prozorro_tenders(bot):
         return
 
     try:
-        await asyncio.wait_for(_run_check_cycle(bot), timeout=120)
+        await asyncio.wait_for(_run_check_cycle(bot), timeout=RUN_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
-        print("Прозорро: прогон перевищив 120 секунд, перервано (запобіжник від зависання)")
+        print(f"Прозорро: прогон перевищив {RUN_TIMEOUT_SECONDS} секунд, перервано (запобіжник від зависання)")
     except Exception as e:
         print("Помилка перевірки Прозорро: " + str(e))
 
 
 async def _run_check_cycle(bot):
     loop = asyncio.get_event_loop()
+    start_time = time.time()
 
     # Одне читання стану на старті прогону
     offset = await loop.run_in_executor(None, storage.get_offset)
@@ -202,18 +197,74 @@ async def _run_check_cycle(bot):
     total_sent = 0
     pages_fetched = 0
     final_offset = offset
+    last_date_modified = None
+
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_DETAIL_REQUESTS)
 
     for page_num in range(MAX_PAGES_PER_RUN):
+        if total_checked >= MAX_DETAIL_REQUESTS_PER_RUN:
+            break
+
         tender_ids, next_offset, has_data = await _fetch_tender_page(final_offset)
         pages_fetched += 1
 
-        for tender_id in tender_ids:
-            if total_checked >= MAX_DETAIL_REQUESTS_PER_RUN:
+        if not tender_ids:
+            if not has_data:
                 break
-            total_checked += 1
-            sent = await _process_tender_id(bot, tender_id, seen_ids, newly_sent)
-            if sent:
-                total_sent += 1
+            continue
+
+        # Обрізаємо список, якщо ця сторінка вивела б нас за загальний ліміт
+        remaining_budget = MAX_DETAIL_REQUESTS_PER_RUN - total_checked
+        ids_to_process = tender_ids[:remaining_budget]
+        total_checked += len(ids_to_process)
+
+        # Паралельна перевірка деталей усіх id на цій сторінці одночасно
+        # (обмежено semaphore, щоб не перевантажити API)
+        results = await asyncio.gather(
+            *[_fetch_and_filter_tender(tid, seen_ids, semaphore) for tid in ids_to_process],
+            return_exceptions=True,
+        )
+
+        # Послідовна обробка результатів: відправка повідомлень і оновлення
+        # seen_ids/newly_sent робиться по черзі, щоб уникнути дублікатів
+        # повідомлень при паралельному виконанні.
+        for tender, tender_id in zip(results, ids_to_process):
+            if isinstance(tender, Exception) or tender is None:
+                continue
+
+            real_tender_id = tender.get("tenderID") or tender.get("id")
+            if real_tender_id in seen_ids:
+                continue  # про всяк випадок, якщо id повторився на двох сторінках
+
+            text, _, title, amount, buyer = _format_message(tender)
+
+            try:
+                message = await bot.send_message(
+                    chat_id=PROZORRO_CHAT_ID,
+                    text=text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                print(f"Прозорро: не вдалось надіслати повідомлення про {real_tender_id}: {e}")
+                continue
+
+            seen_ids.add(real_tender_id)
+            newly_sent.append({
+                "tender_id": real_tender_id,
+                "message_id": message.message_id,
+                "title": title,
+                "amount": amount,
+                "buyer": buyer,
+                "sent_at": datetime.now().isoformat(),
+            })
+            total_sent += 1
+
+        # Фіксуємо dateModified останнього елемента сторінки для діагностики
+        for tender in reversed(results):
+            if not isinstance(tender, Exception) and tender is not None:
+                last_date_modified = tender.get("dateModified")
+                break
 
         if next_offset:
             final_offset = next_offset
@@ -223,14 +274,15 @@ async def _run_check_cycle(bot):
 
         await asyncio.sleep(PAGE_DELAY_SECONDS)
 
-    # Один фінальний запис на диск за весь прогон (навіть якщо timeout — це не дійде,
-    # тому при таймауті прогрес поточного прогону втрачається, але це безпечніше,
-    # ніж дозволити боту висіти безкінечно)
+    # Один фінальний запис на диск за весь прогон
     await loop.run_in_executor(None, storage.bulk_save, newly_sent, final_offset)
 
+    elapsed = time.time() - start_time
+    progress_note = f", остання обр. dateModified≈{last_date_modified}" if last_date_modified else ""
     print(
         f"Прозорро: опрацьовано сторінок={pages_fetched}, "
-        f"перевірено тендерів={total_checked}, відіслано={total_sent}"
+        f"перевірено тендерів={total_checked}, відіслано={total_sent}, "
+        f"час={elapsed:.1f}с{progress_note}"
     )
 
 
