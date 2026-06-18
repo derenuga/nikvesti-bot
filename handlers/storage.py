@@ -189,3 +189,27 @@ def reset_tender_taken(tender_id):
         tender["taken_at"] = None
         _write_state(state)
         return True
+        
+def get_seen_document_ids(source_id):
+    """
+    Повертає список вже бачених ID для конкретного джерела документів.
+    Повертає None якщо джерело ще ніколи не перевірялось (перший запуск) —
+    це важливо, бо [] і None мають різний сенс: [] = є записи але порожньо,
+    None = ще не ініціалізовано (потрібен baseline-запуск без відправки).
+    """
+    with _lock:
+        state = _read_state()
+        doc_ids = state.get("document_ids", {})
+        if source_id not in doc_ids:
+            return None
+        return doc_ids[source_id]
+
+
+def save_seen_document_ids(source_id, ids):
+    """Зберігає список ID для конкретного джерела документів."""
+    with _lock:
+        state = _read_state()
+        if "document_ids" not in state:
+            state["document_ids"] = {}
+        state["document_ids"][source_id] = list(ids)
+        _write_state(state)
