@@ -8,6 +8,7 @@ from handlers.instagram import send_weekly_instagram_report
 from handlers.facebook import send_weekly_facebook_report
 from handlers.morning import send_morning_message
 from handlers.prozorro import check_prozorro_tenders
+from handlers.documents import check_documents
 from datetime import datetime, timedelta
 
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -18,21 +19,17 @@ async def send_daily_report(bot):
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     day_before = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
     yesterday_label = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
-
     users, sessions, pageviews = get_stats(client, yesterday, yesterday)
     u2, s2, p2 = get_stats(client, day_before, day_before)
-
     def diff(a, b):
         d = a - b
         return f"+{d}" if d > 0 else str(d)
-
     top_pages = get_top_pages(client, yesterday, yesterday)
     top_text = "\n".join([
         f'  {i+1}. <a href="{BASE_URL}{path}">{title}</a> — {views}'
         + (f'\n      👤 {author}' if author else '')
         for i, (path, title, views, author) in enumerate(top_pages)
     ])
-
     await bot.send_message(
         chat_id=CHAT_ID,
         text=(
@@ -74,21 +71,14 @@ async def morning_greeting(bot):
 async def check_channel_silence(bot, last_channel_post_time):
     try:
         now = datetime.now()
-
-        # Тільки в робочі дні
         if now.weekday() >= 5:
             return
-
-        # Тільки з 10 до 18
         if now.hour < 10 or now.hour >= 18:
             return
-
         last_post = last_channel_post_time.get("time")
         if not last_post:
             return
-
         silence_hours = (now - last_post).total_seconds() / 3600
-
         if silence_hours >= 2:
             anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
             message = anthropic_client.messages.create(
@@ -106,10 +96,12 @@ async def check_channel_silence(bot, last_channel_post_time):
     except Exception as e:
         print("Помилка перевірки мовчання каналу: " + str(e))
 
+async def run_check_documents(bot):
+    await check_documents(bot)
+
 def setup_scheduler(bot, last_channel_post_time=None):
     if last_channel_post_time is None:
         last_channel_post_time = {"time": datetime.now()}
-
     scheduler = AsyncIOScheduler(timezone="Europe/Kiev")
     scheduler.add_job(send_daily_report, "cron", hour=9, minute=0, args=[bot])
     scheduler.add_job(check_email, "cron", hour=13, minute=0, args=[bot, "afternoon"])
@@ -119,5 +111,6 @@ def setup_scheduler(bot, last_channel_post_time=None):
     scheduler.add_job(morning_greeting, "cron", hour=8, minute=15, args=[bot])
     scheduler.add_job(check_channel_silence, "cron", minute="*/30", args=[bot, last_channel_post_time])
     scheduler.add_job(check_prozorro, "cron", minute=0, args=[bot])
+    scheduler.add_job(run_check_documents, "cron", minute=30, args=[bot])
     scheduler.start()
     return scheduler
