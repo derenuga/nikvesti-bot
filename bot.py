@@ -85,6 +85,12 @@ async def prozorro_reset_tender(update, context):
 async def post_init(application):
     setup_scheduler(application.bot, last_channel_post_time)
 
+from handlers.documents import check_documents
+
+async def documents_check(update, context):
+    await check_documents(context.bot)
+    await update.message.reply_text("Перевірив документи!")
+
 def main():
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
@@ -97,6 +103,7 @@ def main():
     app.add_handler(CommandHandler("facebook", facebook_handler))
     app.add_handler(CommandHandler("fbreport", fbreport))
     app.add_handler(CommandHandler("morning", morning_handler))
+    app.add_handler(CommandHandler("documents", documents_check))
     app.add_handler(CommandHandler("prozorro", prozorro_check))
     app.add_handler(CommandHandler("prozorro_test_jump", prozorro_test_jump))
     app.add_handler(CommandHandler("prozorro_confirm_jump", prozorro_confirm_jump))
