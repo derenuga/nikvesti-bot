@@ -1,110 +1,51 @@
 """
-Моніторинг нових документів на сайті Миколаївської міської ради.
+Моніторинг нових документів органів влади Миколаївщини.
 
-Зараз підключено одне джерело: розпорядження міського голови (?c=4).
-Щоб додати нове джерело (рішення сесії, виконкому тощо) — достатньо
-додати рядок у DOCUMENT_SOURCES нижче, код більше не чіпати.
+Підключені джерела:
+- Розпорядження міського голови Миколаєва (mkrada.gov.ua, ?c=4)
+- Розпорядження голови ОВА/ОВА (mk.gov.ua)
 
-Логіка:
-1. Щогодини для кожного джерела завантажуємо першу сторінку списку
-   (сортування DESC, тобто найновіші зверху).
-2. Порівнюємо внутрішні ID документів (числові, з URL /documents/51982.html)
-   з тими, що вже бачили (зберігаються в storage).
-3. Нові ID → формуємо пост і надсилаємо в канал.
-4. Зберігаємо нові ID в storage.
+Архітектура конфіг-driven: щоб додати нове джерело — додати рядок у
+DOCUMENT_SOURCES. Якщо структура HTML нового сайту відрізняється —
+написати окрему функцію парсера і вказати її в полі "parser".
 
-Формат поста (parse_mode=HTML):
-  📋 <b>Розпорядження міського голови</b> — 3 нові документи
+Логіка для кожного джерела:
+1. Завантажуємо список документів (перша сторінка або пошук за датою).
+2. Порівнюємо ID з тими що вже бачили (storage).
+3. Нові → формуємо пост → надсилаємо в канал.
+4. Зберігаємо нові ID.
 
-  <a href="...">№ 275р</a> від 17.06.2026
-  Про затвердження внутрішньої організаційної структури...
-
-  <a href="...">№ 274р</a> від 17.06.2026
-  ...
-
-Якщо документ один — без заголовку "N нові документи", просто один запис.
-
-ВАЖЛИВО: перший запуск після деплою завантажить поточну першу сторінку
-і збереже всі ID як "вже бачені" — БЕЗ відправки в канал (режим
-"ініціалізація"). Це запобігає спаму при першому старті. Наступні
-запуски порівнюють з цим baseline і надсилають лише реально нові.
+Перший запуск: зберігаємо baseline БЕЗ відправки (захист від спаму).
 """
 
 import os
 import re
 import asyncio
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
 from handlers import storage
 
-BASE_URL = "https://mkrada.gov.ua"
-
-DOCUMENT_SOURCES = [
-    {
-        "id": "mayor_orders",
-        "name": "Розпорядження міського голови",
-        "emoji": "📋",
-        "url": f"{BASE_URL}/documents/",
-        "params": {"c": 4, "o": "DESC"},
-    },
-    # Майбутні джерела — просто додати рядок:
-    # {
-    #     "id": "council_decisions",
-    #     "name": "Рішення міської ради",
-    #     "emoji": "🏛",
-    #     "url": f"{BASE_URL}/documents/",
-    #     "params": {"c": 1, "o": "DESC"},
-    # },
-    # {
-    #     "id": "executive_decisions",
-    #     "name": "Рішення виконкому",
-    #     "emoji": "⚙️",
-    #     "url": f"{BASE_URL}/documents/",
-    #     "params": {"c": 5, "o": "DESC"},
-    # },
-]
+MKRADA_BASE = "https://mkrada.gov.ua"
+OVA_BASE = "https://mk.gov.ua"
 
 DOCUMENTS_CHAT_ID = os.environ.get("DOCUMENTS_CHAT_ID") or os.environ.get("PROZORRO_CHAT_ID")
 
-
-# ---------- Парсинг ----------
-
-def _parse_doc_id(href):
-    """Витягує числовий ID з href виду /documents/51982.html → '51982'."""
-    match = re.search(r"/documents/(\d+)\.html", href)
-    return match.group(1) if match else None
+MONTHS_UA = {
+    "Січня": "01", "Лютого": "02", "Березня": "03", "Квітня": "04",
+    "Травня": "05", "Червня": "06", "Липня": "07", "Серпня": "08",
+    "Вересня": "09", "Жовтня": "10", "Листопада": "11", "Грудня": "12",
+}
 
 
-def _parse_doc_number(date_div):
-    """Витягує номер документа зі структури div.date → '275р'."""
-    strong = date_div.find("strong") if date_div else None
-    return strong.get_text(strip=True) if strong else None
+# ---------- Парсери ----------
 
-
-def _parse_doc_date(date_div):
-    """Витягує дату зі структури div.date → '17.06.2026'."""
-    if not date_div:
-        return None
-    raw = date_div.get_text(strip=True)
-    match = re.search(r"\((\d+)\s+(\S+)\s+(\d{4})\)", raw)
-    if not match:
-        return None
-    months = {
-        "Січня": "01", "Лютого": "02", "Березня": "03", "Квітня": "04",
-        "Травня": "05", "Червня": "06", "Липня": "07", "Серпня": "08",
-        "Вересня": "09", "Жовтня": "10", "Листопада": "11", "Грудня": "12",
-    }
-    day, month_name, year = match.groups()
-    month = months.get(month_name, "??")
-    return f"{int(day):02d}.{month}.{year}"
-
-
-def _fetch_documents_sync(source):
+def _parse_mkrada(source):
     """
-    Завантажує першу сторінку списку документів і повертає список:
-    [{"id": "51982", "title": "...", "number": "275р", "date": "17.06.2026", "url": "..."}]
+    Парсер для mkrada.gov.ua/documents/.
+    Структура: div.news_line_item > a[href] + div.date > strong(номер)
+    ID документа — числовий з URL /documents/51982.html
     """
     try:
         response = requests.get(source["url"], params=source["params"], timeout=15)
@@ -120,28 +61,140 @@ def _fetch_documents_sync(source):
             if not a or not a.get("href"):
                 continue
 
-            doc_id = _parse_doc_id(a["href"])
-            if not doc_id:
+            match = re.search(r"/documents/(\d+)\.html", a["href"])
+            if not match:
                 continue
+            doc_id = match.group(1)
 
             date_div = item.find("div", class_="date")
             title = a.get_text(strip=True)
-            number = _parse_doc_number(date_div)
-            date = _parse_doc_date(date_div)
-            url = BASE_URL + a["href"] if a["href"].startswith("/") else a["href"]
 
-            results.append({
-                "id": doc_id,
-                "title": title,
-                "number": number,
-                "date": date,
-                "url": url,
-            })
+            strong = date_div.find("strong") if date_div else None
+            number = strong.get_text(strip=True) if strong else None
+
+            date = None
+            if date_div:
+                dm = re.search(r"\((\d+)\s+(\S+)\s+(\d{4})\)", date_div.get_text(strip=True))
+                if dm:
+                    day, month_name, year = dm.groups()
+                    month = MONTHS_UA.get(month_name, "??")
+                    date = f"{int(day):02d}.{month}.{year}"
+
+            url = MKRADA_BASE + a["href"]
+            results.append({"id": doc_id, "title": title, "number": number, "date": date, "url": url})
 
         return results
     except Exception as e:
-        print(f"Документи [{source['id']}]: помилка завантаження — {e}")
+        print(f"Документи [{source['id']}]: помилка — {e}")
         return []
+
+
+def _parse_ova(source):
+    """
+    Парсер для mk.gov.ua/ua/oda/order/.
+    Структура: a.list-group-item[href="?doc_id=18165"] >
+                 h4.list-group-item-heading (номер і дата)
+                 p.list-group-item-text (назва)
+    ID документа — числовий з query-параметра ?doc_id=18165.
+    Запит з фільтром по даті: s_date і e_date (формат YYYY-MM-DD).
+    Беремо діапазон "останні 3 дні" — страховка якщо прогін пропустив
+    день (вихідні, перезапуск бота тощо).
+    """
+    try:
+        today = datetime.now()
+        s_date = (today - timedelta(days=3)).strftime("%Y-%m-%d")
+        e_date = today.strftime("%Y-%m-%d")
+
+        params = {
+            "action": "search",
+            "uin": "",
+            "s_date": s_date,
+            "e_date": e_date,
+            "type": source.get("type", 1),
+            "publisher": source.get("publisher", 1),
+            "memo": "",
+        }
+        response = requests.get(source["url"], params=params, timeout=15)
+        if response.status_code != 200:
+            print(f"Документи [{source['id']}]: HTTP {response.status_code}")
+            return []
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        results = []
+
+        for item in soup.find_all("a", href=True):
+            if "doc_id=" not in item.get("href", ""):
+                continue
+
+            match = re.search(r"doc_id=(\d+)", item["href"])
+            if not match:
+                continue
+            doc_id = match.group(1)
+
+            h4 = item.find("h4")
+            h4_text = h4.get_text(strip=True) if h4 else ""
+
+            strong = item.find("strong")
+            number = strong.get_text(strip=True) if strong else None
+
+            date = None
+            dm = re.search(r"вiд\s+(\d+)\s+(\S+)\s+(\d{4})", h4_text, re.IGNORECASE)
+            if dm:
+                day, month_name, year = dm.groups()
+                month = MONTHS_UA.get(month_name.capitalize(), "??")
+                date = f"{int(day):02d}.{month}.{year}"
+
+            p = item.find("p", class_="list-group-item-text")
+            title = p.get_text(strip=True) if p else h4_text
+            # Прибираємо стрілку → яка іноді з'являється в кінці
+            title = title.rstrip(" →")
+
+            url = OVA_BASE + "/ua/oda/order/" + item["href"]
+            results.append({"id": doc_id, "title": title, "number": number, "date": date, "url": url})
+
+        return results
+    except Exception as e:
+        print(f"Документи [{source['id']}]: помилка — {e}")
+        return []
+
+
+# ---------- Конфігурація джерел ----------
+
+DOCUMENT_SOURCES = [
+    {
+        "id": "mayor_orders",
+        "name": "Розпорядження міського голови Миколаєва",
+        "emoji": "📋",
+        "url": f"{MKRADA_BASE}/documents/",
+        "params": {"c": 4, "o": "DESC"},
+        "parser": _parse_mkrada,
+    },
+    {
+        "id": "ova_orders",
+        "name": "Розпорядження голови ОВА",
+        "emoji": "🏛",
+        "url": f"{OVA_BASE}/ua/oda/order/",
+        "type": 1,
+        "publisher": 1,
+        "parser": _parse_ova,
+    },
+    # Майбутні джерела — просто додати рядок:
+    # {
+    #     "id": "council_decisions",
+    #     "name": "Рішення міської ради Миколаєва",
+    #     "emoji": "🏙",
+    #     "url": f"{MKRADA_BASE}/documents/",
+    #     "params": {"c": 1, "o": "DESC"},
+    #     "parser": _parse_mkrada,
+    # },
+    # {
+    #     "id": "oblrada_orders",
+    #     "name": "Розпорядження голови облради",
+    #     "emoji": "📜",
+    #     "url": "...",
+    #     "parser": _parse_???,
+    # },
+]
 
 
 # ---------- Форматування ----------
@@ -163,12 +216,13 @@ def _format_post(source, new_docs):
 
     lines = [header, ""]
     for doc in new_docs:
-        num_text = f"№ {doc['number']}" if doc.get("number") else "Документ"
+        num = doc.get("number") or ""
+        num_text = num if num.startswith("№") else (f"№ {num}" if num else "Документ")
         date_text = f" від {doc['date']}" if doc.get("date") else ""
         link = f'<a href="{doc["url"]}">{_escape_html(num_text)}</a>{date_text}'
         lines.append(link)
         lines.append(_escape_html(doc["title"]))
-        lines.append("")  # порожній рядок між документами
+        lines.append("")
 
     return "\n".join(lines).strip()
 
@@ -176,23 +230,21 @@ def _format_post(source, new_docs):
 # ---------- Основна логіка ----------
 
 async def _check_source(bot, source):
-    """Перевіряє одне джерело і надсилає пост якщо є нові документи."""
     loop = asyncio.get_event_loop()
+    parser = source["parser"]
 
-    docs = await loop.run_in_executor(None, _fetch_documents_sync, source)
+    docs = await loop.run_in_executor(None, parser, source)
     if not docs:
         return
 
     seen_ids = await loop.run_in_executor(None, storage.get_seen_document_ids, source["id"])
     fetched_ids = [d["id"] for d in docs]
 
-    # Перший запуск — зберігаємо baseline без відправки в канал
     if seen_ids is None:
         print(f"Документи [{source['id']}]: перший запуск, зберігаємо baseline ({len(fetched_ids)} документів)")
         await loop.run_in_executor(None, storage.save_seen_document_ids, source["id"], fetched_ids)
         return
 
-    # Знаходимо нові — ті, яких ще не бачили, зберігаємо порядок (найновіші першими)
     seen_set = set(seen_ids)
     new_docs = [d for d in docs if d["id"] not in seen_set]
 
@@ -214,18 +266,56 @@ async def _check_source(bot, source):
             disable_web_page_preview=True,
         )
     except Exception as e:
-        print(f"Документи [{source['id']}]: помилка відправки в Telegram — {e}")
+        print(f"Документи [{source['id']}]: помилка відправки — {e}")
         return
 
-    # Зберігаємо нові ID (додаємо до існуючих)
     all_ids = list(seen_set) + [d["id"] for d in new_docs]
     await loop.run_in_executor(None, storage.save_seen_document_ids, source["id"], all_ids)
 
 
 async def check_documents(bot):
-    """Перевіряє всі джерела документів. Викликається з планувальника."""
+    """Перевіряє всі джерела. Викликається з планувальника і /documents."""
     for source in DOCUMENT_SOURCES:
         try:
             await _check_source(bot, source)
         except Exception as e:
             print(f"Документи [{source['id']}]: неочікувана помилка — {e}")
+
+
+async def test_documents(bot):
+    """
+    Надсилає перший документ з кожного джерела в канал як тестовий пост.
+    НЕ змінює baseline і НЕ оновлює seen_ids — лише перевіряє що
+    парсинг і відправка працюють. Викликається через /documents_test.
+    """
+    if not DOCUMENTS_CHAT_ID:
+        print("test_documents: DOCUMENTS_CHAT_ID не задано")
+        return
+
+    loop = asyncio.get_event_loop()
+    sent = 0
+
+    for source in DOCUMENT_SOURCES:
+        try:
+            docs = await loop.run_in_executor(None, source["parser"], source)
+            if not docs:
+                print(f"test_documents [{source['id']}]: список порожній")
+                continue
+
+            # Беремо тільки перший документ
+            test_doc = docs[0]
+            text = _format_post(source, [test_doc])
+            text = f"🧪 <i>Тестовий пост</i>\n\n{text}"
+
+            await bot.send_message(
+                chat_id=DOCUMENTS_CHAT_ID,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            sent += 1
+            print(f"test_documents [{source['id']}]: надіслано тестовий пост (id={test_doc['id']})")
+        except Exception as e:
+            print(f"test_documents [{source['id']}]: помилка — {e}")
+
+    return sent
