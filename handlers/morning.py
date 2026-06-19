@@ -180,8 +180,8 @@ async def generate_morning_message(weather, events_text=None):
             f"сарказмом відмітьте що пресслужба міськради таки щось внесла в календар — "
             f"наче це рідкість. Формулювання щоразу інше, не повторюй однакові жарти."
         )
-    elif is_weekend:
-        # У вихідні порожній календар — норма, не іронізуємо
+    elif is_weekend or random.random() < 0.6:
+        # У вихідні — завжди мовчимо. У будні — мовчимо з імовірністю 60%
         events_block = ""
     else:
         chosen_calendar_quip = random.choice(EMPTY_CALENDAR_VARIANTS)
