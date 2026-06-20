@@ -112,6 +112,11 @@ async def post_init(application):
 
 def main():
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    
+    # Перевірка доступу — спрацьовує ПЕРЕД усіма іншими хендлерами
+    app.add_handler(TypeHandler(Update, check_allowed), group=-1)
+    
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("analytics", analytics_handler))
