@@ -11,6 +11,19 @@ from handlers.documents import check_documents, test_documents
 from handlers.reactions import handle_message_reaction
 from handlers import storage
 
+ALLOWED_USER_IDS = set(
+    int(x) for x in os.environ.get("ALLOWED_USER_IDS", "").split(",") if x.strip()
+)
+
+async def check_allowed(update: Update, context) -> None:
+    if not ALLOWED_USER_IDS:
+        return  # якщо змінна не задана — пускаємо всіх (безпечний дефолт при деплої)
+    user = update.effective_user
+    if user is None or user.id not in ALLOWED_USER_IDS:
+        if update.message:
+            await update.message.reply_text("⛔ Доступ заборонено.")
+        raise ApplicationHandlerStop
+
 TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 CHANNEL_USERNAME = "nikvesti"
