@@ -10,6 +10,7 @@ from handlers.prozorro import check_prozorro_tenders, diagnose_offset_jump, conf
 from handlers.documents import check_documents, test_documents
 from handlers.reactions import handle_message_reaction
 from handlers import storage
+from telegram import Update
 
 ALLOWED_USER_IDS = set(
     int(x) for x in os.environ.get("ALLOWED_USER_IDS", "").split(",") if x.strip()
