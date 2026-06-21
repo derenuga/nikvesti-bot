@@ -136,12 +136,20 @@ def _escape_html(text):
     )
 
 
-def _format_post(new_by_source):
+def _format_post(new_by_source, intro=None):
     """
     Формує пост з новинами конкурентів.
     new_by_source: список (source_config, [news_items])
+    intro: AI-підводка або None
     """
-    lines = ["🔍 <b>Новини інших миколаївських медіа на регіональну тематику</b>", ""]
+    lines = []
+
+    if intro:
+        lines.append(intro)
+        lines.append("")
+
+    lines.append("🔍 <b>Новини інших миколаївських медіа на регіональну тематику</b>")
+    lines.append("")
 
     for source, items in new_by_source:
         lines.append(f"📰 <b>{source['name']}</b>")
@@ -214,7 +222,14 @@ async def check_competitors(bot):
             print(f"Конкуренти [{source['id']}]: неочікувана помилка — {e}")
 
     if new_by_source:
-        text = _format_post(new_by_source)
+        from handlers.ai_messages import generate_competitors_intro
+        try:
+            intro = await generate_competitors_intro(new_by_source)
+        except Exception as e:
+            print(f"Конкуренти: помилка AI підводки — {e}")
+            intro = None
+
+        text = _format_post(new_by_source, intro)
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
