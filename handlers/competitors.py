@@ -1,38 +1,38 @@
 """
 Моніторинг новин конкурентів — пошук миколаївських новин на сайтах
-конкурентів і відправка в канал раз на годину.
+конкурентів і відправка в чат редакції раз на годину.
 
-Зараз підключено: news.pn
+Підключено: news.pn
 Планується: novosti-n.org
 
 Логіка:
 1. Раз на годину парсимо головну сторінку конкурента.
-2. Фільтруємо новини по словнику ключових слів (миколаївські теми).
-3. Нові (не бачені раніше) → формуємо пост і надсилаємо в чат редакції.
-4. Зберігаємо seen_ids в storage.
+2. Фільтруємо по словнику ключових слів (миколаївські теми).
+3. Відкидаємо новини старші за MAX_NEWS_AGE_HOURS — захист від "спливання"
+   старих новин на сторінці після того як вони вже були у baseline.
+4. Нові (не бачені раніше) → формуємо пост і надсилаємо в чат редакції.
+5. Зберігаємо seen_ids в storage.
 
-Формат поста:
-  🔍 Новини конкурентів про Миколаїв
-
-  📰 NEWS.PN
-  08:02 — Заголовок новини
-  09:33 — Інший заголовок
-
-Пост без превью (disable_web_page_preview=True).
+Важливо: зберігаємо ID всіх нових новин (не тільки локальних) щоб
+національні новини не з'являлись повторно при наступних перевірках.
 """
 
 import os
 import re
 import asyncio
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
 from handlers import storage
 
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# Словник ключових слів для визначення миколаївських новин
+# Новини старші за цей ліміт ігноруємо — захист від "спливання"
+# старих новин на сторінці. 3 години = достатній буфер щоб не
+# пропустити новини між перевірками (перевірка щогодини).
+MAX_NEWS_AGE_HOURS = 3
+
 LOCAL_KEYWORDS = re.compile(
     r'Миколає|Миколаїв|миколаїв|миколаївськ|'
     r'Інгул|Намив|Парутин|Слобідськ|'
@@ -51,7 +51,6 @@ COMPETITORS = [
         "url": "https://news.pn/uk/",
         "parser": "parse_news_pn",
     },
-    # Майбутні джерела:
     # {
     #     "id": "novosti_n",
     #     "name": "Новини N",
@@ -63,6 +62,22 @@ COMPETITORS = [
 
 # ---------- Парсери ----------
 
+def _parse_news_time(time_str):
+    """
+    Конвертує час новини "HH:MM" в datetime сьогоднішнього дня.
+    Якщо час не вдається розпарсити — повертає None (новина не буде
+    відфільтрована по часу, але й не буде "старою").
+    """
+    if not time_str:
+        return None
+    try:
+        now = datetime.now()
+        t = datetime.strptime(time_str.strip(), "%H:%M")
+        return now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+    except ValueError:
+        return None
+
+
 def parse_news_pn(url):
     """
     Парсить головну сторінку news.pn.
@@ -71,7 +86,7 @@ def parse_news_pn(url):
     """
     try:
         response = requests.get(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "NikVesti-Bot/1.0"
         }, timeout=15)
         if response.status_code != 200:
             print(f"Конкуренти [news_pn]: HTTP {response.status_code}")
@@ -79,6 +94,8 @@ def parse_news_pn(url):
 
         soup = BeautifulSoup(response.text, "html.parser")
         results = []
+        now = datetime.now()
+        cutoff = now - timedelta(hours=MAX_NEWS_AGE_HOURS)
 
         for item in soup.find_all("div", class_="hentry"):
             time_el = item.find("span", class_="t")
@@ -100,6 +117,12 @@ def parse_news_pn(url):
             news_id = id_match.group(1)
 
             time_text = time_el.get_text(strip=True) if time_el else None
+            news_time = _parse_news_time(time_text)
+
+            # Відкидаємо новини старші за MAX_NEWS_AGE_HOURS
+            if news_time and news_time < cutoff:
+                continue
+
             url_full = "https://news.pn" + href if href.startswith("/") else href
 
             results.append({
@@ -137,11 +160,6 @@ def _escape_html(text):
 
 
 def _format_post(new_by_source, intro=None):
-    """
-    Формує пост з новинами конкурентів.
-    new_by_source: список (source_config, [news_items])
-    intro: AI-підводка або None
-    """
     lines = []
 
     if intro:
@@ -200,13 +218,13 @@ async def check_competitors(bot):
 
             seen_set = set(seen_ids)
 
-            # Нові локальні новини
+            # Нові локальні новини (не бачені + свіжі + миколаївські)
             new_local = [
                 i for i in items
                 if i["id"] not in seen_set and is_local(i["title"])
             ]
 
-            # Зберігаємо всі нові ID (не тільки локальні) щоб не повторювати
+            # Зберігаємо всі нові ID (не тільки локальні)
             all_new_ids = [i["id"] for i in items if i["id"] not in seen_set]
             if all_new_ids:
                 updated_ids = list(seen_set) + all_new_ids
