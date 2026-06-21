@@ -91,7 +91,11 @@ async def prozorro_reset_tender(update, context):
 
 async def documents_check(update, context):
     await check_documents(context.bot)
-    await update.message.reply_text("Перевірив документи!")
+    async def documents_check(update, context):
+    from handlers.documents import DOCUMENT_SOURCES, _parse_mkrada_decisions
+    source = [s for s in DOCUMENT_SOURCES if s['id'] == 'mkrada_decisions'][0]
+    docs = _parse_mkrada_decisions(source)
+    await update.message.reply_text(f"Знайдено: {len(docs)} документів")
 
 async def documents_test_cmd(update, context):
     sent = await test_documents(context.bot)
