@@ -257,6 +257,7 @@ def _parse_mkrada_decisions(source):
     """
     try:
         response = requests.get(source["url"], timeout=15)
+        response.encoding = 'utf-8'
         if response.status_code != 200:
             print(f"Документи [{source['id']}]: HTTP {response.status_code}")
             return []
