@@ -2,19 +2,16 @@
 Моніторинг новин конкурентів — пошук миколаївських новин на сайтах
 конкурентів і відправка в чат редакції раз на годину.
 
-Підключено: news.pn
-Планується: novosti-n.org
+Підключено: news.pn, novosti-n.org
 
 Логіка:
-1. Раз на годину парсимо головну сторінку конкурента.
+1. Раз на годину парсимо сторінку конкурента.
 2. Фільтруємо по словнику ключових слів (миколаївські теми).
-3. Відкидаємо новини старші за MAX_NEWS_AGE_HOURS — захист від "спливання"
-   старих новин на сторінці після того як вони вже були у baseline.
-4. Нові (не бачені раніше) → формуємо пост і надсилаємо в чат редакції.
-5. Зберігаємо seen_ids в storage.
+3. Нові (не бачені раніше по ID) → формуємо пост → надсилаємо в чат.
+4. Зберігаємо seen_ids всіх новин (не тільки локальних).
 
-Важливо: зберігаємо ID всіх нових новин (не тільки локальних) щоб
-національні новини не з'являлись повторно при наступних перевірках.
+news.pn: фільтр по часу 3 години — захист від підняття старих новин.
+novosti-n.org: без фільтру по часу — беремо все нове по ID.
 """
 
 import os
@@ -27,11 +24,6 @@ from bs4 import BeautifulSoup
 from handlers import storage
 
 CHAT_ID = os.environ.get("CHAT_ID")
-
-# Новини старші за цей ліміт ігноруємо — захист від "спливання"
-# старих новин на сторінці. 3 години = достатній буфер щоб не
-# пропустити новини між перевірками (перевірка щогодини).
-MAX_NEWS_AGE_HOURS = 3
 
 LOCAL_KEYWORDS = re.compile(
     r'Миколає|Миколаїв|миколаїв|миколаївськ|'
@@ -51,51 +43,45 @@ COMPETITORS = [
         "url": "https://news.pn/uk/",
         "parser": "parse_news_pn",
     },
-    # {
-    #     "id": "novosti_n",
-    #     "name": "Новини N",
-    #     "url": "https://novosti-n.org/ua/",
-    #     "parser": "parse_novosti_n",
-    # },
+    {
+        "id": "novosti_n",
+        "name": "Новини N",
+        "url": "https://novosti-n.org/ua/",
+        "parser": "parse_novosti_n",
+    },
 ]
 
 
 # ---------- Парсери ----------
 
-def _parse_news_time(time_str):
-    """
-    Конвертує час новини "HH:MM" в datetime сьогоднішнього дня.
-    Якщо час не вдається розпарсити — повертає None (новина не буде
-    відфільтрована по часу, але й не буде "старою").
-    """
+def _is_fresh_pn(time_str):
+    """Для news.pn — відкидаємо новини старші за 3 години (захист від підняття)."""
     if not time_str:
-        return None
+        return True
     try:
-        now = datetime.now()
         t = datetime.strptime(time_str.strip(), "%H:%M")
-        return now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        now = datetime.now()
+        news_time = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        return news_time >= now - timedelta(hours=3)
     except ValueError:
-        return None
+        return True
 
 
 def parse_news_pn(url):
     """
     Парсить головну сторінку news.pn.
     Структура: div.hentry > span.t (час) + a[href] > span (заголовок)
-    ID новини — числовий в кінці URL: /uk/criminal/345266 → '345266'
+    ID: числовий в кінці URL /uk/criminal/345266 → '345266'
+    Фільтр по часу: новини старші за 3 год відкидаються.
     """
     try:
-        response = requests.get(url, headers={
-            "User-Agent": "NikVesti-Bot/1.0"
-        }, timeout=15)
+        response = requests.get(url, headers={"User-Agent": "NikVesti-Bot/1.0"}, timeout=15)
         if response.status_code != 200:
             print(f"Конкуренти [news_pn]: HTTP {response.status_code}")
             return []
 
         soup = BeautifulSoup(response.text, "html.parser")
         results = []
-        now = datetime.now()
-        cutoff = now - timedelta(hours=MAX_NEWS_AGE_HOURS)
 
         for item in soup.find_all("div", class_="hentry"):
             time_el = item.find("span", class_="t")
@@ -117,29 +103,72 @@ def parse_news_pn(url):
             news_id = id_match.group(1)
 
             time_text = time_el.get_text(strip=True) if time_el else None
-            news_time = _parse_news_time(time_text)
 
-            # Відкидаємо новини старші за MAX_NEWS_AGE_HOURS
-            if news_time and news_time < cutoff:
+            if not _is_fresh_pn(time_text):
                 continue
 
             url_full = "https://news.pn" + href if href.startswith("/") else href
-
-            results.append({
-                "id": news_id,
-                "title": title,
-                "time": time_text,
-                "url": url_full,
-            })
+            results.append({"id": news_id, "title": title, "time": time_text, "url": url_full})
 
         return results
     except Exception as e:
-        print(f"Конкуренти [news_pn]: помилка парсингу — {e}")
+        print(f"Конкуренти [news_pn]: помилка — {e}")
+        return []
+
+
+def parse_novosti_n(url):
+    """
+    Парсить лівий фід головної сторінки novosti-n.org.
+    Контейнер: div.mewsCity > div.newsList__item.ddd.hentry
+    Час: div.newsList__time > span (може бути "Вчора о 23:18" або "08:00")
+    ID: числовий в кінці URL /ua/news/Nazva-340345 → '340345'
+    Без фільтру по часу — беремо все нове по ID (в тому числі вчорашнє).
+    """
+    try:
+        response = requests.get(url, headers={"User-Agent": "NikVesti-Bot/1.0"}, timeout=15)
+        if response.status_code != 200:
+            print(f"Конкуренти [novosti_n]: HTTP {response.status_code}")
+            return []
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        ID_RE = re.compile(r'-(\d+)$')
+        results = []
+
+        feed = soup.find('div', class_='mewsCity')
+        if not feed:
+            print("Конкуренти [novosti_n]: div.mewsCity не знайдено")
+            return []
+
+        for item in feed.find_all('div', class_='newsList__item'):
+            time_el = item.find('div', class_='newsList__time')
+            time_span = time_el.find('span') if time_el else None
+            time_text = time_span.get_text(strip=True) if time_span else None
+
+            a = item.find('a', href=re.compile(r'/news/'))
+            if not a:
+                continue
+            href = a.get('href', '')
+            id_match = ID_RE.search(href)
+            if not id_match:
+                continue
+            news_id = id_match.group(1)
+
+            title = a.get_text(strip=True)
+            if not title or len(title) < 10:
+                continue
+
+            url_full = 'https://novosti-n.org' + href if href.startswith('/') else href
+            results.append({"id": news_id, "title": title, "time": time_text, "url": url_full})
+
+        return results
+    except Exception as e:
+        print(f"Конкуренти [novosti_n]: помилка — {e}")
         return []
 
 
 PARSERS = {
     "parse_news_pn": parse_news_pn,
+    "parse_novosti_n": parse_novosti_n,
 }
 
 
@@ -159,15 +188,8 @@ def _escape_html(text):
     )
 
 
-def _format_post(new_by_source, intro=None):
-    lines = []
-
-    if intro:
-        lines.append(intro)
-        lines.append("")
-
-    lines.append("🔍 <b>Новини інших миколаївських медіа на регіональну тематику</b>")
-    lines.append("")
+def _format_post(new_by_source):
+    lines = ["🔍 <b>Новини інших миколаївських медіа на регіональну тематику</b>", ""]
 
     for source, items in new_by_source:
         lines.append(f"📰 <b>{source['name']}</b>")
@@ -207,7 +229,6 @@ async def check_competitors(bot):
                 None, storage.get_seen_competitor_ids, source["id"]
             )
 
-            # Перший запуск — зберігаємо baseline без відправки
             if seen_ids is None:
                 all_ids = [i["id"] for i in items]
                 print(f"Конкуренти [{source['id']}]: перший запуск, baseline {len(all_ids)} новин")
@@ -218,13 +239,11 @@ async def check_competitors(bot):
 
             seen_set = set(seen_ids)
 
-            # Нові локальні новини (не бачені + свіжі + миколаївські)
             new_local = [
                 i for i in items
                 if i["id"] not in seen_set and is_local(i["title"])
             ]
 
-            # Зберігаємо всі нові ID (не тільки локальні)
             all_new_ids = [i["id"] for i in items if i["id"] not in seen_set]
             if all_new_ids:
                 updated_ids = list(seen_set) + all_new_ids
@@ -240,14 +259,7 @@ async def check_competitors(bot):
             print(f"Конкуренти [{source['id']}]: неочікувана помилка — {e}")
 
     if new_by_source:
-        from handlers.ai_messages import generate_competitors_intro
-        try:
-            intro = await generate_competitors_intro(new_by_source)
-        except Exception as e:
-            print(f"Конкуренти: помилка AI підводки — {e}")
-            intro = None
-
-        text = _format_post(new_by_source, intro)
+        text = _format_post(new_by_source)
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,
