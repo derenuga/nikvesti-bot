@@ -242,7 +242,69 @@ def _parse_oblrada(source):
         return []
 
 
-# ---------- Конфігурація джерел ----------
+def _parse_mkrada_decisions(source):
+    """
+    Парсер для mkrada.gov.ua/content/proekti-rishen-miskradi.html
+    Структура: div.p-content > article > p (заголовок блоку) + ol (список документів)
+    Нові документи завжди додаються в кінець кожного блоку.
+    ID: md5 від URL файлу (URL унікальний і не змінюється).
+    Пояснювальні записки ігноруємо.
+    Повертає плоский список з полем block_title для групування у форматі поста.
+    """
+    try:
+        response = requests.get(source["url"], timeout=15)
+        if response.status_code != 200:
+            print(f"Документи [{source['id']}]: HTTP {response.status_code}")
+            return []
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        content = soup.find("div", class_="p-content")
+        if not content:
+            print(f"Документи [{source['id']}]: div.p-content не знайдено")
+            return []
+
+        results = []
+        for p in content.find_all("p"):
+            block_title = p.get_text(strip=True)
+            if "Перелік" not in block_title or len(block_title) < 50:
+                continue
+            ol = p.find_next_sibling("ol")
+            if not ol:
+                continue
+
+            for li in ol.find_all("li"):
+                a = li.find("a", href=lambda h: h and any(
+                    ext in h.lower() for ext in [".pdf", ".doc", ".docx", ".rtf"]
+                ))
+                if not a:
+                    continue
+                title = a.get_text(strip=True)
+                if not title or "пояснювальна" in title.lower():
+                    continue
+                href = a["href"]
+                if "пояснювальна" in href.lower():
+                    continue
+
+                li_text = li.get_text()
+                date_match = re.search(r"(\d{2}\.\d{2}\.\d{4})", li_text)
+                date_text = date_match.group(1) if date_match else None
+
+                doc_id = hashlib.md5(href.encode()).hexdigest()[:16]
+                url = MKRADA_BASE + href if href.startswith("/") else href
+
+                results.append({
+                    "id": doc_id,
+                    "title": title,
+                    "number": None,
+                    "date": date_text,
+                    "url": url,
+                    "block_title": block_title,
+                })
+
+        return results
+    except Exception as e:
+        print(f"Документи [{source['id']}]: помилка — {e}")
+        return []
 
 DOCUMENT_SOURCES = [
     {
@@ -270,6 +332,15 @@ DOCUMENT_SOURCES = [
         "params": {"group_id": 14},
         "index_url": "https://mk-oblrada.gov.ua/proekty-rishen",
         "parser": _parse_oblrada,
+    },
+    {
+        "id": "mkrada_decisions",
+        "name": "Проєкти рішень Миколаївської міської ради",
+        "emoji": "🏙",
+        "url": f"{MKRADA_BASE}/content/proekti-rishen-miskradi.html",
+        "index_url": f"{MKRADA_BASE}/content/proekti-rishen-miskradi.html",
+        "baseline_per_block": 3,  # кількість останніх документів з кожного блоку для тестової відправки
+        "parser": _parse_mkrada_decisions,
     },
     # Майбутні джерела:
     # {
@@ -301,41 +372,61 @@ def _format_post(source, new_docs):
         header += f" — {count} нові документи"
 
     lines = [header, ""]
-    for doc in new_docs:
-        title_escaped = _escape_html(doc["title"])
 
-        # Джерела з номером і датою (міськрада, ОВА)
-        if doc.get("number") or doc.get("date"):
-            num = doc.get("number") or ""
-            num_text = num if num.startswith("№") else (f"№ {num}" if num else "Документ")
-            date_text = f" від {doc['date']}" if doc.get("date") else ""
+    # Якщо є block_title — групуємо по блоках
+    has_blocks = any(d.get("block_title") for d in new_docs)
+    if has_blocks:
+        current_block = None
+        for doc in new_docs:
+            block = doc.get("block_title", "")
+            if block != current_block:
+                current_block = block
+                lines.append(f"<i>{_escape_html(block[:100])}</i>")
+                lines.append("")
+
+            date_text = f"{doc['date']} — " if doc.get("date") else ""
+            title_escaped = _escape_html(doc["title"])
             if doc.get("url"):
-                link = f'<a href="{doc["url"]}">{_escape_html(num_text)}</a>{date_text}'
+                lines.append(f'📃 {date_text}<a href="{doc["url"]}">{title_escaped}</a>')
             else:
-                link = f"{_escape_html(num_text)}{date_text}"
-            lines.append(link)
-            lines.append(title_escaped)
+                lines.append(f"📃 {date_text}{title_escaped} <i>(файл відсутній)</i>")
+            lines.append("")
+    else:
+        for doc in new_docs:
+            title_escaped = _escape_html(doc["title"])
 
-        # Облрада — перші два слова як лінк, решта звичайним текстом
-        else:
-            words = doc["title"].split()
-            if doc.get("url") and len(words) >= 2:
-                link_words = _escape_html(" ".join(words[:2]))
-                rest_words = _escape_html(" ".join(words[2:])) if len(words) > 2 else ""
-                line = f'📃 <a href="{doc["url"]}">{link_words}</a>'
-                if rest_words:
-                    line += f" {rest_words}"
-            elif doc.get("url"):
-                line = f'📃 <a href="{doc["url"]}">{title_escaped}</a>'
+            # Джерела з номером і датою (міськрада розпорядження, ОВА)
+            if doc.get("number") or doc.get("date"):
+                num = doc.get("number") or ""
+                num_text = num if num.startswith("№") else (f"№ {num}" if num else "Документ")
+                date_text = f" від {doc['date']}" if doc.get("date") else ""
+                if doc.get("url"):
+                    link = f'<a href="{doc["url"]}">{_escape_html(num_text)}</a>{date_text}'
+                else:
+                    link = f"{_escape_html(num_text)}{date_text}"
+                lines.append(link)
+                lines.append(title_escaped)
+
+            # Облрада — перші два слова як лінк, решта звичайним текстом
             else:
-                line = f"📃 {title_escaped} <i>(файл відсутній)</i>"
-            lines.append(line)
+                words = doc["title"].split()
+                if doc.get("url") and len(words) >= 2:
+                    link_words = _escape_html(" ".join(words[:2]))
+                    rest_words = _escape_html(" ".join(words[2:])) if len(words) > 2 else ""
+                    line = f'📃 <a href="{doc["url"]}">{link_words}</a>'
+                    if rest_words:
+                        line += f" {rest_words}"
+                elif doc.get("url"):
+                    line = f'📃 <a href="{doc["url"]}">{title_escaped}</a>'
+                else:
+                    line = f"📃 {title_escaped} <i>(файл відсутній)</i>"
+                lines.append(line)
 
-        lines.append("")
+            lines.append("")
 
     # Для джерел з index_url додаємо посилання на повний перелік
     if source.get("index_url"):
-        lines.append(f'Перелік проєктів рішень: <a href="{source["index_url"]}">{source["index_url"]}</a>')
+        lines.append(f'Перелік: <a href="{source["index_url"]}">{source["index_url"]}</a>')
 
     return "\n".join(lines).strip()
 
@@ -354,15 +445,36 @@ async def _check_source(bot, source):
     fetched_ids = [d["id"] for d in docs]
 
     if seen_ids is None:
-        # Перший запуск: всі документи крім останніх 10 зберігаємо як
-        # "вже бачені" — а останні 10 відправляємо як нові, щоб одразу
-        # перевірити що відправка працює і редакція бачить формат посту.
-        if len(fetched_ids) <= 10:
-            baseline_ids = []
-            new_docs = docs
+        # ВАЖЛИВО: baseline НЕ "зберегти все без відправки".
+        # Правило: зберегти як бачені всі крім N останніх, N відправити одразу
+        # щоб перевірити що парсинг і відправка працюють після деплою.
+        # N = baseline_per_block (по блоках) або 10 (для звичайних джерел).
+
+        baseline_per_block = source.get("baseline_per_block")
+
+        if baseline_per_block:
+            # Для джерел з блоками (mkrada_decisions):
+            # беремо по N останніх з кожного блоку для відправки.
+            # N = baseline_per_block = 3 (задано в конфігу джерела)
+            blocks = {}
+            for d in docs:
+                bt = d.get("block_title", "")
+                blocks.setdefault(bt, []).append(d)
+
+            to_send = []
+            for bt, block_docs in blocks.items():
+                to_send.extend(block_docs[-baseline_per_block:])
+            to_send_ids = {d["id"] for d in to_send}
+            baseline_ids = [d["id"] for d in docs if d["id"] not in to_send_ids]
+            new_docs = to_send
         else:
-            baseline_ids = fetched_ids[10:]  # старіші — в baseline
-            new_docs = docs[:10]             # 10 найновіших — відправляємо
+            # Звичайні джерела — 10 найновіших
+            if len(fetched_ids) <= 10:
+                baseline_ids = []
+                new_docs = docs
+            else:
+                baseline_ids = fetched_ids[10:]
+                new_docs = docs[:10]
 
         print(f"Документи [{source['id']}]: перший запуск, baseline {len(baseline_ids)}, відправляємо {len(new_docs)}")
 
@@ -378,7 +490,6 @@ async def _check_source(bot, source):
             except Exception as e:
                 print(f"Документи [{source['id']}]: помилка відправки при першому запуску — {e}")
 
-        # Зберігаємо всі ID як бачені
         await loop.run_in_executor(None, storage.save_seen_document_ids, source["id"], fetched_ids)
         return
 
