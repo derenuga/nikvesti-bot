@@ -3,7 +3,7 @@ import anthropic
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from handlers.google_analytics import get_ga4_client, get_stats, get_top_pages, BASE_URL
 from handlers.gmail import get_unread_emails, get_oldest_unread_hours
-from handlers.ai_messages import generate_email_reminder
+from handlers.ai_messages import generate_email_reminder, clean_ai_text
 from handlers.instagram import send_weekly_instagram_report
 from handlers.facebook import send_weekly_facebook_report
 from handlers.morning import send_morning_message
@@ -53,9 +53,7 @@ async def check_email(bot, time_of_day):
         if hours < 1:
             return
         message = await generate_email_reminder(emails, hours, time_of_day)
-        INBOX_URL = "https://mail.google.com/mail/u/0/#inbox"
-        full_message = f'{message}\n\n📬 <a href="{INBOX_URL}">Ось лінк, щоб прочитати пошту</a>'
-        await bot.send_message(chat_id=CHAT_ID, text=full_message, parse_mode="HTML")
+        await bot.send_message(chat_id=CHAT_ID, text=message)
     except Exception as e:
         print("Помилка перевірки пошти: " + str(e))
 
@@ -94,7 +92,7 @@ async def check_channel_silence(bot, last_channel_post_time):
 Запитай чи немає новини для публікації, або запропонуй знайти якусь національну подію.
 Неформальний тон, без тиску. Можна 1 емодзі."""}]
             )
-            text = message.content[0].text
+            text = clean_ai_text(message.content[0].text)
             await bot.send_message(chat_id=CHAT_ID, text=text)
     except Exception as e:
         print("Помилка перевірки мовчання каналу: " + str(e))
