@@ -487,16 +487,7 @@ async def _check_source(bot, source):
         print(f"Документи [{source['id']}]: перший запуск, baseline {len(baseline_ids)}, відправляємо {len(new_docs)}")
 
         if new_docs and DOCUMENTS_CHAT_ID:
-            text = _format_post(source, new_docs)
-            try:
-                await bot.send_message(
-                    chat_id=DOCUMENTS_CHAT_ID,
-                    text=text,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
-            except Exception as e:
-                print(f"Документи [{source['id']}]: помилка відправки при першому запуску — {e}")
+            await _send_in_chunks(bot, source, new_docs)
 
         await loop.run_in_executor(None, storage.save_seen_document_ids, source["id"], fetched_ids)
         return
@@ -514,22 +505,42 @@ async def _check_source(bot, source):
         return
 
     text = _format_post(source, new_docs)
-    try:
-        await bot.send_message(
-            chat_id=DOCUMENTS_CHAT_ID,
-            text=text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-    except Exception as e:
-        print(f"Документи [{source['id']}]: помилка відправки — {e}")
-        return
+    if len(text) > 4000:
+        await _send_in_chunks(bot, source, new_docs)
+    else:
+        try:
+            await bot.send_message(
+                chat_id=DOCUMENTS_CHAT_ID,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            print(f"Документи [{source['id']}]: помилка відправки — {e}")
+            return
 
     all_ids = list(seen_set) + [d["id"] for d in new_docs]
     await loop.run_in_executor(None, storage.save_seen_document_ids, source["id"], all_ids)
 
 
-async def check_documents(bot):
+async def _send_in_chunks(bot, source, docs):
+    """
+    Відправляє документи в канал частинами по 10 щоб не перевищити
+    ліміт Telegram (4096 символів на повідомлення).
+    """
+    CHUNK_SIZE = 10
+    for i in range(0, len(docs), CHUNK_SIZE):
+        chunk = docs[i:i + CHUNK_SIZE]
+        text = _format_post(source, chunk)
+        try:
+            await bot.send_message(
+                chat_id=DOCUMENTS_CHAT_ID,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            print(f"Документи [{source['id']}]: помилка відправки чанку {i//CHUNK_SIZE+1} — {e}")
     """Перевіряє всі джерела. Викликається з планувальника і /documents."""
     for source in DOCUMENT_SOURCES:
         try:
