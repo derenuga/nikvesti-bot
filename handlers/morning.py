@@ -180,8 +180,8 @@ async def generate_morning_message(weather, events_text=None):
             f"сарказмом відмітьте що пресслужба міськради таки щось внесла в календар — "
             f"наче це рідкість. Формулювання щоразу інше, не повторюй однакові жарти."
         )
-    elif is_weekend or random.random() < 0.6:
-        # У вихідні — завжди мовчимо. У будні — мовчимо з імовірністю 60%
+    elif is_weekend or random.random() < 0.3:
+        # У вихідні — завжди мовчимо. У будні — мовчимо з імовірністю 30%
         events_block = ""
     else:
         chosen_calendar_quip = random.choice(EMPTY_CALENDAR_VARIANTS)
@@ -253,6 +253,16 @@ async def send_morning_message(bot, chat_id):
         )
     except Exception as e:
         print("Помилка ранкового повідомлення: " + str(e))
+
+    # Привітання з днем народження — окреме повідомлення після ранкового
+    try:
+        from handlers.ai_messages import get_todays_birthdays, generate_birthday_greeting
+        birthdays = get_todays_birthdays()
+        for name, info in birthdays:
+            greeting = await generate_birthday_greeting(name, info)
+            await bot.send_message(chat_id=chat_id, text=greeting, parse_mode="HTML")
+    except Exception as e:
+        print("Помилка привітання з ДН: " + str(e))
 
 async def morning_handler(update, context):
     try:
