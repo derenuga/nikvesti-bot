@@ -9,6 +9,7 @@ from handlers.facebook import send_weekly_facebook_report
 from handlers.morning import send_morning_message
 from handlers.prozorro import check_prozorro_tenders
 from handlers.documents import check_documents
+from handlers.competitors import check_competitors
 from datetime import datetime, timedelta
 
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -99,6 +100,9 @@ async def check_channel_silence(bot, last_channel_post_time):
 async def run_check_documents(bot):
     await check_documents(bot)
 
+async def run_check_competitors(bot):
+    await check_competitors(bot)
+
 def setup_scheduler(bot, last_channel_post_time=None):
     if last_channel_post_time is None:
         last_channel_post_time = {"time": datetime.now()}
@@ -112,5 +116,6 @@ def setup_scheduler(bot, last_channel_post_time=None):
     scheduler.add_job(check_channel_silence, "cron", minute="*/30", args=[bot, last_channel_post_time])
     scheduler.add_job(check_prozorro, "cron", minute=0, args=[bot])
     scheduler.add_job(run_check_documents, "cron", minute=30, args=[bot])
+    scheduler.add_job(run_check_competitors, "cron", minute=15, args=[bot])
     scheduler.start()
     return scheduler
