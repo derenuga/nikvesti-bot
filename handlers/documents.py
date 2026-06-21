@@ -3,23 +3,19 @@
 
 Підключені джерела:
 - Розпорядження міського голови Миколаєва (mkrada.gov.ua, ?c=4)
-- Розпорядження голови ОВА (mk.gov.ua)
-- Проєкти рішень Миколаївської обласної ради (mk-oblrada.gov.ua, group_id=14)
-- Проєкти рішень Миколаївської міської ради (mkrada.gov.ua/content/proekti-rishen-miskradi.html)
+- Розпорядження голови ОВА/ОВА (mk.gov.ua)
 
 Архітектура конфіг-driven: щоб додати нове джерело — додати рядок у
 DOCUMENT_SOURCES. Якщо структура HTML нового сайту відрізняється —
 написати окрему функцію парсера і вказати її в полі "parser".
 
 Логіка для кожного джерела:
-1. Завантажуємо список документів.
+1. Завантажуємо список документів (перша сторінка або пошук за датою).
 2. Порівнюємо ID з тими що вже бачили (storage).
 3. Нові → формуємо пост → надсилаємо в канал.
 4. Зберігаємо нові ID.
 
-Перший запуск: зберігаємо baseline і одразу відправляємо N останніх
-щоб перевірити що парсинг і відправка працюють після деплою.
-Для звичайних джерел N=10, для джерел з блоками N=baseline_per_block з кожного блоку.
+Перший запуск: зберігаємо baseline БЕЗ відправки (захист від спаму).
 """
 
 import os
@@ -249,12 +245,16 @@ def _parse_oblrada(source):
 def _parse_mkrada_decisions(source):
     """
     Парсер для mkrada.gov.ua/content/proekti-rishen-miskradi.html
-    Структура: div.p-content > article > p (заголовок блоку) + ol (список документів)
-    Нові документи завжди додаються в кінець кожного блоку.
-    ID: md5 від URL файлу (URL унікальний і не змінюється).
-    Пояснювальні записки ігноруємо.
-    Повертає плоский список з полем block_title для групування у форматі поста.
+    Структура: div.p-content > p (заголовок блоку) + ol (список документів)
+    Блоки: "Перелік...", "Поточні питання", "ТИМЧАСОВІ СПОРУДИ",
+           "Проєкти рішень, зареєстровані...", "Земельні питання" тощо.
+    Логіка: беремо ВСІ p що мають наступний ol — це і є блоки документів.
+    Нові документи завжди в кінці кожного блоку.
+    ID: md5 від URL файлу. Пояснювальні записки ігноруємо.
+    ВАЖЛИВО: response.encoding = 'utf-8' — сервер не вказує кодування,
+    requests читає як latin-1 що ламає кирилицю.
     """
+    SKIP_TEXTS = {'розпорядження', 'скликання'}
     try:
         response = requests.get(source["url"], timeout=15)
         response.encoding = 'utf-8'
@@ -271,13 +271,15 @@ def _parse_mkrada_decisions(source):
         results = []
         for p in content.find_all("p"):
             block_title = p.get_text(strip=True)
-            if "Перелік" not in block_title or len(block_title) < 50:
+            if not block_title or len(block_title) < 5:
+                continue
+            if any(s in block_title.lower() for s in SKIP_TEXTS):
                 continue
             ol = p.find_next_sibling("ol")
             if not ol:
                 continue
 
-            for li in ol.find_all("li"):
+            for li in ol.find_all("li", recursive=False):
                 a = li.find("a", href=lambda h: h and any(
                     ext in h.lower() for ext in [".pdf", ".doc", ".docx", ".rtf"]
                 ))
@@ -296,7 +298,6 @@ def _parse_mkrada_decisions(source):
 
                 doc_id = hashlib.md5(href.encode()).hexdigest()[:16]
                 url = MKRADA_BASE + href if href.startswith("/") else href
-
                 results.append({
                     "id": doc_id,
                     "title": title,
@@ -310,6 +311,8 @@ def _parse_mkrada_decisions(source):
     except Exception as e:
         print(f"Документи [{source['id']}]: помилка — {e}")
         return []
+
+
 
 DOCUMENT_SOURCES = [
     {
@@ -386,7 +389,7 @@ def _format_post(source, new_docs):
             block = doc.get("block_title", "")
             if block != current_block:
                 current_block = block
-                lines.append(f"<i>{_escape_html(block[:100])}</i>")
+                lines.append(f"<i>{_escape_html(block)}</i>")
                 lines.append("")
 
             date_text = f"{doc['date']} — " if doc.get("date") else ""
