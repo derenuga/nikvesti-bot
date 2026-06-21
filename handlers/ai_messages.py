@@ -1,5 +1,6 @@
 import anthropic
 import os
+import random
 
 TEAM_TELEGRAM = {
     "Олег Деренюга": "@derenuga",
@@ -20,78 +21,66 @@ TEAM_TELEGRAM = {
     "Кристина Леонова": "@skxxlw",
 }
 
+# Runtime ядро особистості — йде в API як system для всіх функцій.
+# Повна lore bible — у FOX_LORE.md (для розробників, не в API).
+FOX_SYSTEM_PROMPT = """Ти — Лис Микита, внутрішній AI-помічник редакції МикВісті. Твоя роль — працювати з редакційними сигналами: помічати нові документи, тендери, новини конкурентів, аналітику, листи, соцмережі, календарі, старі теми й інші речі, які редакції варто побачити.
+
+Ти не замінюєш журналістів і не ухвалюєш редакційні рішення. Ти допомагаєш не пропустити важливе: підсвічуєш факти, зв'язки, ризики, незавершені теми й потенційні зачіпки.
+
+Пиши українською, коротко, живо й конкретно. Лисячість — це уважність, спостережливість, трохи іронії і редакційний нюх, а не постійна рольова гра. Не вигадуй фактів, не перебільшуй, не повторюй однакові вступи й приглушуй персонажність у чутливих темах."""
+
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
 
 async def generate_email_reminder(emails, hours, time_of_day):
     senders = list(set([e["sender"].split("<")[0].strip() for e in emails[:5]]))
     senders_text = ", ".join(senders)
     count = len(emails)
 
-    if time_of_day == "afternoon":
-        urgency = "помірна, робочий день ще триває"
-    else:
-        urgency = "висока, день майже закінчився"
+    urgency = "робочий день ще триває" if time_of_day == "afternoon" else "день майже закінчився"
 
-    prompt = f"""Ти помічник редакції новинного сайту МикВісті. Напиши коротке неформальне повідомлення в Telegram-чат редакції про непрочитані листи на редакційній пошті.
+    prompt = f"""Непрочитані листи на редакційній пошті — нагадай редакції.
 
 Дані:
-- Непрочитаних листів: {count}
-- Найстаріший лист не читався вже: {hours} годин
+- Листів: {count}
+- Найстаріший без відповіді: {hours} год
 - Відправники: {senders_text}
-- Терміновість: {urgency}
+- Час: {urgency}
 
-Вимоги:
-- Українська мова
-- Неформальний, живий тон — як від колеги
-- 2-4 речення максимум
-- Іноді згадуй що "Катя наругає" або подібні жартівливі фрази (але не завжди)
-- Використовуй різні фрази щоразу, не повторюйся
-- Можна використати 1-2 емодзі
-- НЕ використовуй шаблонні фрази типу "Шановні колеги"
-
-Напиши тільки текст повідомлення, нічого більше."""
+2-4 речення, неформально. Іноді згадуй що "Катя наругає" або подібне (але не завжди). Різні формулювання щоразу. 1-2 емодзі максимум."""
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=300,
+        system=FOX_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}]
     )
-
     return message.content[0].text
+
 
 async def generate_instagram_weekly_comment(stats, follows, unfollows, total_posts, reels):
     net = follows - unfollows if follows and unfollows else 0
 
-    prompt = f"""Ти помічник редакції новинного сайту МикВісті. Напиши короткий неформальний коментар до тижневого звіту Instagram в Telegram-чат редакції.
+    prompt = f"""Тижневий звіт Instagram МикВісті — напиши коротку підводку.
 
-Дані за тиждень:
+Дані:
 - Нових підписників: +{net} (прийшло {follows}, пішло {unfollows})
 - Охоплення: {stats.get('reach', 0)}
 - Взаємодії: {stats.get('total_interactions', 0)}
-- Публікацій: {total_posts}, з них рілзів: {reels}
+- Публікацій: {total_posts}, рілзів: {reels}
 
-Команда Instagram:
-- @mskvn1 (Ліза) — керує всім СММ напрямком
-- @Imira_91 (Іміра) — розвиває Instagram
-- Сергій (монтажер рілзів)
+Команда: @mskvn1 (Ліза — керує СММ), @Imira_91 (Іміра — Instagram), Сергій (монтаж рілзів).
 
-Вимоги:
-- Українська мова
-- 3-5 речень максимум
-- Неформальний живий тон
-- Оціни як пройшов тиждень — добре чи є куди рости
-- Подякуй команді, згадай @mskvn1, @Imira_91 і Сергія (без тегу, просто на ім'я)
-- Можна 1-2 емодзі
-- НЕ починай з "Шановні колеги"
-
-Напиши тільки текст, нічого більше."""
+3-5 речень. Оціни тиждень, подякуй команді — згадай усіх трьох. 1-2 емодзі."""
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=300,
+        system=FOX_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}]
     )
     return message.content[0].text
+
 
 async def generate_facebook_weekly_comment(stats, top_authors, total_posts, total_reels):
     authors_with_tg = []
@@ -101,32 +90,62 @@ async def generate_facebook_weekly_comment(stats, top_authors, total_posts, tota
             authors_with_tg.append(f"{author} ({tg})")
         else:
             authors_with_tg.append(author)
-
     authors_text = ", ".join(authors_with_tg) if authors_with_tg else "невідомі автори"
 
-    prompt = f"""Ти помічник редакції новинного сайту МикВісті. Напиши короткий неформальний коментар до тижневого звіту Facebook в Telegram-чат редакції.
+    prompt = f"""Тижневий звіт Facebook МикВісті — напиши коротку підводку.
 
-Дані за тиждень:
+Дані:
 - Охоплення: {stats.get('page_impressions_unique', 0)}
 - Взаємодії: {stats.get('page_post_engagements', 0)}
 - Публікацій: {total_posts}, рілзів: {total_reels}
 - Автори топ публікацій: {authors_text}
 
-Вимоги:
-- Українська мова
-- 3-5 речень максимум
-- Неформальний живий тон
-- Похвали авторів топ публікацій — використовуй їх Telegram username як є (з @ або як HTML посилання)
-- Обов'язково згадай що це звіт по Facebook/фейсбуку
-- Оціни як пройшов тиждень у фейсбуці
-- Можна 1-2 емодзі
-- НЕ починай з "Шановні колеги"
-
-Напиши тільки текст, нічого більше."""
+3-5 речень. Згадай що це фейсбук. Похвали авторів — використовуй їх Telegram username як є. 1-2 емодзі."""
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=300,
+        system=FOX_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return message.content[0].text
+
+
+async def generate_competitors_intro(sources_with_items):
+    """
+    Підводка перед списком новин конкурентів.
+    sources_with_items: список (source_name, [news_titles])
+    """
+    # Збираємо заголовки для контексту
+    lines = []
+    for source_name, items in sources_with_items:
+        titles = [i["title"] for i in items[:3]]
+        lines.append(f"{source_name}: {', '.join(titles)}")
+    news_summary = "\n".join(lines)
+
+    # Пул тональностей — Python обирає одну, щоб AI не повторювався
+    tones = [
+        "коротко і нейтрально — просто сигнал що є нові новини",
+        "з легкою іронією — лис підглянув що пишуть сусіди",
+        "по-редакційному сухо — без коментарів, просто факт",
+        "трохи колегіально — може ви вже бачили, але на всяк випадок",
+        "спостережливо — відмітити що тема перетинається з нашою або цікава",
+    ]
+    chosen_tone = random.choice(tones)
+
+    prompt = f"""Перед списком новин інших миколаївських медіа напиши коротку підводку (1-3 речення).
+
+Новини які зараз будуть показані:
+{news_summary}
+
+Тон сьогодні: {chosen_tone}
+
+Не переказуй заголовки — вони будуть нижче. Не називай себе лисом прямо. Не починай з "Я". Різні формулювання щоразу."""
+
+    message = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=150,
+        system=FOX_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}]
     )
     return message.content[0].text
