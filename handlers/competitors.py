@@ -141,7 +141,7 @@ def _format_post(new_by_source):
     Формує пост з новинами конкурентів.
     new_by_source: список (source_config, [news_items])
     """
-    lines = ["🔍 <b>Новини конкурентів про Миколаїв</b>", ""]
+    lines = ["🔍 <b>Новини інших миколаївських медіа на регіональну тематику</b>", ""]
 
     for source, items in new_by_source:
         lines.append(f"📰 <b>{source['name']}</b>")
