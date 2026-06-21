@@ -219,7 +219,7 @@ async def generate_morning_message(weather, events_text=None):
         max_tokens=400,
         messages=[{"role": "user", "content": prompt}]
     )
-    return message.content[0].text
+    return clean_ai_text(message.content[0].text)
 
 def _escape_html(text):
     return (
@@ -256,7 +256,7 @@ async def send_morning_message(bot, chat_id):
 
     # Привітання з днем народження — окреме повідомлення після ранкового
     try:
-        from handlers.ai_messages import get_todays_birthdays, generate_birthday_greeting
+        from handlers.ai_messages import get_todays_birthdays, generate_birthday_greeting, clean_ai_text
         birthdays = get_todays_birthdays()
         for name, info in birthdays:
             greeting = await generate_birthday_greeting(name, info)
