@@ -549,6 +549,15 @@ async def _send_in_chunks(bot, source, docs):
             print(f"Документи [{source['id']}]: неочікувана помилка — {e}")
 
 
+async def check_documents(bot):
+    """Перевіряє всі джерела. Викликається з планувальника і /documents."""
+    for source in DOCUMENT_SOURCES:
+        try:
+            await _check_source(bot, source)
+        except Exception as e:
+            print(f"Документи [{source['id']}]: неочікувана помилка — {e}")
+
+
 async def test_documents(bot):
     """
     Надсилає перший документ з кожного джерела в канал як тестовий пост.
