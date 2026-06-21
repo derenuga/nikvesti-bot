@@ -53,7 +53,9 @@ async def check_email(bot, time_of_day):
         if hours < 1:
             return
         message = await generate_email_reminder(emails, hours, time_of_day)
-        await bot.send_message(chat_id=CHAT_ID, text=message)
+        INBOX_URL = "https://mail.google.com/mail/u/0/#inbox"
+        full_message = f'{message}\n\n📬 <a href="{INBOX_URL}">Ось лінк, щоб прочитати пошту</a>'
+        await bot.send_message(chat_id=CHAT_ID, text=full_message, parse_mode="HTML")
     except Exception as e:
         print("Помилка перевірки пошти: " + str(e))
 
