@@ -486,10 +486,13 @@ async def _check_source(bot, source):
 
         print(f"Документи [{source['id']}]: перший запуск, baseline {len(baseline_ids)}, відправляємо {len(new_docs)}")
 
+        # ВАЖЛИВО: зберігаємо baseline ДО відправки — якщо відправка впаде,
+        # бот не буде спамити при наступному рестарті
+        await loop.run_in_executor(None, storage.save_seen_document_ids, source["id"], fetched_ids)
+
         if new_docs and DOCUMENTS_CHAT_ID:
             await _send_in_chunks(bot, source, new_docs)
 
-        await loop.run_in_executor(None, storage.save_seen_document_ids, source["id"], fetched_ids)
         return
 
     seen_set = set(seen_ids)
