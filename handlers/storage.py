@@ -213,3 +213,53 @@ def save_seen_document_ids(source_id, ids):
             state["document_ids"] = {}
         state["document_ids"][source_id] = list(ids)
         _write_state(state)
+
+# Ці дві функції потрібно ДОДАТИ в кінець handlers/storage.py
+
+def get_seen_document_ids(source_id):
+    """
+    Повертає список вже бачених ID для конкретного джерела документів.
+    Повертає None якщо джерело ще ніколи не перевірялось (перший запуск) —
+    це важливо, бо [] і None мають різний сенс: [] = є записи але порожньо,
+    None = ще не ініціалізовано (потрібен baseline-запуск без відправки).
+    """
+    with _lock:
+        state = _read_state()
+        doc_ids = state.get("document_ids", {})
+        if source_id not in doc_ids:
+            return None
+        return doc_ids[source_id]
+
+
+def save_seen_document_ids(source_id, ids):
+    """Зберігає список ID для конкретного джерела документів."""
+    with _lock:
+        state = _read_state()
+        if "document_ids" not in state:
+            state["document_ids"] = {}
+        state["document_ids"][source_id] = list(ids)
+        _write_state(state)
+
+
+def get_seen_competitor_ids(source_id):
+    """
+    Повертає список вже бачених ID для конкретного джерела конкурента.
+    None = ще не ініціалізовано (перший запуск).
+    """
+    with _lock:
+        state = _read_state()
+        competitor_ids = state.get("competitor_ids", {})
+        if source_id not in competitor_ids:
+            return None
+        return competitor_ids[source_id]
+
+
+def save_seen_competitor_ids(source_id, ids):
+    """Зберігає список ID для конкретного джерела конкурента."""
+    with _lock:
+        state = _read_state()
+        if "competitor_ids" not in state:
+            state["competitor_ids"] = {}
+        state["competitor_ids"][source_id] = list(ids)
+        _write_state(state)
+
