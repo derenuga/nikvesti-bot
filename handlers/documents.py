@@ -268,6 +268,7 @@ DOCUMENT_SOURCES = [
         "emoji": "📜",
         "url": "https://mk-oblrada.gov.ua/proekty-rishen",
         "params": {"group_id": 14},
+        "index_url": "https://mk-oblrada.gov.ua/proekty-rishen",
         "parser": _parse_oblrada,
     },
     # Майбутні джерела:
@@ -315,15 +316,26 @@ def _format_post(source, new_docs):
             lines.append(link)
             lines.append(title_escaped)
 
-        # Облрада — тільки назва, з посиланням на PDF або міткою
+        # Облрада — перші два слова як лінк, решта звичайним текстом
         else:
-            if doc.get("url"):
-                line = f'<a href="{doc["url"]}">{title_escaped}</a>'
+            words = doc["title"].split()
+            if doc.get("url") and len(words) >= 2:
+                link_words = _escape_html(" ".join(words[:2]))
+                rest_words = _escape_html(" ".join(words[2:])) if len(words) > 2 else ""
+                line = f'📃 <a href="{doc["url"]}">{link_words}</a>'
+                if rest_words:
+                    line += f" {rest_words}"
+            elif doc.get("url"):
+                line = f'📃 <a href="{doc["url"]}">{title_escaped}</a>'
             else:
-                line = f"{title_escaped} <i>(файл відсутній)</i>"
+                line = f"📃 {title_escaped} <i>(файл відсутній)</i>"
             lines.append(line)
 
         lines.append("")
+
+    # Для джерел з index_url додаємо посилання на повний перелік
+    if source.get("index_url"):
+        lines.append(f'Перелік проєктів рішень: <a href="{source["index_url"]}">{source["index_url"]}</a>')
 
     return "\n".join(lines).strip()
 
