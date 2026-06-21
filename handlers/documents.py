@@ -3,6 +3,7 @@
 
 Підключені джерела:
 - Розпорядження міського голови Миколаєва (mkrada.gov.ua, ?c=4)
+- Офіційні оголошення міськради Миколаєва (mkrada.gov.ua, ?c=2)
 - Розпорядження голови ОВА/ОВА (mk.gov.ua)
 
 Архітектура конфіг-driven: щоб додати нове джерело — додати рядок у
@@ -22,6 +23,7 @@ import os
 import re
 import asyncio
 import requests
+import hashlib
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
@@ -37,9 +39,6 @@ MONTHS_UA = {
     "Травня": "05", "Червня": "06", "Липня": "07", "Серпня": "08",
     "Вересня": "09", "Жовтня": "10", "Листопада": "11", "Грудня": "12",
 }
-
-
-import hashlib
 
 
 # ---------- Парсери ----------
@@ -85,6 +84,56 @@ def _parse_mkrada(source):
 
             url = MKRADA_BASE + a["href"]
             results.append({"id": doc_id, "title": title, "number": number, "date": date, "url": url})
+
+        return results
+    except Exception as e:
+        print(f"Документи [{source['id']}]: помилка — {e}")
+        return []
+
+
+def _parse_mkrada_news(source):
+    """
+    Парсер для mkrada.gov.ua/news/ (оголошення, ?c=2).
+    Структура: div.news_line_item > a[href=/news/ID.html] + div.date (без strong, без дужок)
+    Дата: "16 Червня 202616:15" — злиплий формат, парсимо регексом.
+    ID: числовий з URL /news/25518.html
+    """
+    try:
+        response = requests.get(source["url"], params=source.get("params"), timeout=15)
+        if response.status_code != 200:
+            print(f"Документи [{source['id']}]: HTTP {response.status_code}")
+            return []
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        results = []
+
+        for item in soup.find_all("div", class_="news_line_item"):
+            a = item.find("a")
+            if not a or not a.get("href"):
+                continue
+
+            match = re.search(r"/news/(\d+)\.html", a["href"])
+            if not match:
+                continue
+            doc_id = match.group(1)
+
+            title = a.get_text(strip=True)
+            if not title:
+                continue
+
+            date_div = item.find("div", class_="date")
+            date = None
+            if date_div:
+                date_text = date_div.get_text(strip=True)
+                # Формат: "16 Червня 202616:15" — день місяць рік(злиплий)час
+                dm = re.search(r"(\d+)\s+(\S+)\s+(\d{4})", date_text)
+                if dm:
+                    day, month_name, year = dm.groups()
+                    month = MONTHS_UA.get(month_name, "??")
+                    date = f"{int(day):02d}.{month}.{year}"
+
+            url = MKRADA_BASE + a["href"]
+            results.append({"id": doc_id, "title": title, "number": None, "date": date, "url": url})
 
         return results
     except Exception as e:
@@ -313,7 +362,6 @@ def _parse_mkrada_decisions(source):
         return []
 
 
-
 DOCUMENT_SOURCES = [
     {
         "id": "mayor_orders",
@@ -322,6 +370,14 @@ DOCUMENT_SOURCES = [
         "url": f"{MKRADA_BASE}/documents/",
         "params": {"c": 4, "o": "DESC"},
         "parser": _parse_mkrada,
+    },
+    {
+        "id": "mkrada_announcements",
+        "name": "Офіційні оголошення міськради Миколаєва",
+        "emoji": "📢",
+        "url": f"{MKRADA_BASE}/news/",
+        "params": {"c": 2, "o": "DESC"},
+        "parser": _parse_mkrada_news,
     },
     {
         "id": "ova_orders",
@@ -544,12 +600,6 @@ async def _send_in_chunks(bot, source, docs):
             )
         except Exception as e:
             print(f"Документи [{source['id']}]: помилка відправки чанку {i//CHUNK_SIZE+1} — {e}")
-    """Перевіряє всі джерела. Викликається з планувальника і /documents."""
-    for source in DOCUMENT_SOURCES:
-        try:
-            await _check_source(bot, source)
-        except Exception as e:
-            print(f"Документи [{source['id']}]: неочікувана помилка — {e}")
 
 
 async def check_documents(bot):
