@@ -39,6 +39,9 @@ MONTHS_UA = {
 }
 
 
+import hashlib
+
+
 # ---------- Парсери ----------
 
 def _parse_mkrada(source):
@@ -158,6 +161,87 @@ def _parse_ova(source):
         return []
 
 
+def _parse_oblrada(source):
+    """
+    Парсер для mk-oblrada.gov.ua/proekty-rishen?group_id=14.
+    Структура: table.table-striped > tr > td[0] (назва + посилання на PDF)
+                                          td[1] (пояснювальна записка, якщо є)
+    ID документа — md5 від повної назви (PDF іноді відсутній, тому не можна
+    покладатись на URL файлу як ідентифікатор).
+    Підтримує пагінацію: гортає всі сторінки (?page=N) поки є посилання.
+    """
+    OBLRADA_BASE = "https://mk-oblrada.gov.ua"
+    try:
+        results = []
+        page = 1
+        while True:
+            params = dict(source.get("params", {}))
+            params["page"] = page
+            response = requests.get(source["url"], params=params, timeout=15)
+            if response.status_code != 200:
+                print(f"Документи [{source['id']}]: HTTP {response.status_code} (сторінка {page})")
+                break
+
+            soup = BeautifulSoup(response.text, "html.parser")
+            table = soup.find("table", class_="table-striped")
+            if not table:
+                break
+
+            rows = table.find_all("tr")[1:]  # пропускаємо заголовок
+            if not rows:
+                break
+
+            for row in rows:
+                cols = row.find_all("td")
+                if not cols:
+                    continue
+                title_td = cols[0]
+
+                # Посилання на PDF в першій колонці
+                pdf_link = title_td.find("a", href=True)
+                if pdf_link:
+                    title = pdf_link.get_text(strip=True)
+                    pdf_url = pdf_link["href"]
+                    if not pdf_url.startswith("http"):
+                        pdf_url = OBLRADA_BASE + pdf_url
+                else:
+                    b = title_td.find("b")
+                    title = b.get_text(strip=True) if b else title_td.get_text(strip=True)
+                    pdf_url = None
+
+                if not title or len(title) < 5:
+                    continue
+
+                # Пояснювальна записка
+                expl_td = cols[1] if len(cols) > 1 else None
+                expl_link = expl_td.find("a", href=True) if expl_td else None
+                expl_url = expl_link["href"] if expl_link else None
+                if expl_url and not expl_url.startswith("http"):
+                    expl_url = OBLRADA_BASE + expl_url
+
+                doc_id = hashlib.md5(title.encode()).hexdigest()[:16]
+                results.append({
+                    "id": doc_id,
+                    "title": title,
+                    "number": None,
+                    "date": None,
+                    "url": pdf_url,
+                    "explanation_url": expl_url,
+                    "has_file": pdf_url is not None,
+                })
+
+            # Перевіряємо чи є наступна сторінка
+            next_page = soup.find("a", class_="page", attrs={"data-page": str(page + 1)})
+            if not next_page:
+                break
+            page += 1
+
+        return results
+    except Exception as e:
+        print(f"Документи [{source['id']}]: помилка — {e}")
+        return []
+
+
 # ---------- Конфігурація джерел ----------
 
 DOCUMENT_SOURCES = [
@@ -178,21 +262,22 @@ DOCUMENT_SOURCES = [
         "publisher": 1,
         "parser": _parse_ova,
     },
-    # Майбутні джерела — просто додати рядок:
+    {
+        "id": "oblrada_decisions",
+        "name": "Проєкти рішень Миколаївської обласної ради",
+        "emoji": "📜",
+        "url": "https://mk-oblrada.gov.ua/proekty-rishen",
+        "params": {"group_id": 14},
+        "parser": _parse_oblrada,
+    },
+    # Майбутні джерела:
     # {
     #     "id": "council_decisions",
-    #     "name": "Рішення міської ради Миколаєва",
+    #     "name": "Проєкти рішень міської ради Миколаєва",
     #     "emoji": "🏙",
     #     "url": f"{MKRADA_BASE}/documents/",
     #     "params": {"c": 1, "o": "DESC"},
     #     "parser": _parse_mkrada,
-    # },
-    # {
-    #     "id": "oblrada_orders",
-    #     "name": "Розпорядження голови облради",
-    #     "emoji": "📜",
-    #     "url": "...",
-    #     "parser": _parse_???,
     # },
 ]
 
@@ -216,12 +301,28 @@ def _format_post(source, new_docs):
 
     lines = [header, ""]
     for doc in new_docs:
-        num = doc.get("number") or ""
-        num_text = num if num.startswith("№") else (f"№ {num}" if num else "Документ")
-        date_text = f" від {doc['date']}" if doc.get("date") else ""
-        link = f'<a href="{doc["url"]}">{_escape_html(num_text)}</a>{date_text}'
-        lines.append(link)
-        lines.append(_escape_html(doc["title"]))
+        title_escaped = _escape_html(doc["title"])
+
+        # Джерела з номером і датою (міськрада, ОВА)
+        if doc.get("number") or doc.get("date"):
+            num = doc.get("number") or ""
+            num_text = num if num.startswith("№") else (f"№ {num}" if num else "Документ")
+            date_text = f" від {doc['date']}" if doc.get("date") else ""
+            if doc.get("url"):
+                link = f'<a href="{doc["url"]}">{_escape_html(num_text)}</a>{date_text}'
+            else:
+                link = f"{_escape_html(num_text)}{date_text}"
+            lines.append(link)
+            lines.append(title_escaped)
+
+        # Облрада — тільки назва, з посиланням на PDF або міткою
+        else:
+            if doc.get("url"):
+                line = f'<a href="{doc["url"]}">{title_escaped}</a>'
+            else:
+                line = f"{title_escaped} <i>(файл відсутній)</i>"
+            lines.append(line)
+
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -241,7 +342,31 @@ async def _check_source(bot, source):
     fetched_ids = [d["id"] for d in docs]
 
     if seen_ids is None:
-        print(f"Документи [{source['id']}]: перший запуск, зберігаємо baseline ({len(fetched_ids)} документів)")
+        # Перший запуск: всі документи крім останніх 10 зберігаємо як
+        # "вже бачені" — а останні 10 відправляємо як нові, щоб одразу
+        # перевірити що відправка працює і редакція бачить формат посту.
+        if len(fetched_ids) <= 10:
+            baseline_ids = []
+            new_docs = docs
+        else:
+            baseline_ids = fetched_ids[10:]  # старіші — в baseline
+            new_docs = docs[:10]             # 10 найновіших — відправляємо
+
+        print(f"Документи [{source['id']}]: перший запуск, baseline {len(baseline_ids)}, відправляємо {len(new_docs)}")
+
+        if new_docs and DOCUMENTS_CHAT_ID:
+            text = _format_post(source, new_docs)
+            try:
+                await bot.send_message(
+                    chat_id=DOCUMENTS_CHAT_ID,
+                    text=text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                print(f"Документи [{source['id']}]: помилка відправки при першому запуску — {e}")
+
+        # Зберігаємо всі ID як бачені
         await loop.run_in_executor(None, storage.save_seen_document_ids, source["id"], fetched_ids)
         return
 
