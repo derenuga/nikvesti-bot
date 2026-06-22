@@ -4,6 +4,7 @@ import requests
 import anthropic
 from datetime import datetime
 from handlers.events import get_today_events, format_events_for_prompt, format_events_html
+from handlers.ai_messages import clean_ai_text
 
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -256,7 +257,7 @@ async def send_morning_message(bot, chat_id):
 
     # Привітання з днем народження — окреме повідомлення після ранкового
     try:
-        from handlers.ai_messages import get_todays_birthdays, generate_birthday_greeting, clean_ai_text
+        from handlers.ai_messages import get_todays_birthdays, generate_birthday_greeting
         birthdays = get_todays_birthdays()
         for name, info in birthdays:
             greeting = await generate_birthday_greeting(name, info)
