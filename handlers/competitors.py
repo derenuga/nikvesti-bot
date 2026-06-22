@@ -2,29 +2,23 @@
 Моніторинг новин конкурентів — пошук миколаївських новин на сайтах
 конкурентів і відправка в чат редакції раз на годину.
 
-Підключено: news.pn, novosti-n.org, Суспільне Миколаїв
+Підключено: news.pn, novosti-n.org
 
 Логіка:
-1. Раз на годину парсимо сторінку/RSS конкурента.
+1. Раз на годину парсимо сторінку конкурента.
 2. Фільтруємо по словнику ключових слів (миколаївські теми).
-   Виняток: Суспільне Миколаїв — всі новини вже миколаївські, фільтр не потрібен.
 3. Нові (не бачені раніше по ID) → формуємо пост → надсилаємо в чат.
 4. Зберігаємо seen_ids всіх новин (не тільки локальних).
 
 news.pn: фільтр по часу 3 години — захист від підняття старих новин.
-novosti-n.org: без фільтру по часу — беремо все нове по ID (в тому числі вчорашнє).
-Суспільне: RSS all.rss → фільтр по /mykolaiv/ в URL, без фільтру по словнику.
-           Baseline: N=3 — зберігаємо всі крім 3 останніх, 3 останніх відправляємо
-           одразу щоб перевірити що RSS читається і відправка працює.
+novosti-n.org: без фільтру по часу — беремо все нове по ID.
 """
 
 import os
 import re
 import asyncio
 import requests
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
-from email.utils import parsedate_to_datetime
 from bs4 import BeautifulSoup
 
 from handlers import storage
@@ -48,21 +42,12 @@ COMPETITORS = [
         "name": "NEWS.PN",
         "url": "https://news.pn/uk/",
         "parser": "parse_news_pn",
-        "filter_local": True,
     },
     {
         "id": "novosti_n",
         "name": "Новини N",
         "url": "https://novosti-n.org/ua/",
         "parser": "parse_novosti_n",
-        "filter_local": True,
-    },
-    {
-        "id": "suspilne_mk",
-        "name": "Суспільне Миколаїв",
-        "url": "https://suspilne.media/rss/all.rss",
-        "parser": "parse_suspilne_mk",
-        "filter_local": False,  # всі новини вже миколаївські
     },
 ]
 
@@ -70,15 +55,19 @@ COMPETITORS = [
 # ---------- Парсери ----------
 
 def _is_fresh_pn(time_str):
-    """Для news.pn — відкидаємо новини старші за 3 години (захист від підняття)."""
+    """Для news.pn — відкидаємо новини старші за 3 години.
+    ВАЖЛИВО: використовуємо Europe/Kiev timezone бо Railway працює на UTC,
+    а news.pn показує час в UTC+3."""
     if not time_str:
         return True
     try:
+        import pytz
+        kyiv = pytz.timezone('Europe/Kiev')
+        now = datetime.now(kyiv)
         t = datetime.strptime(time_str.strip(), "%H:%M")
-        now = datetime.now()
         news_time = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
         return news_time >= now - timedelta(hours=3)
-    except ValueError:
+    except Exception:
         return True
 
 
@@ -181,72 +170,9 @@ def parse_novosti_n(url):
         return []
 
 
-def parse_suspilne_mk(url):
-    """
-    Парсить загальний RSS Суспільного, фільтрує тільки миколаївські новини.
-    URL: https://suspilne.media/rss/all.rss
-    Фільтр: link містить /mykolaiv/
-    ID: числовий префікс в URL /mykolaiv/1336382-назва/ → '1336382'
-    Час: pubDate в форматі RFC 2822 (Sun, 21 Jun 2026 22:08:45 +0300)
-    Без фільтру по ключових словах — всі новини вже миколаївські.
-    """
-    try:
-        response = requests.get(url, headers={"User-Agent": "NikVesti-Bot/1.0"}, timeout=15)
-        if response.status_code != 200:
-            print(f"Конкуренти [suspilne_mk]: HTTP {response.status_code}")
-            return []
-
-        root = ET.fromstring(response.content)
-        channel = root.find("channel")
-        if channel is None:
-            print("Конкуренти [suspilne_mk]: channel не знайдено в RSS")
-            return []
-
-        ID_RE = re.compile(r'/mykolaiv/(\d+)-')
-        results = []
-
-        for item in channel.findall("item"):
-            link = item.findtext("link") or ""
-            if "/mykolaiv/" not in link:
-                continue
-
-            id_match = ID_RE.search(link)
-            if not id_match:
-                continue
-            news_id = id_match.group(1)
-
-            title = item.findtext("title") or ""
-            title = title.strip()
-            if not title:
-                continue
-
-            pub_date = item.findtext("pubDate") or ""
-            # Форматуємо час як "HH:MM" для однорідності з іншими джерелами
-            time_text = None
-            if pub_date:
-                try:
-                    dt = parsedate_to_datetime(pub_date)
-                    time_text = dt.strftime("%H:%M")
-                except Exception:
-                    pass
-
-            results.append({
-                "id": news_id,
-                "title": title,
-                "time": time_text,
-                "url": link,
-            })
-
-        return results
-    except Exception as e:
-        print(f"Конкуренти [suspilne_mk]: помилка — {e}")
-        return []
-
-
 PARSERS = {
     "parse_news_pn": parse_news_pn,
     "parse_novosti_n": parse_novosti_n,
-    "parse_suspilne_mk": parse_suspilne_mk,
 }
 
 
@@ -308,48 +234,27 @@ async def check_competitors(bot):
             )
 
             if seen_ids is None:
-                # Перший запуск (baseline).
-                # Для джерел з filter_local=True (news.pn, novosti-n): зберігаємо
-                # всі ID без відправки — нові з'являться при наступній перевірці.
-                # Для suspilne_mk (filter_local=False): зберігаємо всі крім
-                # N=3 останніх, 3 останніх відправляємо одразу — щоб одразу
-                # перевірити що RSS читається і відправка в Telegram працює.
-                if source.get("filter_local", True):
-                    all_ids = [i["id"] for i in items]
-                    print(f"Конкуренти [{source['id']}]: перший запуск, baseline {len(all_ids)} новин")
-                    await loop.run_in_executor(
-                        None, storage.save_seen_competitor_ids, source["id"], all_ids
-                    )
-                else:
-                    # N=3: перші 3 (найновіші в RSS) відправляємо, решту — в baseline
-                    BASELINE_SEND_COUNT = 3
-                    to_send = items[:BASELINE_SEND_COUNT]
-                    to_skip = items[BASELINE_SEND_COUNT:]
-                    baseline_ids = [i["id"] for i in to_skip]
-                    print(
-                        f"Конкуренти [{source['id']}]: перший запуск, "
-                        f"baseline {len(baseline_ids)} новин, відправляємо {len(to_send)}"
-                    )
-                    await loop.run_in_executor(
-                        None, storage.save_seen_competitor_ids, source["id"], baseline_ids
-                    )
-                    if to_send:
-                        new_by_source.append((source, to_send))
+                all_ids = [i["id"] for i in items]
+                # Baseline: зберігаємо всі крім 3 останніх локальних,
+                # 3 останніх локальних відправляємо одразу — щоб перевірити
+                # що парсинг і відправка працюють після деплою.
+                local_items = [i for i in items if is_local(i["title"])]
+                to_send = local_items[:3]
+                print(f"Конкуренти [{source['id']}]: перший запуск, baseline {len(all_ids)}, відправляємо {len(to_send)}")
+                await loop.run_in_executor(
+                    None, storage.save_seen_competitor_ids, source["id"], all_ids
+                )
+                if to_send:
+                    new_by_source.append((source, to_send))
                 continue
 
             seen_set = set(seen_ids)
 
-            # Для джерел з filter_local=True — фільтруємо по ключових словах
-            # Для suspilne_mk — беремо всі нові без фільтру
-            if source.get("filter_local", True):
-                new_items = [
-                    i for i in items
-                    if i["id"] not in seen_set and is_local(i["title"])
-                ]
-            else:
-                new_items = [i for i in items if i["id"] not in seen_set]
+            new_local = [
+                i for i in items
+                if i["id"] not in seen_set and is_local(i["title"])
+            ]
 
-            # Зберігаємо всі нові ID (не тільки відфільтровані)
             all_new_ids = [i["id"] for i in items if i["id"] not in seen_set]
             if all_new_ids:
                 updated_ids = list(seen_set) + all_new_ids
@@ -357,9 +262,9 @@ async def check_competitors(bot):
                     None, storage.save_seen_competitor_ids, source["id"], updated_ids
                 )
 
-            if new_items:
-                print(f"Конкуренти [{source['id']}]: {len(new_items)} нових новин")
-                new_by_source.append((source, new_items))
+            if new_local:
+                print(f"Конкуренти [{source['id']}]: {len(new_local)} нових локальних новин")
+                new_by_source.append((source, new_local))
 
         except Exception as e:
             print(f"Конкуренти [{source['id']}]: неочікувана помилка — {e}")
