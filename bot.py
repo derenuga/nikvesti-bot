@@ -9,6 +9,7 @@ from handlers.morning import morning_handler, send_morning_message
 from handlers.prozorro import check_prozorro_tenders, diagnose_offset_jump, confirm_offset_jump
 from handlers.documents import check_documents, test_documents
 from handlers.competitors import check_competitors
+from handlers.stat import stat_handler
 from handlers.reactions import handle_message_reaction
 from handlers import storage
 
@@ -33,7 +34,8 @@ async def start(update, context):
         "/prozorro — перевірити тендери Прозорро\n"
         "/documents — перевірити нові документи міськради\n"
         "/documents_test — тестовий пост документів в канал\n"
-        "/competitors — перевірити новини конкурентів"
+        "/competitors — перевірити новини конкурентів\n"
+        "/stat <url> — статистика матеріалу (Facebook + GA4)"
     )
 
 async def status(update, context):
@@ -123,6 +125,7 @@ def main():
     app.add_handler(CommandHandler("documents", documents_check))
     app.add_handler(CommandHandler("documents_test", documents_test_cmd))
     app.add_handler(CommandHandler("competitors", competitors_check))
+    app.add_handler(CommandHandler("stat", stat_handler))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
     print("Bot started...")
