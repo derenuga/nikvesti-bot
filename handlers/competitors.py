@@ -54,21 +54,11 @@ COMPETITORS = [
 
 # ---------- Парсери ----------
 
-def _is_fresh_pn(time_str):
-    """Для news.pn — відкидаємо новини старші за 3 години.
-    ВАЖЛИВО: використовуємо Europe/Kiev timezone бо Railway працює на UTC,
-    а news.pn показує час в UTC+3."""
-    if not time_str:
-        return True
-    try:
-        import pytz
-        kyiv = pytz.timezone('Europe/Kiev')
-        now = datetime.now(kyiv)
-        t = datetime.strptime(time_str.strip(), "%H:%M")
-        news_time = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-        return news_time >= now - timedelta(hours=3)
-    except Exception:
-        return True
+def _kyiv_now_str():
+    """Повертає поточний час Києва у форматі HH:MM для відображення в постах.
+    Railway працює на UTC, Київ = UTC+3."""
+    now_kyiv = datetime.utcnow() + timedelta(hours=3)
+    return now_kyiv.strftime("%H:%M")
 
 
 def parse_news_pn(url):
@@ -107,9 +97,6 @@ def parse_news_pn(url):
             news_id = id_match.group(1)
 
             time_text = time_el.get_text(strip=True) if time_el else None
-
-            if not _is_fresh_pn(time_text):
-                continue
 
             url_full = "https://news.pn" + href if href.startswith("/") else href
             results.append({"id": news_id, "title": title, "time": time_text, "url": url_full})
