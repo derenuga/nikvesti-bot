@@ -324,8 +324,8 @@ def _parse_mkrada_decisions(source):
                 continue
             if any(s in block_title.lower() for s in SKIP_TEXTS):
                 continue
-            ol = p.find_next_sibling("ol")
-            if not ol:
+            ol = p.find_next_sibling()
+            if not ol or ol.name != "ol":
                 continue
 
             for li in ol.find_all("li", recursive=False):
