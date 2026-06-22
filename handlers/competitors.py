@@ -97,6 +97,15 @@ def parse_news_pn(url):
             news_id = id_match.group(1)
 
             time_text = time_el.get_text(strip=True) if time_el else None
+            # news.pn повертає час в UTC для серверних запитів (Railway = UTC).
+            # Конвертуємо в київський час (+3). При переїзді на KEY4 (UA сервер) — прибрати.
+            if time_text:
+                try:
+                    t = datetime.strptime(time_text, "%H:%M")
+                    t_kyiv = (t + timedelta(hours=3)).strftime("%H:%M")
+                    time_text = t_kyiv
+                except Exception:
+                    pass
 
             url_full = "https://news.pn" + href if href.startswith("/") else href
             results.append({"id": news_id, "title": title, "time": time_text, "url": url_full})
