@@ -234,4 +234,4 @@ async def stat_handler(update, context):
         print(f"stat: помилка GA4 — {e}")
 
     text = format_stat_message(article_url, fb_stat, ga4_stat)
-    await msg.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
+    await msg.edit_text(text, parse_mode="HTML")
