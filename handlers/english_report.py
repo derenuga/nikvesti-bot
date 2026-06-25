@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 from calendar import monthrange
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
-    RunReportRequest, DateRange, Metric, Dimension, OrderBy, FilterExpression, Filter
+    RunReportRequest, DateRange, Metric, Dimension, OrderBy,
+    FilterExpression, FilterExpressionList, Filter
 )
 from google.oauth2 import service_account
 from handlers.ai_messages import generate_english_monthly_comment
@@ -36,40 +37,59 @@ def get_prev_month_range(year, month):
     )
 
 
-def en_filter():
-    """GA4 фільтр: тільки сторінки що починаються з /en/"""
+def en_no_sg_filter():
+    """
+    GA4 фільтр: тільки сторінки /en/ І виключити Сінгапур.
+    AND(pagePath BEGINS_WITH /en/, NOT country EXACT Singapore)
+    """
     return FilterExpression(
-        filter=Filter(
-            field_name="pagePath",
-            string_filter=Filter.StringFilter(
-                match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
-                value="/en/",
-            ),
+        and_group=FilterExpressionList(
+            expressions=[
+                FilterExpression(
+                    filter=Filter(
+                        field_name="pagePath",
+                        string_filter=Filter.StringFilter(
+                            match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
+                            value="/en/",
+                        ),
+                    )
+                ),
+                FilterExpression(
+                    not_expression=FilterExpression(
+                        filter=Filter(
+                            field_name="country",
+                            string_filter=Filter.StringFilter(
+                                match_type=Filter.StringFilter.MatchType.EXACT,
+                                value="Singapore",
+                            ),
+                        )
+                    )
+                ),
+            ]
         )
     )
 
 
 def get_en_summary(client, start_date, end_date):
-    """Користувачі, сесії, перегляди для EN-версії."""
+    """Користувачі та сесії для EN-версії (без Сінгапуру)."""
     request = RunReportRequest(
         property=f"properties/{GA4_PROPERTY_ID}",
         date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
         metrics=[
             Metric(name="activeUsers"),
             Metric(name="sessions"),
-            Metric(name="screenPageViews"),
         ],
-        dimension_filter=en_filter(),
+        dimension_filter=en_no_sg_filter(),
     )
     response = client.run_report(request)
     if not response.rows:
-        return 0, 0, 0
+        return 0, 0
     row = response.rows[0].metric_values
-    return int(row[0].value), int(row[1].value), int(row[2].value)
+    return int(row[0].value), int(row[1].value)
 
 
 def get_en_top_pages(client, start_date, end_date, limit=5):
-    """Топ матеріали EN-версії."""
+    """Топ матеріали EN-версії (без Сінгапуру)."""
     request = RunReportRequest(
         property=f"properties/{GA4_PROPERTY_ID}",
         date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
@@ -77,9 +97,9 @@ def get_en_top_pages(client, start_date, end_date, limit=5):
             Dimension(name="pagePath"),
             Dimension(name="pageTitle"),
         ],
-        metrics=[Metric(name="screenPageViews")],
-        order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
-        dimension_filter=en_filter(),
+        metrics=[Metric(name="activeUsers")],
+        order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="activeUsers"), desc=True)],
+        dimension_filter=en_no_sg_filter(),
         limit=50,
     )
     response = client.run_report(request)
@@ -88,7 +108,6 @@ def get_en_top_pages(client, start_date, end_date, limit=5):
         path = row.dimension_values[0].value
         title = row.dimension_values[1].value
         views = int(row.metric_values[0].value)
-        # Пропускаємо головну EN-сторінку і архіви
         if path in ("/en/", "/en"):
             continue
         if "archive" in path:
@@ -100,14 +119,14 @@ def get_en_top_pages(client, start_date, end_date, limit=5):
 
 
 def get_en_top_countries(client, start_date, end_date, limit=5):
-    """Топ країн для EN-версії."""
+    """Топ країн для EN-версії (без Сінгапуру)."""
     request = RunReportRequest(
         property=f"properties/{GA4_PROPERTY_ID}",
         date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
         dimensions=[Dimension(name="country")],
         metrics=[Metric(name="activeUsers")],
         order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="activeUsers"), desc=True)],
-        dimension_filter=en_filter(),
+        dimension_filter=en_no_sg_filter(),
         limit=limit,
     )
     response = client.run_report(request)
@@ -117,15 +136,57 @@ def get_en_top_countries(client, start_date, end_date, limit=5):
     ]
 
 
-def get_en_top_channels(client, start_date, end_date, limit=5):
-    """Топ каналів трафіку для EN-версії."""
+def get_en_top_referrers(client, start_date, end_date, limit=8):
+    """
+    Конкретні сайти-реферери для EN-версії (без Сінгапуру).
+    Фільтруємо тільки Referral-сесії і дивимось sessionSource.
+    """
+    referral_filter = FilterExpression(
+        and_group=FilterExpressionList(
+            expressions=[
+                # тільки /en/
+                FilterExpression(
+                    filter=Filter(
+                        field_name="pagePath",
+                        string_filter=Filter.StringFilter(
+                            match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
+                            value="/en/",
+                        ),
+                    )
+                ),
+                # без Сінгапуру
+                FilterExpression(
+                    not_expression=FilterExpression(
+                        filter=Filter(
+                            field_name="country",
+                            string_filter=Filter.StringFilter(
+                                match_type=Filter.StringFilter.MatchType.EXACT,
+                                value="Singapore",
+                            ),
+                        )
+                    )
+                ),
+                # тільки referral-канал
+                FilterExpression(
+                    filter=Filter(
+                        field_name="sessionDefaultChannelGroup",
+                        string_filter=Filter.StringFilter(
+                            match_type=Filter.StringFilter.MatchType.EXACT,
+                            value="Referral",
+                        ),
+                    )
+                ),
+            ]
+        )
+    )
+
     request = RunReportRequest(
         property=f"properties/{GA4_PROPERTY_ID}",
         date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-        dimensions=[Dimension(name="sessionDefaultChannelGroup")],
+        dimensions=[Dimension(name="sessionSource")],
         metrics=[Metric(name="sessions")],
         order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="sessions"), desc=True)],
-        dimension_filter=en_filter(),
+        dimension_filter=referral_filter,
         limit=limit,
     )
     response = client.run_report(request)
@@ -149,13 +210,12 @@ async def build_english_report(year=None, month=None):
     """
     Збирає і форматує місячний звіт EN-версії.
     Якщо year/month не передані — звітує за попередній місяць.
+    Сінгапур виключено з усіх запитів.
     Повертає готовий HTML-рядок для Telegram.
     """
     now = datetime.now()
 
-    # Визначаємо звітний місяць
     if year is None or month is None:
-        # Попередній місяць
         first_of_current = now.replace(day=1)
         last_month_end = first_of_current - timedelta(days=1)
         year, month = last_month_end.year, last_month_end.month
@@ -171,46 +231,43 @@ async def build_english_report(year=None, month=None):
     }
     period_label = f"{MONTHS_UA[month]} {year}"
 
-    # Попередній місяць для порівняння
     prev_start, prev_end = get_prev_month_range(year, month)
 
     client = get_ga4_client()
 
-    # Збираємо дані
-    users, sessions, pageviews = get_en_summary(client, start_date, end_date)
-    users_prev, sessions_prev, pageviews_prev = get_en_summary(client, prev_start, prev_end)
+    users, sessions = get_en_summary(client, start_date, end_date)
+    users_prev, sessions_prev = get_en_summary(client, prev_start, prev_end)
     top_pages = get_en_top_pages(client, start_date, end_date)
     top_countries = get_en_top_countries(client, start_date, end_date)
-    top_channels = get_en_top_channels(client, start_date, end_date)
+    top_referrers = get_en_top_referrers(client, start_date, end_date)
 
     # Форматуємо топ матеріали
     pages_text = ""
     for i, (path, title, views) in enumerate(top_pages, 1):
         url = f"{BASE_URL}{path}"
-        pages_text += f'  {i}. <a href="{url}">{title}</a> — {views}\n'
+        pages_text += f'  {i}. <a href="{url}">{title}</a>\n'
 
     # Форматуємо країни
     countries_text = ""
     for i, (country, cnt) in enumerate(top_countries, 1):
         countries_text += f"  {i}. {country} — {cnt}\n"
 
-    # Форматуємо канали
-    channels_text = ""
-    for ch, cnt in top_channels:
-        channels_text += f"  • {ch}: {cnt}\n"
+    # Форматуємо реферери
+    referrers_text = ""
+    for source, cnt in top_referrers:
+        referrers_text += f"  • {source}: {cnt}\n"
 
     # AI-коментар
     ai_comment = await generate_english_monthly_comment(
-        period_label, users, users_prev, pageviews, pageviews_prev,
-        top_pages, top_countries, top_channels
+        period_label, users, users_prev, sessions, sessions_prev,
+        top_pages, top_countries, top_referrers
     )
 
-    # Збираємо повідомлення
     msg = (
-        f"🇬🇧 <b>Англійська версія МикВісті — {period_label}</b>\n\n"
+        f"🇬🇧 <b>Англійська версія МикВісті — {period_label}</b>\n"
+        f"<i>(без урахування ботів із Сінгапуру)</i>\n\n"
         f"👥 Користувачі: <b>{users}</b>{format_diff(users, users_prev)}\n"
         f"🔄 Сесії: <b>{sessions}</b>{format_diff(sessions, sessions_prev)}\n"
-        f"📄 Перегляди: <b>{pageviews}</b>{format_diff(pageviews, pageviews_prev)}\n"
     )
 
     if top_pages:
@@ -219,8 +276,8 @@ async def build_english_report(year=None, month=None):
     if top_countries:
         msg += f"\n🌍 <b>Топ країни:</b>\n{countries_text}"
 
-    if top_channels:
-        msg += f"\n🔍 <b>Звідки прийшли:</b>\n{channels_text}"
+    if top_referrers:
+        msg += f"\n🔗 <b>Реферери (звідки прийшли):</b>\n{referrers_text}"
 
     msg += f"\n🦊 {ai_comment}\n\n"
     msg += "👆 @diiessa, тобі буде цікаво — це твоя версія 😉"
@@ -243,7 +300,7 @@ async def send_english_report(bot, chat_id):
 
 
 async def english_report_handler(update, context):
-    """Команда /english — ручний запуск звіту (шле у відповідь у поточний чат)."""
+    """Команда /english — ручний запуск звіту."""
     try:
         await update.message.reply_text("⏳ Збираю дані GA4 для EN-версії...")
         msg = await build_english_report()
