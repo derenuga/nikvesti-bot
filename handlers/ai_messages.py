@@ -271,6 +271,9 @@ async def generate_english_monthly_comment(
     referrers_text = ", ".join([f"{src} ({cnt})" for src, cnt in top_referrers[:3]])
     queries_text = ", ".join([f"'{q}' ({c} кліків, поз. {p})" for q, c, _, p in top_queries[:5]]) if top_queries else "немає даних"
 
+    ira_tg = TEAM["Ірина Федорович"]["tg"]      # @diiessa
+    katya_tg = TEAM["Катерина Середа"]["tg"]    # @sereda_ka
+
     prompt = f"""Місячний звіт англійської версії МикВісті — коротка аналітична підводка.
 
 Період: {period_label}
@@ -284,7 +287,7 @@ async def generate_english_monthly_comment(
 Пошукові запити Google: {queries_text}
 
 3 речення максимум. Вибери одну-дві найцікавіші деталі — пошукові запити, несподівана країна, тренд у темах. Без переліку цифр — вони вже є вище.
-В кінці одним реченням — підказка для @diiessa (перекладачка) або для @sereda_ka (головред) залежно від того що найцікавіше в даних. КРИТИЧНО: username пиши точно як є — @diiessa і @sereda_ka — не скорочуй, не змінюй."""
+В кінці одним реченням — звернись або до перекладачки ({ira_tg}) або до головреда ({katya_tg}) залежно від того що найцікавіше в даних. Використай username як є, без змін."""
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
