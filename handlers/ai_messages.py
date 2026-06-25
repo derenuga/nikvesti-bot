@@ -248,7 +248,7 @@ async def generate_competitors_intro(sources_with_items):
     return clean_ai_text(message.content[0].text)
 
 
-async def generate_english_monthly_comment(period_label, users, users_prev, pageviews, pageviews_prev, top_pages, top_countries, top_channels):
+async def generate_english_monthly_comment(period_label, users, users_prev, sessions, sessions_prev, top_pages, top_countries, top_referrers):
     """AI-коментар Лиса Микити для місячного звіту англійської версії сайту."""
 
     def pct(curr, prev):
@@ -258,18 +258,18 @@ async def generate_english_monthly_comment(period_label, users, users_prev, page
         return f"+{diff}%" if diff >= 0 else f"{diff}%"
 
     countries_text = ", ".join([f"{c} ({v})" for c, v in top_countries[:3]])
-    pages_text = "\n".join([f"- {title} ({views} переглядів)" for _, title, views in top_pages[:3]])
-    channels_text = ", ".join([f"{ch} ({v})" for ch, v in top_channels[:3]])
+    referrers_text = ", ".join([f"{src} ({cnt} сесій)" for src, cnt in top_referrers[:3]])
+    pages_text = "\n".join([f"- {title}" for _, title, _ in top_pages[:3]])
 
     prompt = f"""Місячний звіт англійської версії МикВісті — напиши коротку аналітичну підводку.
 
 Період: {period_label}
 Користувачі: {users} ({pct(users, users_prev)} до попереднього місяця)
-Перегляди: {pageviews} ({pct(pageviews, pageviews_prev)} до попереднього місяця)
-Топ країни: {countries_text}
+Сесії: {sessions} ({pct(sessions, sessions_prev)} до попереднього місяця)
+Топ країни (без Сінгапуру — там були боти): {countries_text}
 Топ матеріали:
 {pages_text}
-Джерела трафіку: {channels_text}
+Реферери: {referrers_text}
 
 3-5 речень. Зверни увагу на щось цікаве або несподіване в даних — країни, тренд, популярні теми. Можеш зробити припущення чому так. Звернись до Іри (@diiessa) — вона перекладачка і їй буде цікаво. Не перелічуй всі цифри ще раз — вони вже є у звіті вище."""
 
