@@ -133,7 +133,10 @@ def get_en_top_pages(client, start_date, end_date, limit=5):
         users = int(row.metric_values[0].value)
         views = int(row.metric_values[1].value)
         # Приймаємо тільки /en/news/ і /en/articles/
+        # Тільки /en/news/ і /en/articles/, без архівів, тегів і пагінації
         if not (path.startswith("/en/news/") or path.startswith("/en/articles/")):
+            continue
+        if any(x in path for x in ("/archive/", "/tag/", "/page/")):
             continue
         results.append((path, title, users, views))
         if len(results) == limit:
