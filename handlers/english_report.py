@@ -350,7 +350,6 @@ async def build_english_report(year=None, month=None):
     users, sessions, pageviews, returning, eng_rate, pps = get_en_summary(ga4, start_date, end_date)
     users_prev, sessions_prev, pageviews_prev, _, _, _ = get_en_summary(ga4, prev_start, prev_end)
     top_en_pages = get_en_top_pages(ga4, start_date, end_date)
-    top_ua_pages = get_ua_top_pages(ga4, start_date, end_date)
     top_countries = get_en_top_countries(ga4, start_date, end_date)
     top_referrers = get_en_top_referrers(ga4, start_date, end_date)
 
@@ -381,13 +380,6 @@ async def build_english_report(year=None, month=None):
             url = f"{BASE_URL}{path}"
             msg += f'  {i}. <a href="{url}">{title}</a>\n'
 
-    # Порівняння EN vs UA
-    if top_ua_pages:
-        msg += "\n🔀 <b>Топ UA матеріали (для порівняння):</b>\n"
-        for i, (path, title, _) in enumerate(top_ua_pages, 1):
-            url = f"{BASE_URL}{path}"
-            msg += f'  {i}. <a href="{url}">{title}</a>\n'
-
     # Топ країни
     if top_countries:
         msg += "\n🌍 <b>Топ країни:</b>\n"
@@ -415,14 +407,13 @@ async def build_english_report(year=None, month=None):
         returning=returning, returning_pct=returning_pct,
         eng_pct=eng_pct, pages_per_session=pages_per_session,
         top_en_pages=top_en_pages,
-        top_ua_pages=top_ua_pages,
         top_countries=top_countries,
         top_referrers=top_referrers,
         top_queries=top_queries,
     )
 
     msg += f"\n🦊 {ai_comment}\n\n"
-    msg += "👆 @diiessa, тобі буде цікаво — це твоя версія 😉"
+    msg += "@diiessa @sereda_ka"
 
     return msg
 
