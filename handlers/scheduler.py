@@ -10,6 +10,7 @@ from handlers.morning import send_morning_message
 from handlers.prozorro import check_prozorro_tenders
 from handlers.documents import check_documents
 from handlers.competitors import check_competitors
+from handlers.english_report import send_english_report
 from datetime import datetime, timedelta
 
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -103,6 +104,10 @@ async def run_check_documents(bot):
 async def run_check_competitors(bot):
     await check_competitors(bot)
 
+async def monthly_english_report(bot):
+    """Місячний звіт EN-версії — запускається в останній день місяця о 19:00."""
+    await send_english_report(bot, CHAT_ID)
+
 def setup_scheduler(bot, last_channel_post_time=None):
     if last_channel_post_time is None:
         last_channel_post_time = {"time": datetime.now()}
@@ -117,5 +122,8 @@ def setup_scheduler(bot, last_channel_post_time=None):
     scheduler.add_job(check_prozorro, "cron", minute=0, args=[bot])
     scheduler.add_job(run_check_documents, "cron", minute=30, args=[bot])
     scheduler.add_job(run_check_competitors, "cron", minute=15, args=[bot])
+    # Місячний EN-звіт: останній день місяця о 19:00
+    # day="last" — APScheduler cron syntax для останнього дня місяця
+    scheduler.add_job(monthly_english_report, "cron", day="last", hour=19, minute=0, args=[bot])
     scheduler.start()
     return scheduler
