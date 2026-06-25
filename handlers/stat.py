@@ -43,7 +43,7 @@ def _extract_article_id(url):
 def _get_fb_posts(since_ts, until_ts):
     url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
-        "fields": "id,message,permalink_url,created_time,reactions.summary(true),comments.summary(true),shares",
+        "fields": "id,message,story,permalink_url,created_time,reactions.summary(true),comments.summary(true),shares",
         "since": since_ts,
         "until": until_ts,
         "limit": 100,
@@ -67,7 +67,7 @@ def _get_post_views(post_id):
     except Exception:
         return None
 
-def get_fb_stat(article_url):
+def get_fb_stat(article_url, article_id):
     """Шукає пост у Facebook і повертає статистику. Шукає за 14 днів."""
     clean = _clean_url(article_url)
     until_dt = datetime.now()
@@ -77,7 +77,8 @@ def get_fb_stat(article_url):
     found = None
     for post in posts:
         message = post.get("message", "") or ""
-        if clean in message:
+        story = post.get("story", "") or ""
+        if clean in message or clean in story or article_id in message or article_id in story:
             found = post
             break
 
@@ -87,7 +88,8 @@ def get_fb_stat(article_url):
     reactions = found.get("reactions", {}).get("summary", {}).get("total_count", 0)
     comments = found.get("comments", {}).get("summary", {}).get("total_count", 0)
     shares = found.get("shares", {}).get("count", 0)
-    permalink = found.get("permalink_url", "")
+    post_id_short = found["id"].split("_")[1]
+    permalink = f"https://www.facebook.com/nikvesti/posts/{post_id_short}"
 
     try:
         dt = datetime.strptime(found.get("created_time", ""), "%Y-%m-%dT%H:%M:%S+0000")
@@ -222,7 +224,7 @@ async def stat_handler(update, context):
     msg = await update.message.reply_text("⏳ Збираю статистику...")
 
     try:
-        fb_stat = get_fb_stat(article_url)
+        fb_stat = get_fb_stat(article_url, article_id)
     except Exception as e:
         fb_stat = None
         print(f"stat: помилка Facebook — {e}")
