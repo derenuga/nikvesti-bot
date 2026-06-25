@@ -271,11 +271,6 @@ async def generate_english_monthly_comment(
     referrers_text = ", ".join([f"{src} ({cnt})" for src, cnt in top_referrers[:3]])
     queries_text = ", ".join([f"'{q}' ({c} кліків, поз. {p})" for q, c, _, p in top_queries[:5]]) if top_queries else "немає даних"
 
-    # Username без @ — щоб модель не розривала underscore при генерації.
-    # @ додаємо в Python після отримання відповіді через replace.
-    ira_handle = "diiessa"        # повний: @diiessa
-    katya_handle = "sereda_ka"    # повний: @sereda_ka
-
     prompt = f"""Місячний звіт англійської версії МикВісті — коротка аналітична підводка.
 
 Період: {period_label}
@@ -288,8 +283,7 @@ async def generate_english_monthly_comment(
 Реферери: {referrers_text}
 Пошукові запити Google: {queries_text}
 
-3 речення максимум. Вибери одну-дві найцікавіші деталі — пошукові запити, несподівана країна, тренд у темах. Без переліку цифр — вони вже є вище.
-В кінці одним реченням — звернись або до перекладачки (HANDLE_IRA) або до головреда (HANDLE_KATYA) залежно від того що найцікавіше в даних."""
+3 речення максимум. Вибери одну-дві найцікавіші деталі — пошукові запити, несподівана країна, тренд у темах. Без переліку цифр — вони вже є вище. Без тегів людей — вони додаються окремо."""
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
@@ -297,7 +291,4 @@ async def generate_english_monthly_comment(
         system=FOX_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}]
     )
-    text = clean_ai_text(message.content[0].text)
-    text = text.replace("HANDLE_IRA", "@diiessa")
-    text = text.replace("HANDLE_KATYA", "@sereda_ka")
-    return text
+    return clean_ai_text(message.content[0].text)
