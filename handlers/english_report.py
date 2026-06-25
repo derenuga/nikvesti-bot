@@ -77,7 +77,10 @@ def en_no_sg_filter():
 # ── GA4 запити ───────────────────────────────────────────────────────────────
 
 def get_en_summary(client, start_date, end_date):
-    """Користувачі, сесії, перегляди, returning users, engagement rate для EN (без SG)."""
+    """Користувачі, сесії, перегляди, new users, engagement rate для EN (без SG).
+    Returning users = activeUsers - newUsers (GA4 не має окремої метрики returningUsers).
+    screenPageViewsPerSession — вбудована метрика GA4, точніша ніж ручне ділення.
+    """
     request = RunReportRequest(
         property=f"properties/{GA4_PROPERTY_ID}",
         date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
@@ -85,22 +88,24 @@ def get_en_summary(client, start_date, end_date):
             Metric(name="activeUsers"),
             Metric(name="sessions"),
             Metric(name="screenPageViews"),
-            Metric(name="returningUsers"),
+            Metric(name="newUsers"),
             Metric(name="engagementRate"),
+            Metric(name="screenPageViewsPerSession"),
         ],
         dimension_filter=en_no_sg_filter(),
     )
     response = client.run_report(request)
     if not response.rows:
-        return 0, 0, 0, 0, 0.0
+        return 0, 0, 0, 0, 0.0, 0.0
     row = response.rows[0].metric_values
-    return (
-        int(row[0].value),    # activeUsers
-        int(row[1].value),    # sessions
-        int(row[2].value),    # pageviews
-        int(row[3].value),    # returningUsers
-        float(row[4].value),  # engagementRate (0.0–1.0)
-    )
+    active_users  = int(row[0].value)
+    sessions      = int(row[1].value)
+    pageviews     = int(row[2].value)
+    new_users     = int(row[3].value)
+    eng_rate      = float(row[4].value)
+    pps           = float(row[5].value)
+    returning     = max(0, active_users - new_users)
+    return active_users, sessions, pageviews, returning, eng_rate, pps
 
 
 def get_en_top_pages(client, start_date, end_date, limit=5):
@@ -342,8 +347,8 @@ async def build_english_report(year=None, month=None):
     sc = get_sc_client()
 
     # GA4 дані
-    users, sessions, pageviews, returning, eng_rate = get_en_summary(ga4, start_date, end_date)
-    users_prev, sessions_prev, pageviews_prev, _, _ = get_en_summary(ga4, prev_start, prev_end)
+    users, sessions, pageviews, returning, eng_rate, pps = get_en_summary(ga4, start_date, end_date)
+    users_prev, sessions_prev, pageviews_prev, _, _, _ = get_en_summary(ga4, prev_start, prev_end)
     top_en_pages = get_en_top_pages(ga4, start_date, end_date)
     top_ua_pages = get_ua_top_pages(ga4, start_date, end_date)
     top_countries = get_en_top_countries(ga4, start_date, end_date)
@@ -354,7 +359,7 @@ async def build_english_report(year=None, month=None):
 
     # Похідні метрики
     returning_pct = round(returning / users * 100) if users > 0 else 0
-    pages_per_session = round(pageviews / sessions, 1) if sessions > 0 else 0
+    pages_per_session = round(pps, 1)
     eng_pct = round(eng_rate * 100)
 
     # ── Формування повідомлення ──
