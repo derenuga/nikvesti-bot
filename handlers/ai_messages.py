@@ -255,7 +255,7 @@ async def generate_english_monthly_comment(
     pageviews, pageviews_prev,
     returning, returning_pct,
     eng_pct, pages_per_session,
-    top_en_pages, top_ua_pages,
+    top_en_pages,
     top_countries, top_referrers, top_queries,
 ):
     """AI-коментар Лиса Микити для місячного звіту англійської версії сайту."""
@@ -268,36 +268,27 @@ async def generate_english_monthly_comment(
 
     countries_text = ", ".join([f"{c} ({v})" for c, v in top_countries[:3]])
     en_titles = "\n".join([f"- {title}" for _, title, _, _ in top_en_pages[:3]])
-    ua_titles = "\n".join([f"- {title}" for _, title, _ in top_ua_pages[:3]])
     referrers_text = ", ".join([f"{src} ({cnt})" for src, cnt in top_referrers[:3]])
-    queries_text = ", ".join([f"'{q}' ({c} кліків)" for q, c, _, _ in top_queries[:5]]) if top_queries else "немає даних"
+    queries_text = ", ".join([f"'{q}' ({c} кліків, поз. {p})" for q, c, _, p in top_queries[:5]]) if top_queries else "немає даних"
 
-    prompt = f"""Місячний звіт англійської версії МикВісті — напиши аналітичну підводку.
+    prompt = f"""Місячний звіт англійської версії МикВісті — коротка аналітична підводка.
 
 Період: {period_label}
-Користувачі: {users} ({pct(users, users_prev)} до попереднього місяця)
-Сесії: {sessions} ({pct(sessions, sessions_prev)})
+Користувачі: {users} ({pct(users, users_prev)})
 Перегляди: {pageviews} ({pct(pageviews, pageviews_prev)})
-Повторні читачі: {returning} ({returning_pct}% аудиторії)
+Повторні читачі: {returning_pct}% аудиторії
 Залученість: {eng_pct}%, {pages_per_session} стор/сесію
-Топ країни (без Сінгапуру — боти): {countries_text}
-
-Топ EN матеріали:
-{en_titles}
-
-Топ UA матеріали (що читають українці):
-{ua_titles}
-
+Топ країни: {countries_text}
+Топ матеріали: {en_titles}
 Реферери: {referrers_text}
 Пошукові запити Google: {queries_text}
 
-4-6 речень. Знайди найцікавіше: чи збігаються EN і UA топи? Що шукають в Google? Звідки аудиторія? Чи лояльна (returning %)?
-Звернись до Іри (@diiessa) — вона перекладачка і їй важливо знати що резонує з міжнародною аудиторією.
-Не перелічуй цифри — вони вже є у звіті. Говори про смисли і тренди."""
+3 речення максимум. Вибери одну-дві найцікавіші деталі — пошукові запити, несподівана країна, тренд у темах. Без переліку цифр — вони вже є вище.
+В кінці одним реченням — підказка для @diiessa що варто перекладати або для @sereda_ka що резонує з іноземною аудиторією (залежно від того що найцікавіше в даних)."""
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=400,
+        max_tokens=250,
         system=FOX_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}]
     )
