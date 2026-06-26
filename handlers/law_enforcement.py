@@ -21,11 +21,14 @@ import os
 import re
 import asyncio
 import requests
+import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 from handlers import storage
 
 BASE_URL_PROKURATURA = "https://myk.gp.gov.ua"
+BASE_URL_POLICE = "https://mk.npu.gov.ua"
+SITEMAP_URL_POLICE = "https://mk.npu.gov.ua/sitemap-rainlab-blog-models-post-1.xml"
 
 # Канал для постів — той самий що й документи та тендери
 DOCUMENTS_CHAT_ID = os.environ.get("DOCUMENTS_CHAT_ID") or os.environ.get("PROZORRO_CHAT_ID")
@@ -107,6 +110,108 @@ def _parse_prokuratura(source):
         return []
 
 
+# ---------- Парсер: Поліція (sitemap + meta) ----------
+
+def _fetch_title_and_date(url):
+    """Завантажує сторінку новини поліції, витягує заголовок і дату публікації."""
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "NikVesti-Bot/1.0"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None, None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        meta_title = soup.find("meta", attrs={"name": "title"})
+        title = meta_title["content"].strip() if meta_title and meta_title.get("content") else None
+
+        pub_date = None
+        h1 = soup.find("h1", class_="page_title-text")
+        if h1:
+            next_text = h1.find_next(string=re.compile(r"Опубліковано\s+"))
+            if next_text:
+                m = re.search(r"Опубліковано\s+(.+?)(?:\s+о\s+\d{1,2}:\d{2})?$", next_text.strip())
+                if m:
+                    pub_date = m.group(1).strip()
+
+        return title, pub_date
+    except Exception as e:
+        print(f"Правоохоронці [police]: помилка завантаження {url} — {e}")
+        return None, None
+
+
+def _parse_police(source):
+    """
+    Парсер для mk.npu.gov.ua через sitemap.
+    Sitemap відсортований від найновіших. Парсимо зверху, зупиняємось
+    коли дійшли до вже бачених (max 50 записів для безпеки).
+    Для кожної нової новини завантажуємо сторінку за заголовком.
+    """
+    try:
+        resp = requests.get(
+            SITEMAP_URL_POLICE,
+            headers={"User-Agent": "NikVesti-Bot/1.0"},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print(f"Правоохоронці [police]: sitemap HTTP {resp.status_code}")
+            return []
+
+        ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+        root = ET.fromstring(resp.content)
+
+        seen_ids = storage.get_seen_document_ids(source["id"])
+        seen_set = set(seen_ids) if seen_ids is not None else None
+
+        results = []
+        for url_el in root.findall("sm:url", ns):
+            if len(results) >= 50:
+                break
+
+            loc = url_el.findtext("sm:loc", namespaces=ns)
+            lastmod = url_el.findtext("sm:lastmod", namespaces=ns)
+            if not loc:
+                continue
+
+            slug = loc.rstrip("/").rsplit("/", 1)[-1]
+            if not slug:
+                continue
+
+            if seen_set is not None and slug in seen_set:
+                break
+
+            sitemap_date = ""
+            if lastmod:
+                m = re.match(r"(\d{4})-(\d{2})-(\d{2})", lastmod)
+                if m:
+                    sitemap_date = f"{m.group(3)}.{m.group(2)}.{m.group(1)}"
+
+            results.append({
+                "id": slug,
+                "url": loc,
+                "sitemap_date": sitemap_date,
+                "title": None,
+                "date": None,
+            })
+
+        for item in results:
+            title, pub_date = _fetch_title_and_date(item["url"])
+            if title:
+                item["title"] = title
+            else:
+                item["title"] = item["id"].replace("-", " ").capitalize()
+            item["date"] = pub_date
+
+        return results
+
+    except Exception as e:
+        print(f"Правоохоронці [police]: помилка — {e}")
+        return []
+
+
 # ---------- Конфіг джерел ----------
 
 LAW_ENFORCEMENT_SOURCES = [
@@ -116,6 +221,13 @@ LAW_ENFORCEMENT_SOURCES = [
         "emoji": "⚖️",
         "url": "https://myk.gp.gov.ua/ua/news.html",
         "parser": _parse_prokuratura,
+    },
+    {
+        "id": "police",
+        "name": "Поліція Миколаївщини",
+        "emoji": "🚔",
+        "url": SITEMAP_URL_POLICE,
+        "parser": _parse_police,
     },
 ]
 
@@ -153,6 +265,10 @@ def _format_post(source, news_items):
         if date_esc:
             line += f" <i>({date_esc})</i>"
 
+        sitemap_date = item.get("sitemap_date", "")
+        if sitemap_date and date_esc and sitemap_date not in date_esc:
+            line += f"\n⚠️ <i>sitemap: {_escape_html(sitemap_date)}</i>"
+
         lines.append(line)
         lines.append("")
 
@@ -178,9 +294,7 @@ async def _check_source(bot, source):
         # Перший запуск.
         # BASELINE N=1: зберігаємо всі новини крім 1 найновішої як бачені,
         # 1 найновішу відправляємо одразу — щоб перевірити що парсинг
-        # і відправка працюють після деплою. N=1 обрано бо прес-релізи
-        # прокуратури виходять рідше ніж документи міськради, і одного
-        # достатньо для перевірки формату.
+        # і відправка працюють після деплою.
         if len(fetched_ids) <= 1:
             baseline_ids = []
             new_docs = docs
