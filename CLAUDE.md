@@ -1,0 +1,172 @@
+# Лис Микита — бот редакції МикВісті
+
+Внутрішній Telegram-бот редакції новинного медіа МикВісті (nikvesti.com, Миколаїв).
+Моніторить документи влади, тендери, конкурентів, правоохоронців, збирає аналітику, надсилає ранкові зведення.
+
+**Репозиторій:** github.com/derenuga/nikvesti-bot  
+**Хостинг:** Railway (проект `remarkable-stillness`)  
+**Стек:** Python, python-telegram-bot 21.9, APScheduler, BeautifulSoup, Google Analytics Data API  
+**Бот:** @nikvesti_desk_bot  
+**Чат редакції:** -1001857099475  
+**Канал "🦊 Микита винюхав":** -1004322862າ (тендери + документи влади + правоохоронці)
+
+---
+
+## Правила роботи з кодом
+
+1. **Повні файли завжди.** Ніколи не давати патчі, інструкції "додай після рядка X" або часткові фрагменти. Тільки повний готовий файл для заміни.
+2. **Не зупинятись на питаннях.** Якщо є неясність — уточнити одне питання і продовжувати, не чекати підтвердження кожного кроку.
+3. **Тестувати парсери на реальному HTML.** Не писати власні зразки HTML, не тестувати на вигаданих даних.
+4. **Baseline моніторингу з тестовою відправкою.** При першому запуску модуля моніторингу зберегти всі ID крім N останніх як бачені, N останніх одразу відправити — щоб перевірити що відправка і формат працюють. N вказувати явно в коментарі з поясненням.
+5. **Emoji напряму в коді**, не як Unicode escape sequences (`🦊`, не `\U0001F98A`).
+6. **Перевіряти факти** — особливо структуру HTML і API перед написанням парсерів.
+
+---
+
+## Структура коду
+
+```
+bot.py                    — реєстрація handlers, команди, TypeHandler middleware
+handlers/
+  scheduler.py            — APScheduler, розклад всіх автозавдань (Europe/Kiev)
+  storage.py              — JSON-стан на Railway Volume (/data/prozorro_state.json)
+  ai_messages.py          — AI-шар (Anthropic Claude), FOX_SYSTEM_PROMPT, TEAM словник
+  morning.py              — ранкове повідомлення: погода + події міськради + AI текст
+  events.py               — парсинг календаря подій mkrada.gov.ua/calendar/
+  prozorro.py             — моніторинг тендерів Prozorro ≥1 млн грн
+  documents.py            — моніторинг документів органів влади (міськрада, ОВА, облрада)
+  law_enforcement.py      — моніторинг новин правоохоронних органів (прокуратура тощо)
+  competitors.py          — моніторинг новин конкурентів (news.pn тощо)
+  google_analytics.py     — GA4 щоденна аналітика, /analytics, /report
+  stat.py                 — /stat <url>: статистика конкретного матеріалу (Facebook + GA4)
+  english_report.py       — місячний звіт EN-версії (GA4 + Search Console + AI коментар)
+  instagram.py            — тижнева статистика Instagram
+  facebook.py             — тижнева статистика Facebook
+  gmail.py                — перевірка Gmail
+  sheets.py               — запис у Google Sheets (Prozorro)
+  reactions.py            — обробка реакцій на повідомлення про тендери
+  helpers.py              — спільні утиліти (парсинг місяців, get_author_from_url)
+```
+
+---
+
+## Команди бота
+
+| Команда | Що робить |
+|---|---|
+| /start | Привітання зі списком команд |
+| /status | Перевірка що бот живий |
+| /analytics | GA4 статистика за вчора + топ-5 статей |
+| /report | GA4 звіт в чат редакції |
+| /checkmail | Перевірити Gmail |
+| /instagram | Тижнева статистика Instagram |
+| /igreport | Тижневий Instagram звіт з AI в чат |
+| /facebook | Тижнева статистика Facebook |
+| /fbreport | Тижневий Facebook звіт з AI в чат |
+| /morning | Ранкове повідомлення вручну |
+| /documents | Перевірити нові документи органів влади |
+| /documents_test | Тестовий пост з першого документа кожного джерела |
+| /competitors | Перевірити новини конкурентів |
+| /law | Перевірити новини правоохоронних органів |
+| /stat \<url\> | Статистика матеріалу (Facebook + GA4) за URL nikvesti.com |
+| /english | Місячний звіт EN-версії сайту (GA4 + Search Console) |
+| /prozorro | Перевірити тендери Prozorro |
+| /prozorro_test_jump \[N\] | Діагностика зсуву офсету за N днів (дефолт 14) |
+| /prozorro_confirm_jump \[N\] | Підтвердити скидання офсету |
+| /prozorro_reset_tender \<id\> | Розблокувати тендер для повторної реакції |
+
+---
+
+## Розклад (Europe/Kiev)
+
+| Час | Що запускається |
+|---|---|
+| 08:15 щодня | Ранкове повідомлення в чат редакції |
+| 09:00 щодня | GA4 звіт за вчора |
+| 10:00 щодня | Перевірка правоохоронних органів |
+| 13:00 щодня | Перевірка Gmail + правоохоронні органи |
+| 16:00 щодня | Перевірка правоохоронних органів |
+| 16:50 щодня | Перевірка Gmail |
+| 15:00 щонеділі | Facebook тижневий звіт з AI |
+| 18:00 щонеділі | Instagram тижневий звіт з AI |
+| Щогодини :00 | Тендери Prozorro |
+| Щогодини :15 | Новини конкурентів |
+| Щогодини :30 | Документи органів влади |
+| Кожні 30 хв (10–18, пн–пт) | Перевірка мовчання каналу @nikvesti |
+| Останній день місяця 19:00 | Місячний EN-звіт |
+
+---
+
+## Змінні середовища (Railway)
+
+```
+BOT_TOKEN
+CHAT_ID = -1001857099475
+PROZORRO_CHAT_ID = -1004322862192
+DOCUMENTS_CHAT_ID = -1004322862192
+GA4_PROPERTY_ID = 321381722
+GA4_CREDENTIALS              # JSON сервісного акаунту Google
+GMAIL_USER
+GMAIL_PASSWORD               # App Password
+INSTAGRAM_TOKEN
+INSTAGRAM_USER_ID = 17841400860799899
+FACEBOOK_PAGE_TOKEN
+FACEBOOK_PAGE_ID = 301719373180657
+ANTHROPIC_API_KEY
+OPENWEATHER_API_KEY
+SPREADSHEET_ID = 1bsKzGRsQ7O1aa4TpxmzqEfIjRM1A0dso7zueYvCXB1I
+ALLOWED_USER_IDS = 56631818
+STATE_PATH                   # опційно, дефолт /data/prozorro_state.json
+MISE_PYTHON_GITHUB_ATTESTATIONS = false
+```
+
+**Railway Volume:** mount path `/data`.  
+**Стан:** єдиний файл `/data/prozorro_state.json` для всіх модулів моніторингу.
+
+---
+
+## Storage — структура JSON
+
+```json
+{
+  "document_ids": {
+    "mayor_orders": ["51982", ...],
+    "ova_orders": ["18165", ...],
+    "oblrada_decisions": ["md5hash", ...],
+    "prokuratura": ["424328", ...]
+  },
+  "competitor_ids": {
+    "news_pn": ["345266", ...]
+  },
+  "prozorro": { ... }
+}
+```
+
+`None` (ключ відсутній) ≠ `[]` (ініціалізовано але порожньо). `None` = перший запуск, потрібен baseline.
+
+---
+
+## Детальна документація модулів
+
+- [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) — загальний контекст, беклог
+- [`docs/DOCUMENTS_MODULE.md`](docs/DOCUMENTS_MODULE.md) — моніторинг документів влади
+- [`docs/LAW_ENFORCEMENT_MODULE.md`](docs/LAW_ENFORCEMENT_MODULE.md) — моніторинг правоохоронців
+- [`docs/COMPETITORS_MODULE.md`](docs/COMPETITORS_MODULE.md) — моніторинг конкурентів
+- [`docs/PROZORRO_MODULE.md`](docs/PROZORRO_MODULE.md) — тендери Prozorro
+- [`docs/STAT_MODULE.md`](docs/STAT_MODULE.md) — статистика матеріалів (/stat)
+- [`docs/ENGLISH_REPORT_MODULE.md`](docs/ENGLISH_REPORT_MODULE.md) — EN-звіт
+- [`docs/FOX_LORE.md`](docs/FOX_LORE.md) — identity frame персонажа Лиса Микити
+
+---
+
+## Команда редакції (TEAM в ai_messages.py)
+
+| Хто | TG | Роль |
+|---|---|---|
+| Олег Деренюга | @derenuga | Керівник |
+| Катерина Середа | @sereda_ka | Головред |
+| Юлія Бойченко | — | Лід-журналістка |
+| Аліса Мелікадамян | — | Лід-журналістка, судова репортерка |
+| Світлана Іванченко | — | Редакторка стрічки |
+| Альона Коханчук | — | Лід-журналістка, екологія |
+| Іра Федорович | @diiessa | Перекладачка (EN-версія) |
