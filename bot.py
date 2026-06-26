@@ -9,6 +9,7 @@ from handlers.morning import morning_handler, send_morning_message
 from handlers.prozorro import check_prozorro_tenders, diagnose_offset_jump, confirm_offset_jump
 from handlers.documents import check_documents, test_documents
 from handlers.competitors import check_competitors
+from handlers.law_enforcement import check_law_enforcement
 from handlers.stat import stat_handler
 from handlers.reactions import handle_message_reaction
 from handlers.english_report import english_report_handler
@@ -36,6 +37,7 @@ async def start(update, context):
         "/documents — перевірити нові документи міськради\n"
         "/documents_test — тестовий пост документів в канал\n"
         "/competitors — перевірити новини конкурентів\n"
+        "/law — перевірити новини правоохоронних органів\n"
         "/stat <url> — статистика матеріалу (Facebook + GA4)\n"
         "/english — місячний звіт англійської версії сайту"
     )
@@ -105,6 +107,10 @@ async def competitors_check(update, context):
     await check_competitors(context.bot)
     await update.message.reply_text("Перевірив новини конкурентів!")
 
+async def law_check(update, context):
+    await check_law_enforcement(context.bot)
+    await update.message.reply_text("Перевірив правоохоронні органи!")
+
 async def post_init(application):
     setup_scheduler(application.bot, last_channel_post_time)
 
@@ -127,6 +133,7 @@ def main():
     app.add_handler(CommandHandler("documents", documents_check))
     app.add_handler(CommandHandler("documents_test", documents_test_cmd))
     app.add_handler(CommandHandler("competitors", competitors_check))
+    app.add_handler(CommandHandler("law", law_check))
     app.add_handler(CommandHandler("stat", stat_handler))
     app.add_handler(CommandHandler("english", english_report_handler))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
