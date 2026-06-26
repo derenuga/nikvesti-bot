@@ -110,6 +110,25 @@ def _parse_prokuratura(source):
         return []
 
 
+MONTHS_UK = {
+    "січня": "01", "лютого": "02", "березня": "03", "квітня": "04",
+    "травня": "05", "червня": "06", "липня": "07", "серпня": "08",
+    "вересня": "09", "жовтня": "10", "листопада": "11", "грудня": "12",
+}
+
+
+def _normalize_date(text):
+    """'25 червня 2026 року' → '25.06.2026'"""
+    if not text:
+        return ""
+    m = re.match(r"(\d{1,2})\s+(\w+)\s+(\d{4})", text)
+    if m:
+        month = MONTHS_UK.get(m.group(2).lower(), "")
+        if month:
+            return f"{int(m.group(1)):02d}.{month}.{m.group(3)}"
+    return text
+
+
 # ---------- Парсер: Поліція (sitemap + meta) ----------
 
 def _fetch_title_and_date(url):
@@ -266,7 +285,8 @@ def _format_post(source, news_items):
             line += f" <i>({date_esc})</i>"
 
         sitemap_date = item.get("sitemap_date", "")
-        if sitemap_date and date_esc and sitemap_date not in date_esc:
+        pub_normalized = _normalize_date(item.get("date", ""))
+        if sitemap_date and pub_normalized and sitemap_date != pub_normalized:
             line += f"\n⚠️ <i>sitemap: {_escape_html(sitemap_date)}</i>"
 
         lines.append(line)
