@@ -1,3 +1,6 @@
+import csv
+import io
+import json
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -169,6 +172,85 @@ async def outage_handler(update, context):
 
 
 SITE_ROOT = "https://off.energy.mk.ua"
+
+
+def _export_streets_csv(idfilial: int) -> io.StringIO:
+    """Розвідувальний обхід каскаду адрес для однієї дільниці:
+    filii/{id}/ns -> ns/{id}/street -> street/{id}/dom -> dom/{id}/outage-queue.
+    Будинків на вулиці може бути десятки-сотні, а черга off.energy.mk.ua
+    призначається не на конкретний будинок, а масово (вулицями/районами),
+    тож як представника вулиці беремо лише ПЕРШИЙ будинок зі списку —
+    цього достатньо, щоб визначити чергу(и) для всієї вулиці, і не робить
+    обхід нереально довгим (тисячі запитів замість десятків тисяч).
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "filiya_id", "filiya_name", "naspunkt_id", "naspunkt_name",
+        "street_id", "street_name", "sample_dom_id", "sample_dom_name",
+        "outage_queue_raw",
+    ])
+
+    filii = {f["idfilial"]: f["fullname"] for f in _fetch_json(f"{BASE_URL}/addr/filii")}
+    filiya_name = filii.get(idfilial, str(idfilial))
+
+    ns_list = _fetch_json(f"{BASE_URL}/addr/filii/{idfilial}/ns")
+    for ns in ns_list:
+        ns_id = ns["idnaspunkt"]
+        ns_name = ns["naznaspunkt"]
+        streets = _fetch_json(f"{BASE_URL}/addr/ns/{ns_id}/street")
+        for street in streets:
+            street_id = street["idstreet"]
+            street_name = street["nazstreet"]
+            try:
+                doms = _fetch_json(f"{BASE_URL}/addr/street/{street_id}/dom")
+            except Exception as e:
+                writer.writerow([idfilial, filiya_name, ns_id, ns_name,
+                                  street_id, street_name, "", "", f"ERROR: {e}"])
+                continue
+            if not doms:
+                writer.writerow([idfilial, filiya_name, ns_id, ns_name,
+                                  street_id, street_name, "", "", ""])
+                continue
+            sample = doms[0]
+            dom_id = sample["iddom"]
+            dom_name = sample["nazdom"]
+            try:
+                outage_queue = _fetch_json(f"{BASE_URL}/addr/dom/{dom_id}/outage-queue")
+                raw = json.dumps(outage_queue, ensure_ascii=False)
+            except Exception as e:
+                raw = f"ERROR: {e}"
+            writer.writerow([idfilial, filiya_name, ns_id, ns_name,
+                              street_id, street_name, dom_id, dom_name, raw])
+
+    buf.seek(0)
+    return buf
+
+
+async def outage_export_handler(update, context):
+    """Розвідувальна команда: /outage_export [idfilial] — обходить весь
+    каскад адрес для однієї дільниці і присилає CSV для подальшого
+    групування вулиць по мікрорайонах. За замовчуванням idfilial=15
+    (Миколаївський РЕМ — місто Миколаїв).
+    """
+    idfilial = 15
+    if context.args:
+        try:
+            idfilial = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("idfilial має бути числом, напр. /outage_export 15")
+            return
+    await update.message.reply_text(f"Збираю CSV для дільниці {idfilial}... це може зайняти кілька хвилин.")
+    try:
+        buf = _export_streets_csv(idfilial)
+        data = buf.getvalue().encode("utf-8")
+        await update.message.reply_document(
+            document=io.BytesIO(data),
+            filename=f"outage_streets_filial_{idfilial}.csv",
+        )
+    except Exception as e:
+        logger.error(f"energy_outage export error: {e}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Помилка експорту: {e}")
 
 
 async def outage_probe_handler(update, context):
