@@ -360,8 +360,12 @@ def get_search_console_report(period, dimensions=None, page_url=None, search_typ
         "rowLimit": limit,
     }
     if page_url:
+        # equals вимагає точного співпадіння URL (протокол, www, трейлінг слеш) — крихко.
+        # Натомість шукаємо по ID статті (числовий префікс у шляху), як і в GA4-tools.
+        id_match = re.search(r'/(\d{4,})-', page_url)
+        expression = id_match.group(1) if id_match else page_url
         body["dimensionFilterGroups"] = [{
-            "filters": [{"dimension": "page", "operator": "equals", "expression": page_url}]
+            "filters": [{"dimension": "page", "operator": "contains", "expression": expression}]
         }]
 
     try:
