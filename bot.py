@@ -12,6 +12,7 @@ from handlers.documents import check_documents, test_documents
 from handlers.competitors import check_competitors
 from handlers.law_enforcement import check_law_enforcement
 from handlers.stat import stat_handler
+from handlers.query_router import handle_natural_language_query
 from handlers.reactions import handle_message_reaction
 from handlers.english_report import english_report_handler
 from handlers import storage
@@ -154,6 +155,7 @@ def main():
     app.add_handler(CommandHandler("stat", stat_handler))
     app.add_handler(CommandHandler("english", english_report_handler))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_natural_language_query))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
     print("Bot started...")
     app.run_polling(allowed_updates=["message", "channel_post", "message_reaction"])
