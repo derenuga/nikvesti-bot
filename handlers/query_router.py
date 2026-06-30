@@ -200,6 +200,34 @@ def get_ga4_geo_breakdown(period, dimension="region", limit=10, start_date=None,
     return {"start_date": start, "end_date": end, "dimension": dimension, "breakdown": breakdown}
 
 
+def get_ga4_hourly_breakdown(period, start_date=None, end_date=None):
+    """Активність аудиторії по годинах доби (0-23, за київським часом сайту) — для пошуку найкращого часу публікації."""
+    start, end = _resolve_period(period, start_date, end_date)
+    client = _ga4_client()
+
+    request = RunReportRequest(
+        property=f"properties/{GA4_PROPERTY_ID}",
+        date_ranges=[DateRange(start_date=start, end_date=end)],
+        dimensions=[Dimension(name="hour")],
+        metrics=[Metric(name="activeUsers"), Metric(name="screenPageViews")],
+        dimension_filter=_no_singapore_filter(),
+        order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="hour"))],
+        limit=24,
+    )
+    response = client.run_report(request)
+
+    breakdown = [
+        {
+            "hour": int(row.dimension_values[0].value),
+            "users": int(row.metric_values[0].value),
+            "pageviews": int(row.metric_values[1].value),
+        }
+        for row in response.rows
+    ]
+    breakdown.sort(key=lambda r: r["hour"])
+    return {"start_date": start, "end_date": end, "breakdown": breakdown}
+
+
 def get_ga4_article_stats(url):
     import re
     match = re.search(r'/(\d{4,})-', url)
@@ -313,6 +341,22 @@ TOOLS = [
         },
     },
     {
+        "name": "get_ga4_hourly_breakdown",
+        "description": "Активність аудиторії сайту nikvesti.com по годинах доби (0-23) за вказаний період — кількість користувачів і переглядів на кожну годину. Використовувати для питань про найкращий/оптимальний час публікації новин.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "enum": ["today", "yesterday", "last_7_days", "last_30_days", "this_month", "last_month", "this_quarter", "custom"],
+                },
+                "start_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+            },
+            "required": ["period"],
+        },
+    },
+    {
         "name": "get_ga4_article_stats",
         "description": "Статистика переглядів конкретної статті nikvesti.com за всю історію, по мовних версіях (ua/ru/en).",
         "input_schema": {
@@ -329,6 +373,7 @@ TOOL_FUNCTIONS = {
     "get_ga4_metric": get_ga4_metric,
     "get_ga4_top_articles": get_ga4_top_articles,
     "get_ga4_geo_breakdown": get_ga4_geo_breakdown,
+    "get_ga4_hourly_breakdown": get_ga4_hourly_breakdown,
     "get_ga4_article_stats": get_ga4_article_stats,
 }
 
