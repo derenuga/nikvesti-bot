@@ -274,7 +274,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 
 Зараз ти відповідаєш на природномовне запитання про статистику сайту nikvesti.com (Google Analytics). Сьогоднішня дата: {today}.
 Використовуй доступні tools щоб отримати реальні дані — не вигадуй цифр. Якщо період сформульований розмовно ("середньомісячна", "за останній тиждень", "у вересні") — сам визнач відповідний period або start_date/end_date.
-Відповідай коротко, по суті, з конкретними числами. Якщо даних не вдалось отримати — чесно скажи про це."""
+Відповідай коротко, по суті, з конкретними числами, простим текстом у кілька рядків — без Markdown-таблиць. Якщо даних не вдалось отримати — чесно скажи про це."""
 
 
 async def handle_natural_language_query(update, context):
@@ -283,6 +283,7 @@ async def handle_natural_language_query(update, context):
     system_prompt = QUERY_ROUTER_SYSTEM_PROMPT.format(today=today)
 
     messages = [{"role": "user", "content": question}]
+    placeholder = await update.message.reply_text("🦊 Розбираюсь з вашим питанням, шефе...")
 
     try:
         for _ in range(MAX_TOOL_ITERATIONS):
@@ -296,7 +297,7 @@ async def handle_natural_language_query(update, context):
 
             if response.stop_reason != "tool_use":
                 final_text = "".join(b.text for b in response.content if b.type == "text")
-                await update.message.reply_text(clean_ai_text(final_text) or "Не вдалося сформувати відповідь.")
+                await placeholder.edit_text(clean_ai_text(final_text) or "Не вдалося сформувати відповідь.")
                 return
 
             messages.append({"role": "assistant", "content": response.content})
@@ -318,6 +319,6 @@ async def handle_natural_language_query(update, context):
 
             messages.append({"role": "user", "content": tool_results})
 
-        await update.message.reply_text("Забагато кроків для відповіді на це питання — спробуй сформулювати простіше.")
+        await placeholder.edit_text("Забагато кроків для відповіді на це питання — спробуй сформулювати простіше.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Помилка: {e}")
+        await placeholder.edit_text(f"❌ Помилка: {e}")
