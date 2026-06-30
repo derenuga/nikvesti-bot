@@ -94,7 +94,7 @@ def build_message(data: dict) -> str:
     schedule = _find_current_schedule(data["active"])
 
     if not schedule:
-        return "⚡ Дані про відключення наразі відсутні.\n\nДані Миколаївобленерго"
+        return "⚡ Дані про відключення наразі відсутні."
 
     now_kyiv = datetime.now(KYIV_TZ)
     date_str = now_kyiv.strftime("%-d.%m.%Y")
@@ -113,7 +113,7 @@ def build_message(data: dict) -> str:
 
     all_queue_ids = set(queue_off) | set(queue_prob)
     if not all_queue_ids:
-        return "⚡ На сьогодні графік відключень порожній.\n\nДані Миколаївобленерго"
+        return "⚡ На сьогодні графік відключень порожній."
 
     by_type: dict[int, list] = {}
     for qid in all_queue_ids:
@@ -155,8 +155,7 @@ def build_message(data: dict) -> str:
                 lines.append(f"  Черга {e['name']}: {'; '.join(queue_lines)}")
         lines.append("")
 
-    lines.append("Дані Миколаївобленерго")
-    return "\n".join(lines)
+    return "\n".join(lines).rstrip()
 
 
 async def outage_handler(update, context):
