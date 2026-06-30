@@ -5,7 +5,7 @@
 
 **Репозиторій:** github.com/derenuga/nikvesti-bot  
 **Хостинг:** Railway (проект `remarkable-stillness`)  
-**Стек:** Python, python-telegram-bot 21.9, APScheduler, BeautifulSoup, Google Analytics Data API  
+**Стек:** Python, python-telegram-bot 21.9, APScheduler, BeautifulSoup, Google Analytics Data API, Google Search Console API, Anthropic Claude (tool use), matplotlib  
 **Бот:** @nikvesti_desk_bot  
 **Чат редакції:** -1001857099475  
 **Канал "🦊 Микита винюхав":** -1004322862າ (тендери + документи влади + правоохоронці)
@@ -46,6 +46,7 @@ handlers/
   sheets.py               — запис у Google Sheets (Prozorro)
   reactions.py            — обробка реакцій на повідомлення про тендери
   helpers.py              — спільні утиліти (парсинг місяців, get_author_from_url)
+  query_router.py         — Intent Router: природномовні запити до Лиса (GA4 + Search Console, tool use)
 ```
 
 ---
@@ -74,6 +75,12 @@ handlers/
 | /prozorro_test_jump \[N\] | Діагностика зсуву офсету за N днів (дефолт 14) |
 | /prozorro_confirm_jump \[N\] | Підтвердити скидання офсету |
 | /prozorro_reset_tender \<id\> | Розблокувати тендер для повторної реакції |
+
+---
+
+## Природномовні запити (Intent Router)
+
+Приватне повідомлення боту (від `ALLOWED_USER_IDS`), або reply на повідомлення бота в чаті редакції — йде в `handle_natural_language_query` (`handlers/query_router.py`), Claude сам обирає GA4/Search Console tool через tool use і відповідає живою мовою. Деталі — [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md).
 
 ---
 
@@ -115,7 +122,7 @@ FACEBOOK_PAGE_ID = 301719373180657
 ANTHROPIC_API_KEY
 OPENWEATHER_API_KEY
 SPREADSHEET_ID = 1bsKzGRsQ7O1aa4TpxmzqEfIjRM1A0dso7zueYvCXB1I
-ALLOWED_USER_IDS = 56631818
+ALLOWED_USER_IDS = 56631818,56424866,386403807   # Олег, Катя, Ліза — whitelist приватних повідомлень і NLQ
 STATE_PATH                   # опційно, дефолт /data/prozorro_state.json
 MISE_PYTHON_GITHUB_ATTESTATIONS = false
 ```
@@ -156,7 +163,7 @@ MISE_PYTHON_GITHUB_ATTESTATIONS = false
 - [`docs/STAT_MODULE.md`](docs/STAT_MODULE.md) — статистика матеріалів (/stat)
 - [`docs/ENGLISH_REPORT_MODULE.md`](docs/ENGLISH_REPORT_MODULE.md) — EN-звіт
 - [`docs/FOX_LORE.md`](docs/FOX_LORE.md) — identity frame персонажа Лиса Микити
-- [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md) — природномовні запити (Agentic Query Layer), ідея на майбутнє
+- [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md) — природномовні запити (Agentic Query Layer): GA4 + Search Console, tool use, whitelist
 
 ---
 
