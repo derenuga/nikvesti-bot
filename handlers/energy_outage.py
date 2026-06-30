@@ -183,10 +183,7 @@ def build_message(data: dict) -> str:
 
             neighborhoods = _LABELS.get(e["name"], [])
             if neighborhoods:
-                MAX_SHOWN = 5
-                shown = neighborhoods[:MAX_SHOWN]
-                suffix = " та ін." if len(neighborhoods) > MAX_SHOWN else ""
-                lines.append(f"<i>{', '.join(shown)}{suffix}</i>")
+                lines.append(f"<i>{', '.join(neighborhoods)}</i>")
 
             lines.append("")
 
