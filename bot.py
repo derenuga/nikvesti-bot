@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, MessageReactionHandler, filters
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ApplicationHandlerStop, CommandHandler, MessageHandler, MessageReactionHandler, TypeHandler, filters
 from handlers.google_analytics import analytics_handler
 from handlers.scheduler import setup_scheduler, send_daily_report, check_email
 from handlers.instagram import instagram_handler, send_weekly_instagram_report
@@ -19,7 +20,22 @@ TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 CHANNEL_USERNAME = "nikvesti"
 
+ALLOWED_USER_IDS = {
+    int(uid) for uid in os.environ.get("ALLOWED_USER_IDS", "").split(",") if uid.strip()
+}
+
 last_channel_post_time = {"time": datetime.now()}
+
+async def check_allowed(update, context):
+    """Захист від спаму через глобальний пошук Telegram: блокує приватні повідомлення
+    від користувачів поза ALLOWED_USER_IDS. Якщо змінна не задана — пускає всіх (дефолт)."""
+    if not ALLOWED_USER_IDS:
+        return
+    if update.effective_chat and update.effective_chat.type == "private":
+        if update.effective_user and update.effective_user.id not in ALLOWED_USER_IDS:
+            if update.message:
+                await update.message.reply_text("⛔ Доступ заборонено.")
+            raise ApplicationHandlerStop
 
 async def channel_post_handler(update, context):
     if update.channel_post and update.channel_post.chat.username == CHANNEL_USERNAME:
@@ -116,6 +132,7 @@ async def post_init(application):
 
 def main():
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    app.add_handler(TypeHandler(Update, check_allowed), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("analytics", analytics_handler))
