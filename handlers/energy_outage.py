@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://off.energy.mk.ua/api"
 SITE_ROOT = "https://off.energy.mk.ua"
 
+_LABELS_PATH = Path(__file__).parent / "energy_outage_labels.json"
+_LABELS: dict[str, list[str]] = json.loads(_LABELS_PATH.read_text(encoding="utf-8")) if _LABELS_PATH.exists() else {}
+
 OUTAGE_TYPE_NAMES = {
     1: "ГАВ",
     2: "СГАВ",
@@ -165,7 +168,15 @@ def build_message(data: dict) -> str:
                 ranges_str = ", ".join(f"{s}–{en}" for s, en in e["prob"])
                 queue_lines.append(f"можливе відключення {ranges_str}")
             if queue_lines:
-                lines.append(f"  Черга {e['name']}: {'; '.join(queue_lines)}")
+                neighborhoods = _LABELS.get(e["name"], [])
+                if neighborhoods:
+                    MAX_SHOWN = 5
+                    shown = neighborhoods[:MAX_SHOWN]
+                    suffix = ", та ін." if len(neighborhoods) > MAX_SHOWN else ""
+                    label = f" ({', '.join(shown)}{suffix})"
+                else:
+                    label = ""
+                lines.append(f"  Черга {e['name']}{label}: {'; '.join(queue_lines)}")
         lines.append("")
 
     return "\n".join(lines).rstrip()
