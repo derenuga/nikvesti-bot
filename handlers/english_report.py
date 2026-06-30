@@ -301,14 +301,19 @@ def format_diff(curr, prev):
 async def build_english_report(year=None, month=None):
     """
     Збирає місячний звіт EN-версії.
-    Без year/month — звітує за попередній місяць.
+    Без year/month: в останній день місяця звітує за поточний (вже практично завершений)
+    місяць, в усі інші дні — за попередній (поточний ще не зібрав достатньо даних).
     """
     now = datetime.now()
 
     if year is None or month is None:
-        first_of_current = now.replace(day=1)
-        last_month_end = first_of_current - timedelta(days=1)
-        year, month = last_month_end.year, last_month_end.month
+        last_day_of_current = monthrange(now.year, now.month)[1]
+        if now.day == last_day_of_current:
+            year, month = now.year, now.month
+        else:
+            first_of_current = now.replace(day=1)
+            last_month_end = first_of_current - timedelta(days=1)
+            year, month = last_month_end.year, last_month_end.month
 
     last_day = monthrange(year, month)[1]
     start_date = f"{year}-{month:02d}-01"
