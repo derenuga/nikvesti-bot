@@ -470,7 +470,10 @@ async def handle_natural_language_query(update, context):
 
             if response.stop_reason != "tool_use":
                 final_text = "".join(b.text for b in response.content if b.type == "text")
-                await placeholder.edit_text(clean_ai_text(final_text) or "Не вдалося сформувати відповідь.")
+                final_text = clean_ai_text(final_text) or "Не вдалося сформувати відповідь."
+                if any(m.get("role") == "assistant" for m in messages):
+                    final_text += "\n\n📊 Джерело даних: Google Analytics 4 (nikvesti.com)"
+                await placeholder.edit_text(final_text)
                 return
 
             messages.append({"role": "assistant", "content": response.content})
