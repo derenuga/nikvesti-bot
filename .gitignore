@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+nominatim_cache.json
+streets_with_mikroraion.json
+queue_clusters_with_mikroraion.json
+outage_streets_filial_15.csv

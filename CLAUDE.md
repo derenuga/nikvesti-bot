@@ -75,6 +75,9 @@ handlers/
 | /prozorro_test_jump \[N\] | Діагностика зсуву офсету за N днів (дефолт 14) |
 | /prozorro_confirm_jump \[N\] | Підтвердити скидання офсету |
 | /prozorro_reset_tender \<id\> | Розблокувати тендер для повторної реакції |
+| /outage | Графік відключень електроенергії (off.energy.mk.ua) |
+| /outage_probe \<path\> \[arg\] | Службова розвідка API з Railway (тимчасово) |
+| /outage_export \[idfilial\] | CSV вулиць із чергами, дефолт 15 (Миколаїв), ~7–15 хв |
 
 ---
 
@@ -164,6 +167,7 @@ MISE_PYTHON_GITHUB_ATTESTATIONS = false
 - [`docs/ENGLISH_REPORT_MODULE.md`](docs/ENGLISH_REPORT_MODULE.md) — EN-звіт
 - [`docs/FOX_LORE.md`](docs/FOX_LORE.md) — identity frame персонажа Лиса Микити
 - [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md) — природномовні запити (Agentic Query Layer): GA4 + Search Console, tool use, whitelist
+- [`docs/ENERGY_OUTAGE_MODULE.md`](docs/ENERGY_OUTAGE_MODULE.md) — графік відключень: API off.energy.mk.ua, адресний каскад, CSV-експорт, наступні кроки
 - [`docs/LONG_TERM_VISION.md`](docs/LONG_TERM_VISION.md) — довгострокові ідеї: підписки, перехід на власний сервер+MySQL, AI-доступ до 17-річного архіву новин
 
 ---
