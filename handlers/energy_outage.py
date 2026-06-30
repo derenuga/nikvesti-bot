@@ -1,8 +1,7 @@
-import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
-import aiohttp
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +13,14 @@ OUTAGE_TYPE_NAMES = {
     3: "СГАВ",
 }
 
-# Час по Києву = UTC+3
 KYIV_TZ = timezone(timedelta(hours=3))
 
-# 48 тридцятихвилинних слотів: id=1 → 00:00–00:30, id=N → (N-1)*30хв
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; NikvestiBot/1.0)",
+    "Referer": "https://off.energy.mk.ua/",
+}
+
+
 def _slot_to_time(slot_id: int) -> tuple[str, str]:
     start_minutes = (slot_id - 1) * 30
     end_minutes = slot_id * 30
@@ -26,34 +29,16 @@ def _slot_to_time(slot_id: int) -> tuple[str, str]:
     return f"{h_s:02d}:{m_s:02d}", f"{h_e:02d}:{m_e:02d}"
 
 
-async def _fetch_json(session: aiohttp.ClientSession, url: str) -> list | dict:
-    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-        resp.raise_for_status()
-        return await resp.json()
+def _fetch_json(url: str) -> list | dict:
+    resp = requests.get(url, headers=HEADERS, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
 
 
-async def fetch_outage_data() -> dict:
-    """Повертає словник з усіма потрібними даними для формування повідомлення."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; NikvestiBot/1.0)",
-        "Referer": "https://off.energy.mk.ua/",
-    }
-    async with aiohttp.ClientSession(headers=headers) as session:
-        queues_by_type, active = await asyncio.gather(
-            _fetch_all_queues(session),
-            _fetch_json(session, f"{BASE_URL}/v2/schedule/active"),
-        )
-    return {"queues": queues_by_type, "active": active}
-
-
-async def _fetch_all_queues(session: aiohttp.ClientSession) -> dict:
-    """Повертає {queue_id: {name, type_id, type_name, enabled}}."""
-    results = await asyncio.gather(*[
-        _fetch_json(session, f"{BASE_URL}/outage-queue/by-type/{t}")
-        for t in (1, 2, 3)
-    ])
+def _fetch_all_queues() -> dict:
     lookup = {}
-    for type_id, queues in enumerate(results, start=1):
+    for type_id in (1, 2, 3):
+        queues = _fetch_json(f"{BASE_URL}/outage-queue/by-type/{type_id}")
         for q in queues:
             lookup[q["id"]] = {
                 "name": q["name"],
@@ -65,21 +50,18 @@ async def _fetch_all_queues(session: aiohttp.ClientSession) -> dict:
 
 
 def _find_current_schedule(active: list) -> dict | None:
-    """Знаходить розклад що діє зараз (за UTC)."""
     now_utc = datetime.now(timezone.utc)
     for schedule in active:
         frm = datetime.fromisoformat(schedule["from"].replace("Z", "+00:00"))
         to = datetime.fromisoformat(schedule["to"].replace("Z", "+00:00"))
         if frm <= now_utc <= to:
             return schedule
-    # Якщо поточного нема — перший майбутній
     future = [s for s in active
               if datetime.fromisoformat(s["from"].replace("Z", "+00:00")) > now_utc]
     return future[0] if future else None
 
 
 def _merge_slots(slot_ids: list[int]) -> list[tuple[str, str]]:
-    """Зливає послідовні слоти в часові інтервали."""
     if not slot_ids:
         return []
     sorted_ids = sorted(slot_ids)
@@ -101,17 +83,22 @@ def _merge_slots(slot_ids: list[int]) -> list[tuple[str, str]]:
     return result
 
 
+def fetch_outage_data() -> dict:
+    queues = _fetch_all_queues()
+    active = _fetch_json(f"{BASE_URL}/v2/schedule/active")
+    return {"queues": queues, "active": active}
+
+
 def build_message(data: dict) -> str:
     queues = data["queues"]
     schedule = _find_current_schedule(data["active"])
 
     if not schedule:
-        return "⚡ Дані про відключення наразі відсутні.\n\n📋 Дані Миколаївобленерго"
+        return "⚡ Дані про відключення наразі відсутні.\n\nДані Миколаївобленерго"
 
     now_kyiv = datetime.now(KYIV_TZ)
-    date_str = now_kyiv.strftime("%-d %B %Y").lower()
+    date_str = now_kyiv.strftime("%-d.%m.%Y")
 
-    # Збираємо per-queue: OFF-слоти і PROBABLY_OFF-слоти
     queue_off: dict[int, list[int]] = {}
     queue_prob: dict[int, list[int]] = {}
 
@@ -126,9 +113,8 @@ def build_message(data: dict) -> str:
 
     all_queue_ids = set(queue_off) | set(queue_prob)
     if not all_queue_ids:
-        return "⚡ На сьогодні графік відключень порожній.\n\n📋 Дані Миколаївобленерго"
+        return "⚡ На сьогодні графік відключень порожній.\n\nДані Миколаївобленерго"
 
-    # Групуємо по типу відключення
     by_type: dict[int, list] = {}
     for qid in all_queue_ids:
         q = queues.get(qid)
@@ -144,7 +130,14 @@ def build_message(data: dict) -> str:
             "prob": prob_ranges,
         })
 
-    lines = [f"⚡ Оновлено графік відключень на {date_str}\n"]
+    MONTH_UA = {
+        1: "січня", 2: "лютого", 3: "березня", 4: "квітня",
+        5: "травня", 6: "червня", 7: "липня", 8: "серпня",
+        9: "вересня", 10: "жовтня", 11: "листопада", 12: "грудня",
+    }
+    date_str = f"{now_kyiv.day} {MONTH_UA[now_kyiv.month]} {now_kyiv.year}"
+
+    lines = [f"⚡ Графік відключень на {date_str}\n"]
 
     for type_id in sorted(by_type):
         type_name = OUTAGE_TYPE_NAMES[type_id]
@@ -167,9 +160,8 @@ def build_message(data: dict) -> str:
 
 
 async def outage_handler(update, context):
-    """Команда /outage — формує і надсилає повідомлення про відключення."""
     try:
-        data = await fetch_outage_data()
+        data = fetch_outage_data()
         text = build_message(data)
     except Exception as e:
         logger.error(f"energy_outage error: {e}", exc_info=True)
