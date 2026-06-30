@@ -228,6 +228,36 @@ def get_ga4_hourly_breakdown(period, start_date=None, end_date=None):
     return {"start_date": start, "end_date": end, "breakdown": breakdown}
 
 
+def get_ga4_custom_report(dimensions, metrics, period, limit=20, start_date=None, end_date=None):
+    """Запасний вихід: довільний GA4 звіт для питань, які не покриті іншими tools.
+    dimensions/metrics — точні назви з GA4 Data API (наприклад deviceCategory, browser,
+    sessionDefaultChannelGroup, operatingSystem, dayOfWeek). Singapore завжди виключається."""
+    start, end = _resolve_period(period, start_date, end_date)
+    client = _ga4_client()
+
+    request = RunReportRequest(
+        property=f"properties/{GA4_PROPERTY_ID}",
+        date_ranges=[DateRange(start_date=start, end_date=end)],
+        dimensions=[Dimension(name=d) for d in dimensions],
+        metrics=[Metric(name=m) for m in metrics],
+        dimension_filter=_no_singapore_filter(),
+        order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name=metrics[0]), desc=True)],
+        limit=limit,
+    )
+    response = client.run_report(request)
+
+    rows = []
+    for row in response.rows:
+        entry = {}
+        for i, d in enumerate(dimensions):
+            entry[d] = row.dimension_values[i].value
+        for i, m in enumerate(metrics):
+            entry[m] = row.metric_values[i].value
+        rows.append(entry)
+
+    return {"start_date": start, "end_date": end, "dimensions": dimensions, "metrics": metrics, "rows": rows}
+
+
 def get_ga4_article_stats(url):
     import re
     match = re.search(r'/(\d{4,})-', url)
@@ -357,6 +387,40 @@ TOOLS = [
         },
     },
     {
+        "name": "get_ga4_custom_report",
+        "description": (
+            "Запасний інструмент для GA4-питань, які не покриваються іншими tools — наприклад "
+            "по пристроях, браузерах, джерелах трафіку, дні тижня тощо. Приймає точні назви "
+            "dimensions і metrics з Google Analytics 4 Data API (GA4 dimension/metric reference). "
+            "Приклади dimensions: deviceCategory, browser, operatingSystem, sessionDefaultChannelGroup, "
+            "dayOfWeek, sessionSource, landingPage. Приклади metrics: activeUsers, sessions, "
+            "screenPageViews, engagementRate, averageSessionDuration. Singapore завжди виключається."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dimensions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Точні назви GA4 dimensions, наприклад ['deviceCategory']",
+                },
+                "metrics": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Точні назви GA4 metrics, наприклад ['activeUsers']",
+                },
+                "period": {
+                    "type": "string",
+                    "enum": ["today", "yesterday", "last_7_days", "last_30_days", "this_month", "last_month", "this_quarter", "custom"],
+                },
+                "limit": {"type": "integer", "description": "Скільки рядків повернути, за замовчуванням 20"},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+            },
+            "required": ["dimensions", "metrics", "period"],
+        },
+    },
+    {
         "name": "get_ga4_article_stats",
         "description": "Статистика переглядів конкретної статті nikvesti.com за всю історію, по мовних версіях (ua/ru/en).",
         "input_schema": {
@@ -374,6 +438,7 @@ TOOL_FUNCTIONS = {
     "get_ga4_top_articles": get_ga4_top_articles,
     "get_ga4_geo_breakdown": get_ga4_geo_breakdown,
     "get_ga4_hourly_breakdown": get_ga4_hourly_breakdown,
+    "get_ga4_custom_report": get_ga4_custom_report,
     "get_ga4_article_stats": get_ga4_article_stats,
 }
 
@@ -381,6 +446,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 
 Зараз ти відповідаєш на природномовне запитання про статистику сайту nikvesti.com (Google Analytics). Сьогоднішня дата: {today}.
 Використовуй доступні tools щоб отримати реальні дані — не вигадуй цифр. Якщо період сформульований розмовно ("середньомісячна", "за останній тиждень", "у вересні") — сам визнач відповідний period або start_date/end_date.
+Якщо питання не покривається жодним із спеціалізованих tools (наприклад про пристрої, браузери, джерела трафіку, дні тижня) — використай get_ga4_custom_report з точними назвами GA4 dimensions/metrics. Якщо він поверне помилку через невірну назву — спробуй іншу назву ще раз, не здавайся одразу.
 Відповідай коротко, по суті, з конкретними числами, простим текстом у кілька рядків — без Markdown-таблиць. Якщо даних не вдалось отримати — чесно скажи про це."""
 
 
