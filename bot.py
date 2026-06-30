@@ -44,9 +44,12 @@ async def channel_post_handler(update, context):
 
 async def group_reply_to_bot(update, context):
     """Reply на повідомлення бота в чаті редакції — теж іде в Intent Router,
-    але тільки для ALLOWED_USER_IDS (групу check_allowed не блокує, тут перевірка інлайн)."""
+    але тільки для ALLOWED_USER_IDS (групу check_allowed не блокує, тут перевірка інлайн)
+    і тільки в чаті редакції — щоб не реагувати на реплаї в каналі тендерів/документів."""
     msg = update.message
     if not msg or not msg.reply_to_message:
+        return
+    if str(update.effective_chat.id) != str(CHAT_ID):
         return
     if msg.reply_to_message.from_user.id != context.bot.id:
         return
