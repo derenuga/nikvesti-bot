@@ -15,6 +15,7 @@ from handlers.stat import stat_handler
 from handlers.query_router import handle_natural_language_query
 from handlers.reactions import handle_message_reaction
 from handlers.english_report import english_report_handler
+from handlers.energy_outage import outage_handler
 from handlers import storage
 
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -169,6 +170,7 @@ def main():
     app.add_handler(CommandHandler("law", law_check))
     app.add_handler(CommandHandler("stat", stat_handler))
     app.add_handler(CommandHandler("english", english_report_handler))
+    app.add_handler(CommandHandler("outage", outage_handler))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_natural_language_query))
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, group_reply_to_bot))
