@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://off.energy.mk.ua/api"
 SITE_ROOT = "https://off.energy.mk.ua"
 
+_LABELS_PATH = Path(__file__).parent / "energy_outage_labels.json"
+_LABELS: dict[str, list[str]] = json.loads(_LABELS_PATH.read_text(encoding="utf-8")) if _LABELS_PATH.exists() else {}
+
 OUTAGE_TYPE_NAMES = {
     1: "ГАВ",
     2: "СГАВ",
@@ -157,16 +160,35 @@ def build_message(data: dict) -> str:
         entries = sorted(by_type[type_id], key=lambda x: x["name"])
         lines.append(f"📋 {type_name}:")
         for e in entries:
-            queue_lines = []
+            if not e["off"] and not e["prob"]:
+                continue
+
+            off_min = sum(
+                (int(en.split(":")[0]) * 60 + int(en.split(":")[1])) -
+                (int(s.split(":")[0]) * 60 + int(s.split(":")[1]))
+                for s, en in e["off"]
+            )
+            h, m = divmod(off_min, 60)
+            hours_str = f"{h} год" + (f" {m} хв" if m else "")
+
+            parts = []
             if e["off"]:
-                ranges_str = ", ".join(f"{s}–{en}" for s, en in e["off"])
-                queue_lines.append(f"немає світла {ranges_str}")
+                off_str = " / ".join(f"{s}–{en}" for s, en in e["off"])
+                parts.append(f"немає світла {hours_str} — {off_str}")
             if e["prob"]:
-                ranges_str = ", ".join(f"{s}–{en}" for s, en in e["prob"])
-                queue_lines.append(f"можливе відключення {ranges_str}")
-            if queue_lines:
-                lines.append(f"  Черга {e['name']}: {'; '.join(queue_lines)}")
-        lines.append("")
+                prob_str = " / ".join(f"{s}–{en}" for s, en in e["prob"])
+                parts.append(f"можливо — {prob_str}")
+
+            lines.append(f"Черга {e['name']}: {'; '.join(parts)}")
+
+            neighborhoods = _LABELS.get(e["name"], [])
+            if neighborhoods:
+                MAX_SHOWN = 5
+                shown = neighborhoods[:MAX_SHOWN]
+                suffix = " та ін." if len(neighborhoods) > MAX_SHOWN else ""
+                lines.append(f"<i>{', '.join(shown)}{suffix}</i>")
+
+            lines.append("")
 
     return "\n".join(lines).rstrip()
 
@@ -178,7 +200,7 @@ async def outage_handler(update, context):
     except Exception as e:
         logger.error(f"energy_outage error: {e}", exc_info=True)
         text = f"⚠️ Не вдалося отримати дані про відключення: {e}"
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 # ---------- Адресний каскад ----------
