@@ -25,6 +25,7 @@
 - `STAT_MODULE.md` — команда /stat: статистика конкретного матеріалу (Facebook + GA4)
 - `ENGLISH_REPORT_MODULE.md` — місячний звіт EN-версії сайту (GA4 + Search Console + AI)
 - `FOX_LORE.md` — повна lore bible персонажа Лиса Микити (для розробників)
+- `ENERGY_OUTAGE_MODULE.md` — графік відключень електроенергії: API off.energy.mk.ua, адресний каскад, CSV-експорт, наступні кроки
 
 ---
 
@@ -69,6 +70,7 @@ handlers/
   competitors.py — моніторинг новин конкурентів (деталі — COMPETITORS_MODULE.md)
   stat.py — /stat <url>: статистика матеріалу Facebook + GA4 (деталі — STAT_MODULE.md)
   english_report.py — місячний звіт EN-версії (деталі — ENGLISH_REPORT_MODULE.md)
+  energy_outage.py — графік відключень /outage (деталі — ENERGY_OUTAGE_MODULE.md)
   storage.py — шар абстракції над станом (JSON на Railway Volume)
   sheets.py — запис у Google Sheets
   reactions.py — обробка реакцій на повідомлення про тендери
@@ -95,6 +97,9 @@ handlers/
 - /stat <url> — статистика матеріалу nikvesti.com (Facebook перегляди/реакції + GA4 по мовах)
 - /english — місячний звіт EN-версії сайту (GA4 + Search Console + AI коментар)
 - /prozorro, /prozorro_test_jump, /prozorro_confirm_jump, /prozorro_reset_tender — див. PROZORRO_MODULE.md
+- /outage — графік відключень електроенергії (off.energy.mk.ua)
+- /outage_probe <path> [arg] — службова розвідка API off.energy.mk.ua з Railway (деталі — ENERGY_OUTAGE_MODULE.md)
+- /outage_export [idfilial] — CSV-експорт вулиць із черговими призначеннями (дефолт idfilial=15, ~7–15 хв)
 
 ---
 
