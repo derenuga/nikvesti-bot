@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
     RunReportRequest, DateRange, Metric, Dimension, OrderBy,
-    FilterExpression, Filter,
+    FilterExpression, FilterExpressionList, Filter,
 )
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as gapi_build
@@ -222,25 +222,49 @@ def get_ga4_hourly_breakdown(period, start_date=None, end_date=None):
     return {"start_date": start, "end_date": end, "breakdown": breakdown}
 
 
-def get_ga4_custom_report(dimensions, metrics, period, limit=20, start_date=None, end_date=None, page_path_contains=None):
+def get_ga4_custom_report(dimensions, metrics, period, limit=20, start_date=None, end_date=None,
+                           page_path_contains=None, filter_dimension=None, filter_value_contains=None):
     """Запасний вихід: довільний GA4 звіт для питань, які не покриті іншими tools.
     dimensions/metrics — точні назви з GA4 Data API (наприклад deviceCategory, browser,
-    sessionDefaultChannelGroup, operatingSystem, dayOfWeek).
-    page_path_contains — опційно звузити звіт до конкретної статті/розділу (наприклад ID статті з URL)."""
+    sessionDefaultChannelGroup, operatingSystem, dayOfWeek, sessionSource, pageReferrer).
+    page_path_contains — опційно звузити звіт до конкретної статті/розділу (наприклад ID статті з URL).
+    filter_dimension/filter_value_contains — опційно звузити звіт по будь-якій іншій dimension
+    (наприклад filter_dimension='sessionSource', filter_value_contains='derstandard.de'),
+    щоб подивитись детальний розклад трафіку з конкретного джерела/реферера."""
     start, end = _resolve_period(period, start_date, end_date)
     client = _ga4_client()
 
-    dimension_filter = None
+    filters = []
     if page_path_contains:
-        dimension_filter = FilterExpression(
-            filter=Filter(
-                field_name="pagePath",
-                string_filter=Filter.StringFilter(
-                    match_type=Filter.StringFilter.MatchType.CONTAINS,
-                    value=page_path_contains,
+        filters.append(
+            FilterExpression(
+                filter=Filter(
+                    field_name="pagePath",
+                    string_filter=Filter.StringFilter(
+                        match_type=Filter.StringFilter.MatchType.CONTAINS,
+                        value=page_path_contains,
+                    )
                 )
             )
         )
+    if filter_dimension and filter_value_contains:
+        filters.append(
+            FilterExpression(
+                filter=Filter(
+                    field_name=filter_dimension,
+                    string_filter=Filter.StringFilter(
+                        match_type=Filter.StringFilter.MatchType.CONTAINS,
+                        value=filter_value_contains,
+                    )
+                )
+            )
+        )
+
+    dimension_filter = None
+    if len(filters) == 1:
+        dimension_filter = filters[0]
+    elif len(filters) > 1:
+        dimension_filter = FilterExpression(and_group=FilterExpressionList(expressions=filters))
 
     request = RunReportRequest(
         property=f"properties/{GA4_PROPERTY_ID}",
@@ -461,7 +485,8 @@ TOOLS = [
             "по пристроях, браузерах, джерелах трафіку, дні тижня тощо. Приймає точні назви "
             "dimensions і metrics з Google Analytics 4 Data API (GA4 dimension/metric reference). "
             "Приклади dimensions: deviceCategory, browser, operatingSystem, sessionDefaultChannelGroup, "
-            "dayOfWeek, sessionSource, landingPage. Приклади metrics: activeUsers, sessions, "
+            "dayOfWeek, sessionSource, landingPage, pageReferrer (повний URL сторінки-реферера). "
+            "Приклади metrics: activeUsers, sessions, "
             "screenPageViews, engagementRate, averageSessionDuration."
         ),
         "input_schema": {
@@ -487,6 +512,14 @@ TOOLS = [
                 "page_path_contains": {
                     "type": "string",
                     "description": "Опційно: звузити звіт до конкретної статті — ID статті з URL або фрагмент шляху. Використовуй разом з dimensions типу sessionDefaultChannelGroup/sessionSource, щоб дізнатись звідки прийшов трафік на конкретний матеріал.",
+                },
+                "filter_dimension": {
+                    "type": "string",
+                    "description": "Опційно: назва GA4 dimension для додаткового фільтра (наприклад 'sessionSource'). Працює разом з filter_value_contains. Можна комбінувати з page_path_contains.",
+                },
+                "filter_value_contains": {
+                    "type": "string",
+                    "description": "Опційно: значення для фільтра по filter_dimension (CONTAINS-збіг), наприклад 'derstandard.de'. Використовуй щоб деталізувати трафік з конкретного реферера/джерела — наприклад dimensions=['pageReferrer','pagePath'], filter_dimension='sessionSource', filter_value_contains='derstandard.de', щоб побачити з яких сторінок-реферерів і на які наші сторінки прийшли користувачі.",
                 },
             },
             "required": ["dimensions", "metrics", "period"],
@@ -589,6 +622,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 Якщо питання не покривається жодним із спеціалізованих tools (наприклад про пристрої, браузери, джерела трафіку, дні тижня) — використай get_ga4_custom_report з точними назвами GA4 dimensions/metrics. Якщо він поверне помилку через невірну назву — спробуй іншу назву ще раз, не здавайся одразу.
 Якщо питають звідки прийшов трафік на конкретну статтю (соцмережі, реферали тощо) — використай get_ga4_custom_report з dimensions ['sessionDefaultChannelGroup'] або ['sessionSource', 'sessionMedium'] і page_path_contains (ID статті з URL, наприклад "35814" з "/news/35814-..."). Не питай дату публікації — для джерел трафіку конкретної статті дата не потрібна, бери period='last_30_days' або ширше якщо невпевнений.
 Якщо питають конкретно про Google Discover, Google News чи пошукові запити Google — використай get_search_console_report (search_type='discover' для Discover). Для конкретної статті передай page_url повним URL (https://nikvesti.com/...). Це окреме джерело даних від GA4 — не плутай.
+Якщо питають деталі про конкретний реферер/джерело трафіку з невеликою кількістю сесій (наприклад "звідки саме прийшли заходи з derstandard.de" або "на які наші сторінки попав трафік з X") — використай get_ga4_custom_report з filter_dimension='sessionSource', filter_value_contains=<домен>, dimensions=['pageReferrer', 'pagePath'] (або додай 'sessionSourceMedium'). Це дозволяє звузити звіт до конкретного джерела навіть якщо воно дало лише кілька сесій і не потрапляє в загальний топ. pageReferrer дає повний URL сторінки-донора, pagePath — куди саме на нашому сайті потрапив користувач.
 Відповідай коротко, по суті, з конкретними числами, простим текстом у кілька рядків — без Markdown-таблиць. Якщо викликав render_chart — графік буде надіслано окремим повідомленням автоматично, НЕ згадуй шлях до файлу, НЕ вставляй markdown-посилання чи ![]() на зображення в тексті відповіді. Якщо даних не вдалось отримати — чесно скажи про це."""
 
 

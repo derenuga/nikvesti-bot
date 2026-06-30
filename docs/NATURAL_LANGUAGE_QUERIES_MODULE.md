@@ -63,7 +63,7 @@ handle_natural_language_query() в query_router.py
 | `get_ga4_top_articles(period, limit?, start_date?, end_date?)` | Топ статей за переглядами з атрибуцією автора |
 | `get_ga4_geo_breakdown(period, dimension?, limit?, ...)` | Географія аудиторії по Україні: `region` або `city` |
 | `get_ga4_hourly_breakdown(period, ...)` | Активність по годинах доби (0-23) — найкращий час публікації |
-| `get_ga4_custom_report(dimensions, metrics, period, limit?, page_path_contains?, ...)` | Запасний інструмент для довільних GA4 dimensions/metrics (пристрої, браузери, джерела трафіку, день тижня тощо). `page_path_contains` звужує до конкретної статті (ID з URL) — наприклад, щоб дізнатись звідки прийшов трафік на конкретний матеріал |
+| `get_ga4_custom_report(dimensions, metrics, period, limit?, page_path_contains?, filter_dimension?, filter_value_contains?, ...)` | Запасний інструмент для довільних GA4 dimensions/metrics (пристрої, браузери, джерела трафіку, день тижня тощо). `page_path_contains` звужує до конкретної статті (ID з URL). `filter_dimension`+`filter_value_contains` — довільний CONTAINS-фільтр по будь-якій dimension (наприклад `sessionSource` містить `derstandard.de`), щоб деталізувати трафік з конкретного джерела навіть при малій кількості сесій |
 | `get_ga4_article_stats(url)` | Перегляди конкретної статті за всю історію, по мовних версіях (ua/ru/en) |
 | `get_search_console_report(period, dimensions?, page_url?, search_type?, limit?, ...)` | Google Search Console: пошукові запити, сторінки, країни, кліки/покази/CTR/позиція. `search_type`: `web` (дефолт), `discover` (Google Discover), `googleNews`, `image`, `video`. `page_url` звужує до конкретної статті — **матчиться по ID статті через CONTAINS, не по точному URL** (equals виявився крихким — трейлінг слеші, протокол тощо ламали фільтр і давали хибний "нуль трафіку") |
 | `render_chart(labels, values, chart_type?, title?, ylabel?)` | Малює bar/line графік (matplotlib) з даних, які Claude вже отримав з інших tools, зберігає PNG; надсилається окремим повідомленням після тексту |
@@ -101,6 +101,9 @@ handle_natural_language_query() в query_router.py
 11. Додано `get_search_console_report`, включно з `search_type='discover'` — тепер Лис бачить трафік з Google Discover, пошукові запити Google, Google News.
 12. Footer джерела даних зроблено динамічним (GA4 / Search Console / обидва — залежно від реально викликаних tools).
 13. Виправлено фільтр `page_url` в Search Console: був `equals` (крихке точне співпадіння URL, давало хибні "0 трафіку"), став `contains` по ID статті — як і в GA4-tools.
+14. Прибрано фільтр виключення трафіку з Сінгапуру (`_no_singapore_filter` та аналог в `english_report.py`) — після впровадження капчі на сайті бот-трафіку немає.
+15. `/english` і місячний автозвіт тепер коректно звітують за поточний місяць, коли запускаються в його останній день (раніше завжди брали попередній місяць).
+16. Додано `filter_dimension`/`filter_value_contains` до `get_ga4_custom_report` — довільний CONTAINS-фільтр по будь-якій GA4 dimension (не тільки `pagePath`). Дозволяє деталізувати трафік з конкретного джерела/реферера (наприклад `sessionSource` містить `derstandard.de`) навіть якщо воно дало лише кілька сесій і не потрапляє в загальний топ; разом з dimension `pageReferrer` показує точні сторінки-донори.
 
 ---
 
