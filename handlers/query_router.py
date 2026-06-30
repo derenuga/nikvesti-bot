@@ -161,6 +161,45 @@ def get_ga4_top_articles(period, limit=5, start_date=None, end_date=None):
     return {"start_date": start, "end_date": end, "articles": results}
 
 
+def get_ga4_geo_breakdown(period, dimension="region", limit=10, start_date=None, end_date=None):
+    start, end = _resolve_period(period, start_date, end_date)
+    client = _ga4_client()
+
+    ga4_dimension = "city" if dimension == "city" else "region"
+
+    request = RunReportRequest(
+        property=f"properties/{GA4_PROPERTY_ID}",
+        date_ranges=[DateRange(start_date=start, end_date=end)],
+        dimensions=[Dimension(name=ga4_dimension)],
+        metrics=[Metric(name="activeUsers")],
+        dimension_filter=FilterExpression(
+            and_group=FilterExpressionList(
+                expressions=[
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="country",
+                            string_filter=Filter.StringFilter(
+                                match_type=Filter.StringFilter.MatchType.EXACT,
+                                value="Ukraine",
+                            ),
+                        )
+                    ),
+                    _no_singapore_filter(),
+                ]
+            )
+        ),
+        order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="activeUsers"), desc=True)],
+        limit=limit,
+    )
+    response = client.run_report(request)
+
+    breakdown = [
+        {dimension: row.dimension_values[0].value, "users": int(row.metric_values[0].value)}
+        for row in response.rows
+    ]
+    return {"start_date": start, "end_date": end, "dimension": dimension, "breakdown": breakdown}
+
+
 def get_ga4_article_stats(url):
     import re
     match = re.search(r'/(\d{4,})-', url)
@@ -252,6 +291,28 @@ TOOLS = [
         },
     },
     {
+        "name": "get_ga4_geo_breakdown",
+        "description": "Географія аудиторії сайту nikvesti.com по Україні (кількість користувачів по областях/регіонах або містах) за вказаний період. Трафік поза Україною сюди не входить.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "enum": ["today", "yesterday", "last_7_days", "last_30_days", "this_month", "last_month", "this_quarter", "custom"],
+                },
+                "dimension": {
+                    "type": "string",
+                    "enum": ["region", "city"],
+                    "description": "region — області/регіони України, city — міста. За замовчуванням region",
+                },
+                "limit": {"type": "integer", "description": "Скільки регіонів/міст повернути, за замовчуванням 10"},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+            },
+            "required": ["period"],
+        },
+    },
+    {
         "name": "get_ga4_article_stats",
         "description": "Статистика переглядів конкретної статті nikvesti.com за всю історію, по мовних версіях (ua/ru/en).",
         "input_schema": {
@@ -267,6 +328,7 @@ TOOLS = [
 TOOL_FUNCTIONS = {
     "get_ga4_metric": get_ga4_metric,
     "get_ga4_top_articles": get_ga4_top_articles,
+    "get_ga4_geo_breakdown": get_ga4_geo_breakdown,
     "get_ga4_article_stats": get_ga4_article_stats,
 }
 
