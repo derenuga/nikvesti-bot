@@ -166,3 +166,31 @@ async def outage_handler(update, context):
         logger.error(f"energy_outage error: {e}", exc_info=True)
         text = f"⚠️ Не вдалося отримати дані про відключення: {e}"
     await update.message.reply_text(text)
+
+
+async def outage_probe_handler(update, context):
+    """Тимчасова службова команда для розвідки API off.energy.mk.ua.
+    Локальне середовище розробки не має мережевого доступу до off.energy.mk.ua
+    (блокується Cloudflare), а Railway — має. Тому формати ендпоінтів адресного
+    каскаду (ns/street/dom) підбираються наживо через цю команду в Telegram.
+    /outage_probe <path-after-/api/> [query string]
+    Приклад: /outage_probe addr/ns filiya_id=1
+    """
+    if not context.args:
+        await update.message.reply_text(
+            "Використання: /outage_probe <шлях після /api/> [?query]\n"
+            "Приклад: /outage_probe addr/ns filiya_id=1"
+        )
+        return
+    path = context.args[0]
+    query = context.args[1] if len(context.args) > 1 else ""
+    url = f"{BASE_URL}/{path}"
+    if query:
+        url = f"{url}?{query}"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        body = resp.text
+        text = f"URL: {url}\nStatus: {resp.status_code}\n\n{body[:3500]}"
+    except Exception as e:
+        text = f"URL: {url}\n⚠️ Помилка: {e}"
+    await update.message.reply_text(text)
