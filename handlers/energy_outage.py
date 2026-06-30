@@ -168,29 +168,56 @@ async def outage_handler(update, context):
     await update.message.reply_text(text)
 
 
+SITE_ROOT = "https://off.energy.mk.ua"
+
+
 async def outage_probe_handler(update, context):
-    """Тимчасова службова команда для розвідки API off.energy.mk.ua.
+    """Тимчасова службова команда для розвідки off.energy.mk.ua.
     Локальне середовище розробки не має мережевого доступу до off.energy.mk.ua
-    (блокується Cloudflare), а Railway — має. Тому формати ендпоінтів адресного
-    каскаду (ns/street/dom) підбираються наживо через цю команду в Telegram.
-    /outage_probe <path-after-/api/> [query string]
-    Приклад: /outage_probe addr/ns filiya_id=1
+    (блокується Cloudflare), а Railway — має. Тому ендпоінти адресного каскаду
+    (ns/street/dom) підбираються наживо через цю команду в Telegram.
+
+    /outage_probe <path> [query string | пошуковий рядок для .js файлів]
+    Якщо <path> починається з "api/" — запит іде на off.energy.mk.ua/api/...,
+    другий аргумент трактується як query string (filiya_id=15 тощо).
+    Якщо <path> не починається з "api/" (наприклад js/app.js) — запит іде
+    на off.energy.mk.ua/<path>, а другий аргумент — це підрядок для пошуку
+    в тексті відповіді (бо файл мінімізований і завеликий для повного виводу).
     """
     if not context.args:
         await update.message.reply_text(
-            "Використання: /outage_probe <шлях після /api/> [?query]\n"
-            "Приклад: /outage_probe addr/ns filiya_id=1"
+            "Використання:\n"
+            "/outage_probe api/<шлях> [query string] — запит до API\n"
+            "/outage_probe js/app.js <підрядок> — пошук тексту в JS-файлі сайту"
         )
         return
     path = context.args[0]
-    query = context.args[1] if len(context.args) > 1 else ""
-    url = f"{BASE_URL}/{path}"
-    if query:
-        url = f"{url}?{query}"
+    arg2 = context.args[1] if len(context.args) > 1 else ""
+    is_api = path.startswith("api/")
+    url = f"{SITE_ROOT}/{path}"
+    if is_api and arg2:
+        url = f"{url}?{arg2}"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
+        resp = requests.get(url, headers=HEADERS, timeout=15)
         body = resp.text
-        text = f"URL: {url}\nStatus: {resp.status_code}\n\n{body[:3500]}"
+        if is_api or not arg2:
+            text = f"URL: {url}\nStatus: {resp.status_code}\n\n{body[:3500]}"
+        else:
+            matches = []
+            start = 0
+            while len(matches) < 5:
+                idx = body.find(arg2, start)
+                if idx == -1:
+                    break
+                lo = max(0, idx - 80)
+                hi = min(len(body), idx + len(arg2) + 80)
+                matches.append(body[lo:hi])
+                start = idx + len(arg2)
+            if matches:
+                snippet = "\n---\n".join(matches)
+                text = f"URL: {url}\nStatus: {resp.status_code}\nЗнайдено '{arg2}': {len(matches)}+\n\n{snippet}"
+            else:
+                text = f"URL: {url}\nStatus: {resp.status_code}\nПідрядок '{arg2}' не знайдено (довжина файлу: {len(body)})"
+        await update.message.reply_text(text[:4000])
     except Exception as e:
-        text = f"URL: {url}\n⚠️ Помилка: {e}"
-    await update.message.reply_text(text)
+        await update.message.reply_text(f"URL: {url}\n⚠️ Помилка: {e}")
