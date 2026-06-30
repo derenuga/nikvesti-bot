@@ -45,31 +45,15 @@ def get_sc_client():
 # ── GA4 фільтри ──────────────────────────────────────────────────────────────
 
 def en_no_sg_filter():
-    """AND(pagePath BEGINS_WITH /en/, NOT country = Singapore)"""
+    """pagePath BEGINS_WITH /en/. Раніше тут також виключався Singapore (бот-трафік),
+    але після впровадження капчі на сайті бот-трафіку немає — фільтр прибрано."""
     return FilterExpression(
-        and_group=FilterExpressionList(
-            expressions=[
-                FilterExpression(
-                    filter=Filter(
-                        field_name="pagePath",
-                        string_filter=Filter.StringFilter(
-                            match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
-                            value="/en/",
-                        ),
-                    )
-                ),
-                FilterExpression(
-                    not_expression=FilterExpression(
-                        filter=Filter(
-                            field_name="country",
-                            string_filter=Filter.StringFilter(
-                                match_type=Filter.StringFilter.MatchType.EXACT,
-                                value="Singapore",
-                            ),
-                        )
-                    )
-                ),
-            ]
+        filter=Filter(
+            field_name="pagePath",
+            string_filter=Filter.StringFilter(
+                match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
+                value="/en/",
+            ),
         )
     )
 
@@ -207,7 +191,7 @@ def get_en_top_countries(client, start_date, end_date, limit=5):
 
 
 def get_en_top_referrers(client, start_date, end_date, limit=8):
-    """Конкретні сайти-реферери для EN-версії (без SG)."""
+    """Конкретні сайти-реферери для EN-версії."""
     referral_filter = FilterExpression(
         and_group=FilterExpressionList(
             expressions=[
@@ -218,17 +202,6 @@ def get_en_top_referrers(client, start_date, end_date, limit=8):
                             match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
                             value="/en/",
                         ),
-                    )
-                ),
-                FilterExpression(
-                    not_expression=FilterExpression(
-                        filter=Filter(
-                            field_name="country",
-                            string_filter=Filter.StringFilter(
-                                match_type=Filter.StringFilter.MatchType.EXACT,
-                                value="Singapore",
-                            ),
-                        )
                     )
                 ),
                 FilterExpression(
@@ -329,7 +302,6 @@ async def build_english_report(year=None, month=None):
     """
     Збирає місячний звіт EN-версії.
     Без year/month — звітує за попередній місяць.
-    Сінгапур виключено з усіх GA4 запитів.
     """
     now = datetime.now()
 
@@ -366,8 +338,7 @@ async def build_english_report(year=None, month=None):
     # ── Формування повідомлення ──
 
     msg = (
-        f"🇬🇧 <b>Англійська версія МикВісті — {period_label}</b>\n"
-        f"<i>(без урахування ботів із Сінгапуру)</i>\n\n"
+        f"🇬🇧 <b>Англійська версія МикВісті — {period_label}</b>\n\n"
         f"👥 Користувачі: <b>{users}</b>{format_diff(users, users_prev)}\n"
         f"🔄 Сесії: <b>{sessions}</b>{format_diff(sessions, sessions_prev)}\n"
         f"📄 Перегляди: <b>{pageviews}</b>{format_diff(pageviews, pageviews_prev)}\n"
@@ -420,10 +391,10 @@ async def build_english_report(year=None, month=None):
     return msg
 
 
-async def send_english_report(bot, chat_id):
+async def send_english_report(bot, chat_id, year=None, month=None):
     """Відправляє місячний EN-звіт в чат."""
     try:
-        msg = await build_english_report()
+        msg = await build_english_report(year, month)
         await bot.send_message(
             chat_id=chat_id,
             text=msg,

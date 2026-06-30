@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
     RunReportRequest, DateRange, Metric, Dimension, OrderBy,
-    FilterExpression, FilterExpressionList, Filter,
+    FilterExpression, Filter,
 )
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as gapi_build
@@ -61,21 +61,6 @@ def _sc_client():
         scopes=["https://www.googleapis.com/auth/webmasters.readonly"]
     )
     return gapi_build("searchconsole", "v1", credentials=credentials, cache_discovery=False)
-
-
-def _no_singapore_filter():
-    """Singapore — бот-трафік, виключаємо з усіх GA4-запитів NLQ-шару."""
-    return FilterExpression(
-        not_expression=FilterExpression(
-            filter=Filter(
-                field_name="country",
-                string_filter=Filter.StringFilter(
-                    match_type=Filter.StringFilter.MatchType.EXACT,
-                    value="Singapore",
-                ),
-            )
-        )
-    )
 
 
 PERIOD_PRESETS = {
@@ -134,7 +119,6 @@ def get_ga4_metric(metric, period, start_date=None, end_date=None):
         property=f"properties/{GA4_PROPERTY_ID}",
         date_ranges=[DateRange(start_date=start, end_date=end)],
         metrics=[Metric(name=metric)],
-        dimension_filter=_no_singapore_filter(),
     )
     response = client.run_report(request)
     value = int(response.rows[0].metric_values[0].value) if response.rows else 0
@@ -150,7 +134,6 @@ def get_ga4_top_articles(period, limit=5, start_date=None, end_date=None):
         date_ranges=[DateRange(start_date=start, end_date=end)],
         dimensions=[Dimension(name="pagePath"), Dimension(name="pageTitle")],
         metrics=[Metric(name="screenPageViews")],
-        dimension_filter=_no_singapore_filter(),
         order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
         limit=50,
     )
@@ -192,19 +175,12 @@ def get_ga4_geo_breakdown(period, dimension="region", limit=10, start_date=None,
         dimensions=[Dimension(name=ga4_dimension)],
         metrics=[Metric(name="activeUsers")],
         dimension_filter=FilterExpression(
-            and_group=FilterExpressionList(
-                expressions=[
-                    FilterExpression(
-                        filter=Filter(
-                            field_name="country",
-                            string_filter=Filter.StringFilter(
-                                match_type=Filter.StringFilter.MatchType.EXACT,
-                                value="Ukraine",
-                            ),
-                        )
-                    ),
-                    _no_singapore_filter(),
-                ]
+            filter=Filter(
+                field_name="country",
+                string_filter=Filter.StringFilter(
+                    match_type=Filter.StringFilter.MatchType.EXACT,
+                    value="Ukraine",
+                ),
             )
         ),
         order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="activeUsers"), desc=True)],
@@ -229,7 +205,6 @@ def get_ga4_hourly_breakdown(period, start_date=None, end_date=None):
         date_ranges=[DateRange(start_date=start, end_date=end)],
         dimensions=[Dimension(name="hour")],
         metrics=[Metric(name="activeUsers"), Metric(name="screenPageViews")],
-        dimension_filter=_no_singapore_filter(),
         order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="hour"))],
         limit=24,
     )
@@ -250,28 +225,22 @@ def get_ga4_hourly_breakdown(period, start_date=None, end_date=None):
 def get_ga4_custom_report(dimensions, metrics, period, limit=20, start_date=None, end_date=None, page_path_contains=None):
     """Запасний вихід: довільний GA4 звіт для питань, які не покриті іншими tools.
     dimensions/metrics — точні назви з GA4 Data API (наприклад deviceCategory, browser,
-    sessionDefaultChannelGroup, operatingSystem, dayOfWeek). Singapore завжди виключається.
+    sessionDefaultChannelGroup, operatingSystem, dayOfWeek).
     page_path_contains — опційно звузити звіт до конкретної статті/розділу (наприклад ID статті з URL)."""
     start, end = _resolve_period(period, start_date, end_date)
     client = _ga4_client()
 
-    filters = [_no_singapore_filter()]
+    dimension_filter = None
     if page_path_contains:
-        filters.append(
-            FilterExpression(
-                filter=Filter(
-                    field_name="pagePath",
-                    string_filter=Filter.StringFilter(
-                        match_type=Filter.StringFilter.MatchType.CONTAINS,
-                        value=page_path_contains,
-                    )
+        dimension_filter = FilterExpression(
+            filter=Filter(
+                field_name="pagePath",
+                string_filter=Filter.StringFilter(
+                    match_type=Filter.StringFilter.MatchType.CONTAINS,
+                    value=page_path_contains,
                 )
             )
         )
-    dimension_filter = (
-        FilterExpression(and_group=FilterExpressionList(expressions=filters))
-        if page_path_contains else filters[0]
-    )
 
     request = RunReportRequest(
         property=f"properties/{GA4_PROPERTY_ID}",
@@ -310,19 +279,12 @@ def get_ga4_article_stats(url):
         dimensions=[Dimension(name="pagePath")],
         metrics=[Metric(name="screenPageViews")],
         dimension_filter=FilterExpression(
-            and_group=FilterExpressionList(
-                expressions=[
-                    FilterExpression(
-                        filter=Filter(
-                            field_name="pagePath",
-                            string_filter=Filter.StringFilter(
-                                match_type=Filter.StringFilter.MatchType.CONTAINS,
-                                value=article_id,
-                            )
-                        )
-                    ),
-                    _no_singapore_filter(),
-                ]
+            filter=Filter(
+                field_name="pagePath",
+                string_filter=Filter.StringFilter(
+                    match_type=Filter.StringFilter.MatchType.CONTAINS,
+                    value=article_id,
+                )
             )
         ),
         limit=50,
@@ -500,7 +462,7 @@ TOOLS = [
             "dimensions і metrics з Google Analytics 4 Data API (GA4 dimension/metric reference). "
             "Приклади dimensions: deviceCategory, browser, operatingSystem, sessionDefaultChannelGroup, "
             "dayOfWeek, sessionSource, landingPage. Приклади metrics: activeUsers, sessions, "
-            "screenPageViews, engagementRate, averageSessionDuration. Singapore завжди виключається."
+            "screenPageViews, engagementRate, averageSessionDuration."
         ),
         "input_schema": {
             "type": "object",

@@ -109,8 +109,11 @@ async def run_check_law_enforcement(bot):
     await check_law_enforcement(bot)
 
 async def monthly_english_report(bot):
-    """Місячний звіт EN-версії — запускається в останній день місяця о 19:00."""
-    await send_english_report(bot, CHAT_ID)
+    """Місячний звіт EN-версії — запускається в останній день місяця о 19:00,
+    коли поточний місяць вже практично завершений. Тому звітуємо саме за нього,
+    а не за попередній (build_english_report без аргументів звітує за попередній місяць)."""
+    now = datetime.now()
+    await send_english_report(bot, CHAT_ID, year=now.year, month=now.month)
 
 def setup_scheduler(bot, last_channel_post_time=None):
     if last_channel_post_time is None:

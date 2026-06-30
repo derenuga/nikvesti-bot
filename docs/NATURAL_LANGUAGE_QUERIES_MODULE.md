@@ -57,8 +57,6 @@ handle_natural_language_query() в query_router.py
 
 ## Доступні tools (`handlers/query_router.py`)
 
-Усі GA4-функції виключають трафік з Сінгапуру (`_no_singapore_filter()` — бот-трафік, та сама бізнес-логіка що й у `english_report.py`).
-
 | Tool | Призначення |
 |---|---|
 | `get_ga4_metric(metric, period, start_date?, end_date?)` | Одна метрика за період: `activeUsers`, `screenPageViews`, `screenPageViewsPerSession`, `newUsers`, `returningUsers` (рахується як `activeUsers - newUsers`) |
