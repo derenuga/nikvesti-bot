@@ -25,6 +25,7 @@ from google.analytics.data_v1beta.types import (
     FilterExpression, FilterExpressionList, Filter,
 )
 from google.oauth2 import service_account
+from googleapiclient.discovery import build as gapi_build
 
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, clean_ai_text
 from handlers.helpers import get_author_from_url
@@ -35,6 +36,7 @@ os.makedirs(CHARTS_DIR, exist_ok=True)
 GA4_PROPERTY_ID = os.environ.get("GA4_PROPERTY_ID")
 GA4_CREDENTIALS = os.environ.get("GA4_CREDENTIALS")
 BASE_URL = "https://nikvesti.com"
+SC_SITE_URL = "sc-domain:nikvesti.com"
 
 MAX_TOOL_ITERATIONS = 4
 
@@ -50,6 +52,15 @@ def _ga4_client():
         scopes=["https://www.googleapis.com/auth/analytics.readonly"]
     )
     return BetaAnalyticsDataClient(credentials=credentials)
+
+
+def _sc_client():
+    creds_dict = json.loads(GA4_CREDENTIALS)
+    credentials = service_account.Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/webmasters.readonly"]
+    )
+    return gapi_build("searchconsole", "v1", credentials=credentials, cache_discovery=False)
 
 
 def _no_singapore_filter():
@@ -333,6 +344,45 @@ def get_ga4_article_stats(url):
     return {"url": url, "views_by_lang": by_lang, "total_views": sum(by_lang.values())}
 
 
+def get_search_console_report(period, dimensions=None, page_url=None, search_type="web", limit=10, start_date=None, end_date=None):
+    """Дані Google Search Console: пошукові запити, сторінки, країни, дати тощо.
+    search_type='discover' — трафік з Google Discover (стрічка рекомендацій), 'web' — звичайний пошук Google,
+    'googleNews' — Google News. page_url — звузити до конкретної статті (повний URL nikvesti.com)."""
+    start, end = _resolve_period(period, start_date, end_date)
+    dims = dimensions or ["query"]
+    sc = _sc_client()
+
+    body = {
+        "startDate": start,
+        "endDate": end,
+        "dimensions": dims,
+        "type": search_type,
+        "rowLimit": limit,
+    }
+    if page_url:
+        body["dimensionFilterGroups"] = [{
+            "filters": [{"dimension": "page", "operator": "equals", "expression": page_url}]
+        }]
+
+    try:
+        response = sc.searchanalytics().query(siteUrl=SC_SITE_URL, body=body).execute()
+    except Exception as e:
+        return {"error": str(e)}
+
+    rows = response.get("rows", [])
+    results = [
+        {
+            **{dims[i]: r["keys"][i] for i in range(len(dims))},
+            "clicks": int(r.get("clicks", 0)),
+            "impressions": int(r.get("impressions", 0)),
+            "ctr": round(r.get("ctr", 0) * 100, 2),
+            "position": round(r.get("position", 0), 1),
+        }
+        for r in rows
+    ]
+    return {"start_date": start, "end_date": end, "search_type": search_type, "rows": results}
+
+
 # ---------- Графіки ----------
 
 def render_chart(labels, values, chart_type="bar", title="", ylabel=""):
@@ -488,6 +538,40 @@ TOOLS = [
         },
     },
     {
+        "name": "get_search_console_report",
+        "description": (
+            "Дані Google Search Console для nikvesti.com: пошукові запити, по яких показується сайт, "
+            "сторінки, країни, кліки/покази/CTR/позиція. search_type='discover' — трафік з Google Discover "
+            "(стрічка рекомендацій в додатку Google, типово саме звідти приходять вірусні сплески), "
+            "'web' — звичайний органічний пошук, 'googleNews' — Google News. Використовуй, коли питають "
+            "звідки з Google прийшов трафік, чи стаття 'попала в Discover', по яких запитах знаходять сайт."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "enum": ["today", "yesterday", "last_7_days", "last_30_days", "this_month", "last_month", "this_quarter", "custom"],
+                },
+                "dimensions": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["query", "page", "country", "device", "date"]},
+                    "description": "За замовчуванням ['query']. Можна комбінувати, наприклад ['date'] для динаміки по днях.",
+                },
+                "page_url": {"type": "string", "description": "Опційно: повний URL конкретної статті nikvesti.com, щоб звузити звіт до неї"},
+                "search_type": {
+                    "type": "string",
+                    "enum": ["web", "discover", "googleNews", "image", "video"],
+                    "description": "За замовчуванням 'web'. 'discover' — для питань про Google Discover",
+                },
+                "limit": {"type": "integer", "description": "Скільки рядків повернути, за замовчуванням 10"},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+            },
+            "required": ["period"],
+        },
+    },
+    {
         "name": "render_chart",
         "description": (
             "Малює графік (стовпчиковий або лінійний) з даних, які ти вже отримав з інших GA4-tools, "
@@ -528,6 +612,7 @@ TOOL_FUNCTIONS = {
     "get_ga4_hourly_breakdown": get_ga4_hourly_breakdown,
     "get_ga4_custom_report": get_ga4_custom_report,
     "get_ga4_article_stats": get_ga4_article_stats,
+    "get_search_console_report": get_search_console_report,
     "render_chart": render_chart,
 }
 
@@ -536,7 +621,8 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 Зараз ти відповідаєш на природномовне запитання про статистику сайту nikvesti.com (Google Analytics). Сьогоднішня дата: {today}.
 Використовуй доступні tools щоб отримати реальні дані — не вигадуй цифр. Якщо період сформульований розмовно ("середньомісячна", "за останній тиждень", "у вересні") — сам визнач відповідний period або start_date/end_date.
 Якщо питання не покривається жодним із спеціалізованих tools (наприклад про пристрої, браузери, джерела трафіку, дні тижня) — використай get_ga4_custom_report з точними назвами GA4 dimensions/metrics. Якщо він поверне помилку через невірну назву — спробуй іншу назву ще раз, не здавайся одразу.
-Якщо питають звідки прийшов трафік на конкретну статтю (соцмережі, реферали, Discover тощо) — використай get_ga4_custom_report з dimensions ['sessionDefaultChannelGroup'] або ['sessionSource', 'sessionMedium'] і page_path_contains (ID статті з URL, наприклад "35814" з "/news/35814-..."). Не питай дату публікації — для джерел трафіку конкретної статті дата не потрібна, бери period='last_30_days' або ширше якщо невпевнений.
+Якщо питають звідки прийшов трафік на конкретну статтю (соцмережі, реферали тощо) — використай get_ga4_custom_report з dimensions ['sessionDefaultChannelGroup'] або ['sessionSource', 'sessionMedium'] і page_path_contains (ID статті з URL, наприклад "35814" з "/news/35814-..."). Не питай дату публікації — для джерел трафіку конкретної статті дата не потрібна, бери period='last_30_days' або ширше якщо невпевнений.
+Якщо питають конкретно про Google Discover, Google News чи пошукові запити Google — використай get_search_console_report (search_type='discover' для Discover). Для конкретної статті передай page_url повним URL (https://nikvesti.com/...). Це окреме джерело даних від GA4 — не плутай.
 Відповідай коротко, по суті, з конкретними числами, простим текстом у кілька рядків — без Markdown-таблиць. Якщо викликав render_chart — графік буде надіслано окремим повідомленням автоматично, НЕ згадуй шлях до файлу, НЕ вставляй markdown-посилання чи ![]() на зображення в тексті відповіді. Якщо даних не вдалось отримати — чесно скажи про це."""
 
 
@@ -548,6 +634,7 @@ async def handle_natural_language_query(update, context):
     messages = [{"role": "user", "content": question}]
     placeholder = await update.message.reply_text("🦊 Розбираюсь з вашим питанням, шефе...")
     chart_path = None
+    used_tools = set()
 
     try:
         for _ in range(MAX_TOOL_ITERATIONS):
@@ -563,8 +650,14 @@ async def handle_natural_language_query(update, context):
                 final_text = "".join(b.text for b in response.content if b.type == "text")
                 final_text = clean_ai_text(final_text) or "Не вдалося сформувати відповідь."
                 final_text = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', final_text).strip()
-                if any(m.get("role") == "assistant" for m in messages):
-                    final_text += "\n\n📊 Джерело даних: Google Analytics 4 (nikvesti.com)"
+                if used_tools:
+                    sources = []
+                    if used_tools - {"get_search_console_report", "render_chart"}:
+                        sources.append("Google Analytics 4")
+                    if "get_search_console_report" in used_tools:
+                        sources.append("Google Search Console")
+                    if sources:
+                        final_text += f"\n\n📊 Джерело даних: {' + '.join(sources)} (nikvesti.com)"
                 await placeholder.edit_text(final_text)
                 if chart_path:
                     try:
@@ -581,6 +674,7 @@ async def handle_natural_language_query(update, context):
                 if block.type != "tool_use":
                     continue
                 func = TOOL_FUNCTIONS.get(block.name)
+                used_tools.add(block.name)
                 try:
                     result = func(**block.input) if func else {"error": f"Невідомий tool: {block.name}"}
                 except Exception as e:
