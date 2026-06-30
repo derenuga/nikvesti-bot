@@ -164,6 +164,7 @@ MISE_PYTHON_GITHUB_ATTESTATIONS = false
 - [`docs/ENGLISH_REPORT_MODULE.md`](docs/ENGLISH_REPORT_MODULE.md) — EN-звіт
 - [`docs/FOX_LORE.md`](docs/FOX_LORE.md) — identity frame персонажа Лиса Микити
 - [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md) — природномовні запити (Agentic Query Layer): GA4 + Search Console, tool use, whitelist
+- [`docs/LONG_TERM_VISION.md`](docs/LONG_TERM_VISION.md) — довгострокові ідеї: підписки, перехід на власний сервер+MySQL, AI-доступ до 17-річного архіву новин
 
 ---
 
