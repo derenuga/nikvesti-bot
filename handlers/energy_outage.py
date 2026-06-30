@@ -176,7 +176,14 @@ def build_message(data: dict) -> str:
                     label = f" ({', '.join(shown)}{suffix})"
                 else:
                     label = ""
-                lines.append(f"  Черга {e['name']}{label}: {'; '.join(queue_lines)}")
+                total_min = sum(
+                    (int(en.split(":")[0]) * 60 + int(en.split(":")[1])) -
+                    (int(s.split(":")[0]) * 60 + int(s.split(":")[1]))
+                    for s, en in (e["off"] + e["prob"])
+                )
+                h, m = divmod(total_min, 60)
+                hours_str = f"{h} год" + (f" {m} хв" if m else "")
+                lines.append(f"  Черга {e['name']}{label}: {'; '.join(queue_lines)} — {hours_str}")
         lines.append("")
 
     return "\n".join(lines).rstrip()
