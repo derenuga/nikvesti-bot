@@ -8,9 +8,9 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://off.energy.mk.ua/api"
 
 OUTAGE_TYPE_NAMES = {
-    1: "ГПВ",
-    2: "ГАВ",
-    3: "СГАВ",
+    1: "ГАВ",
+    2: "СГАВ",
+    3: "ГПВ",
 }
 
 KYIV_TZ = timezone(timedelta(hours=3))
