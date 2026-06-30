@@ -42,6 +42,18 @@ async def channel_post_handler(update, context):
     if update.channel_post and update.channel_post.chat.username == CHANNEL_USERNAME:
         last_channel_post_time["time"] = datetime.now()
 
+async def group_reply_to_bot(update, context):
+    """Reply на повідомлення бота в чаті редакції — теж іде в Intent Router,
+    але тільки для ALLOWED_USER_IDS (групу check_allowed не блокує, тут перевірка інлайн)."""
+    msg = update.message
+    if not msg or not msg.reply_to_message:
+        return
+    if msg.reply_to_message.from_user.id != context.bot.id:
+        return
+    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        return
+    await handle_natural_language_query(update, context)
+
 async def start(update, context):
     await update.message.reply_text(
         "Привіт! Я помічник редакції МикВісті 👋\n"
@@ -156,6 +168,7 @@ def main():
     app.add_handler(CommandHandler("english", english_report_handler))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_natural_language_query))
+    app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, group_reply_to_bot))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
     print("Bot started...")
     app.run_polling(allowed_updates=["message", "channel_post", "message_reaction"])
