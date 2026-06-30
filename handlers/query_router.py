@@ -236,19 +236,38 @@ def get_ga4_hourly_breakdown(period, start_date=None, end_date=None):
     return {"start_date": start, "end_date": end, "breakdown": breakdown}
 
 
-def get_ga4_custom_report(dimensions, metrics, period, limit=20, start_date=None, end_date=None):
+def get_ga4_custom_report(dimensions, metrics, period, limit=20, start_date=None, end_date=None, page_path_contains=None):
     """Запасний вихід: довільний GA4 звіт для питань, які не покриті іншими tools.
     dimensions/metrics — точні назви з GA4 Data API (наприклад deviceCategory, browser,
-    sessionDefaultChannelGroup, operatingSystem, dayOfWeek). Singapore завжди виключається."""
+    sessionDefaultChannelGroup, operatingSystem, dayOfWeek). Singapore завжди виключається.
+    page_path_contains — опційно звузити звіт до конкретної статті/розділу (наприклад ID статті з URL)."""
     start, end = _resolve_period(period, start_date, end_date)
     client = _ga4_client()
+
+    filters = [_no_singapore_filter()]
+    if page_path_contains:
+        filters.append(
+            FilterExpression(
+                filter=Filter(
+                    field_name="pagePath",
+                    string_filter=Filter.StringFilter(
+                        match_type=Filter.StringFilter.MatchType.CONTAINS,
+                        value=page_path_contains,
+                    )
+                )
+            )
+        )
+    dimension_filter = (
+        FilterExpression(and_group=FilterExpressionList(expressions=filters))
+        if page_path_contains else filters[0]
+    )
 
     request = RunReportRequest(
         property=f"properties/{GA4_PROPERTY_ID}",
         date_ranges=[DateRange(start_date=start, end_date=end)],
         dimensions=[Dimension(name=d) for d in dimensions],
         metrics=[Metric(name=m) for m in metrics],
-        dimension_filter=_no_singapore_filter(),
+        dimension_filter=dimension_filter,
         order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name=metrics[0]), desc=True)],
         limit=limit,
     )
@@ -449,6 +468,10 @@ TOOLS = [
                 "limit": {"type": "integer", "description": "Скільки рядків повернути, за замовчуванням 20"},
                 "start_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
                 "end_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+                "page_path_contains": {
+                    "type": "string",
+                    "description": "Опційно: звузити звіт до конкретної статті — ID статті з URL або фрагмент шляху. Використовуй разом з dimensions типу sessionDefaultChannelGroup/sessionSource, щоб дізнатись звідки прийшов трафік на конкретний матеріал.",
+                },
             },
             "required": ["dimensions", "metrics", "period"],
         },
@@ -513,6 +536,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 Зараз ти відповідаєш на природномовне запитання про статистику сайту nikvesti.com (Google Analytics). Сьогоднішня дата: {today}.
 Використовуй доступні tools щоб отримати реальні дані — не вигадуй цифр. Якщо період сформульований розмовно ("середньомісячна", "за останній тиждень", "у вересні") — сам визнач відповідний period або start_date/end_date.
 Якщо питання не покривається жодним із спеціалізованих tools (наприклад про пристрої, браузери, джерела трафіку, дні тижня) — використай get_ga4_custom_report з точними назвами GA4 dimensions/metrics. Якщо він поверне помилку через невірну назву — спробуй іншу назву ще раз, не здавайся одразу.
+Якщо питають звідки прийшов трафік на конкретну статтю (соцмережі, реферали, Discover тощо) — використай get_ga4_custom_report з dimensions ['sessionDefaultChannelGroup'] або ['sessionSource', 'sessionMedium'] і page_path_contains (ID статті з URL, наприклад "35814" з "/news/35814-..."). Не питай дату публікації — для джерел трафіку конкретної статті дата не потрібна, бери period='last_30_days' або ширше якщо невпевнений.
 Відповідай коротко, по суті, з конкретними числами, простим текстом у кілька рядків — без Markdown-таблиць. Якщо викликав render_chart — графік буде надіслано окремим повідомленням автоматично, НЕ згадуй шлях до файлу, НЕ вставляй markdown-посилання чи ![]() на зображення в тексті відповіді. Якщо даних не вдалось отримати — чесно скажи про це."""
 
 
