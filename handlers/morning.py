@@ -1,15 +1,18 @@
+import asyncio
 import os
 import random
 import requests
-import anthropic
 from datetime import datetime
 from handlers.events import get_today_events, format_events_for_prompt, format_events_html
-from handlers.ai_messages import clean_ai_text
+from handlers.ai_messages import fox_generate, FOX_MODEL_SMART
+from handlers.helpers import escape_html as _escape_html
 
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+WEEKDAYS_UA = [
+    "понеділок", "вівторок", "середа", "четвер",
+    "п'ятниця", "субота", "неділя",
+]
 
 # Фіксовані координати Миколаєва (НЕ змінювати на q="Mykolaiv,UA" — назва міста
 # через геокодер OpenWeatherMap не завжди резолвиться в потрібне місто і може
@@ -193,9 +196,12 @@ async def generate_morning_message(weather, events_text=None):
             f"Перефразуй своїми словами, не цитуй дослівно. Легка журналістська іронія, без грубощів."
         )
 
+    today = datetime.now()
+    today_label = f"{WEEKDAYS_UA[today.weekday()]}, {today.strftime('%d.%m.%Y')}"
+
     prompt = f"""Ти — Лис Микита, бот редакції новинного сайту МикВісті (Миколаїв, Україна).
 
-Напиши ранкове повідомлення для редакції. Сьогодні {datetime.now().strftime('%A, %d.%m.%Y')}.
+Напиши ранкове повідомлення для редакції. Сьогодні {today_label}.
 
 Прогноз погоди в Миколаєві на сьогодні: {weather_text}
 {events_block}
@@ -215,19 +221,8 @@ async def generate_morning_message(weather, events_text=None):
 
 Напиши тільки текст повідомлення, без пояснень."""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=400,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return clean_ai_text(message.content[0].text)
-
-def _escape_html(text):
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    # system=None — промпт самодостатній (містить власний identity frame)
+    return await fox_generate(prompt, system=None, model=FOX_MODEL_SMART, max_tokens=400)
 
 
 def _build_full_message(ai_text, events):
@@ -241,8 +236,9 @@ def _build_full_message(ai_text, events):
 
 async def send_morning_message(bot, chat_id):
     try:
-        weather = get_mykolaiv_weather()
-        events = get_today_events()
+        # requests-виклики — в окремому потоці, щоб не блокувати event loop
+        weather = await asyncio.to_thread(get_mykolaiv_weather)
+        events = await asyncio.to_thread(get_today_events)
         events_text = format_events_for_prompt(events)
         ai_text = await generate_morning_message(weather, events_text)
         full_text = _build_full_message(ai_text, events)
@@ -267,8 +263,8 @@ async def send_morning_message(bot, chat_id):
 
 async def morning_handler(update, context):
     try:
-        weather = get_mykolaiv_weather()
-        events = get_today_events()
+        weather = await asyncio.to_thread(get_mykolaiv_weather)
+        events = await asyncio.to_thread(get_today_events)
         events_text = format_events_for_prompt(events)
         ai_text = await generate_morning_message(weather, events_text)
         full_text = _build_full_message(ai_text, events)

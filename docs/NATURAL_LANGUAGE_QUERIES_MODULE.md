@@ -19,10 +19,14 @@ handle_natural_language_query() в query_router.py
         │
         ▼
 Надсилається плейсхолдер: "🦊 Розбираюсь з вашим питанням, шефе..."
+(під час виконання tools плейсхолдер оновлюється живим прогресом:
+"🦊 Дивлюсь метрики GA4...", "🦊 Звіряю з Google Search Console..." — TOOL_PROGRESS)
         │
         ▼
-Цикл tool use (максимум MAX_TOOL_ITERATIONS = 4 ітерації):
-  Claude API виклик (system = QUERY_ROUTER_SYSTEM_PROMPT + tools=TOOLS)
+Цикл tool use (максимум MAX_TOOL_ITERATIONS = 8 ітерацій):
+  Claude API виклик (модель ROUTER_MODEL = claude-sonnet-5, adaptive thinking;
+  system+tools кешуються через cache_control — кожна ітерація і кожен запит
+  протягом дня читають префікс з кешу за ~10% ціни)
         │
         ▼
   stop_reason == "tool_use"? ──так──▶ виконати Python-функцію(ї) з TOOL_FUNCTIONS,
@@ -104,6 +108,7 @@ handle_natural_language_query() в query_router.py
 14. Прибрано фільтр виключення трафіку з Сінгапуру (`_no_singapore_filter` та аналог в `english_report.py`) — після впровадження капчі на сайті бот-трафіку немає.
 15. `/english` і місячний автозвіт тепер коректно звітують за поточний місяць, коли запускаються в його останній день (раніше завжди брали попередній місяць).
 16. Додано `filter_dimension`/`filter_value_contains` до `get_ga4_custom_report` — довільний CONTAINS-фільтр по будь-якій GA4 dimension (не тільки `pagePath`). Дозволяє деталізувати трафік з конкретного джерела/реферера (наприклад `sessionSource` містить `derstandard.de`) навіть якщо воно дало лише кілька сесій і не потрапляє в загальний топ; разом з dimension `pageReferrer` показує точні сторінки-донори.
+17. Хвиля 2 ревізії (07.2026): модель роутера → `claude-sonnet-5` (adaptive thinking); prompt caching на system+tools (~80-90% економії input-токенів); `MAX_TOOL_ITERATIONS` 4 → 8; AsyncAnthropic + tool-функції через `asyncio.to_thread` — NLQ більше не блокує event loop бота; живий прогрес у плейсхолдері (TOOL_PROGRESS).
 
 ---
 

@@ -138,12 +138,7 @@ def _format_message(tender):
     return text, tender_id, title, amount, buyer
 
 
-def _escape_html(text):
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+from handlers.helpers import escape_html as _escape_html
 
 
 # ---------- Основна логіка ----------

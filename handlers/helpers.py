@@ -34,6 +34,15 @@ def parse_month_arg(args):
     label = f"{MONTHS_UA[month_num]} {year}"
     return start, end, label
 
+def escape_html(text):
+    """Екранування для Telegram parse_mode=HTML. Єдина копія для всіх модулів."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 import requests
 from bs4 import BeautifulSoup
 

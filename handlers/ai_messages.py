@@ -97,7 +97,37 @@ TEAM_TELEGRAM = {name: info["tg"] for name, info in TEAM.items()}
 FOX_SYSTEM_PROMPT = """Ти — Лис Микита, внутрішній AI-помічник редакції МикВісті. Твоя роль — працювати з редакційними сигналами: помічати, звіряти, нагадувати й підсвічувати те, що може бути важливим для команди.
 Ти не замінюєш журналістів і не ухвалюєш редакційні рішення. Пиши українською, коротко, живо й конкретно. Лисячість — це уважність, хитрість, спостережливість і редакційний нюх, а не постійна рольова гра. Не вигадуй фактів, не перебільшуй, не повторюй однакові вступи й приглушуй персонажність у чутливих темах."""
 
-client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+# Стратегія моделей (REVIEW_2026_07.md, п. б.3):
+# SMART — аналітика і головні тексти (ранкове, тижневі звіти з цифрами, NLQ-роутер);
+# FAST — короткі "смакові" тексти (ДН, нагадування про пошту, підводки) —
+# у рази дешевше і швидше, на 2-4 реченнях різниці в якості не видно.
+FOX_MODEL_SMART = "claude-sonnet-5"
+FOX_MODEL_FAST = "claude-haiku-4-5"
+
+async_client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+
+async def fox_generate(prompt, *, system=FOX_SYSTEM_PROMPT, model=FOX_MODEL_FAST, max_tokens=300):
+    """Єдина точка всіх AI-викликів Лиса (крім tool-use циклу в query_router).
+
+    Асинхронний клієнт — виклик НЕ блокує event loop бота (REVIEW п. б.1).
+    Зміна моделі, retry, облік вартості — робляться тут, а не по всьому коду.
+    system=None — промпт самодостатній, системний промпт не надсилається.
+    """
+    kwargs = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if system:
+        kwargs["system"] = system
+    if model == FOX_MODEL_SMART:
+        # У Sonnet 5 з пропущеним thinking вмикається adaptive thinking —
+        # для коротких стилістичних текстів воно з'їдає max_tokens без користі.
+        kwargs["thinking"] = {"type": "disabled"}
+    message = await async_client.messages.create(**kwargs)
+    text = "".join(b.text for b in message.content if b.type == "text")
+    return clean_ai_text(text)
 
 
 def clean_ai_text(text):
@@ -126,13 +156,7 @@ async def generate_birthday_greeting(name, info):
 
 2-3 речення. Тепло, щиро, з гумором якщо доречно. Згадай їх роль або внесок у редакцію — але природно, без пафосу. Згадай тег {info['tg']} щоб людина побачила. Різні формулювання щоразу."""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=200,
-        system=FOX_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return clean_ai_text(message.content[0].text)
+    return await fox_generate(prompt, model=FOX_MODEL_FAST, max_tokens=200)
 
 
 async def generate_email_reminder(emails, hours, time_of_day):
@@ -151,13 +175,7 @@ async def generate_email_reminder(emails, hours, time_of_day):
 
 2-4 речення, неформально. Іноді згадуй що "Катя наругає" або подібне (але не завжди). Різні формулювання щоразу. 1-2 емодзі максимум."""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=300,
-        system=FOX_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return clean_ai_text(message.content[0].text)
+    return await fox_generate(prompt, model=FOX_MODEL_FAST, max_tokens=300)
 
 
 async def generate_instagram_weekly_comment(stats, follows, unfollows, total_posts, reels):
@@ -175,13 +193,7 @@ async def generate_instagram_weekly_comment(stats, follows, unfollows, total_pos
 
 3-5 речень. Оціни тиждень, подякуй команді — згадай усіх трьох. 1-2 емодзі."""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=300,
-        system=FOX_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return clean_ai_text(message.content[0].text)
+    return await fox_generate(prompt, model=FOX_MODEL_SMART, max_tokens=300)
 
 
 async def generate_facebook_weekly_comment(stats, top_authors, total_posts, total_reels):
@@ -204,13 +216,7 @@ async def generate_facebook_weekly_comment(stats, top_authors, total_posts, tota
 
 3-5 речень. Згадай що це фейсбук. Похвали авторів — використовуй їх Telegram username як є. 1-2 емодзі."""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=300,
-        system=FOX_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return clean_ai_text(message.content[0].text)
+    return await fox_generate(prompt, model=FOX_MODEL_SMART, max_tokens=300)
 
 
 async def generate_competitors_intro(sources_with_items):
@@ -239,13 +245,7 @@ async def generate_competitors_intro(sources_with_items):
 
 Не переказуй заголовки — вони будуть нижче. Не називай себе лисом прямо. Не починай з "Я". Різні формулювання щоразу."""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=150,
-        system=FOX_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return clean_ai_text(message.content[0].text)
+    return await fox_generate(prompt, model=FOX_MODEL_FAST, max_tokens=150)
 
 
 async def generate_english_monthly_comment(
@@ -285,10 +285,15 @@ async def generate_english_monthly_comment(
 
 3 речення максимум. Вибери одну-дві найцікавіші деталі — пошукові запити, несподівана країна, тренд у темах. Без переліку цифр — вони вже є вище. Без тегів людей — вони додаються окремо."""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=250,
-        system=FOX_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return clean_ai_text(message.content[0].text)
+    return await fox_generate(prompt, model=FOX_MODEL_SMART, max_tokens=250)
+
+
+async def generate_silence_reminder(channel_username, silence_hours):
+    """Нагадування редакції про мовчання телеграм-каналу (викликається з scheduler)."""
+    prompt = f"""Телеграм-канал @{channel_username} мовчить вже {int(silence_hours)} годин(и).
+Напиши коротке (2-3 речення) обережне нагадування редакції українською мовою.
+ОБОВ'ЯЗКОВО вкажи в тексті платформу - Телеграм та назву каналу — @{channel_username} (саме так, з @, не пропускай і не заміняй на загальне слово "канал" без назви).
+Запитай чи немає новини для публікації, або запропонуй знайти якусь національну подію.
+Неформальний тон, без тиску. Можна 1 емодзі."""
+
+    return await fox_generate(prompt, model=FOX_MODEL_FAST, max_tokens=200)
