@@ -209,15 +209,16 @@ def build_message(data: dict, changes: list[str] | None = None) -> str:
             h, m = divmod(off_min, 60)
             hours_str = f"{h} год" + (f" {m} хв" if m else "")
 
-            parts = []
+            schedule_parts = []
             if e["off"]:
                 off_str = " / ".join(f"{s}–{en}" for s, en in e["off"])
-                parts.append(f"немає світла {hours_str} — {off_str}")
+                schedule_parts.append(off_str)
             if e["prob"]:
                 prob_str = " / ".join(f"{s}–{en}" for s, en in e["prob"])
-                parts.append(f"можливо — {prob_str}")
+                schedule_parts.append(f"можливо — {prob_str}")
 
-            lines.append(f"<b>Черга {e['name']}: {'; '.join(parts)}</b>")
+            lines.append(f"<b>Черга {e['name']}: немає світла {hours_str}</b>")
+            lines.append(f"🕐 {' / '.join(schedule_parts)}")
 
             neighborhoods = _LABELS.get(e["name"], [])
             if neighborhoods:
