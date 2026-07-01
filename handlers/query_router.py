@@ -626,8 +626,9 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 Відповідай коротко, по суті, з конкретними числами, простим текстом у кілька рядків — без Markdown-таблиць. Якщо викликав render_chart — графік буде надіслано окремим повідомленням автоматично, НЕ згадуй шлях до файлу, НЕ вставляй markdown-посилання чи ![]() на зображення в тексті відповіді. Якщо даних не вдалось отримати — чесно скажи про це."""
 
 
-async def handle_natural_language_query(update, context):
-    question = update.message.text
+async def handle_natural_language_query(update, context, question=None):
+    if question is None:
+        question = update.message.text
     today = datetime.now().strftime("%Y-%m-%d")
     system_prompt = QUERY_ROUTER_SYSTEM_PROMPT.format(today=today)
 

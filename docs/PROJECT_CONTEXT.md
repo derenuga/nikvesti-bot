@@ -9,7 +9,7 @@
 
 **Стек:** Python, python-telegram-bot 21.9, Railway, GitHub
 
-**Бот:** @nikvesti_desk_bot (токен в Railway як BOT_TOKEN)
+**Бот:** @mykvisti_bot (токен в Railway як BOT_TOKEN)
 
 **Чат редакції ID:** -1001857099475
 

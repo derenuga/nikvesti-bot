@@ -6,7 +6,7 @@
 **Репозиторій:** github.com/derenuga/nikvesti-bot  
 **Хостинг:** Railway (проект `remarkable-stillness`)  
 **Стек:** Python, python-telegram-bot 21.9, APScheduler, BeautifulSoup, Google Analytics Data API, Google Search Console API, Anthropic Claude (tool use), matplotlib  
-**Бот:** @nikvesti_desk_bot  
+**Бот:** @mykvisti_bot  
 **Чат редакції:** -1001857099475  
 **Канал "🦊 Микита винюхав":** -1004322862າ (тендери + документи влади + правоохоронці)
 

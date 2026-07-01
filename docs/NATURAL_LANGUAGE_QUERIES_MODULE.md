@@ -43,15 +43,18 @@ handle_natural_language_query() в query_router.py
 ## Тригери
 
 1. **Приватне повідомлення боту** (`filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND` в `bot.py`) — основний канал.
-2. **Reply на повідомлення бота в чаті редакції** (`group_reply_to_bot` в `bot.py`) — той самий Intent Router, але тільки якщо `msg.reply_to_message.from_user.id == bot.id` і автор reply входить в `ALLOWED_USER_IDS`.
+2. **Reply на повідомлення бота в чаті редакції** (`group_query_trigger` в `bot.py`) — той самий Intent Router, але тільки якщо `msg.reply_to_message.from_user.id == bot.id` і автор reply входить в `ALLOWED_USER_IDS`.
+3. **Згадка `@<юзернейм бота>` будь-де в тексті повідомлення** в чаті редакції (без reply) — та сама `group_query_trigger`. Юзернейм береться динамічно з `context.bot.username` (не хардкодиться в коді), сама згадка вирізається з тексту перед тим як питання йде в `handle_natural_language_query(update, context, question=...)`.
 
-Обидва шляхи ведуть в `handle_natural_language_query`.
+Тригери 2 і 3 оброблені в одній функції `group_query_trigger` (а не в двох окремих `MessageHandler`), щоб reply на чуже повідомлення зі згадкою бота теж спрацював — окремі handlers з різними фільтрами конкурували б за пріоритет обробки апдейту в python-telegram-bot, і другий випадок міг би загубитись.
+
+Усі три шляхи ведуть в `handle_natural_language_query`.
 
 ### Виняток: reply на автоматичну розсилку
 
-`group_reply_to_bot` мовчки ігнорує (не запускає Intent Router) reply на повідомлення, яке бот надіслав як автоматичну розсилку — ранкове привітання (`send_morning_message`), привітання з днем народження, нагадування про непрочитану пошту чи про мовчання каналу @nikvesti. Такі пости не містять аналітичних даних, і reply на них зазвичай коментар до контенту ("в календарі знову пусто"), а не питання — раніше Claude намагався відповісти через GA4/Search Console tools, хоча питання до статистики не мало жодного стосунку.
+`group_query_trigger` мовчки ігнорує (не запускає Intent Router) reply на повідомлення, яке бот надіслав як автоматичну розсилку — ранкове привітання (`send_morning_message`), привітання з днем народження, нагадування про непрочитану пошту чи про мовчання каналу @nikvesti. Такі пости не містять аналітичних даних, і reply на них зазвичай коментар до контенту ("в календарі знову пусто"), а не питання — раніше Claude намагався відповісти через GA4/Search Console tools, хоча питання до статистики не мало жодного стосунку. Це обмеження стосується тільки reply — згадка `@бот` в новому повідомленні (навіть якщо воно теж є reply на розсилку) все одно спрацює, бо трактується як окреме питання.
 
-Реалізовано через `handlers/broadcast_tracker.py`: кожна з цих функцій відмічає `message_id` надісланого повідомлення (`mark_broadcast`) в in-memory реєстр (без персистентності — забувається після рестарту бота), `group_reply_to_bot` звіряється з ним (`is_broadcast`) перед викликом `handle_natural_language_query`.
+Реалізовано через `handlers/broadcast_tracker.py`: кожна з цих функцій відмічає `message_id` надісланого повідомлення (`mark_broadcast`) в in-memory реєстр (без персистентності — забувається після рестарту бота), `group_query_trigger` звіряється з ним (`is_broadcast`) перед викликом `handle_natural_language_query`.
 
 Звіти зі статистикою (`send_daily_report`, тижневі IG/FB звіти, місячний EN-звіт) в цей реєстр свідомо НЕ потрапляють — reply на них цілком може бути реальним аналітичним питанням ("чому впали перегляди?") і має йти в Intent Router як і раніше.
 
@@ -117,7 +120,7 @@ handle_natural_language_query() в query_router.py
 
 ## Відомі проблеми / спостереження з продакшну
 
-- **Group-chat reply leak (не пріоритет, відкладено):** зафіксований випадок, коли бот відповів у чаті редакції людині поза `ALLOWED_USER_IDS`, яка зробила reply на повідомлення лиса. Очікувана поведінка — `group_reply_to_bot` в `bot.py` має мовчки ігнорувати таких користувачів (`if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS: return`). Причина не підтверджена, не досліджено — за явним проханням залишити на потім.
+- **Group-chat reply leak (не пріоритет, відкладено):** зафіксований випадок, коли бот відповів у чаті редакції людині поза `ALLOWED_USER_IDS`, яка зробила reply на повідомлення лиса. Очікувана поведінка — `group_query_trigger` в `bot.py` має мовчки ігнорувати таких користувачів (`if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS: return`). Причина не підтверджена, не досліджено — за явним проханням залишити на потім.
 
 ---
 

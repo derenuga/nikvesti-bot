@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ApplicationHandlerStop, CommandHandler, MessageHandler, MessageReactionHandler, TypeHandler, filters
@@ -44,25 +45,58 @@ async def channel_post_handler(update, context):
     if update.channel_post and update.channel_post.chat.username == CHANNEL_USERNAME:
         last_channel_post_time["time"] = datetime.now()
 
-async def group_reply_to_bot(update, context):
-    """Reply на повідомлення бота в чаті редакції — теж іде в Intent Router,
-    але тільки для ALLOWED_USER_IDS (групу check_allowed не блокує, тут перевірка інлайн)
-    і тільки в чаті редакції — щоб не реагувати на реплаї в каналі тендерів/документів.
-    Reply на автоматичну розсилку (ранкове привітання, нагадування про пошту чи мовчання
-    каналу — див. broadcast_tracker.py) — це коментар до посту, а не питання, тому
-    ігнорується мовчки, без спроби Claude вигадати відповідь через GA4/Search Console tools."""
+async def group_query_trigger(update, context):
+    """Два способи задати питання Intent Router в чаті редакції без приватного
+    повідомлення — тільки для ALLOWED_USER_IDS (групу check_allowed не блокує,
+    тут перевірка інлайн) і тільки в чаті редакції (щоб не реагувати в каналі
+    тендерів/документів):
+
+    1. Reply на повідомлення бота. Reply на автоматичну розсилку (ранкове
+       привітання, нагадування про пошту чи мовчання каналу — див.
+       broadcast_tracker.py) — це зазвичай коментар до посту, а не питання,
+       тому мовчки ігнорується, без спроби Claude вигадати відповідь через
+       GA4/Search Console tools — ЯКЩО в тексті reply немає явної згадки бота.
+    2. Згадка @<юзернейм бота> будь-де в тексті повідомлення. Юзернейм
+       береться динамічно з context.bot.username — НЕ хардкодиться, щоб не
+       розʼїжджатись з реальним юзернеймом бота в Telegram. Явна згадка —
+       сильніший сигнал наміру, ніж сам факт reply, тому вона працює навіть
+       якщо повідомлення є reply на розсилку.
+
+    Обидва варіанти оброблені в одній функції, щоб reply на чуже повідомлення
+    зі згадкою бота теж спрацював (окремі MessageHandler з різними фільтрами
+    конкурували б за пріоритет обробки апдейту, і другий випадок міг би
+    загубитись)."""
     msg = update.message
-    if not msg or not msg.reply_to_message:
+    if not msg or not msg.text:
         return
     if str(update.effective_chat.id) != str(CHAT_ID):
         return
-    if msg.reply_to_message.from_user.id != context.bot.id:
-        return
     if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
         return
-    if is_broadcast(msg.reply_to_message.chat_id, msg.reply_to_message.message_id):
+
+    bot_username = context.bot.username
+    mention = f"@{bot_username}" if bot_username else None
+    has_mention = bool(mention) and mention.lower() in msg.text.lower()
+
+    is_reply_to_bot = bool(
+        msg.reply_to_message
+        and msg.reply_to_message.from_user
+        and msg.reply_to_message.from_user.id == context.bot.id
+    )
+
+    if not is_reply_to_bot and not has_mention:
         return
-    await handle_natural_language_query(update, context)
+
+    if is_reply_to_bot and not has_mention:
+        if is_broadcast(msg.reply_to_message.chat_id, msg.reply_to_message.message_id):
+            return
+        await handle_natural_language_query(update, context)
+        return
+
+    question = re.sub(re.escape(mention), "", msg.text, flags=re.IGNORECASE).strip() if has_mention else msg.text
+    if not question:
+        return
+    await handle_natural_language_query(update, context, question=question)
 
 async def start(update, context):
     await update.message.reply_text(
@@ -182,7 +216,7 @@ def main():
     app.add_handler(CommandHandler("outage_geocode", outage_geocode_handler))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_natural_language_query))
-    app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, group_reply_to_bot))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, group_query_trigger))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
     print("Bot started...")
     app.run_polling(allowed_updates=["message", "channel_post", "message_reaction"])
