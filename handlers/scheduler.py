@@ -16,7 +16,8 @@ from handlers.energy_outage import check_outage_changes
 from datetime import datetime, timedelta
 
 CHAT_ID = os.environ.get("CHAT_ID")
-OUTAGE_DEBUG_CHAT_ID = int(os.environ.get("ALLOWED_USER_IDS", "56631818").split(",")[0])
+_allowed = os.environ.get("ALLOWED_USER_IDS", "").strip()
+OUTAGE_DEBUG_CHAT_ID = int(_allowed.split(",")[0]) if _allowed else 56631818
 CHANNEL_USERNAME = "nikvesti"
 
 async def send_daily_report(bot):
