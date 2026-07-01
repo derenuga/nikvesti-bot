@@ -269,10 +269,14 @@ async def check_outage_changes(bot, debug_chat_id: int) -> None:
         state = _load_outage_state()
         old_map: dict[str, dict] = state.get("queue_map", {})
 
-        changes = _build_changes(old_map, new_map)
+        if not old_map:
+            # перший запуск — зберігаємо baseline без надсилання
+            _save_outage_state({"queue_map": new_map})
+            return
 
-        if changes or not old_map:
-            text = build_message(data, changes=changes if changes else None)
+        changes = _build_changes(old_map, new_map)
+        if changes:
+            text = build_message(data, changes=changes)
             await bot.send_message(chat_id=debug_chat_id, text=text, parse_mode="HTML")
 
         _save_outage_state({"queue_map": new_map})
