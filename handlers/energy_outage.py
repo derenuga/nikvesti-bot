@@ -161,7 +161,7 @@ def _queue_map_to_entries(queue_map: dict[str, dict]) -> dict[int, list]:
     return by_type
 
 
-def build_message(data: dict, changes: list[str] | None = None) -> str:
+def build_message(data: dict, changes: list[str] | None = None, detected_at: datetime | None = None) -> str:
     schedule, queue_map = _parse_schedule(data)
 
     if not schedule:
@@ -172,16 +172,9 @@ def build_message(data: dict, changes: list[str] | None = None) -> str:
     now_kyiv = datetime.now(KYIV_TZ)
     date_str = f"{now_kyiv.day} {MONTH_UA[now_kyiv.month]} {now_kyiv.year}"
 
-    updated_raw = schedule.get("updated_at") or schedule.get("from", "")
-    try:
-        updated_dt = datetime.fromisoformat(updated_raw.replace("Z", "+00:00")).astimezone(KYIV_TZ)
-        updated_str = updated_dt.strftime("%H:%M")
-    except Exception:
-        updated_str = None
-
     header = f"⚡ Графік відключень на {date_str}"
-    if updated_str:
-        header += f" (оновлено {updated_str})"
+    if detected_at:
+        header += f" (зміни о {detected_at.strftime('%H:%M')})"
 
     lines = [header, ""]
 
@@ -286,7 +279,8 @@ async def check_outage_changes(bot, debug_chat_id: int) -> None:
 
         changes = _build_changes(old_map, new_map)
         if changes:
-            text = build_message(data, changes=changes)
+            now_kyiv = datetime.now(KYIV_TZ)
+            text = build_message(data, changes=changes, detected_at=now_kyiv)
             await bot.send_message(chat_id=debug_chat_id, text=text, parse_mode="HTML")
 
         _save_outage_state({"queue_map": new_map})
