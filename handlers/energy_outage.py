@@ -175,6 +175,13 @@ def build_message(data: dict, changes: list[str] | None = None, detected_at: dat
     header = f"⚡ Графік відключень на {date_str}"
     if detected_at:
         header += f" (зміни о {detected_at.strftime('%H:%M')})"
+    else:
+        updated_raw = schedule.get("updated_at") or schedule.get("from", "")
+        try:
+            updated_dt = datetime.fromisoformat(updated_raw.replace("Z", "+00:00")).astimezone(KYIV_TZ)
+            header += f" (опубліковано о {updated_dt.strftime('%H:%M')})"
+        except Exception:
+            pass
 
     lines = [header, ""]
 
