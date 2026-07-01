@@ -13,6 +13,7 @@ from handlers.competitors import check_competitors
 from handlers.law_enforcement import check_law_enforcement
 from handlers.stat import stat_handler
 from handlers.query_router import handle_natural_language_query
+from handlers.broadcast_tracker import is_broadcast
 from handlers.reactions import handle_message_reaction
 from handlers.english_report import english_report_handler
 from handlers.energy_outage import outage_handler, outage_probe_handler, outage_export_handler, outage_geocode_handler
@@ -46,7 +47,10 @@ async def channel_post_handler(update, context):
 async def group_reply_to_bot(update, context):
     """Reply на повідомлення бота в чаті редакції — теж іде в Intent Router,
     але тільки для ALLOWED_USER_IDS (групу check_allowed не блокує, тут перевірка інлайн)
-    і тільки в чаті редакції — щоб не реагувати на реплаї в каналі тендерів/документів."""
+    і тільки в чаті редакції — щоб не реагувати на реплаї в каналі тендерів/документів.
+    Reply на автоматичну розсилку (ранкове привітання, нагадування про пошту чи мовчання
+    каналу — див. broadcast_tracker.py) — це коментар до посту, а не питання, тому
+    ігнорується мовчки, без спроби Claude вигадати відповідь через GA4/Search Console tools."""
     msg = update.message
     if not msg or not msg.reply_to_message:
         return
@@ -55,6 +59,8 @@ async def group_reply_to_bot(update, context):
     if msg.reply_to_message.from_user.id != context.bot.id:
         return
     if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        return
+    if is_broadcast(msg.reply_to_message.chat_id, msg.reply_to_message.message_id):
         return
     await handle_natural_language_query(update, context)
 

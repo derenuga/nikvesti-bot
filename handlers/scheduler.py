@@ -13,6 +13,7 @@ from handlers.competitors import check_competitors
 from handlers.english_report import send_english_report
 from handlers.law_enforcement import check_law_enforcement
 from handlers.energy_outage import check_outage_changes
+from handlers.broadcast_tracker import mark_broadcast
 from datetime import datetime, timedelta
 
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -58,7 +59,8 @@ async def check_email(bot, time_of_day):
         if hours < 1:
             return
         message = await generate_email_reminder(emails, hours, time_of_day)
-        await bot.send_message(chat_id=CHAT_ID, text=message)
+        sent = await bot.send_message(chat_id=CHAT_ID, text=message)
+        mark_broadcast(sent)
     except Exception as e:
         print("Помилка перевірки пошти: " + str(e))
 
@@ -98,7 +100,8 @@ async def check_channel_silence(bot, last_channel_post_time):
 Неформальний тон, без тиску. Можна 1 емодзі."""}]
             )
             text = clean_ai_text(message.content[0].text)
-            await bot.send_message(chat_id=CHAT_ID, text=text)
+            sent = await bot.send_message(chat_id=CHAT_ID, text=text)
+            mark_broadcast(sent)
     except Exception as e:
         print("Помилка перевірки мовчання каналу: " + str(e))
 

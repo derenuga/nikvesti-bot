@@ -5,6 +5,7 @@ import anthropic
 from datetime import datetime
 from handlers.events import get_today_events, format_events_for_prompt, format_events_html
 from handlers.ai_messages import clean_ai_text
+from handlers.broadcast_tracker import mark_broadcast
 
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -246,12 +247,13 @@ async def send_morning_message(bot, chat_id):
         events_text = format_events_for_prompt(events)
         ai_text = await generate_morning_message(weather, events_text)
         full_text = _build_full_message(ai_text, events)
-        await bot.send_message(
+        sent = await bot.send_message(
             chat_id=chat_id,
             text=full_text,
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
+        mark_broadcast(sent)
     except Exception as e:
         print("Помилка ранкового повідомлення: " + str(e))
 
@@ -261,7 +263,8 @@ async def send_morning_message(bot, chat_id):
         birthdays = get_todays_birthdays()
         for name, info in birthdays:
             greeting = await generate_birthday_greeting(name, info)
-            await bot.send_message(chat_id=chat_id, text=greeting, parse_mode="HTML")
+            sent = await bot.send_message(chat_id=chat_id, text=greeting, parse_mode="HTML")
+            mark_broadcast(sent)
     except Exception as e:
         print("Помилка привітання з ДН: " + str(e))
 
@@ -272,10 +275,11 @@ async def morning_handler(update, context):
         events_text = format_events_for_prompt(events)
         ai_text = await generate_morning_message(weather, events_text)
         full_text = _build_full_message(ai_text, events)
-        await update.message.reply_text(
+        sent = await update.message.reply_text(
             full_text,
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
+        mark_broadcast(sent)
     except Exception as e:
         await update.message.reply_text("Помилка: " + str(e))
