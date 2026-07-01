@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
 from handlers import storage
+from handlers.ai_messages import generate_competitors_intro
 
 CHAT_ID = os.environ.get("CHAT_ID")
 
@@ -267,6 +268,16 @@ async def check_competitors(bot):
 
     if new_by_source:
         text = _format_post(new_by_source)
+        # AI-підводка Лиса перед списком — якщо генерація впаде,
+        # пост все одно йде без неї
+        try:
+            intro = await generate_competitors_intro(
+                [(source["name"], items) for source, items in new_by_source]
+            )
+            if intro and intro.strip():
+                text = f"🦊 {_escape_html(intro.strip())}\n\n{text}"
+        except Exception as e:
+            print(f"Конкуренти: помилка AI-підводки — {e}")
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,

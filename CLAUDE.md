@@ -162,13 +162,14 @@ MISE_PYTHON_GITHUB_ATTESTATIONS = false
 - [`docs/DOCUMENTS_MODULE.md`](docs/DOCUMENTS_MODULE.md) — моніторинг документів влади
 - [`docs/LAW_ENFORCEMENT_MODULE.md`](docs/LAW_ENFORCEMENT_MODULE.md) — моніторинг правоохоронців
 - [`docs/COMPETITORS_MODULE.md`](docs/COMPETITORS_MODULE.md) — моніторинг конкурентів
-- [`docs/PROZORRO_MODULE.md`](docs/PROZORRO_MODULE.md) — тендери Prozorro
+- Тендери Prozorro — окремого дока немає, детальний опис у док-стрінгу [`handlers/prozorro.py`](handlers/prozorro.py)
 - [`docs/STAT_MODULE.md`](docs/STAT_MODULE.md) — статистика матеріалів (/stat)
 - [`docs/ENGLISH_REPORT_MODULE.md`](docs/ENGLISH_REPORT_MODULE.md) — EN-звіт
 - [`docs/FOX_LORE.md`](docs/FOX_LORE.md) — identity frame персонажа Лиса Микити
 - [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md) — природномовні запити (Agentic Query Layer): GA4 + Search Console, tool use, whitelist
 - [`docs/ENERGY_OUTAGE_MODULE.md`](docs/ENERGY_OUTAGE_MODULE.md) — графік відключень: API off.energy.mk.ua, адресний каскад, CSV-експорт, наступні кроки
 - [`docs/LONG_TERM_VISION.md`](docs/LONG_TERM_VISION.md) — довгострокові ідеї: підписки, перехід на власний сервер+MySQL, AI-доступ до 17-річного архіву новин
+- [`docs/REVIEW_2026_07.md`](docs/REVIEW_2026_07.md) — ревізія липня 2026: апрувнутий план оптимізацій і розвитку (хвилі впровадження)
 
 ---
 
