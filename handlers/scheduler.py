@@ -14,6 +14,9 @@ from handlers.english_report import send_english_report
 from handlers.law_enforcement import check_law_enforcement
 from handlers.energy_outage import check_outage_changes
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+KYIV_TZ = ZoneInfo("Europe/Kiev")
 
 CHAT_ID = os.environ.get("CHAT_ID")
 _allowed = os.environ.get("ALLOWED_USER_IDS", "").strip()
@@ -74,18 +77,35 @@ async def check_prozorro(bot):
 async def morning_greeting(bot):
     await send_morning_message(bot, CHAT_ID)
 
+# Ескалація нагадувань про мовчання каналу: перше — після 2 год тиші,
+# наступні — не раніше ніж через 1, 2, 4 (і далі по 4) години після попереднього.
+# Новий пост у каналі скидає лічильник.
+_silence_reminders = {"last_at": None, "count": 0}
+
 async def check_channel_silence(bot, last_channel_post_time):
     try:
+        # Вікно 10:00–18:00 і будні рахуємо за Києвом — сервер Railway працює в UTC
+        kyiv_now = datetime.now(KYIV_TZ)
+        if kyiv_now.weekday() >= 5:
+            return
+        if kyiv_now.hour < 10 or kyiv_now.hour >= 18:
+            return
+        # Тривалість тиші рахуємо в наївному серверному часі —
+        # та сама шкала, що й datetime.now() в bot.py (last_channel_post_time)
         now = datetime.now()
-        if now.weekday() >= 5:
-            return
-        if now.hour < 10 or now.hour >= 18:
-            return
         last_post = last_channel_post_time.get("time")
         if not last_post:
             return
+        if _silence_reminders["last_at"] and last_post > _silence_reminders["last_at"]:
+            _silence_reminders["last_at"] = None
+            _silence_reminders["count"] = 0
         silence_hours = (now - last_post).total_seconds() / 3600
         if silence_hours >= 2:
+            if _silence_reminders["last_at"]:
+                cooldown_hours = min(2 ** (_silence_reminders["count"] - 1), 4)
+                since_last = (now - _silence_reminders["last_at"]).total_seconds() / 3600
+                if since_last < cooldown_hours:
+                    return
             anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
             message = anthropic_client.messages.create(
                 model="claude-sonnet-4-6",
@@ -99,6 +119,8 @@ async def check_channel_silence(bot, last_channel_post_time):
             )
             text = clean_ai_text(message.content[0].text)
             await bot.send_message(chat_id=CHAT_ID, text=text)
+            _silence_reminders["last_at"] = now
+            _silence_reminders["count"] += 1
     except Exception as e:
         print("Помилка перевірки мовчання каналу: " + str(e))
 
