@@ -12,9 +12,11 @@ from handlers.documents import check_documents
 from handlers.competitors import check_competitors
 from handlers.english_report import send_english_report
 from handlers.law_enforcement import check_law_enforcement
+from handlers.energy_outage import check_outage_changes
 from datetime import datetime, timedelta
 
 CHAT_ID = os.environ.get("CHAT_ID")
+OUTAGE_DEBUG_CHAT_ID = int(os.environ.get("ALLOWED_USER_IDS", "56631818").split(",")[0])
 CHANNEL_USERNAME = "nikvesti"
 
 async def send_daily_report(bot):
@@ -134,5 +136,7 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # Місячний EN-звіт: останній день місяця о 19:00
     # day="last" — APScheduler cron syntax для останнього дня місяця
     scheduler.add_job(monthly_english_report, "cron", day="last", hour=19, minute=0, args=[bot])
+    # Моніторинг змін у графіку відключень — кожні 5 хвилин, в особистий чат для налагодження
+    scheduler.add_job(check_outage_changes, "interval", minutes=5, args=[bot, OUTAGE_DEBUG_CHAT_ID])
     scheduler.start()
     return scheduler

@@ -100,24 +100,30 @@ def _merge_slots(slot_ids: list[int]) -> list[tuple[str, str]]:
     return result
 
 
+OUTAGE_STATE_PATH = DATA_DIR / "outage_monitor_state.json"
+
+MONTH_UA = {
+    1: "січня", 2: "лютого", 3: "березня", 4: "квітня",
+    5: "травня", 6: "червня", 7: "липня", 8: "серпня",
+    9: "вересня", 10: "жовтня", 11: "листопада", 12: "грудня",
+}
+
+
 def fetch_outage_data() -> dict:
     queues = _fetch_all_queues()
     active = _fetch_json(f"{BASE_URL}/v2/schedule/active")
     return {"queues": queues, "active": active}
 
 
-def build_message(data: dict) -> str:
+def _parse_schedule(data: dict) -> tuple[dict | None, dict[str, dict]]:
+    """Повертає (schedule, queue_map) де queue_map: name → {off, prob}."""
     queues = data["queues"]
     schedule = _find_current_schedule(data["active"])
-
     if not schedule:
-        return "⚡ Дані про відключення наразі відсутні."
-
-    now_kyiv = datetime.now(KYIV_TZ)
+        return None, {}
 
     queue_off: dict[int, list[int]] = {}
     queue_prob: dict[int, list[int]] = {}
-
     for entry in schedule["series"]:
         qid = entry["outage_queue_id"]
         tsid = entry["time_series_id"]
@@ -127,33 +133,65 @@ def build_message(data: dict) -> str:
         elif t == "PROBABLY_OFF":
             queue_prob.setdefault(qid, []).append(tsid)
 
-    all_queue_ids = set(queue_off) | set(queue_prob)
-    if not all_queue_ids:
-        return "⚡ На сьогодні графік відключень порожній."
-
-    by_type: dict[int, list] = {}
-    for qid in all_queue_ids:
+    queue_map: dict[str, dict] = {}
+    for qid in set(queue_off) | set(queue_prob):
         q = queues.get(qid)
         if not q:
             continue
-        type_id = q["type_id"]
-        off_ranges = _merge_slots(queue_off.get(qid, []))
-        prob_ranges = _merge_slots(queue_prob.get(qid, []))
-        by_type.setdefault(type_id, []).append({
-            "name": q["name"],
+        queue_map[q["name"]] = {
+            "off": sorted(queue_off.get(qid, [])),
+            "prob": sorted(queue_prob.get(qid, [])),
+            "type_id": q["type_id"],
+            "type_name": q["type_name"],
+        }
+    return schedule, queue_map
+
+
+def _queue_map_to_entries(queue_map: dict[str, dict]) -> dict[int, list]:
+    by_type: dict[int, list] = {}
+    for name, q in queue_map.items():
+        off_ranges = _merge_slots(q["off"])
+        prob_ranges = _merge_slots(q["prob"])
+        by_type.setdefault(q["type_id"], []).append({
+            "name": name,
             "type_name": q["type_name"],
             "off": off_ranges,
             "prob": prob_ranges,
         })
+    return by_type
 
-    MONTH_UA = {
-        1: "січня", 2: "лютого", 3: "березня", 4: "квітня",
-        5: "травня", 6: "червня", 7: "липня", 8: "серпня",
-        9: "вересня", 10: "жовтня", 11: "листопада", 12: "грудня",
-    }
+
+def build_message(data: dict, changes: list[str] | None = None) -> str:
+    schedule, queue_map = _parse_schedule(data)
+
+    if not schedule:
+        return "⚡ Дані про відключення наразі відсутні."
+    if not queue_map:
+        return "⚡ На сьогодні графік відключень порожній."
+
+    now_kyiv = datetime.now(KYIV_TZ)
     date_str = f"{now_kyiv.day} {MONTH_UA[now_kyiv.month]} {now_kyiv.year}"
 
-    lines = [f"⚡ Графік відключень на {date_str}\n"]
+    updated_raw = schedule.get("updated_at") or schedule.get("from", "")
+    try:
+        updated_dt = datetime.fromisoformat(updated_raw.replace("Z", "+00:00")).astimezone(KYIV_TZ)
+        updated_str = updated_dt.strftime("%H:%M")
+    except Exception:
+        updated_str = None
+
+    header = f"⚡ Графік відключень на {date_str}"
+    if updated_str:
+        header += f" (оновлено {updated_str})"
+
+    lines = [header, ""]
+
+    if changes:
+        lines.append("🔄 <b>Зміни у графіку:</b>")
+        for ch in changes:
+            lines.append(f"  {ch}")
+        lines.append("")
+
+    by_type = _queue_map_to_entries(queue_map)
 
     for type_id in sorted(by_type):
         type_name = OUTAGE_TYPE_NAMES[type_id]
@@ -179,15 +217,68 @@ def build_message(data: dict) -> str:
                 prob_str = " / ".join(f"{s}–{en}" for s, en in e["prob"])
                 parts.append(f"можливо — {prob_str}")
 
-            lines.append(f"Черга {e['name']}: {'; '.join(parts)}")
+            lines.append(f"<b>Черга {e['name']}: {'; '.join(parts)}</b>")
 
             neighborhoods = _LABELS.get(e["name"], [])
             if neighborhoods:
-                lines.append(f"<i>{', '.join(neighborhoods)}</i>")
+                lines.append(f"<blockquote expandable>{', '.join(neighborhoods)}</blockquote>")
 
             lines.append("")
 
     return "\n".join(lines).rstrip()
+
+
+def _load_outage_state() -> dict:
+    if OUTAGE_STATE_PATH.exists():
+        try:
+            return json.loads(OUTAGE_STATE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_outage_state(state: dict) -> None:
+    OUTAGE_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _build_changes(old_map: dict[str, dict], new_map: dict[str, dict]) -> list[str]:
+    changes = []
+    all_queues = sorted(set(old_map) | set(new_map))
+    for name in all_queues:
+        if name not in old_map:
+            changes.append(f"➕ Черга {name} з'явилась у графіку")
+        elif name not in new_map:
+            changes.append(f"➖ Черга {name} зникла з графіку")
+        else:
+            old, new = old_map[name], new_map[name]
+            if old["off"] != new["off"] or old["prob"] != new["prob"]:
+                off_ranges = _merge_slots(new["off"])
+                off_str = " / ".join(f"{s}–{en}" for s, en in off_ranges) if off_ranges else "—"
+                changes.append(f"✏️ Черга {name}: новий графік — {off_str}")
+    return changes
+
+
+async def check_outage_changes(bot, debug_chat_id: int) -> None:
+    try:
+        data = fetch_outage_data()
+        schedule, new_map = _parse_schedule(data)
+
+        if schedule is None:
+            return
+
+        state = _load_outage_state()
+        old_map: dict[str, dict] = state.get("queue_map", {})
+
+        changes = _build_changes(old_map, new_map)
+
+        if changes or not old_map:
+            text = build_message(data, changes=changes if changes else None)
+            await bot.send_message(chat_id=debug_chat_id, text=text, parse_mode="HTML")
+
+        _save_outage_state({"queue_map": new_map})
+
+    except Exception as e:
+        logger.error(f"check_outage_changes error: {e}", exc_info=True)
 
 
 async def outage_handler(update, context):
