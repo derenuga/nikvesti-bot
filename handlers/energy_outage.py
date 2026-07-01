@@ -201,14 +201,6 @@ def build_message(data: dict, changes: list[str] | None = None) -> str:
             if not e["off"] and not e["prob"]:
                 continue
 
-            off_min = sum(
-                (int(en.split(":")[0]) * 60 + int(en.split(":")[1])) -
-                (int(s.split(":")[0]) * 60 + int(s.split(":")[1]))
-                for s, en in e["off"]
-            )
-            h, m = divmod(off_min, 60)
-            hours_str = f"{h} год" + (f" {m} хв" if m else "")
-
             schedule_parts = []
             if e["off"]:
                 off_str = " / ".join(f"{s}–{en}" for s, en in e["off"])
@@ -217,7 +209,18 @@ def build_message(data: dict, changes: list[str] | None = None) -> str:
                 prob_str = " / ".join(f"{s}–{en}" for s, en in e["prob"])
                 schedule_parts.append(f"можливо — {prob_str}")
 
-            lines.append(f"<b>Черга {e['name']}: немає світла {hours_str}</b>")
+            if e["off"]:
+                off_min = sum(
+                    (int(en.split(":")[0]) * 60 + int(en.split(":")[1])) -
+                    (int(s.split(":")[0]) * 60 + int(s.split(":")[1]))
+                    for s, en in e["off"]
+                )
+                h, m = divmod(off_min, 60)
+                hours_str = f"{h} год" + (f" {m} хв" if m else "")
+                lines.append(f"<b>Черга {e['name']}: немає світла {hours_str}</b>")
+            else:
+                lines.append(f"<b>Черга {e['name']}: можливе відключення</b>")
+
             lines.append(f"🕐 {' / '.join(schedule_parts)}")
 
             neighborhoods = _LABELS.get(e["name"], [])
@@ -254,8 +257,14 @@ def _build_changes(old_map: dict[str, dict], new_map: dict[str, dict]) -> list[s
             old, new = old_map[name], new_map[name]
             if old["off"] != new["off"] or old["prob"] != new["prob"]:
                 off_ranges = _merge_slots(new["off"])
-                off_str = " / ".join(f"{s}–{en}" for s, en in off_ranges) if off_ranges else "—"
-                changes.append(f"✏️ Черга {name}: новий графік — {off_str}")
+                prob_ranges = _merge_slots(new["prob"])
+                if off_ranges:
+                    time_str = " / ".join(f"{s}–{en}" for s, en in off_ranges)
+                elif prob_ranges:
+                    time_str = "можливо — " + " / ".join(f"{s}–{en}" for s, en in prob_ranges)
+                else:
+                    time_str = "без змін у слотах"
+                changes.append(f"✏️ Черга {name}: {time_str}")
     return changes
 
 
