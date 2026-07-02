@@ -12,7 +12,7 @@ from handlers.documents import check_documents, test_documents
 from handlers.competitors import check_competitors
 from handlers.law_enforcement import check_law_enforcement
 from handlers.stat import stat_handler
-from handlers.query_router import handle_natural_language_query
+from handlers.query_router import handle_natural_language_query, reset_dialog
 from handlers.reactions import handle_message_reaction
 from handlers.english_report import english_report_handler
 from handlers.energy_outage import outage_handler, outage_probe_handler, outage_export_handler, outage_geocode_handler
@@ -79,11 +79,20 @@ async def start(update, context):
         "/law — перевірити новини правоохоронних органів\n"
         "/stat <url> — статистика матеріалу (Facebook + GA4)\n"
         "/english — місячний звіт англійської версії сайту\n"
-        "/traffic — хто зараз на сайті + типовий трафік для цієї години"
+        "/traffic — хто зараз на сайті + типовий трафік для цієї години\n"
+        "/reset — забути контекст розмови з Лисом"
     )
 
 async def status(update, context):
     await update.message.reply_text("Бот працює. Все під контролем.")
+
+async def reset_cmd(update, context):
+    """Скидання пам'яті діалогу з Лисом — нова розмова з чистого аркуша."""
+    had_dialog = reset_dialog(update.effective_chat.id, update.effective_user.id)
+    if had_dialog:
+        await update.message.reply_text("🦊 Гаразд, забув попередню розмову. Питайте з чистого аркуша.")
+    else:
+        await update.message.reply_text("🦊 Та ми й не розмовляли — пам'ять і так чиста.")
 
 async def report(update, context):
     await send_daily_report(context.bot)
@@ -159,6 +168,7 @@ def main():
     app.add_handler(TypeHandler(Update, check_allowed), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("analytics", analytics_handler))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("checkmail", checkmail))
