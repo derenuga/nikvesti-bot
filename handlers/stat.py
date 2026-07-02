@@ -120,7 +120,10 @@ def get_article_published_date(article_url):
 
 # ---------- Facebook ----------
 
-def _get_fb_posts(since_ts, until_ts):
+def _get_fb_posts(since_ts, until_ts, max_pages=15):
+    """Усі пости у вікні [since, until] з пагінацією. FB віддає по 100 і
+    найновіші перші — без гортання старий край вікна (де і лежить пост
+    про давню статтю) не потрапляє у вибірку."""
     url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
         "fields": "id,message,story,permalink_url,created_time,reactions.summary(true),comments.summary(true),shares,attachments{media_type,target,url,unshimmed_url}",
@@ -129,11 +132,20 @@ def _get_fb_posts(since_ts, until_ts):
         "limit": 100,
         "access_token": FACEBOOK_PAGE_TOKEN,
     }
-    resp = requests.get(url, params=params, timeout=15)
-    data = resp.json()
-    if "error" in data:
-        raise Exception(data["error"]["message"])
-    return data.get("data", [])
+    all_posts = []
+    for _ in range(max_pages):
+        resp = requests.get(url, params=params, timeout=15)
+        data = resp.json()
+        if "error" in data:
+            if all_posts:
+                break  # частину вже маємо — віддаємо, що встигли
+            raise Exception(data["error"]["message"])
+        all_posts.extend(data.get("data", []))
+        next_url = data.get("paging", {}).get("next")
+        if not next_url:
+            break
+        url, params = next_url, None  # next_url уже містить усі параметри
+    return all_posts
 
 def _get_post_views(post_id):
     url = f"https://graph.facebook.com/v25.0/{post_id}/insights"
