@@ -178,6 +178,8 @@ async def check_prozorro_tenders(bot):
         print(f"Прозорро: прогон перевищив {RUN_TIMEOUT_SECONDS} секунд, перервано (запобіжник від зависання)")
     except Exception as e:
         print("Помилка перевірки Прозорро: " + str(e))
+        from handlers.notifier import notify_error
+        await notify_error(bot, "тендери Prozorro", e)
 
 
 async def _run_check_cycle(bot):

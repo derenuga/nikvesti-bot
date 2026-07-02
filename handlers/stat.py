@@ -13,6 +13,7 @@ import os
 import re
 import json
 import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, DateRange, Metric, Dimension, FilterExpression, Filter
@@ -42,6 +43,78 @@ def _extract_article_id(url):
     """Витягуємо числовий ID з URL: /news/justice/320102-... → '320102'"""
     match = re.search(r'/(\d{4,})-', url)
     return match.group(1) if match else None
+
+
+FB_SEARCH_FORWARD_DAYS = 10  # від дати публікації дивимось уперед — статтю постять у ці дні
+
+
+def _parse_iso_date(value):
+    """'2026-05-14T09:30:00+03:00' / '2026-05-14' → datetime (або None)."""
+    if not value or not isinstance(value, str):
+        return None
+    v = value.strip().replace("Z", "+00:00")
+    for parse in (
+        lambda x: datetime.fromisoformat(x),
+        lambda x: datetime.strptime(x[:10], "%Y-%m-%d"),
+    ):
+        try:
+            return parse(v)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _find_date_published(node):
+    """Рекурсивно шукає datePublished у JSON-LD (може бути об'єкт, список, @graph)."""
+    if isinstance(node, dict):
+        if node.get("datePublished"):
+            dt = _parse_iso_date(node["datePublished"])
+            if dt:
+                return dt
+        for value in node.values():
+            found = _find_date_published(value)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _find_date_published(item)
+            if found:
+                return found
+    return None
+
+
+def get_article_published_date(article_url):
+    """Дата публікації матеріалу з JSON-LD (datePublished) або
+    <meta article:published_time>. None якщо не вдалося — тоді пошук
+    у FB відкотиться на дефолтне вікно 14 днів назад."""
+    try:
+        resp = requests.get(
+            article_url, timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; NikVesti-Bot/1.0)"},
+        )
+        if resp.status_code != 200:
+            return None
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        for tag in soup.find_all("script", type="application/ld+json"):
+            raw = tag.string or tag.get_text()
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            dt = _find_date_published(data)
+            if dt:
+                return dt
+
+        meta = soup.find("meta", property="article:published_time")
+        if meta and meta.get("content"):
+            return _parse_iso_date(meta["content"])
+        return None
+    except Exception as e:
+        print(f"stat: не вдалося визначити дату публікації — {e}")
+        return None
 
 
 # ---------- Facebook ----------
@@ -173,8 +246,18 @@ def get_fb_stats(article_url, article_id):
     except Exception as e:
         print(f"stat: помилка пошуку рілзів — {e}")
 
-    until_dt = datetime.now()
-    since_dt = until_dt - timedelta(days=14)
+    # Вікно пошуку постів: якщо знаємо дату публікації — дивимось від неї
+    # вперед FB_SEARCH_FORWARD_DAYS днів (статтю постять у цей проміжок).
+    # Так знаходимо і старі матеріали, а не тільки за 14 днів. Без дати —
+    # дефолтне вікно 14 днів назад.
+    pub_date = get_article_published_date(article_url)
+    now = datetime.now()
+    if pub_date:
+        since_dt = pub_date - timedelta(days=1)
+        until_dt = min(pub_date + timedelta(days=FB_SEARCH_FORWARD_DAYS), now)
+    else:
+        until_dt = now
+        since_dt = until_dt - timedelta(days=14)
     posts = _get_fb_posts(int(since_dt.timestamp()), int(until_dt.timestamp()))
 
     for post in posts:
@@ -265,7 +348,7 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat):
     ]
 
     if not fb_stats:
-        lines.append("Публікацій не знайдено (пости за 14 днів + останні ~50 рілзів)")
+        lines.append("Публікацій не знайдено (пости біля дати публікації + останні ~50 рілзів)")
     else:
         several = len(fb_stats) > 1
         for i, item in enumerate(fb_stats):

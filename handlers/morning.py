@@ -250,6 +250,8 @@ async def send_morning_message(bot, chat_id):
         )
     except Exception as e:
         print("Помилка ранкового повідомлення: " + str(e))
+        from handlers.notifier import notify_error
+        await notify_error(bot, "ранкове повідомлення", e)
 
     # Привітання з днем народження — окреме повідомлення після ранкового
     try:

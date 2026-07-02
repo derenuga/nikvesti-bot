@@ -1,5 +1,7 @@
+import asyncio
 import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.events import EVENT_JOB_ERROR
 from handlers.google_analytics import get_ga4_client, get_stats, get_top_pages, BASE_URL
 from handlers.gmail import get_unread_emails, get_oldest_unread_hours
 from handlers.ai_messages import generate_email_reminder, generate_silence_reminder
@@ -13,6 +15,7 @@ from handlers.english_report import send_english_report
 from handlers.law_enforcement import check_law_enforcement
 from handlers.energy_outage import check_outage_changes
 from handlers.traffic_spikes import check_traffic_spikes
+from handlers.notifier import notify_error
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -64,6 +67,7 @@ async def check_email(bot, time_of_day):
         await bot.send_message(chat_id=CHAT_ID, text=message)
     except Exception as e:
         print("Помилка перевірки пошти: " + str(e))
+        await notify_error(bot, "перевірка пошти", e)
 
 async def weekly_instagram(bot):
     await send_weekly_instagram_report(bot, CHAT_ID)
@@ -112,25 +116,53 @@ async def check_channel_silence(bot, last_channel_post_time):
             _silence_reminders["count"] += 1
     except Exception as e:
         print("Помилка перевірки мовчання каналу: " + str(e))
+        await notify_error(bot, "перевірка мовчання каналу", e)
 
 async def run_check_documents(bot):
-    await check_documents(bot)
+    try:
+        await check_documents(bot)
+    except Exception as e:
+        print("Помилка перевірки документів: " + str(e))
+        await notify_error(bot, "документи органів влади", e)
 
 async def run_check_competitors(bot):
-    await check_competitors(bot)
+    try:
+        await check_competitors(bot)
+    except Exception as e:
+        print("Помилка перевірки конкурентів: " + str(e))
+        await notify_error(bot, "новини конкурентів", e)
 
 async def run_check_law_enforcement(bot):
-    await check_law_enforcement(bot)
+    try:
+        await check_law_enforcement(bot)
+    except Exception as e:
+        print("Помилка перевірки правоохоронців: " + str(e))
+        await notify_error(bot, "правоохоронні органи", e)
 
 async def monthly_english_report(bot):
     """Місячний звіт EN-версії — запускається в останній день місяця о 19:00.
     build_english_report сам визначає, що це останній день, і звітує за поточний місяць."""
     await send_english_report(bot, CHAT_ID)
 
+def _on_job_error(bot, event):
+    """Слухач APScheduler: ловить будь-який виняток, що вилетів із задачі
+    назовні (не був заглушений всередині), і шле алерт адміну. Викликається
+    синхронно в loop-потоці — плануємо корутину через create_task."""
+    job_id = getattr(event, "job_id", "?")
+    exc = getattr(event, "exception", None) or Exception("невідома помилка")
+    try:
+        asyncio.get_event_loop().create_task(
+            notify_error(bot, f"планувальник ({job_id})", exc)
+        )
+    except Exception as e:
+        print(f"scheduler: не вдалось запланувати алерт — {e}")
+
+
 def setup_scheduler(bot, last_channel_post_time=None):
     if last_channel_post_time is None:
         last_channel_post_time = {"time": datetime.now()}
     scheduler = AsyncIOScheduler(timezone="Europe/Kiev")
+    scheduler.add_listener(lambda event: _on_job_error(bot, event), EVENT_JOB_ERROR)
     scheduler.add_job(send_daily_report, "cron", hour=9, minute=0, args=[bot])
     scheduler.add_job(check_email, "cron", hour=13, minute=0, args=[bot, "afternoon"])
     scheduler.add_job(check_email, "cron", hour=16, minute=50, args=[bot, "evening"])

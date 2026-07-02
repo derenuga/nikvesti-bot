@@ -153,6 +153,8 @@ async def check_traffic_spikes(bot):
         await asyncio.to_thread(storage.save_traffic_spikes_state, state)
     except Exception as e:
         print(f"Сплески трафіку: помилка — {e}")
+        from handlers.notifier import notify_error
+        await notify_error(bot, "детектор сплесків трафіку", e)
 
 
 async def _send_spike_alert(bot, current, typical, top_pages):
