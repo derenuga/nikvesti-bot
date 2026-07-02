@@ -28,6 +28,7 @@ from google.analytics.data_v1beta.types import (
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as gapi_build
 
+from handlers import storage
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, clean_ai_text
 from handlers.helpers import get_author_from_url
 
@@ -419,6 +420,95 @@ def get_search_console_report(period, dimensions=None, page_url=None, search_typ
     return {"start_date": start, "end_date": end, "search_type": search_type, "rows": results}
 
 
+# ---------- Тендери Prozorro (архів бота) ----------
+#
+# Джерело — власний стан бота (/data/prozorro_state.json): усе, що моніторинг
+# виловив і відіслав у канал (Миколаївська область, ≥1 млн грн). Це НЕ повний
+# Prozorro — тільки з моменту запуску моніторингу і тільки за критеріями бота.
+
+def _load_recent_tenders(period_days):
+    """Тендери, відіслані за останні period_days днів, з розпарсеною датою."""
+    cutoff = datetime.now() - timedelta(days=period_days)
+    result = []
+    for tender_id, t in storage.get_all_tenders().items():
+        try:
+            sent_at = datetime.fromisoformat(t.get("sent_at", ""))
+        except (ValueError, TypeError):
+            continue
+        if sent_at < cutoff:
+            continue
+        result.append({
+            "tender_id": tender_id,
+            "title": t.get("title"),
+            "amount": t.get("amount"),
+            "buyer": t.get("buyer"),
+            "sent_at": sent_at.strftime("%Y-%m-%d %H:%M"),
+            "taken_by": t.get("taken_by"),
+            "url": f"https://prozorro.gov.ua/tender/{tender_id}",
+        })
+    return result
+
+
+def get_recent_tenders(period_days=7, min_amount=None, sort="amount", limit=10, taken="any"):
+    tenders = _load_recent_tenders(period_days)
+
+    if min_amount is not None:
+        tenders = [t for t in tenders if (t["amount"] or 0) >= min_amount]
+    if taken == "taken":
+        tenders = [t for t in tenders if t["taken_by"]]
+    elif taken == "free":
+        tenders = [t for t in tenders if not t["taken_by"]]
+
+    if sort == "date":
+        tenders.sort(key=lambda t: t["sent_at"], reverse=True)
+    else:
+        tenders.sort(key=lambda t: t["amount"] or 0, reverse=True)
+
+    limit = min(int(limit), 30)
+    return {
+        "period_days": period_days,
+        "total_matching": len(tenders),
+        "note": "Архів бота: Миколаївська область, від 1 млн грн, з моменту запуску моніторингу. Не повний Prozorro.",
+        "tenders": tenders[:limit],
+    }
+
+
+def get_tender_stats(period_days=30):
+    tenders = _load_recent_tenders(period_days)
+    if not tenders:
+        return {"period_days": period_days, "count": 0,
+                "note": "За цей період в архіві бота тендерів немає."}
+
+    amounts = [t["amount"] or 0 for t in tenders]
+    taken = [t for t in tenders if t["taken_by"]]
+
+    taken_by_counts = {}
+    for t in taken:
+        taken_by_counts[t["taken_by"]] = taken_by_counts.get(t["taken_by"], 0) + 1
+
+    buyer_totals = {}
+    for t in tenders:
+        b = t["buyer"] or "невідомо"
+        cnt, total = buyer_totals.get(b, (0, 0))
+        buyer_totals[b] = (cnt + 1, total + (t["amount"] or 0))
+    top_buyers = sorted(buyer_totals.items(), key=lambda kv: kv[1][1], reverse=True)[:5]
+
+    biggest = max(tenders, key=lambda t: t["amount"] or 0)
+    return {
+        "period_days": period_days,
+        "count": len(tenders),
+        "total_amount": sum(amounts),
+        "biggest_tender": biggest,
+        "taken_count": len(taken),
+        "free_count": len(tenders) - len(taken),
+        "taken_by_counts": taken_by_counts,
+        "top_buyers_by_amount": [
+            {"buyer": b, "tenders": cnt, "total_amount": total} for b, (cnt, total) in top_buyers
+        ],
+        "note": "Архів бота: Миколаївська область, від 1 млн грн. 'Взяті' — по реакціях команди на повідомлення в каналі.",
+    }
+
+
 # ---------- Графіки ----------
 
 def render_chart(labels, values, chart_type="bar", title="", ylabel=""):
@@ -617,6 +707,42 @@ TOOLS = [
         },
     },
     {
+        "name": "get_recent_tenders",
+        "description": (
+            "Тендери Prozorro з архіву бота: все, що моніторинг виловив і відіслав у канал "
+            "(Миколаївська область, сума від 1 млн грн). Використовуй для питань 'що там по "
+            "тендерах за тиждень?', 'найбільші тендери місяця', 'які тендери ще ніхто не взяв?'. "
+            "Це НЕ повний Prozorro — тільки виловлене ботом з моменту запуску моніторингу."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period_days": {"type": "integer", "description": "За скільки останніх днів, за замовчуванням 7"},
+                "min_amount": {"type": "number", "description": "Опційно: мінімальна сума в грн (поверх базового порогу 1 млн)"},
+                "sort": {"type": "string", "enum": ["amount", "date"], "description": "amount — найбільші перші (дефолт), date — найновіші перші"},
+                "limit": {"type": "integer", "description": "Скільки тендерів повернути, за замовчуванням 10, максимум 30"},
+                "taken": {"type": "string", "enum": ["any", "taken", "free"], "description": "taken — тільки взяті кимось у роботу, free — тільки нічиї, any — всі (дефолт)"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_tender_stats",
+        "description": (
+            "Зведена статистика тендерів з архіву бота за період: кількість, загальна сума, "
+            "найбільший тендер, скільки взято в роботу і ким, топ замовників за сумами. "
+            "Використовуй для питань 'скільки тендерів було цього місяця?', 'хто найактивніше "
+            "бере тендери?', 'які замовники найбільше закуповують?'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period_days": {"type": "integer", "description": "За скільки останніх днів, за замовчуванням 30"},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "render_chart",
         "description": (
             "Малює графік (стовпчиковий або лінійний) з даних, які ти вже отримав з інших GA4-tools, "
@@ -658,8 +784,17 @@ TOOL_FUNCTIONS = {
     "get_ga4_custom_report": get_ga4_custom_report,
     "get_ga4_article_stats": get_ga4_article_stats,
     "get_search_console_report": get_search_console_report,
+    "get_recent_tenders": get_recent_tenders,
+    "get_tender_stats": get_tender_stats,
     "render_chart": render_chart,
 }
+
+# Для footer'а джерел даних
+GA4_TOOL_NAMES = {
+    "get_ga4_metric", "get_ga4_top_articles", "get_ga4_geo_breakdown",
+    "get_ga4_hourly_breakdown", "get_ga4_custom_report", "get_ga4_article_stats",
+}
+TENDER_TOOL_NAMES = {"get_recent_tenders", "get_tender_stats"}
 
 # Живий прогрес у плейсхолдері: людський опис кожного tool,
 # щоб під час довгого запиту було видно, що Лис зараз робить.
@@ -671,6 +806,8 @@ TOOL_PROGRESS = {
     "get_ga4_custom_report": "🦊 Копаю глибше в GA4...",
     "get_ga4_article_stats": "🦊 Рахую перегляди статті...",
     "get_search_console_report": "🦊 Звіряю з Google Search Console...",
+    "get_recent_tenders": "🦊 Гортаю архів тендерів...",
+    "get_tender_stats": "🦊 Рахую тендерну статистику...",
     "render_chart": "🦊 Малюю графік...",
 }
 
@@ -682,6 +819,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 Якщо питання не покривається жодним із спеціалізованих tools (наприклад про пристрої, браузери, джерела трафіку, дні тижня) — використай get_ga4_custom_report з точними назвами GA4 dimensions/metrics. Якщо він поверне помилку через невірну назву — спробуй іншу назву ще раз, не здавайся одразу.
 Якщо питають звідки прийшов трафік на конкретну статтю (соцмережі, реферали тощо) — використай get_ga4_custom_report з dimensions ['sessionDefaultChannelGroup'] або ['sessionSource', 'sessionMedium'] і page_path_contains (ID статті з URL, наприклад "35814" з "/news/35814-..."). Не питай дату публікації — для джерел трафіку конкретної статті дата не потрібна, бери period='last_30_days' або ширше якщо невпевнений.
 Якщо питають конкретно про Google Discover, Google News чи пошукові запити Google — використай get_search_console_report (search_type='discover' для Discover). Для конкретної статті передай page_url повним URL (https://nikvesti.com/...). Це окреме джерело даних від GA4 — не плутай.
+Якщо питають про тендери ("що там по тендерах за тиждень?", "найбільший тендер місяця", "хто взяв тендер", "які тендери нічиї?") — використай get_recent_tenders (список з фільтрами) або get_tender_stats (зведення: кількість, суми, хто скільки взяв, топ замовників). Це архів того, що бот сам виловив з Prozorro (Миколаївська область, від 1 млн грн) — чесно зазначай, що це не весь Prozorro, якщо питання ширше. Суми пиши в млн грн, коли вони великі ("32,5 млн грн", а не "32 500 000 грн").
 Якщо питають деталі про конкретний реферер/джерело трафіку з невеликою кількістю сесій (наприклад "звідки саме прийшли заходи з derstandard.de" або "на які наші сторінки попав трафік з X") — використай get_ga4_custom_report з filter_dimension='sessionSource', filter_value_contains=<домен>, dimensions=['pageReferrer', 'pagePath'] (або додай 'sessionSourceMedium'). Це дозволяє звузити звіт до конкретного джерела навіть якщо воно дало лише кілька сесій і не потрапляє в загальний топ. pageReferrer дає повний URL сторінки-донора, pagePath — куди саме на нашому сайті потрапив користувач.
 Відповідай коротко, по суті, з конкретними числами, простим текстом у кілька рядків — без Markdown-таблиць. Якщо викликав render_chart — графік буде надіслано окремим повідомленням автоматично, НЕ згадуй шлях до файлу, НЕ вставляй markdown-посилання чи ![]() на зображення в тексті відповіді. Якщо даних не вдалось отримати — чесно скажи про це."""
 
@@ -739,12 +877,15 @@ async def handle_natural_language_query(update, context):
                 _remember_exchange(dialog_key, question, final_text)
                 if used_tools:
                     sources = []
-                    if used_tools - {"get_search_console_report", "render_chart"}:
+                    if used_tools & GA4_TOOL_NAMES:
                         sources.append("Google Analytics 4")
                     if "get_search_console_report" in used_tools:
                         sources.append("Google Search Console")
+                    site_suffix = " (nikvesti.com)" if sources else ""
+                    if used_tools & TENDER_TOOL_NAMES:
+                        sources.append("архів тендерів Лиса (Prozorro)")
                     if sources:
-                        final_text += f"\n\n📊 Джерело даних: {' + '.join(sources)} (nikvesti.com)"
+                        final_text += f"\n\n📊 Джерело даних: {' + '.join(sources)}{site_suffix}"
                 await placeholder.edit_text(final_text)
                 if chart_path:
                     try:

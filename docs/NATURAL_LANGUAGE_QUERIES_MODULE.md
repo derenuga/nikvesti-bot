@@ -1,6 +1,6 @@
 # Природномовні запити до Лиса Микити (Agentic Query Layer)
 
-**Статус:** Реалізовано і в проді. GA4 + Google Search Console контур (Meta і пошук по сайту — ще ні, див. "Беклог" нижче).
+**Статус:** Реалізовано і в проді. GA4 + Google Search Console + архів тендерів Prozorro (Meta і пошук по сайту — ще ні, див. "Беклог" нижче).
 
 **Модуль:** `handlers/query_router.py`
 
@@ -74,6 +74,8 @@ handle_natural_language_query() в query_router.py
 | `get_ga4_custom_report(dimensions, metrics, period, limit?, page_path_contains?, filter_dimension?, filter_value_contains?, ...)` | Запасний інструмент для довільних GA4 dimensions/metrics (пристрої, браузери, джерела трафіку, день тижня тощо). `page_path_contains` звужує до конкретної статті (ID з URL). `filter_dimension`+`filter_value_contains` — довільний CONTAINS-фільтр по будь-якій dimension (наприклад `sessionSource` містить `derstandard.de`), щоб деталізувати трафік з конкретного джерела навіть при малій кількості сесій |
 | `get_ga4_article_stats(url)` | Перегляди конкретної статті за всю історію, по мовних версіях (ua/ru/en) |
 | `get_search_console_report(period, dimensions?, page_url?, search_type?, limit?, ...)` | Google Search Console: пошукові запити, сторінки, країни, кліки/покази/CTR/позиція. `search_type`: `web` (дефолт), `discover` (Google Discover), `googleNews`, `image`, `video`. `page_url` звужує до конкретної статті — **матчиться по ID статті через CONTAINS, не по точному URL** (equals виявився крихким — трейлінг слеші, протокол тощо ламали фільтр і давали хибний "нуль трафіку") |
+| `get_recent_tenders(period_days?, min_amount?, sort?, limit?, taken?)` | Тендери з архіву бота (Миколаївська область, ≥1 млн грн, з моменту запуску моніторингу): фільтри за сумою/періодом, сортування за сумою чи датою, taken=taken/free — взяті кимось у роботу чи нічиї |
+| `get_tender_stats(period_days?)` | Зведення по тендерах за період: кількість, загальна сума, найбільший, скільки взято і ким, топ замовників за сумами |
 | `render_chart(labels, values, chart_type?, title?, ylabel?)` | Малює bar/line графік (matplotlib) з даних, які Claude вже отримав з інших tools, зберігає PNG; надсилається окремим повідомленням після тексту |
 
 ### Авторизація Search Console
@@ -114,6 +116,7 @@ handle_natural_language_query() в query_router.py
 16. Додано `filter_dimension`/`filter_value_contains` до `get_ga4_custom_report` — довільний CONTAINS-фільтр по будь-якій GA4 dimension (не тільки `pagePath`). Дозволяє деталізувати трафік з конкретного джерела/реферера (наприклад `sessionSource` містить `derstandard.de`) навіть якщо воно дало лише кілька сесій і не потрапляє в загальний топ; разом з dimension `pageReferrer` показує точні сторінки-донори.
 17. Хвиля 2 ревізії (07.2026): модель роутера → `claude-sonnet-5` (adaptive thinking); prompt caching на system+tools (~80-90% економії input-токенів); `MAX_TOOL_ITERATIONS` 4 → 8; AsyncAnthropic + tool-функції через `asyncio.to_thread` — NLQ більше не блокує event loop бота; живий прогрес у плейсхолдері (TOOL_PROGRESS).
 18. Пам'ять діалогу (а.1): останні 6 обмінів на (chat_id, user_id), TTL 30 хв, `/reset` для скидання.
+19. Tools над архівом тендерів (а.2): `get_recent_tenders` + `get_tender_stats` поверх стану бота — "що там по тендерах за тиждень?", "хто найактивніше бере тендери?". Footer джерел став модульним (GA4 / SC / архів тендерів).
 
 ---
 

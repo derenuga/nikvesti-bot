@@ -215,6 +215,15 @@ def save_seen_document_ids(source_id, ids):
         _write_state(state)
 
 
+def get_all_tenders():
+    """Повний архів відісланих тендерів (read-only копія) — для NLQ-tools
+    'що там по тендерах за тиждень?'. Ключ — tender_id, значення — dict
+    з title/amount/buyer/sent_at/taken_by/taken_at."""
+    with _lock:
+        state = _read_state()
+        return dict(state["tenders"])
+
+
 def get_traffic_spikes_state():
     """Стан детектора сплесків трафіку: профіль типового трафіку по слотах
     (день тижня + година) і час останнього алерту. Порожній dict = перший запуск."""
