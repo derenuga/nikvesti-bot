@@ -19,6 +19,7 @@ from google.analytics.data_v1beta.types import RunReportRequest, DateRange, Metr
 from google.oauth2 import service_account
 
 from handlers.telegram_stats import get_tg_stat, SEARCH_MAX_PAGES
+from handlers.facebook import get_reel_insights, fix_permalink
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
@@ -72,46 +73,95 @@ def _get_post_views(post_id):
     except Exception:
         return None
 
-def get_fb_stat(article_url, article_id):
-    """Шукає пост у Facebook і повертає статистику. Шукає за 14 днів."""
+def _fb_date(created_time):
+    try:
+        dt = datetime.strptime(created_time or "", "%Y-%m-%dT%H:%M:%S+0000")
+        return (dt + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return created_time or ""
+
+
+def _matches_article(text, clean_url, article_id):
+    """Точний матч: повний URL або /ID- (щоб 320362 не ловив 1320362)."""
+    if not text:
+        return False
+    return clean_url in text or f"/{article_id}-" in text
+
+
+def _get_fb_reels(limit=50):
+    url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/video_reels"
+    params = {
+        "fields": "id,description,permalink_url,created_time",
+        "limit": limit,
+        "access_token": FACEBOOK_PAGE_TOKEN,
+    }
+    resp = requests.get(url, params=params, timeout=15)
+    data = resp.json()
+    if "error" in data:
+        return []
+    return data.get("data", [])
+
+
+def _get_reel_views(reel_id):
+    """Перегляди рілза: назва метрики різна залежно від типу відео,
+    пробуємо по черзі. None якщо жодна не спрацювала."""
+    for metric in ("blue_reels_play_count", "post_video_views"):
+        try:
+            url = f"https://graph.facebook.com/v25.0/{reel_id}/video_insights"
+            params = {"metric": metric, "access_token": FACEBOOK_PAGE_TOKEN}
+            data = requests.get(url, params=params, timeout=15).json()
+            if "error" in data:
+                continue
+            return data["data"][0]["values"][0]["value"]
+        except Exception:
+            continue
+    return None
+
+
+def get_fb_stats(article_url, article_id):
+    """Шукає ВСІ публікації про матеріал: звичайні пости (14 днів)
+    і рілзи з посиланням в описі (останні ~50). Повертає список."""
     clean = _clean_url(article_url)
+    results = []
+
     until_dt = datetime.now()
     since_dt = until_dt - timedelta(days=14)
     posts = _get_fb_posts(int(since_dt.timestamp()), int(until_dt.timestamp()))
 
-    found = None
     for post in posts:
         message = post.get("message", "") or ""
         story = post.get("story", "") or ""
-        if clean in message or clean in story or article_id in message or article_id in story:
-            found = post
-            break
-
-    if not found:
-        return None
-
-    reactions = found.get("reactions", {}).get("summary", {}).get("total_count", 0)
-    comments = found.get("comments", {}).get("summary", {}).get("total_count", 0)
-    shares = found.get("shares", {}).get("count", 0)
-    post_id_short = found["id"].split("_")[1]
-    permalink = f"https://www.facebook.com/nikvesti/posts/{post_id_short}"
+        if not (_matches_article(message, clean, article_id) or _matches_article(story, clean, article_id)):
+            continue
+        post_id_short = post["id"].split("_")[1]
+        results.append({
+            "type": "post",
+            "permalink": f"https://www.facebook.com/nikvesti/posts/{post_id_short}",
+            "date": _fb_date(post.get("created_time")),
+            "views": _get_post_views(post["id"]),
+            "reactions": post.get("reactions", {}).get("summary", {}).get("total_count", 0),
+            "comments": post.get("comments", {}).get("summary", {}).get("total_count", 0),
+            "shares": post.get("shares", {}).get("count", 0),
+        })
 
     try:
-        dt = datetime.strptime(found.get("created_time", ""), "%Y-%m-%dT%H:%M:%S+0000")
-        date_str = (dt + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M")
-    except Exception:
-        date_str = found.get("created_time", "")
+        for reel in _get_fb_reels():
+            if not _matches_article(reel.get("description") or "", clean, article_id):
+                continue
+            reactions, comments, shares = get_reel_insights(reel["id"])
+            results.append({
+                "type": "reel",
+                "permalink": fix_permalink(reel.get("permalink_url", "")),
+                "date": _fb_date(reel.get("created_time")),
+                "views": _get_reel_views(reel["id"]),
+                "reactions": reactions,
+                "comments": comments,
+                "shares": shares,
+            })
+    except Exception as e:
+        print(f"stat: помилка пошуку рілзів — {e}")
 
-    views = _get_post_views(found["id"])
-
-    return {
-        "permalink": permalink,
-        "date": date_str,
-        "views": views,
-        "reactions": reactions,
-        "comments": comments,
-        "shares": shares,
-    }
+    return results
 
 
 # ---------- GA4 ----------
@@ -170,7 +220,7 @@ def get_ga4_stat(article_id):
 
 # ---------- Форматування ----------
 
-def format_stat_message(article_url, fb_stat, ga4_stat, tg_stat):
+def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat):
     clean = _clean_url(article_url)
     lines = [
         f"📊 <b>Статистика матеріалу</b>",
@@ -179,15 +229,26 @@ def format_stat_message(article_url, fb_stat, ga4_stat, tg_stat):
         "📘 <b>Facebook</b>",
     ]
 
-    if fb_stat is None:
-        lines.append("Пост не знайдено (шукали за останні 14 днів)")
+    if not fb_stats:
+        lines.append("Публікацій не знайдено (пости за 14 днів + останні ~50 рілзів)")
     else:
-        lines.append(f'<a href="{fb_stat["permalink"]}">Пост від {fb_stat["date"]}</a>')
-        if fb_stat["views"] is not None:
-            lines.append(f'👁 Перегляди: {fb_stat["views"]:,}'.replace(",", "\u00a0"))
-        lines.append(f'❤️ Реакції: {fb_stat["reactions"]}')
-        lines.append(f'💬 Коментарі: {fb_stat["comments"]}')
-        lines.append(f'🔄 Шери: {fb_stat["shares"]}')
+        several = len(fb_stats) > 1
+        for i, item in enumerate(fb_stats):
+            if i > 0:
+                lines.append("")
+            label = "Пост" if item["type"] == "post" else "🎬 Рілз"
+            num = f"{i + 1}. " if several else ""
+            lines.append(f'{num}<a href="{item["permalink"]}">{label} від {item["date"]}</a>')
+            if item["views"] is not None:
+                lines.append(f'👁 Перегляди: {item["views"]:,}'.replace(",", "\u00a0"))
+            lines.append(f'❤️ Реакції: {item["reactions"]}')
+            lines.append(f'💬 Коментарі: {item["comments"]}')
+            lines.append(f'🔄 Шери: {item["shares"]}')
+        views_known = [it["views"] for it in fb_stats if it["views"] is not None]
+        if several and views_known:
+            total_views = sum(views_known)
+            lines.append("")
+            lines.append(f'Разом переглядів: {total_views:,}'.replace(",", "\u00a0"))
 
     lines.append("")
     lines.append("📣 <b>Telegram</b>")
@@ -242,9 +303,9 @@ async def stat_handler(update, context):
 
     # Всі мережеві виклики — в окремому потоці, щоб не блокувати event loop
     try:
-        fb_stat = await asyncio.to_thread(get_fb_stat, article_url, article_id)
+        fb_stats = await asyncio.to_thread(get_fb_stats, article_url, article_id)
     except Exception as e:
-        fb_stat = None
+        fb_stats = []
         print(f"stat: помилка Facebook — {e}")
 
     try:
@@ -259,5 +320,5 @@ async def stat_handler(update, context):
         tg_stat = None
         print(f"stat: помилка Telegram — {e}")
 
-    text = format_stat_message(article_url, fb_stat, ga4_stat, tg_stat)
+    text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat)
     await msg.edit_text(text, parse_mode="HTML")
