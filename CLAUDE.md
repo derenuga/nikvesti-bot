@@ -39,7 +39,8 @@ handlers/
   competitors.py          — моніторинг новин конкурентів (news.pn тощо)
   google_analytics.py     — GA4 щоденна аналітика, /analytics, /report
   traffic_spikes.py       — детектор сплесків трафіку (GA4 Realtime, самонавчальний профіль), /traffic
-  stat.py                 — /stat <url>: статистика конкретного матеріалу (Facebook + GA4)
+  stat.py                 — /stat <url>: статистика матеріалу (Facebook + Telegram + GA4)
+  telegram_stats.py       — перегляди постів каналу @nikvesti (індекс + парсинг t.me/s)
   english_report.py       — місячний звіт EN-версії (GA4 + Search Console + AI коментар)
   instagram.py            — тижнева статистика Instagram
   facebook.py             — тижнева статистика Facebook
@@ -70,7 +71,7 @@ handlers/
 | /documents_test | Тестовий пост з першого документа кожного джерела |
 | /competitors | Перевірити новини конкурентів |
 | /law | Перевірити новини правоохоронних органів |
-| /stat \<url\> | Статистика матеріалу (Facebook + GA4) за URL nikvesti.com |
+| /stat \<url\> | Статистика матеріалу (Facebook + Telegram + GA4) за URL nikvesti.com |
 | /english | Місячний звіт EN-версії сайту (GA4 + Search Console) |
 | /prozorro | Перевірити тендери Prozorro |
 | /prozorro_test_jump \[N\] | Діагностика зсуву офсету за N днів (дефолт 14) |
@@ -151,6 +152,9 @@ MISE_PYTHON_GITHUB_ATTESTATIONS = false
   },
   "competitor_ids": {
     "news_pn": ["345266", ...]
+  },
+  "tg_posts": {
+    "320362": {"message_id": 82005}
   },
   "traffic_spikes": {
     "profile": {"2_14": [312, 298, ...]},
