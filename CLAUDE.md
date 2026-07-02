@@ -77,6 +77,7 @@ handlers/
 | /prozorro_confirm_jump \[N\] | Підтвердити скидання офсету |
 | /prozorro_reset_tender \<id\> | Розблокувати тендер для повторної реакції |
 | /traffic | Хто зараз на сайті (GA4 Realtime) + типовий трафік для цієї години |
+| /reset | Забути контекст розмови з Лисом (пам'ять діалогу NLQ) |
 | /outage | Графік відключень електроенергії (off.energy.mk.ua) |
 | /outage_probe \<path\> \[arg\] | Службова розвідка API з Railway (тимчасово) |
 | /outage_export \[idfilial\] | CSV вулиць із чергами, дефолт 15 (Миколаїв), ~7–15 хв |
@@ -85,7 +86,7 @@ handlers/
 
 ## Природномовні запити (Intent Router)
 
-Приватне повідомлення боту (від `ALLOWED_USER_IDS`), або reply на повідомлення бота в чаті редакції — йде в `handle_natural_language_query` (`handlers/query_router.py`), Claude сам обирає GA4/Search Console tool через tool use і відповідає живою мовою. Деталі — [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md).
+Приватне повідомлення боту (від `ALLOWED_USER_IDS`), або reply на повідомлення бота в чаті редакції — йде в `handle_natural_language_query` (`handlers/query_router.py`), Claude сам обирає GA4/Search Console tool через tool use і відповідає живою мовою. Лис пам'ятає останні 6 обмінів протягом 30 хв (follow-up'и "а за минулий місяць?" працюють), `/reset` скидає. Деталі — [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md).
 
 ---
 

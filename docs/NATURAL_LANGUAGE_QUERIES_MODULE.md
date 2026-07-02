@@ -51,6 +51,10 @@ handle_natural_language_query() в query_router.py
 
 Обидва шляхи ведуть в `handle_natural_language_query`.
 
+## Пам'ять діалогу
+
+Лис пам'ятає останні 6 обмінів (питання + відповідь) на пару (chat_id, user_id) протягом 30 хвилин — follow-up'и типу "а за минулий місяць?", "а по містах?" працюють як продовження розмови. В історію йде тільки текст питання і фінальної відповіді (без проміжних tool-викликів і footer'а джерел). Зберігається в пам'яті процесу — рестарт бота очищає. `/reset` — примусово почати з чистого аркуша. Системний промпт явно вимагає перезапитувати цифри через tools, а не переоцінювати по пам'яті.
+
 ## Whitelist
 
 `ALLOWED_USER_IDS` (env, comma-separated ID) — глобальний middleware `check_allowed` в `bot.py` (`TypeHandler`, `group=-1`) блокує приватні повідомлення від людей поза списком з відповіддю "⛔ Доступ заборонено." і `ApplicationHandlerStop`. Якщо змінна не задана — дозволено всім (дефолт, для зворотної сумісності).
@@ -109,6 +113,7 @@ handle_natural_language_query() в query_router.py
 15. `/english` і місячний автозвіт тепер коректно звітують за поточний місяць, коли запускаються в його останній день (раніше завжди брали попередній місяць).
 16. Додано `filter_dimension`/`filter_value_contains` до `get_ga4_custom_report` — довільний CONTAINS-фільтр по будь-якій GA4 dimension (не тільки `pagePath`). Дозволяє деталізувати трафік з конкретного джерела/реферера (наприклад `sessionSource` містить `derstandard.de`) навіть якщо воно дало лише кілька сесій і не потрапляє в загальний топ; разом з dimension `pageReferrer` показує точні сторінки-донори.
 17. Хвиля 2 ревізії (07.2026): модель роутера → `claude-sonnet-5` (adaptive thinking); prompt caching на system+tools (~80-90% економії input-токенів); `MAX_TOOL_ITERATIONS` 4 → 8; AsyncAnthropic + tool-функції через `asyncio.to_thread` — NLQ більше не блокує event loop бота; живий прогрес у плейсхолдері (TOOL_PROGRESS).
+18. Пам'ять діалогу (а.1): останні 6 обмінів на (chat_id, user_id), TTL 30 хв, `/reset` для скидання.
 
 ---
 

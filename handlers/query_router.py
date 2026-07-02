@@ -52,6 +52,43 @@ ROUTER_MAX_TOKENS = 2000
 client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 
+# ---------- Пам'ять діалогу (REVIEW а.1) ----------
+#
+# Короткий контекст розмови на (chat_id, user_id) в пам'яті процесу:
+# питання типу "а за минулий місяць?" працюють як продовження попереднього.
+# В історію йдуть тільки питання і фінальна текстова відповідь (без
+# проміжних tool-викликів — вони роздували б контекст і не потрібні
+# для follow-up'ів: цифри вже є в тексті відповіді).
+# Рестарт бота очищає пам'ять — це ок, діалог і так живе 30 хвилин.
+
+DIALOG_TTL_MINUTES = 30
+DIALOG_MAX_EXCHANGES = 6  # пар питання-відповідь в історії
+_dialogs = {}  # (chat_id, user_id) -> {"messages": [...], "updated_at": datetime}
+
+
+def _get_dialog_history(key):
+    entry = _dialogs.get(key)
+    if not entry:
+        return []
+    if datetime.now() - entry["updated_at"] > timedelta(minutes=DIALOG_TTL_MINUTES):
+        del _dialogs[key]
+        return []
+    return list(entry["messages"])
+
+
+def _remember_exchange(key, question, answer):
+    entry = _dialogs.setdefault(key, {"messages": [], "updated_at": datetime.now()})
+    entry["messages"].append({"role": "user", "content": question})
+    entry["messages"].append({"role": "assistant", "content": answer})
+    entry["messages"] = entry["messages"][-2 * DIALOG_MAX_EXCHANGES:]
+    entry["updated_at"] = datetime.now()
+
+
+def reset_dialog(chat_id, user_id):
+    """Скидання контексту розмови — команда /reset у bot.py."""
+    return _dialogs.pop((chat_id, user_id), None) is not None
+
+
 # ---------- GA4 ----------
 
 def _ga4_client():
@@ -641,6 +678,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 
 Зараз ти відповідаєш на природномовне запитання про статистику сайту nikvesti.com (Google Analytics). Сьогоднішня дата: {today}.
 Використовуй доступні tools щоб отримати реальні дані — не вигадуй цифр. Якщо період сформульований розмовно ("середньомісячна", "за останній тиждень", "у вересні") — сам визнач відповідний period або start_date/end_date.
+Якщо перед поточним питанням є попередні репліки — це продовження розмови: короткі уточнення ("а за минулий місяць?", "а по містах?", "порівняй з попереднім") стосуються теми і параметрів попереднього питання. Але цифри для нового періоду завжди отримуй tools заново — не переоцінюй по пам'яті.
 Якщо питання не покривається жодним із спеціалізованих tools (наприклад про пристрої, браузери, джерела трафіку, дні тижня) — використай get_ga4_custom_report з точними назвами GA4 dimensions/metrics. Якщо він поверне помилку через невірну назву — спробуй іншу назву ще раз, не здавайся одразу.
 Якщо питають звідки прийшов трафік на конкретну статтю (соцмережі, реферали тощо) — використай get_ga4_custom_report з dimensions ['sessionDefaultChannelGroup'] або ['sessionSource', 'sessionMedium'] і page_path_contains (ID статті з URL, наприклад "35814" з "/news/35814-..."). Не питай дату публікації — для джерел трафіку конкретної статті дата не потрібна, бери period='last_30_days' або ширше якщо невпевнений.
 Якщо питають конкретно про Google Discover, Google News чи пошукові запити Google — використай get_search_console_report (search_type='discover' для Discover). Для конкретної статті передай page_url повним URL (https://nikvesti.com/...). Це окреме джерело даних від GA4 — не плутай.
@@ -664,7 +702,8 @@ async def handle_natural_language_query(update, context):
     today = datetime.now().strftime("%Y-%m-%d")
     system_prompt = QUERY_ROUTER_SYSTEM_PROMPT.format(today=today)
 
-    messages = [{"role": "user", "content": question}]
+    dialog_key = (update.effective_chat.id, update.effective_user.id)
+    messages = _get_dialog_history(dialog_key) + [{"role": "user", "content": question}]
     placeholder = await update.message.reply_text("🦊 Розбираюсь з вашим питанням, шефе...")
     last_placeholder_text = ["🦊 Розбираюсь з вашим питанням, шефе..."]
     chart_path = None
@@ -696,6 +735,8 @@ async def handle_natural_language_query(update, context):
                 # Нерозривний пробіл (U+00A0) між розрядами тисяч ("23 037"),
                 # щоб Telegram не переносив число на новий рядок посередині
                 final_text = re.sub(r'(?<=\d) (?=\d{3}(?:\D|$))', '\u00A0', final_text)
+                # В історію діалогу — без footer джерел, щоб не накопичувати шум
+                _remember_exchange(dialog_key, question, final_text)
                 if used_tools:
                     sources = []
                     if used_tools - {"get_search_console_report", "render_chart"}:
