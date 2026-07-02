@@ -693,6 +693,9 @@ async def handle_natural_language_query(update, context):
                 final_text = "".join(b.text for b in response.content if b.type == "text")
                 final_text = clean_ai_text(final_text) or "Не вдалося сформувати відповідь."
                 final_text = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', final_text).strip()
+                # Нерозривний пробіл (U+00A0) між розрядами тисяч ("23 037"),
+                # щоб Telegram не переносив число на новий рядок посередині
+                final_text = re.sub(r'(?<=\d) (?=\d{3}(?:\D|$))', '\u00A0', final_text)
                 if used_tools:
                     sources = []
                     if used_tools - {"get_search_console_report", "render_chart"}:
