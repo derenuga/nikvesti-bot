@@ -38,6 +38,7 @@ handlers/
   law_enforcement.py      — моніторинг новин правоохоронних органів (прокуратура тощо)
   competitors.py          — моніторинг новин конкурентів (news.pn тощо)
   google_analytics.py     — GA4 щоденна аналітика, /analytics, /report
+  traffic_spikes.py       — детектор сплесків трафіку (GA4 Realtime, самонавчальний профіль), /traffic
   stat.py                 — /stat <url>: статистика конкретного матеріалу (Facebook + GA4)
   english_report.py       — місячний звіт EN-версії (GA4 + Search Console + AI коментар)
   instagram.py            — тижнева статистика Instagram
@@ -75,6 +76,7 @@ handlers/
 | /prozorro_test_jump \[N\] | Діагностика зсуву офсету за N днів (дефолт 14) |
 | /prozorro_confirm_jump \[N\] | Підтвердити скидання офсету |
 | /prozorro_reset_tender \<id\> | Розблокувати тендер для повторної реакції |
+| /traffic | Хто зараз на сайті (GA4 Realtime) + типовий трафік для цієї години |
 | /outage | Графік відключень електроенергії (off.energy.mk.ua) |
 | /outage_probe \<path\> \[arg\] | Службова розвідка API з Railway (тимчасово) |
 | /outage_export \[idfilial\] | CSV вулиць із чергами, дефолт 15 (Миколаїв), ~7–15 хв |
@@ -103,6 +105,7 @@ handlers/
 | Щогодини :15 | Новини конкурентів |
 | Щогодини :30 | Документи органів влади |
 | Кожні 30 хв (10–18, пн–пт) | Перевірка мовчання каналу @nikvesti |
+| Щогодини :05 і :35 | Детектор сплесків трафіку (GA4 Realtime, алерт при ≥2× від типового) |
 | Останній день місяця 19:00 | Місячний EN-звіт |
 
 ---
@@ -147,6 +150,10 @@ MISE_PYTHON_GITHUB_ATTESTATIONS = false
   },
   "competitor_ids": {
     "news_pn": ["345266", ...]
+  },
+  "traffic_spikes": {
+    "profile": {"2_14": [312, 298, ...]},
+    "last_alert_at": "2026-07-02T14:35:00+03:00"
   },
   "prozorro": { ... }
 }
