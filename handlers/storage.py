@@ -235,7 +235,7 @@ def clear_competitor_night_buffer():
         _write_state(state)
 
 
-TG_POSTS_MAX_ENTRIES = 2000  # ~2 місяці постів каналу; старіші можна знайти пошуком по t.me/s
+TG_POSTS_MAX_ENTRIES = 20000  # вистачає на кілька років історії каналу (бэкфіл)
 
 
 def get_tg_post(article_id):
@@ -244,15 +244,29 @@ def get_tg_post(article_id):
         return _read_state().get("tg_posts", {}).get(str(article_id))
 
 
+def _trim_tg_posts(posts):
+    if len(posts) > TG_POSTS_MAX_ENTRIES:
+        for key in list(posts.keys())[:len(posts) - TG_POSTS_MAX_ENTRIES]:
+            del posts[key]
+
+
 def save_tg_post(article_id, message_id):
     with _lock:
         state = _read_state()
         posts = state.setdefault("tg_posts", {})
         posts[str(article_id)] = {"message_id": message_id}
-        # обрізаємо найстаріші записи (dict зберігає порядок вставки)
-        if len(posts) > TG_POSTS_MAX_ENTRIES:
-            for key in list(posts.keys())[:len(posts) - TG_POSTS_MAX_ENTRIES]:
-                del posts[key]
+        _trim_tg_posts(posts)
+        _write_state(state)
+
+
+def bulk_save_tg_posts(mapping):
+    """Записує багато article_id→message_id ОДНИМ записом файлу (для бэкфілу)."""
+    with _lock:
+        state = _read_state()
+        posts = state.setdefault("tg_posts", {})
+        for article_id, message_id in mapping.items():
+            posts[str(article_id)] = {"message_id": message_id}
+        _trim_tg_posts(posts)
         _write_state(state)
 
 

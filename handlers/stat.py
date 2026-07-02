@@ -495,7 +495,7 @@ async def stat_handler(update, context):
         print(f"stat: помилка GA4 — {e}")
 
     try:
-        tg_stat = await asyncio.to_thread(get_tg_stat, article_id)
+        tg_stat = await asyncio.to_thread(get_tg_stat, article_id, pub_date)
     except Exception as e:
         tg_stat = None
         print(f"stat: помилка Telegram — {e}")
