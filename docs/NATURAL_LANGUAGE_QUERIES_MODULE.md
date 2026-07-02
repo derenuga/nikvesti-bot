@@ -1,6 +1,6 @@
 # Природномовні запити до Лиса Микити (Agentic Query Layer)
 
-**Статус:** Реалізовано і в проді. GA4 + Google Search Console + архів тендерів Prozorro (Meta і пошук по сайту — ще ні, див. "Беклог" нижче).
+**Статус:** Реалізовано і в проді. GA4 + Google Search Console + архів тендерів Prozorro + Meta (Facebook/Instagram). Пошук по сайту — ще ні, див. "Беклог" нижче.
 
 **Модуль:** `handlers/query_router.py`
 
@@ -76,7 +76,11 @@ handle_natural_language_query() в query_router.py
 | `get_search_console_report(period, dimensions?, page_url?, search_type?, limit?, ...)` | Google Search Console: пошукові запити, сторінки, країни, кліки/покази/CTR/позиція. `search_type`: `web` (дефолт), `discover` (Google Discover), `googleNews`, `image`, `video`. `page_url` звужує до конкретної статті — **матчиться по ID статті через CONTAINS, не по точному URL** (equals виявився крихким — трейлінг слеші, протокол тощо ламали фільтр і давали хибний "нуль трафіку") |
 | `get_recent_tenders(period_days?, min_amount?, sort?, limit?, taken?)` | Тендери з архіву бота (Миколаївська область, ≥1 млн грн, з моменту запуску моніторингу): фільтри за сумою/періодом, сортування за сумою чи датою, taken=taken/free — взяті кимось у роботу чи нічиї |
 | `get_tender_stats(period_days?)` | Зведення по тендерах за період: кількість, загальна сума, найбільший, скільки взято і ким, топ замовників за сумами |
+| `get_facebook_stats(period_days?)` | Facebook-сторінка: підписники, фани, тижневі охоплення/взаємодії, топ-5 постів і рілзів за період (реакції/коменти/поширення, посилання) |
+| `get_instagram_stats(period_days?)` | Instagram: підписники, приріст/відтік за період, опубліковане (пости/рілзи/каруселі), тижневі охоплення/взаємодії, топ-5 за лайками |
 | `render_chart(labels, values, chart_type?, title?, ylabel?)` | Малює bar/line графік (matplotlib) з даних, які Claude вже отримав з інших tools, зберігає PNG; надсилається окремим повідомленням після тексту |
+
+**Обмеження Meta insights:** охоплення і взаємодії (weekly_*) Graph API віддає фіксованим вікном "останній тиждень" незалежно від period_days — tools чесно повертають це в полі note, системний промпт вимагає зазначати у відповіді.
 
 ### Авторизація Search Console
 
@@ -117,6 +121,7 @@ handle_natural_language_query() в query_router.py
 17. Хвиля 2 ревізії (07.2026): модель роутера → `claude-sonnet-5` (adaptive thinking); prompt caching на system+tools (~80-90% економії input-токенів); `MAX_TOOL_ITERATIONS` 4 → 8; AsyncAnthropic + tool-функції через `asyncio.to_thread` — NLQ більше не блокує event loop бота; живий прогрес у плейсхолдері (TOOL_PROGRESS).
 18. Пам'ять діалогу (а.1): останні 6 обмінів на (chat_id, user_id), TTL 30 хв, `/reset` для скидання.
 19. Tools над архівом тендерів (а.2): `get_recent_tenders` + `get_tender_stats` поверх стану бота — "що там по тендерах за тиждень?", "хто найактивніше бере тендери?". Footer джерел став модульним (GA4 / SC / архів тендерів).
+20. Meta-tools (а.3): `get_facebook_stats` + `get_instagram_stats` — обгортки над facebook.py/instagram.py. "Як справи у фейсбуці?", "який рілз залетів?", "скільки підписників прийшло в інсту?".
 
 ---
 
@@ -128,13 +133,6 @@ handle_natural_language_query() в query_router.py
 
 ## Беклог (не реалізовано)
 
-### Meta (Facebook + Instagram)
-
-Основа є в `facebook.py`, `instagram.py`, але tool-обгорток для NLQ ще немає:
-- `get_facebook_post_stats(period | post_url)`
-- `get_instagram_stats(period)`
-- `get_facebook_top_posts(period, limit?)`
-
 ### Пошук по сайту (MySQL)
 
 Найскладніший і найцінніший інструмент — питання типу "що останнє ми писали про Сєнкевича?". Залежить від доступу до БД сайту (KEY4-міграція або REST wrapper — див. `PROJECT_CONTEXT.md`).
@@ -143,7 +141,7 @@ handle_natural_language_query() в query_router.py
 
 ### Комбіновані запити
 
-Питання що вимагають кількох джерел одночасно (сайт + соцмережі) — не окремий tool, а природний наслідок того, що Claude сам ланцюжком викликає кілька tools в межах одного діалогу tool use, коли з'являться Meta- і site-search tools.
+Питання що вимагають кількох джерел одночасно (сайт + соцмережі) — не окремий tool, а природний наслідок того, що Claude сам ланцюжком викликає кілька tools в межах одного діалогу tool use. З появою Meta-tools вже працює ("як зайшла стаття X на сайті і у фейсбуці?").
 
 ---
 
