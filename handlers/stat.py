@@ -134,8 +134,18 @@ def _get_fb_posts(since_ts, until_ts, max_pages=15):
     }
     all_posts = []
     for _ in range(max_pages):
-        resp = requests.get(url, params=params, timeout=15)
-        data = resp.json()
+        # Один ретрай на таймаут: сторінка з summary-полями інколи відповідає
+        # довше 30с, повторна спроба зазвичай проходить
+        data = None
+        for attempt in range(2):
+            try:
+                resp = requests.get(url, params=params, timeout=30)
+                data = resp.json()
+                break
+            except requests.exceptions.Timeout:
+                if attempt == 0:
+                    continue
+                raise
         if "error" in data:
             if all_posts:
                 break  # частину вже маємо — віддаємо, що встигли
@@ -267,8 +277,8 @@ def get_fb_stats(article_url, article_id, pub_date=None):
     Рілз FB дублює ще й у стрічці постів (як відео-пост із тим самим
     контентом, але іншим лічильником переглядів). Такий дубль прибираємо —
     лишаємо рілз, бо там коректний реловий лічильник. Повертає кортеж
-    (список публікацій: спершу пости, потім рілзи; кількість переглянутих
-    постів у вікні — для діагностики). pub_date — дата публікації статті
+    (список публікацій; кількість переглянутих постів у вікні; текст помилки
+    стрічки постів або None). pub_date — дата публікації статті
     (якщо None, визначається тут)."""
     clean = _clean_url(article_url)
     posts_out = []
@@ -307,7 +317,15 @@ def get_fb_stats(article_url, article_id, pub_date=None):
     else:
         until_dt = now
         since_dt = until_dt - timedelta(days=14)
-    posts = _get_fb_posts(int(since_dt.timestamp()), int(until_dt.timestamp()))
+
+    # Помилку стрічки постів (напр. ліміт Graph API) ловимо тут — щоб не
+    # занулити всю секцію: рілзи вже зібрані, і повертаємо ознаку помилки
+    error = None
+    try:
+        posts = _get_fb_posts(int(since_dt.timestamp()), int(until_dt.timestamp()))
+    except Exception as e:
+        posts = []
+        error = str(e)
 
     for post in posts:
         if not _post_matches_article(post, clean, article_id):
@@ -326,7 +344,7 @@ def get_fb_stats(article_url, article_id, pub_date=None):
             "shares": post.get("shares", {}).get("count", 0),
         })
 
-    return posts_out + reels_out, len(posts)
+    return posts_out + reels_out, len(posts), error
 
 
 # ---------- GA4 ----------
@@ -385,7 +403,18 @@ def get_ga4_stat(article_id):
 
 # ---------- Форматування ----------
 
-def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None, posts_scanned=None):
+def _short_fb_error(error):
+    """Людський опис помилки Graph API для повідомлення."""
+    low = error.lower()
+    if "timed out" in low or "timeout" in low:
+        return "Facebook відповідав надто довго (таймаут)"
+    if "request limit" in low or "rate limit" in low or "#4" in error or "#17" in error:
+        return "Facebook тимчасово обмежив запити (ліміт)"
+    return f"помилка Facebook API: {error[:150]}"
+
+
+def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
+                        posts_scanned=None, fb_error=None):
     clean = _clean_url(article_url)
     lines = [
         f"📊 <b>Статистика матеріалу</b>",
@@ -394,7 +423,11 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
         "📘 <b>Facebook</b>",
     ]
 
-    if not fb_stats:
+    if not fb_stats and fb_error:
+        # Помилка API — це НЕ "поста немає". Кажемо чесно й радимо повторити.
+        lines.append(f"⚠️ {_short_fb_error(fb_error)}")
+        lines.append("Спробуйте /stat ще раз за хвилину — це тимчасово.")
+    elif not fb_stats:
         # Діагностика: чи визначилась дата + скільки постів переглянуто у вікні.
         # Багато постів і нема збігу → проблема матчингу; мало → вікно/пагінація.
         if pub_date:
@@ -483,10 +516,12 @@ async def stat_handler(update, context):
         print(f"stat: помилка визначення дати — {e}")
 
     try:
-        fb_stats, fb_scanned = await asyncio.to_thread(get_fb_stats, article_url, article_id, pub_date)
+        fb_stats, fb_scanned, fb_error = await asyncio.to_thread(get_fb_stats, article_url, article_id, pub_date)
     except Exception as e:
-        fb_stats, fb_scanned = [], None
+        fb_stats, fb_scanned, fb_error = [], None, str(e)
         print(f"stat: помилка Facebook — {e}")
+    if fb_error:
+        print(f"stat: Facebook стрічка постів — {fb_error}")
 
     try:
         ga4_stat = await asyncio.to_thread(get_ga4_stat, article_id)
@@ -500,5 +535,5 @@ async def stat_handler(update, context):
         tg_stat = None
         print(f"stat: помилка Telegram — {e}")
 
-    text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date, fb_scanned)
+    text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date, fb_scanned, fb_error)
     await msg.edit_text(text, parse_mode="HTML")
