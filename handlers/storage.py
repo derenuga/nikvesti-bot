@@ -235,6 +235,27 @@ def clear_competitor_night_buffer():
         _write_state(state)
 
 
+TG_POSTS_MAX_ENTRIES = 2000  # ~2 місяці постів каналу; старіші можна знайти пошуком по t.me/s
+
+
+def get_tg_post(article_id):
+    """Індекс постів каналу @nikvesti: article_id → {"message_id": ...}. None якщо немає."""
+    with _lock:
+        return _read_state().get("tg_posts", {}).get(str(article_id))
+
+
+def save_tg_post(article_id, message_id):
+    with _lock:
+        state = _read_state()
+        posts = state.setdefault("tg_posts", {})
+        posts[str(article_id)] = {"message_id": message_id}
+        # обрізаємо найстаріші записи (dict зберігає порядок вставки)
+        if len(posts) > TG_POSTS_MAX_ENTRIES:
+            for key in list(posts.keys())[:len(posts) - TG_POSTS_MAX_ENTRIES]:
+                del posts[key]
+        _write_state(state)
+
+
 def get_all_tenders():
     """Повний архів відісланих тендерів (read-only копія) — для NLQ-tools
     'що там по тендерах за тиждень?'. Ключ — tender_id, значення — dict

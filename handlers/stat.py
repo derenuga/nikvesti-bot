@@ -2,10 +2,13 @@
 Команда /stat <url> — збирає статистику матеріалу nikvesti.com:
 - Facebook: перегляди (post_media_view), реакції, коментарі, шери
 - GA4: перегляди по мовних версіях (ua/ru/en) за ID матеріалу
+- Telegram: перегляди поста в каналі @nikvesti (індекс + пошук по t.me/s,
+  деталі — handlers/telegram_stats.py)
 
 Використання: /stat https://nikvesti.com/news/...
 """
 
+import asyncio
 import os
 import re
 import json
@@ -14,6 +17,8 @@ from datetime import datetime, timedelta
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, DateRange, Metric, Dimension, FilterExpression, Filter
 from google.oauth2 import service_account
+
+from handlers.telegram_stats import get_tg_stat, SEARCH_MAX_PAGES
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
@@ -165,7 +170,7 @@ def get_ga4_stat(article_id):
 
 # ---------- Форматування ----------
 
-def format_stat_message(article_url, fb_stat, ga4_stat):
+def format_stat_message(article_url, fb_stat, ga4_stat, tg_stat):
     clean = _clean_url(article_url)
     lines = [
         f"📊 <b>Статистика матеріалу</b>",
@@ -183,6 +188,18 @@ def format_stat_message(article_url, fb_stat, ga4_stat):
         lines.append(f'❤️ Реакції: {fb_stat["reactions"]}')
         lines.append(f'💬 Коментарі: {fb_stat["comments"]}')
         lines.append(f'🔄 Шери: {fb_stat["shares"]}')
+
+    lines.append("")
+    lines.append("📣 <b>Telegram</b>")
+
+    if tg_stat is None:
+        lines.append(f"Пост не знайдено (індекс + останні ~{SEARCH_MAX_PAGES * 20} постів каналу)")
+    else:
+        lines.append(f'<a href="{tg_stat["url"]}">{tg_stat["url"].replace("https://", "")}</a>')
+        if tg_stat["views"] is not None:
+            lines.append(f'👁 Перегляди: {tg_stat["views"]:,}'.replace(",", "\u00a0"))
+        else:
+            lines.append("👁 Перегляди: не вдалося зчитати")
 
     lines.append("")
     lines.append("📈 <b>GA4</b>")
@@ -223,17 +240,24 @@ async def stat_handler(update, context):
 
     msg = await update.message.reply_text("⏳ Збираю статистику...")
 
+    # Всі мережеві виклики — в окремому потоці, щоб не блокувати event loop
     try:
-        fb_stat = get_fb_stat(article_url, article_id)
+        fb_stat = await asyncio.to_thread(get_fb_stat, article_url, article_id)
     except Exception as e:
         fb_stat = None
         print(f"stat: помилка Facebook — {e}")
 
     try:
-        ga4_stat = get_ga4_stat(article_id)
+        ga4_stat = await asyncio.to_thread(get_ga4_stat, article_id)
     except Exception as e:
         ga4_stat = {}
         print(f"stat: помилка GA4 — {e}")
 
-    text = format_stat_message(article_url, fb_stat, ga4_stat)
+    try:
+        tg_stat = await asyncio.to_thread(get_tg_stat, article_id)
+    except Exception as e:
+        tg_stat = None
+        print(f"stat: помилка Telegram — {e}")
+
+    text = format_stat_message(article_url, fb_stat, ga4_stat, tg_stat)
     await msg.edit_text(text, parse_mode="HTML")

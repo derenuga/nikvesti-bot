@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime
 from telegram import Update
@@ -17,6 +18,7 @@ from handlers.reactions import handle_message_reaction
 from handlers.english_report import english_report_handler
 from handlers.energy_outage import outage_handler, outage_probe_handler, outage_export_handler, outage_geocode_handler
 from handlers.traffic_spikes import traffic_handler
+from handlers.telegram_stats import index_channel_post
 from handlers import storage
 
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -43,6 +45,8 @@ async def check_allowed(update, context):
 async def channel_post_handler(update, context):
     if update.channel_post and update.channel_post.chat.username == CHANNEL_USERNAME:
         last_channel_post_time["time"] = datetime.now()
+        # Індекс для /stat: article_id → message_id (запис у storage — в потоці)
+        await asyncio.to_thread(index_channel_post, update.channel_post)
 
 async def group_reply_to_bot(update, context):
     """Reply на повідомлення бота в чаті редакції — теж іде в Intent Router,
