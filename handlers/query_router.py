@@ -509,6 +509,95 @@ def get_tender_stats(period_days=30):
     }
 
 
+# ---------- Meta: Facebook + Instagram (обгортки над facebook.py/instagram.py) ----------
+
+def _nlq_facebook_stats(period_days=7):
+    from datetime import timezone
+    from handlers import facebook as fb
+
+    now = datetime.now()
+    since_ts = int((now - timedelta(days=period_days)).timestamp())
+    since_dt = datetime.now(timezone.utc) - timedelta(days=period_days)
+
+    page = fb.get_page_followers()
+    stats = fb.get_page_stats()  # insights Meta віддає фіксовано за тиждень
+    posts, total_posts = fb.get_top_posts(since_ts)
+    reels, total_reels = fb.get_top_reels(since_dt)
+
+    def fmt_post(p):
+        return {
+            "text": fb.short_message(p.get("message", ""), words=12),
+            "url": p.get("permalink_url"),
+            "reactions": p.get("reactions", {}).get("summary", {}).get("total_count", 0),
+            "comments": p.get("comments", {}).get("summary", {}).get("total_count", 0),
+            "shares": p.get("shares", {}).get("count", 0),
+            "created": p.get("created_time"),
+        }
+
+    def fmt_reel(r):
+        return {
+            "text": fb.short_message(r.get("description", ""), words=12),
+            "url": r.get("permalink_url"),
+            "reactions": r.get("reactions", 0),
+            "comments": r.get("comments_count", 0),
+            "shares": r.get("shares_count", 0),
+            "created": r.get("created_time"),
+        }
+
+    return {
+        "period_days": period_days,
+        "followers": page.get("followers_count"),
+        "fans": page.get("fan_count"),
+        "weekly_reach": stats.get("page_impressions_unique"),
+        "weekly_engagements": stats.get("page_post_engagements"),
+        "note": "weekly_reach і weekly_engagements Meta віддає фіксовано за останній тиждень, незалежно від period_days. Топ постів — тільки пости з посиланням на nikvesti.com.",
+        "total_posts": total_posts,
+        "top_posts": [fmt_post(p) for p in posts],
+        "total_reels": total_reels,
+        "top_reels": [fmt_reel(r) for r in reels],
+    }
+
+
+def _nlq_instagram_stats(period_days=7):
+    from handlers import instagram as ig
+
+    now = datetime.now()
+    since_ts = int((now - timedelta(days=period_days)).timestamp())
+
+    profile = ig.get_instagram_profile()
+    week_stats = ig.get_instagram_stats()  # insights Meta віддає фіксовано за тиждень
+    follows, unfollows = ig.get_follows_week(since_ts, int(now.timestamp()))
+    top_media = ig.get_top_media(since_ts)
+    counts = ig.get_media_counts(since_ts)
+
+    def fmt_media(m):
+        return {
+            "type": m.get("media_type"),
+            "caption": ig.short_caption(m.get("caption", ""), words=12),
+            "url": m.get("permalink"),
+            "likes": m.get("like_count", 0),
+            "comments": m.get("comments_count", 0),
+            "created": m.get("timestamp"),
+        }
+
+    return {
+        "period_days": period_days,
+        "followers": profile.get("followers_count"),
+        "follows_gained": follows,
+        "follows_lost": unfollows,
+        "published": {
+            "photos": counts.get("IMAGE", 0),
+            "reels": counts.get("VIDEO", 0),
+            "carousels": counts.get("CAROUSEL_ALBUM", 0),
+        },
+        "weekly_reach": week_stats.get("reach"),
+        "weekly_interactions": week_stats.get("total_interactions"),
+        "weekly_accounts_engaged": week_stats.get("accounts_engaged"),
+        "note": "weekly_* метрики Meta віддає фіксовано за останній тиждень, незалежно від period_days. follows_gained/lost і топ — за period_days.",
+        "top_media": [fmt_media(m) for m in top_media],
+    }
+
+
 # ---------- Графіки ----------
 
 def render_chart(labels, values, chart_type="bar", title="", ylabel=""):
@@ -743,6 +832,38 @@ TOOLS = [
         },
     },
     {
+        "name": "get_facebook_stats",
+        "description": (
+            "Статистика Facebook-сторінки МикВісті: підписники, фани, охоплення і взаємодії "
+            "за останній тиждень, топ-5 публікацій і топ-5 рілзів за вказаний період "
+            "(з реакціями/коментарями/поширеннями і посиланнями). Використовуй для питань "
+            "'як справи у фейсбуці?', 'який пост найкраще зайшов?', 'скільки підписників у ФБ?'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period_days": {"type": "integer", "description": "За скільки останніх днів брати топ постів/рілзів, за замовчуванням 7"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_instagram_stats",
+        "description": (
+            "Статистика Instagram МикВісті: підписники, приріст/відтік за період, скільки "
+            "опубліковано (пости/рілзи/каруселі), охоплення і взаємодії за останній тиждень, "
+            "топ-5 публікацій за лайками+коментарями. Використовуй для питань 'як інста?', "
+            "'скільки підписників прийшло?', 'який рілз залетів?'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period_days": {"type": "integer", "description": "За скільки останніх днів, за замовчуванням 7"},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "render_chart",
         "description": (
             "Малює графік (стовпчиковий або лінійний) з даних, які ти вже отримав з інших GA4-tools, "
@@ -786,6 +907,8 @@ TOOL_FUNCTIONS = {
     "get_search_console_report": get_search_console_report,
     "get_recent_tenders": get_recent_tenders,
     "get_tender_stats": get_tender_stats,
+    "get_facebook_stats": _nlq_facebook_stats,
+    "get_instagram_stats": _nlq_instagram_stats,
     "render_chart": render_chart,
 }
 
@@ -795,6 +918,7 @@ GA4_TOOL_NAMES = {
     "get_ga4_hourly_breakdown", "get_ga4_custom_report", "get_ga4_article_stats",
 }
 TENDER_TOOL_NAMES = {"get_recent_tenders", "get_tender_stats"}
+META_TOOL_NAMES = {"get_facebook_stats", "get_instagram_stats"}
 
 # Живий прогрес у плейсхолдері: людський опис кожного tool,
 # щоб під час довгого запиту було видно, що Лис зараз робить.
@@ -808,6 +932,8 @@ TOOL_PROGRESS = {
     "get_search_console_report": "🦊 Звіряю з Google Search Console...",
     "get_recent_tenders": "🦊 Гортаю архів тендерів...",
     "get_tender_stats": "🦊 Рахую тендерну статистику...",
+    "get_facebook_stats": "🦊 Заглядаю у Facebook...",
+    "get_instagram_stats": "🦊 Гортаю Instagram...",
     "render_chart": "🦊 Малюю графік...",
 }
 
@@ -820,6 +946,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 Якщо питають звідки прийшов трафік на конкретну статтю (соцмережі, реферали тощо) — використай get_ga4_custom_report з dimensions ['sessionDefaultChannelGroup'] або ['sessionSource', 'sessionMedium'] і page_path_contains (ID статті з URL, наприклад "35814" з "/news/35814-..."). Не питай дату публікації — для джерел трафіку конкретної статті дата не потрібна, бери period='last_30_days' або ширше якщо невпевнений.
 Якщо питають конкретно про Google Discover, Google News чи пошукові запити Google — використай get_search_console_report (search_type='discover' для Discover). Для конкретної статті передай page_url повним URL (https://nikvesti.com/...). Це окреме джерело даних від GA4 — не плутай.
 Якщо питають про тендери ("що там по тендерах за тиждень?", "найбільший тендер місяця", "хто взяв тендер", "які тендери нічиї?") — використай get_recent_tenders (список з фільтрами) або get_tender_stats (зведення: кількість, суми, хто скільки взяв, топ замовників). Це архів того, що бот сам виловив з Prozorro (Миколаївська область, від 1 млн грн) — чесно зазначай, що це не весь Prozorro, якщо питання ширше. Суми пиши в млн грн, коли вони великі ("32,5 млн грн", а не "32 500 000 грн").
+Якщо питають про соцмережі — get_facebook_stats (сторінка ФБ: підписники, охоплення, топ постів і рілзів) або get_instagram_stats (підписники з приростом/відтоком, публікації, топ за лайками). Зверни увагу на note в результатах: охоплення/взаємодії Meta віддає фіксовано за останній тиждень — якщо питали про інший період, чесно зазнач це.
 Якщо питають деталі про конкретний реферер/джерело трафіку з невеликою кількістю сесій (наприклад "звідки саме прийшли заходи з derstandard.de" або "на які наші сторінки попав трафік з X") — використай get_ga4_custom_report з filter_dimension='sessionSource', filter_value_contains=<домен>, dimensions=['pageReferrer', 'pagePath'] (або додай 'sessionSourceMedium'). Це дозволяє звузити звіт до конкретного джерела навіть якщо воно дало лише кілька сесій і не потрапляє в загальний топ. pageReferrer дає повний URL сторінки-донора, pagePath — куди саме на нашому сайті потрапив користувач.
 Відповідай коротко, по суті, з конкретними числами, простим текстом у кілька рядків — без Markdown-таблиць. Якщо викликав render_chart — графік буде надіслано окремим повідомленням автоматично, НЕ згадуй шлях до файлу, НЕ вставляй markdown-посилання чи ![]() на зображення в тексті відповіді. Якщо даних не вдалось отримати — чесно скажи про це."""
 
@@ -884,6 +1011,10 @@ async def handle_natural_language_query(update, context):
                     site_suffix = " (nikvesti.com)" if sources else ""
                     if used_tools & TENDER_TOOL_NAMES:
                         sources.append("архів тендерів Лиса (Prozorro)")
+                    if "get_facebook_stats" in used_tools:
+                        sources.append("Facebook Graph API")
+                    if "get_instagram_stats" in used_tools:
+                        sources.append("Instagram API")
                     if sources:
                         final_text += f"\n\n📊 Джерело даних: {' + '.join(sources)}{site_suffix}"
                 await placeholder.edit_text(final_text)
