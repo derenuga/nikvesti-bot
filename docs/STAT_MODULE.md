@@ -7,7 +7,7 @@
 
 ### Що робить
 За URL матеріалу nikvesti.com збирає і відображає статистику з трьох джерел:
-- **Facebook** — перегляди, реакції, коментарі, шери
+- **Facebook** — ВСІ публікації про матеріал (звичайні пости + рілзи з посиланням в описі), кожна з переглядами/реакціями/коментарями/шерами; якщо їх кілька — нумерація і "Разом переглядів"
 - **Telegram** — пост у каналі @nikvesti з посиланням на матеріал + його перегляди
 - **GA4** — перегляди по мовних версіях (ua/ru/en) і загальна сума
 
@@ -46,9 +46,13 @@ handlers/storage.py        — ключ "tg_posts": {article_id: {"message_id": 
 
 **Facebook:**
 - API: Graph API v25.0
-- Ендпоінт: `GET /{page_id}/posts?fields=message,created_time,permalink_url,attachments&limit=100`
-- Пошук: порівнює ID матеріалу з URL вкладення поста (attachments → media → href)
-- Діапазон пошуку: останні 14 днів
+- Збирає ВСІ публікації, не тільки першу знайдену:
+  - **Пости**: `GET /{page_id}/posts` за останні 14 днів; матч по message/story
+  - **Рілзи**: `GET /{page_id}/video_reels` (останні ~50); матч по description;
+    реакції/коменти/шери — `video_insights` (як у тижневому звіті),
+    перегляди — метрика `blue_reels_play_count` з фолбеком `post_video_views`
+- Матч точний: повний clean URL або `/{article_id}-` (щоб 320362 не ловив 1320362)
+- Якщо публікацій кілька — нумеровані блоки (🎬 для рілзів) + "Разом переглядів"
 - Метрики: `post_media_view` (перегляди, актуальна з листопада 2025), `post_reactions_by_type_total`, `post_comments`, `post_shares`
 - Permalink формат: `facebook.com/nikvesti/posts/{id}`
 
