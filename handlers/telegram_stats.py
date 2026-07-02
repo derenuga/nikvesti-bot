@@ -26,8 +26,10 @@ _parse_message_block/_parse_views_text — перші кандидати на п
 """
 
 import re
+import time
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime, timedelta, timezone
 
 from handlers import storage
 
@@ -37,6 +39,61 @@ HEADERS = {
     # t.me інколи віддає редирект-заглушку без браузерного UA
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0",
 }
+
+# Калібрувальні якорі (дата 1-го числа → message_id), від Олега. Дозволяють
+# оцінити message_id для будь-якої дати ЛІНІЙНОЮ інтерполяцією між сусідніми
+# якорями (локальна швидкість постингу точніша за середню по всій історії).
+# Використовуються: (1) для прицільного пошуку старого поста по даті статті,
+# (2) як орієнтир глибини для бэкфілу. Доповнювати новими місяцями за потреби.
+CALIBRATION_ANCHORS = {
+    "2026-07-01": 82078, "2026-06-01": 81415, "2026-05-01": 80768,
+    "2026-04-01": 80044, "2026-03-01": 79397, "2026-02-01": 78753,
+    "2026-01-01": 78042, "2025-12-01": 77356, "2025-11-01": 76638,
+    "2025-10-01": 75963, "2025-09-01": 75331, "2025-08-01": 74569,
+    "2025-07-01": 73830, "2025-06-01": 73224, "2025-05-01": 72552,
+    "2025-04-01": 71816, "2025-03-01": 71130, "2025-02-01": 70344,
+    "2025-01-01": 69580,
+}
+
+# Прицільний пошук по даті: старт трохи вище оцінки (пост виходить у день
+# публікації або наступні — тобто id ≈ оцінка або трохи більший) і гортаємо
+# вниз, щоб перекрити похибку інтерполяції в обидва боки.
+TARGETED_START_OFFSET = 300
+TARGETED_PAGES = 25
+
+
+def _anchor_items():
+    return sorted(
+        (datetime.fromisoformat(d).replace(tzinfo=timezone.utc), mid)
+        for d, mid in CALIBRATION_ANCHORS.items()
+    )
+
+
+def estimate_message_id(target_date):
+    """Оцінка message_id для дати лінійною інтерполяцією між якорями
+    (екстраполяція за крайніми двома, якщо дата поза діапазоном)."""
+    if target_date.tzinfo is None:
+        target_date = target_date.replace(tzinfo=timezone.utc)
+    else:
+        target_date = target_date.astimezone(timezone.utc)
+
+    items = _anchor_items()
+    if target_date <= items[0][0]:
+        (d0, m0), (d1, m1) = items[0], items[1]
+    elif target_date >= items[-1][0]:
+        (d0, m0), (d1, m1) = items[-2], items[-1]
+    else:
+        (d0, m0), (d1, m1) = items[0], items[1]
+        for i in range(len(items) - 1):
+            if items[i][0] <= target_date <= items[i + 1][0]:
+                (d0, m0), (d1, m1) = items[i], items[i + 1]
+                break
+
+    span_days = (d1 - d0).total_seconds() / 86400
+    if span_days == 0:
+        return m1
+    rate = (m1 - m0) / span_days
+    return int(m0 + rate * ((target_date - d0).total_seconds() / 86400))
 
 
 def _parse_views_text(text):
@@ -66,8 +123,11 @@ def _fetch_html(url, params=None):
     return resp.text
 
 
+_HREF_ARTICLE_RE = re.compile(r"nikvesti\.com/[^\s\"'<>]*?/(\d{4,})-")
+
+
 def _parse_message_block(block):
-    """З div.tgme_widget_message дістає (message_id, views, всі href'и)."""
+    """З div.tgme_widget_message дістає (message_id, views, href'и, datetime)."""
     data_post = block.get("data-post", "")  # "nikvesti/82005"
     msg_id = None
     if "/" in data_post:
@@ -82,7 +142,26 @@ def _parse_message_block(block):
         views = _parse_views_text(views_span.get_text(strip=True))
 
     hrefs = [a.get("href", "") for a in block.find_all("a", href=True)]
-    return msg_id, views, hrefs
+
+    dt = None
+    time_tag = block.find("time", attrs={"datetime": True})
+    if time_tag:
+        try:
+            dt = datetime.fromisoformat(time_tag["datetime"].replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            pass
+
+    return msg_id, views, hrefs, dt
+
+
+def _article_ids_in_hrefs(hrefs):
+    """Усі ID статей nikvesti.com серед посилань поста."""
+    ids = set()
+    for href in hrefs:
+        m = _HREF_ARTICLE_RE.search(href)
+        if m:
+            ids.add(m.group(1))
+    return ids
 
 
 def fetch_post_views(message_id):
@@ -95,13 +174,11 @@ def fetch_post_views(message_id):
     return _parse_views_text(views_span.get_text(strip=True))
 
 
-def search_channel_post(article_id, max_pages=SEARCH_MAX_PAGES):
-    """
-    Гортає t.me/s/nikvesti назад і шукає пост із посиланням на статтю.
-    Повертає {"message_id", "url", "views"} або None.
-    """
+def _scan_pages(article_id, start_before, max_pages):
+    """Гортає t.me/s назад від start_before, шукає пост із посиланням на статтю.
+    start_before=None → від найновіших. Повертає {"message_id","url","views"} або None."""
     link_re = _article_link_re(article_id)
-    before = None
+    before = start_before
 
     for _ in range(max_pages):
         params = {"before": before} if before else None
@@ -114,7 +191,7 @@ def search_channel_post(article_id, max_pages=SEARCH_MAX_PAGES):
 
         page_min_id = None
         for block in blocks:
-            msg_id, views, hrefs = _parse_message_block(block)
+            msg_id, views, hrefs, _dt = _parse_message_block(block)
             if msg_id is not None and (page_min_id is None or msg_id < page_min_id):
                 page_min_id = msg_id
             if any(link_re.search(h) for h in hrefs):
@@ -131,10 +208,87 @@ def search_channel_post(article_id, max_pages=SEARCH_MAX_PAGES):
     return None
 
 
-def get_tg_stat(article_id):
+def search_channel_post(article_id, max_pages=SEARCH_MAX_PAGES):
+    """Пошук від найновіших постів назад (для свіжих матеріалів)."""
+    return _scan_pages(article_id, None, max_pages)
+
+
+def search_channel_post_near_date(article_id, pub_date, pages=TARGETED_PAGES):
+    """Прицільний пошук: оцінюємо message_id по даті публікації (інтерполяція
+    між якорями) і гортаємо вікно навколо оцінки. Так знаходимо старі
+    матеріали за ~десяток запитів замість сотень сторінок від початку."""
+    est = estimate_message_id(pub_date)
+    return _scan_pages(article_id, est + TARGETED_START_OFFSET, pages)
+
+
+def backfill_channel_index(months_back=None, max_pages=1500, pace_seconds=0.35):
+    """Гортає історію каналу назад і індексує всі article_id→message_id одним
+    записом у storage наприкінці. months_back — скільки місяців углиб (None =
+    поки є сторінки або поки не досягнемо max_pages). Стоп також по якірному
+    floor-id (страховка, якщо парсинг дати підведе). Повертає
+    (проіндексовано_статей, переглянуто_постів, сторінок)."""
+    cutoff = None
+    floor_id = None
+    if months_back:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=30 * months_back)
+        floor_id = estimate_message_id(cutoff)
+
+    mapping = {}
+    posts_seen = 0
+    pages = 0
+    before = None
+
+    for _ in range(max_pages):
+        params = {"before": before} if before else None
+        try:
+            html = _fetch_html(f"https://t.me/s/{CHANNEL}", params=params)
+        except Exception as e:
+            print(f"tg_stats backfill: зупинка на сторінці {pages} — {e}")
+            break
+
+        soup = BeautifulSoup(html, "html.parser")
+        blocks = soup.find_all("div", class_="tgme_widget_message")
+        if not blocks:
+            break
+        pages += 1
+
+        page_min_id = None
+        oldest_dt = None
+        for block in blocks:
+            msg_id, _views, hrefs, dt = _parse_message_block(block)
+            posts_seen += 1
+            if msg_id is not None and (page_min_id is None or msg_id < page_min_id):
+                page_min_id = msg_id
+            if dt is not None and (oldest_dt is None or dt < oldest_dt):
+                oldest_dt = dt
+            if msg_id is not None:
+                for aid in _article_ids_in_hrefs(hrefs):
+                    # лишаємо найменший message_id — оригінальний пост статті
+                    if aid not in mapping or msg_id < mapping[aid]:
+                        mapping[aid] = msg_id
+
+        if page_min_id is None or page_min_id <= 1:
+            break
+        if cutoff and oldest_dt is not None and oldest_dt < cutoff:
+            break
+        if floor_id and page_min_id <= floor_id:
+            break
+        before = page_min_id
+        time.sleep(pace_seconds)
+
+    if mapping:
+        storage.bulk_save_tg_posts(mapping)
+    return len(mapping), posts_seen, pages
+
+
+def get_tg_stat(article_id, pub_date=None):
     """
-    Головна точка для /stat: індекс → embed; інакше пошук по стрічці.
-    Повертає {"url", "views", "found_via"} або None.
+    Головна точка для /stat. Шляхи пошуку по черзі:
+      1. індекс (миттєво) → перегляди з embed
+      2. прицільний пошук по даті публікації (якщо pub_date відома) —
+         оцінка message_id по якорях + вікно навколо неї
+      3. пошук від найновіших постів назад (свіжі матеріали)
+    Знайдене кладемо в індекс. Повертає {"url","views","found_via"} або None.
     """
     entry = storage.get_tg_post(article_id)
     if entry:
@@ -146,11 +300,23 @@ def get_tg_stat(article_id):
             "found_via": "index",
         }
 
-    found = search_channel_post(article_id)
+    found = None
+    found_via = None
+    if pub_date is not None:
+        try:
+            found = search_channel_post_near_date(article_id, pub_date)
+            found_via = "date"
+        except Exception as e:
+            print(f"tg_stats: прицільний пошук не вдався — {e}")
+
+    if not found:
+        found = search_channel_post(article_id)
+        found_via = "search"
+
     if found:
         if found["message_id"]:
             storage.save_tg_post(article_id, found["message_id"])
-        return {"url": found["url"], "views": found["views"], "found_via": "search"}
+        return {"url": found["url"], "views": found["views"], "found_via": found_via}
 
     return None
 
