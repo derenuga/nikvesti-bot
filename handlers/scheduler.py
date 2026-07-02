@@ -12,6 +12,7 @@ from handlers.competitors import check_competitors
 from handlers.english_report import send_english_report
 from handlers.law_enforcement import check_law_enforcement
 from handlers.energy_outage import check_outage_changes
+from handlers.traffic_spikes import check_traffic_spikes
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -149,5 +150,8 @@ def setup_scheduler(bot, last_channel_post_time=None):
     scheduler.add_job(monthly_english_report, "cron", day="last", hour=19, minute=0, args=[bot])
     # Моніторинг змін у графіку відключень — кожні 5 хвилин, в особистий чат для налагодження
     scheduler.add_job(check_outage_changes, "interval", minutes=5, args=[bot, OUTAGE_DEBUG_CHAT_ID])
+    # Детектор сплесків трафіку — кожні 30 хв (:05 і :35, щоб не збігатись
+    # з тендерами/конкурентами/документами на :00/:15/:30)
+    scheduler.add_job(check_traffic_spikes, "cron", minute="5,35", args=[bot])
     scheduler.start()
     return scheduler

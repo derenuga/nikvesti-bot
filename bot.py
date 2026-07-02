@@ -16,6 +16,7 @@ from handlers.query_router import handle_natural_language_query
 from handlers.reactions import handle_message_reaction
 from handlers.english_report import english_report_handler
 from handlers.energy_outage import outage_handler, outage_probe_handler, outage_export_handler, outage_geocode_handler
+from handlers.traffic_spikes import traffic_handler
 from handlers import storage
 
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -77,7 +78,8 @@ async def start(update, context):
         "/competitors — перевірити новини конкурентів\n"
         "/law — перевірити новини правоохоронних органів\n"
         "/stat <url> — статистика матеріалу (Facebook + GA4)\n"
-        "/english — місячний звіт англійської версії сайту"
+        "/english — місячний звіт англійської версії сайту\n"
+        "/traffic — хто зараз на сайті + типовий трафік для цієї години"
     )
 
 async def status(update, context):
@@ -175,6 +177,7 @@ def main():
     app.add_handler(CommandHandler("law", law_check))
     app.add_handler(CommandHandler("stat", stat_handler))
     app.add_handler(CommandHandler("english", english_report_handler))
+    app.add_handler(CommandHandler("traffic", traffic_handler))
     app.add_handler(CommandHandler("outage", outage_handler))
     app.add_handler(CommandHandler("outage_probe", outage_probe_handler))
     app.add_handler(CommandHandler("outage_export", outage_export_handler))

@@ -215,6 +215,21 @@ def save_seen_document_ids(source_id, ids):
         _write_state(state)
 
 
+def get_traffic_spikes_state():
+    """Стан детектора сплесків трафіку: профіль типового трафіку по слотах
+    (день тижня + година) і час останнього алерту. Порожній dict = перший запуск."""
+    with _lock:
+        state = _read_state()
+        return state.get("traffic_spikes", {})
+
+
+def save_traffic_spikes_state(spikes_state):
+    with _lock:
+        state = _read_state()
+        state["traffic_spikes"] = spikes_state
+        _write_state(state)
+
+
 def get_seen_competitor_ids(source_id):
     """
     Повертає список вже бачених ID для конкретного джерела конкурента.
