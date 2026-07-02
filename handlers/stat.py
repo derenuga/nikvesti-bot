@@ -266,8 +266,9 @@ def get_fb_stats(article_url, article_id, pub_date=None):
 
     Рілз FB дублює ще й у стрічці постів (як відео-пост із тим самим
     контентом, але іншим лічильником переглядів). Такий дубль прибираємо —
-    лишаємо рілз, бо там коректний реловий лічильник. Повертає список:
-    спершу звичайні пости, потім рілзи. pub_date — дата публікації статті
+    лишаємо рілз, бо там коректний реловий лічильник. Повертає кортеж
+    (список публікацій: спершу пости, потім рілзи; кількість переглянутих
+    постів у вікні — для діагностики). pub_date — дата публікації статті
     (якщо None, визначається тут)."""
     clean = _clean_url(article_url)
     posts_out = []
@@ -325,7 +326,7 @@ def get_fb_stats(article_url, article_id, pub_date=None):
             "shares": post.get("shares", {}).get("count", 0),
         })
 
-    return posts_out + reels_out
+    return posts_out + reels_out, len(posts)
 
 
 # ---------- GA4 ----------
@@ -384,7 +385,7 @@ def get_ga4_stat(article_id):
 
 # ---------- Форматування ----------
 
-def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None):
+def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None, posts_scanned=None):
     clean = _clean_url(article_url)
     lines = [
         f"📊 <b>Статистика матеріалу</b>",
@@ -394,11 +395,14 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None)
     ]
 
     if not fb_stats:
-        # Діагностика: показуємо, чи вдалось визначити дату публікації
+        # Діагностика: чи визначилась дата + скільки постів переглянуто у вікні.
+        # Багато постів і нема збігу → проблема матчингу; мало → вікно/пагінація.
         if pub_date:
-            window = f"шукав біля {pub_date.strftime('%d.%m.%Y')} + рілзи"
+            window = f"шукав біля {pub_date.strftime('%d.%m.%Y')}"
         else:
             window = "дату публікації не визначив → шукав за 14 днів"
+        if posts_scanned is not None:
+            window += f", переглянув {posts_scanned} постів у вікні + рілзи"
         lines.append(f"Публікацій не знайдено ({window})")
     else:
         several = len(fb_stats) > 1
@@ -479,9 +483,9 @@ async def stat_handler(update, context):
         print(f"stat: помилка визначення дати — {e}")
 
     try:
-        fb_stats = await asyncio.to_thread(get_fb_stats, article_url, article_id, pub_date)
+        fb_stats, fb_scanned = await asyncio.to_thread(get_fb_stats, article_url, article_id, pub_date)
     except Exception as e:
-        fb_stats = []
+        fb_stats, fb_scanned = [], None
         print(f"stat: помилка Facebook — {e}")
 
     try:
@@ -496,5 +500,5 @@ async def stat_handler(update, context):
         tg_stat = None
         print(f"stat: помилка Telegram — {e}")
 
-    text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date)
+    text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date, fb_scanned)
     await msg.edit_text(text, parse_mode="HTML")
