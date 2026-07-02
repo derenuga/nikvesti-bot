@@ -420,12 +420,7 @@ DOCUMENT_SOURCES = [
 
 # ---------- Форматування ----------
 
-def _escape_html(text):
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+from handlers.helpers import escape_html as _escape_html
 
 
 def _format_post(source, new_docs):

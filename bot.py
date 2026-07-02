@@ -54,8 +54,13 @@ async def group_reply_to_bot(update, context):
         return
     if msg.reply_to_message.from_user.id != context.bot.id:
         return
-    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+    # Лог для розслідування group-reply leak (NLQ-дока, "Відомі проблеми"):
+    # фіксуємо кожен reply на бота, щоб при повторенні інциденту була фактура
+    user_id = update.effective_user.id if update.effective_user else None
+    if ALLOWED_USER_IDS and user_id not in ALLOWED_USER_IDS:
+        print(f"NLQ group reply: відхилено user_id={user_id} chat_id={update.effective_chat.id}")
         return
+    print(f"NLQ group reply: прийнято user_id={user_id} chat_id={update.effective_chat.id}")
     await handle_natural_language_query(update, context)
 
 async def start(update, context):

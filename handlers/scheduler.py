@@ -1,9 +1,8 @@
 import os
-import anthropic
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from handlers.google_analytics import get_ga4_client, get_stats, get_top_pages, BASE_URL
 from handlers.gmail import get_unread_emails, get_oldest_unread_hours
-from handlers.ai_messages import generate_email_reminder, clean_ai_text
+from handlers.ai_messages import generate_email_reminder, generate_silence_reminder
 from handlers.instagram import send_weekly_instagram_report
 from handlers.facebook import send_weekly_facebook_report
 from handlers.morning import send_morning_message
@@ -106,18 +105,7 @@ async def check_channel_silence(bot, last_channel_post_time):
                 since_last = (now - _silence_reminders["last_at"]).total_seconds() / 3600
                 if since_last < cooldown_hours:
                     return
-            anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-            message = anthropic_client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=200,
-                messages=[{"role": "user", "content": f"""Ти — Лис Микита, бот редакції МикВісті.
-Телеграм-канал @{CHANNEL_USERNAME} мовчить вже {int(silence_hours)} годин(и).
-Напиши коротке (2-3 речення) обережне нагадування редакції українською мовою.
-ОБОВ'ЯЗКОВО вкажи в тексті платформу - Телеграм та назву каналу — @{CHANNEL_USERNAME} (саме так, з @, не пропускай і не заміняй на загальне слово "канал" без назви).
-Запитай чи немає новини для публікації, або запропонуй знайти якусь національну подію.
-Неформальний тон, без тиску. Можна 1 емодзі."""}]
-            )
-            text = clean_ai_text(message.content[0].text)
+            text = await generate_silence_reminder(CHANNEL_USERNAME, silence_hours)
             await bot.send_message(chat_id=CHAT_ID, text=text)
             _silence_reminders["last_at"] = now
             _silence_reminders["count"] += 1

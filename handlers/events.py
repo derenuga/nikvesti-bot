@@ -183,9 +183,4 @@ def format_events_html(events):
     return "\n".join(lines)
 
 
-def _escape_html(text):
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+from handlers.helpers import escape_html as _escape_html
