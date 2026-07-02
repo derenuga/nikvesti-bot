@@ -14,6 +14,7 @@ import re
 import json
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import unquote
 from datetime import datetime, timedelta
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, DateRange, Metric, Dimension, FilterExpression, Filter
@@ -122,7 +123,7 @@ def get_article_published_date(article_url):
 def _get_fb_posts(since_ts, until_ts):
     url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
-        "fields": "id,message,story,permalink_url,created_time,reactions.summary(true),comments.summary(true),shares,attachments{media_type,target}",
+        "fields": "id,message,story,permalink_url,created_time,reactions.summary(true),comments.summary(true),shares,attachments{media_type,target,url,unshimmed_url}",
         "since": since_ts,
         "until": until_ts,
         "limit": 100,
@@ -159,6 +160,39 @@ def _matches_article(text, clean_url, article_id):
     if not text:
         return False
     return clean_url in text or f"/{article_id}-" in text
+
+
+def _collect_attachment_urls(post):
+    """Усі URL з вкладень поста (url, unshimmed_url, target.url) — рекурсивно.
+    Посилання на статтю у ФБ часто не в тексті підпису, а у прикріпленому лінку."""
+    urls = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("url", "unshimmed_url") and isinstance(value, str):
+                    urls.append(value)
+                else:
+                    walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(post.get("attachments", {}))
+    return urls
+
+
+def _post_matches_article(post, clean_url, article_id):
+    """Пост стосується статті, якщо посилання є в тексті/story АБО у вкладенні
+    (fb-лінки бувають shimmed — l.facebook.com/l.php?u=... — тому декодуємо)."""
+    if _matches_article(post.get("message", "") or "", clean_url, article_id):
+        return True
+    if _matches_article(post.get("story", "") or "", clean_url, article_id):
+        return True
+    for u in _collect_attachment_urls(post):
+        if _matches_article(unquote(u), clean_url, article_id):
+            return True
+    return False
 
 
 def _get_fb_reels(limit=50):
@@ -214,14 +248,15 @@ def _post_keys(post):
     return keys
 
 
-def get_fb_stats(article_url, article_id):
-    """Шукає ВСІ публікації про матеріал: звичайні пости (14 днів)
-    і рілзи з посиланням в описі (останні ~50).
+def get_fb_stats(article_url, article_id, pub_date=None):
+    """Шукає ВСІ публікації про матеріал: звичайні пости (вікно від дати
+    публікації) і рілзи з посиланням в описі (останні ~50).
 
     Рілз FB дублює ще й у стрічці постів (як відео-пост із тим самим
     контентом, але іншим лічильником переглядів). Такий дубль прибираємо —
     лишаємо рілз, бо там коректний реловий лічильник. Повертає список:
-    спершу звичайні пости, потім рілзи."""
+    спершу звичайні пости, потім рілзи. pub_date — дата публікації статті
+    (якщо None, визначається тут)."""
     clean = _clean_url(article_url)
     posts_out = []
     reels_out = []
@@ -250,20 +285,19 @@ def get_fb_stats(article_url, article_id):
     # вперед FB_SEARCH_FORWARD_DAYS днів (статтю постять у цей проміжок).
     # Так знаходимо і старі матеріали, а не тільки за 14 днів. Без дати —
     # дефолтне вікно 14 днів назад.
-    pub_date = get_article_published_date(article_url)
+    if pub_date is None:
+        pub_date = get_article_published_date(article_url)
     now = datetime.now()
     if pub_date:
-        since_dt = pub_date - timedelta(days=1)
-        until_dt = min(pub_date + timedelta(days=FB_SEARCH_FORWARD_DAYS), now)
+        since_dt = pub_date.replace(tzinfo=None) - timedelta(days=1)
+        until_dt = min(pub_date.replace(tzinfo=None) + timedelta(days=FB_SEARCH_FORWARD_DAYS), now)
     else:
         until_dt = now
         since_dt = until_dt - timedelta(days=14)
     posts = _get_fb_posts(int(since_dt.timestamp()), int(until_dt.timestamp()))
 
     for post in posts:
-        message = post.get("message", "") or ""
-        story = post.get("story", "") or ""
-        if not (_matches_article(message, clean, article_id) or _matches_article(story, clean, article_id)):
+        if not _post_matches_article(post, clean, article_id):
             continue
         # той самий рілз, уже врахований вище як рілз — не дублюємо постом
         if reel_key_union and (_post_keys(post) & reel_key_union):
@@ -338,7 +372,7 @@ def get_ga4_stat(article_id):
 
 # ---------- Форматування ----------
 
-def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat):
+def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None):
     clean = _clean_url(article_url)
     lines = [
         f"📊 <b>Статистика матеріалу</b>",
@@ -348,7 +382,12 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat):
     ]
 
     if not fb_stats:
-        lines.append("Публікацій не знайдено (пости біля дати публікації + останні ~50 рілзів)")
+        # Діагностика: показуємо, чи вдалось визначити дату публікації
+        if pub_date:
+            window = f"шукав біля {pub_date.strftime('%d.%m.%Y')} + рілзи"
+        else:
+            window = "дату публікації не визначив → шукав за 14 днів"
+        lines.append(f"Публікацій не знайдено ({window})")
     else:
         several = len(fb_stats) > 1
         for i, item in enumerate(fb_stats):
@@ -420,8 +459,15 @@ async def stat_handler(update, context):
     msg = await update.message.reply_text("⏳ Збираю статистику...")
 
     # Всі мережеві виклики — в окремому потоці, щоб не блокувати event loop
+    # Дату публікації визначаємо один раз — і для вікна пошуку FB, і для діагностики
     try:
-        fb_stats = await asyncio.to_thread(get_fb_stats, article_url, article_id)
+        pub_date = await asyncio.to_thread(get_article_published_date, article_url)
+    except Exception as e:
+        pub_date = None
+        print(f"stat: помилка визначення дати — {e}")
+
+    try:
+        fb_stats = await asyncio.to_thread(get_fb_stats, article_url, article_id, pub_date)
     except Exception as e:
         fb_stats = []
         print(f"stat: помилка Facebook — {e}")
@@ -438,5 +484,5 @@ async def stat_handler(update, context):
         tg_stat = None
         print(f"stat: помилка Telegram — {e}")
 
-    text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat)
+    text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date)
     await msg.edit_text(text, parse_mode="HTML")
