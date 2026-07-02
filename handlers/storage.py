@@ -215,6 +215,26 @@ def save_seen_document_ids(source_id, ids):
         _write_state(state)
 
 
+def get_competitor_night_buffer():
+    """Нічний буфер новин конкурентів (00:00–07:00) — шлються ранковим дайджестом."""
+    with _lock:
+        return list(_read_state().get("competitor_night_buffer", []))
+
+
+def append_competitor_night_buffer(items):
+    with _lock:
+        state = _read_state()
+        state.setdefault("competitor_night_buffer", []).extend(items)
+        _write_state(state)
+
+
+def clear_competitor_night_buffer():
+    with _lock:
+        state = _read_state()
+        state["competitor_night_buffer"] = []
+        _write_state(state)
+
+
 def get_all_tenders():
     """Повний архів відісланих тендерів (read-only копія) — для NLQ-tools
     'що там по тендерах за тиждень?'. Ключ — tender_id, значення — dict

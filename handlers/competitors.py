@@ -12,6 +12,10 @@
 
 news.pn: фільтр по часу 3 години — захист від підняття старих новин.
 novosti-n.org: без фільтру по часу — беремо все нове по ID.
+
+Нічний режим (00:00–07:00 за Києвом): нові новини НЕ шлються одразу,
+а збираються в буфер у storage і приходять одним дайджестом "за ніч"
+з першою ранковою перевіркою (07:15) — щоб не штормити чат вночі.
 """
 
 import os
@@ -19,12 +23,14 @@ import re
 import asyncio
 import requests
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 
 from handlers import storage
-from handlers.ai_messages import generate_competitors_intro
 
 CHAT_ID = os.environ.get("CHAT_ID")
+KYIV_TZ = ZoneInfo("Europe/Kiev")
+NIGHT_END_HOUR = 7  # 00:00–06:59 — новини йдуть у нічний буфер
 
 LOCAL_KEYWORDS = re.compile(
     r'Миколає|Миколаїв|миколаїв|миколаївськ|'
@@ -199,6 +205,25 @@ def _format_post(new_by_source):
     return "\n".join(lines).strip()
 
 
+def _format_night_digest(items):
+    """Один ранковий дайджест з усього, що назбиралось у нічному буфері."""
+    lines = ["🌙 <b>Новини конкурентів за ніч</b> (00:00–07:00)", ""]
+
+    by_source = {}
+    for item in items:
+        by_source.setdefault(item.get("source_name", "?"), []).append(item)
+
+    for source_name, source_items in by_source.items():
+        lines.append(f"📰 <b>{source_name}</b>")
+        for item in source_items:
+            time_text = item.get("time") or ""
+            title = _escape_html(item.get("title", ""))
+            lines.append(f'{time_text} — <a href="{item.get("url", "")}">{title}</a>')
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
 # ---------- Основна логіка ----------
 
 async def check_competitors(bot):
@@ -208,6 +233,25 @@ async def check_competitors(bot):
         return
 
     loop = asyncio.get_event_loop()
+    is_night = datetime.now(KYIV_TZ).hour < NIGHT_END_HOUR
+
+    # Ранковий флаш: перша денна перевірка (07:15) відправляє все,
+    # що назбиралось у нічному буфері, одним дайджестом
+    if not is_night:
+        try:
+            buffered = await loop.run_in_executor(None, storage.get_competitor_night_buffer)
+            if buffered:
+                await bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=_format_night_digest(buffered),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+                await loop.run_in_executor(None, storage.clear_competitor_night_buffer)
+                print(f"Конкуренти: ранковий дайджест — {len(buffered)} нічних новин")
+        except Exception as e:
+            print(f"Конкуренти: помилка ранкового дайджесту — {e}")
+
     new_by_source = []
 
     for source in COMPETITORS:
@@ -262,17 +306,23 @@ async def check_competitors(bot):
             print(f"Конкуренти [{source['id']}]: неочікувана помилка — {e}")
 
     if new_by_source:
+        if is_night:
+            # Вночі не шлемо — складаємо в буфер до ранкового дайджесту
+            items_to_buffer = [
+                {"source_name": source["name"], **item}
+                for source, items in new_by_source
+                for item in items
+            ]
+            try:
+                await loop.run_in_executor(
+                    None, storage.append_competitor_night_buffer, items_to_buffer
+                )
+                print(f"Конкуренти: ніч — {len(items_to_buffer)} новин у буфер")
+            except Exception as e:
+                print(f"Конкуренти: помилка запису в нічний буфер — {e}")
+            return
+
         text = _format_post(new_by_source)
-        # AI-підводка Лиса перед списком — якщо генерація впаде,
-        # пост все одно йде без неї
-        try:
-            intro = await generate_competitors_intro(
-                [(source["name"], items) for source, items in new_by_source]
-            )
-            if intro and intro.strip():
-                text = f"🦊 {_escape_html(intro.strip())}\n\n{text}"
-        except Exception as e:
-            print(f"Конкуренти: помилка AI-підводки — {e}")
         try:
             await bot.send_message(
                 chat_id=CHAT_ID,

@@ -1,6 +1,5 @@
 import anthropic
 import os
-import random
 from datetime import datetime
 
 TEAM = {
@@ -217,35 +216,6 @@ async def generate_facebook_weekly_comment(stats, top_authors, total_posts, tota
 3-5 речень. Згадай що це фейсбук. Похвали авторів — використовуй їх Telegram username як є. 1-2 емодзі."""
 
     return await fox_generate(prompt, model=FOX_MODEL_SMART, max_tokens=300)
-
-
-async def generate_competitors_intro(sources_with_items):
-    """Підводка перед списком новин конкурентів."""
-    lines = []
-    for source_name, items in sources_with_items:
-        titles = [i["title"] for i in items[:3]]
-        lines.append(f"{source_name}: {', '.join(titles)}")
-    news_summary = "\n".join(lines)
-
-    tones = [
-        "коротко і нейтрально — просто сигнал що є нові новини",
-        "з легкою іронією — лис підглянув що пишуть сусіди",
-        "по-редакційному сухо — без коментарів, просто факт",
-        "трохи колегіально — може ви вже бачили, але на всяк випадок",
-        "спостережливо — відмітити що тема може перетинатись з нашою",
-    ]
-    chosen_tone = random.choice(tones)
-
-    prompt = f"""Перед списком новин інших миколаївських медіа напиши коротку підводку (1-3 речення).
-
-Новини які зараз будуть показані:
-{news_summary}
-
-Тон сьогодні: {chosen_tone}
-
-Не переказуй заголовки — вони будуть нижче. Не називай себе лисом прямо. Не починай з "Я". Різні формулювання щоразу."""
-
-    return await fox_generate(prompt, model=FOX_MODEL_FAST, max_tokens=150)
 
 
 async def generate_english_monthly_comment(
