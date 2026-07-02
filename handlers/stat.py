@@ -49,7 +49,7 @@ def _extract_article_id(url):
 def _get_fb_posts(since_ts, until_ts):
     url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
-        "fields": "id,message,story,permalink_url,created_time,reactions.summary(true),comments.summary(true),shares",
+        "fields": "id,message,story,permalink_url,created_time,reactions.summary(true),comments.summary(true),shares,attachments{media_type,target}",
         "since": since_ts,
         "until": until_ts,
         "limit": 100,
@@ -118,11 +118,60 @@ def _get_reel_views(reel_id):
     return None
 
 
+def _digits_in(text, minlen=6):
+    """Множина довгих числових ID у тексті/URL (для зіставлення пост↔рілз)."""
+    return set(re.findall(rf"\d{{{minlen},}}", text or ""))
+
+
+def _reel_keys(reel):
+    keys = {str(reel.get("id", ""))} | _digits_in(reel.get("permalink_url", ""))
+    keys.discard("")
+    return keys
+
+
+def _post_keys(post):
+    """ID, за якими пост можна впізнати як рілз-дубль: id вкладення + числа з permalink."""
+    keys = set()
+    attachments = (post.get("attachments", {}) or {}).get("data", [])
+    if attachments:
+        target_id = (attachments[0].get("target", {}) or {}).get("id")
+        if target_id:
+            keys.add(str(target_id))
+    keys |= _digits_in(post.get("permalink_url", ""))
+    return keys
+
+
 def get_fb_stats(article_url, article_id):
     """Шукає ВСІ публікації про матеріал: звичайні пости (14 днів)
-    і рілзи з посиланням в описі (останні ~50). Повертає список."""
+    і рілзи з посиланням в описі (останні ~50).
+
+    Рілз FB дублює ще й у стрічці постів (як відео-пост із тим самим
+    контентом, але іншим лічильником переглядів). Такий дубль прибираємо —
+    лишаємо рілз, бо там коректний реловий лічильник. Повертає список:
+    спершу звичайні пости, потім рілзи."""
     clean = _clean_url(article_url)
-    results = []
+    posts_out = []
+    reels_out = []
+    reel_key_union = set()
+
+    # Рілзи спершу — щоб потім впізнати і прибрати їх дублі зі стрічки постів
+    try:
+        for reel in _get_fb_reels():
+            if not _matches_article(reel.get("description") or "", clean, article_id):
+                continue
+            reactions, comments, shares = get_reel_insights(reel["id"])
+            reels_out.append({
+                "type": "reel",
+                "permalink": fix_permalink(reel.get("permalink_url", "")),
+                "date": _fb_date(reel.get("created_time")),
+                "views": _get_reel_views(reel["id"]),
+                "reactions": reactions,
+                "comments": comments,
+                "shares": shares,
+            })
+            reel_key_union |= _reel_keys(reel)
+    except Exception as e:
+        print(f"stat: помилка пошуку рілзів — {e}")
 
     until_dt = datetime.now()
     since_dt = until_dt - timedelta(days=14)
@@ -133,8 +182,11 @@ def get_fb_stats(article_url, article_id):
         story = post.get("story", "") or ""
         if not (_matches_article(message, clean, article_id) or _matches_article(story, clean, article_id)):
             continue
+        # той самий рілз, уже врахований вище як рілз — не дублюємо постом
+        if reel_key_union and (_post_keys(post) & reel_key_union):
+            continue
         post_id_short = post["id"].split("_")[1]
-        results.append({
+        posts_out.append({
             "type": "post",
             "permalink": f"https://www.facebook.com/nikvesti/posts/{post_id_short}",
             "date": _fb_date(post.get("created_time")),
@@ -144,24 +196,7 @@ def get_fb_stats(article_url, article_id):
             "shares": post.get("shares", {}).get("count", 0),
         })
 
-    try:
-        for reel in _get_fb_reels():
-            if not _matches_article(reel.get("description") or "", clean, article_id):
-                continue
-            reactions, comments, shares = get_reel_insights(reel["id"])
-            results.append({
-                "type": "reel",
-                "permalink": fix_permalink(reel.get("permalink_url", "")),
-                "date": _fb_date(reel.get("created_time")),
-                "views": _get_reel_views(reel["id"]),
-                "reactions": reactions,
-                "comments": comments,
-                "shares": shares,
-            })
-    except Exception as e:
-        print(f"stat: помилка пошуку рілзів — {e}")
-
-    return results
+    return posts_out + reels_out
 
 
 # ---------- GA4 ----------
