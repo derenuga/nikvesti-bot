@@ -126,7 +126,8 @@ def _format_message(tender):
     amount = tender.get("value", {}).get("amount")
     currency = tender.get("value", {}).get("currency", "UAH")
 
-    amount_text = f"{amount:,.0f}".replace(",", " ") if amount is not None else "н/д"
+    # \u00A0 — нерозривний пробіл, щоб сума не переносилась на новий рядок
+    amount_text = f"{amount:,.0f}".replace(",", "\u00A0") if amount is not None else "н/д"
     url = f"https://prozorro.gov.ua/tender/{tender_id}"
 
     text = (
