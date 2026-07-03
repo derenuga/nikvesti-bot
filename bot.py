@@ -3,7 +3,7 @@ import os
 import urllib.request
 from datetime import datetime
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ApplicationHandlerStop, CommandHandler, MessageHandler, MessageReactionHandler, TypeHandler, filters
+from telegram.ext import ApplicationBuilder, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, MessageHandler, MessageReactionHandler, TypeHandler, filters
 from handlers.google_analytics import analytics_handler
 from handlers.scheduler import setup_scheduler, send_daily_report, check_email
 from handlers.instagram import instagram_handler, send_weekly_instagram_report
@@ -23,6 +23,7 @@ from handlers.telegram_stats import index_channel_post, backfill_channel_index
 from handlers.ai_usage import aicost_handler
 from handlers.db import dbtest_handler, dbquery_handler
 from handlers.builder_monitor import builder_handler, builder_test_handler
+from handlers.news_archive import news_back_callback, BACK_CALLBACK_DATA
 from handlers import storage
 
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -282,8 +283,11 @@ def main():
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_natural_language_query))
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, group_reply_to_bot))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
+    app.add_handler(CallbackQueryHandler(news_back_callback, pattern=f"^{BACK_CALLBACK_DATA}$"))
     print("Bot started...")
-    app.run_polling(allowed_updates=["message", "channel_post", "message_reaction"])
+    # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
+    # натискання inline-кнопок і кнопка «Написати бек» мовчить.
+    app.run_polling(allowed_updates=["message", "channel_post", "message_reaction", "callback_query"])
 
 if __name__ == "__main__":
     main()

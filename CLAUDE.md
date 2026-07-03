@@ -51,6 +51,7 @@ handlers/
   reactions.py            — обробка реакцій на повідомлення про тендери
   helpers.py              — спільні утиліти (парсинг місяців, get_author_from_url)
   query_router.py         — Intent Router: природномовні запити до Лиса (GA4 + Search Console, tool use)
+  news_archive.py         — архів новин сайту (БД): пошук "що ми писали про X", ліди, генерація беку, кнопка "Написати бек"
 ```
 
 ---
@@ -96,7 +97,7 @@ handlers/
 
 ## Природномовні запити (Intent Router)
 
-Приватне повідомлення боту (від `ALLOWED_USER_IDS`), або reply на повідомлення бота в чаті редакції — йде в `handle_natural_language_query` (`handlers/query_router.py`), Claude сам обирає tool через tool use (GA4, Search Console, архів тендерів Prozorro, Facebook/Instagram) і відповідає живою мовою. Лис пам'ятає останні 6 обмінів протягом 30 хв (follow-up'и "а за минулий місяць?" працюють), `/reset` скидає. Деталі — [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md).
+Приватне повідомлення боту (від `ALLOWED_USER_IDS`), або reply на повідомлення бота в чаті редакції — йде в `handle_natural_language_query` (`handlers/query_router.py`), Claude сам обирає tool через tool use (GA4, Search Console, архів тендерів Prozorro, Facebook/Instagram, архів новин сайту) і відповідає живою мовою. Питання "що ми писали про X?" шукає по заголовках новин у БД сайту (`handlers/news_archive.py`) і відповідає списком "дата — заголовок (лінк)" з inline-кнопкою "🦊 Написати бек"; бек ("Нагадаємо, раніше…") складається з лідів вибраних новин — кнопкою (всі знайдені) або текстом ("бек по 1 і 3"). Лис пам'ятає останні 6 обмінів протягом 30 хв (follow-up'и "а за минулий місяць?" працюють), `/reset` скидає. Деталі — [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md).
 
 ---
 
