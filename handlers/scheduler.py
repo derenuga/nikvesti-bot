@@ -16,6 +16,7 @@ from handlers.law_enforcement import check_law_enforcement
 from handlers.energy_outage import check_outage_changes
 from handlers.traffic_spikes import check_traffic_spikes
 from handlers.notifier import notify_error
+from handlers.ai_usage import send_monthly_ai_cost
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -144,6 +145,10 @@ async def monthly_english_report(bot):
     build_english_report сам визначає, що це останній день, і звітує за поточний місяць."""
     await send_english_report(bot, CHAT_ID)
 
+async def monthly_ai_cost(bot):
+    """1-го числа Лис звітує Олегу про вартість AI за попередній місяць."""
+    await send_monthly_ai_cost(bot, OUTAGE_DEBUG_CHAT_ID)
+
 def _on_job_error(bot, event):
     """Слухач APScheduler: ловить будь-який виняток, що вилетів із задачі
     назовні (не був заглушений всередині), і шле алерт адміну. Викликається
@@ -185,5 +190,7 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # Детектор сплесків трафіку — кожні 30 хв (:05 і :35, щоб не збігатись
     # з тендерами/конкурентами/документами на :00/:15/:30)
     scheduler.add_job(check_traffic_spikes, "cron", minute="5,35", args=[bot])
+    # Вартість AI за попередній місяць — 1-го числа о 10:00, в особистий чат Олегу
+    scheduler.add_job(monthly_ai_cost, "cron", day=1, hour=10, minute=0, args=[bot])
     scheduler.start()
     return scheduler

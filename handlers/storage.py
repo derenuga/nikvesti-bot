@@ -316,6 +316,38 @@ def get_all_tenders():
         return dict(state["tenders"])
 
 
+AI_USAGE_MAX_MONTHS = 13  # тримаємо ~рік історії витрат
+
+
+def record_ai_usage(model, input_tokens=0, output_tokens=0, cache_read=0, cache_creation=0):
+    """Акумулює токени AI-виклику в місячний агрегат по моделях (REVIEW в.5).
+    Викликається раз на запит (для NLQ — сумарно за весь tool-use цикл)."""
+    month = datetime.now().strftime("%Y-%m")
+    with _lock:
+        state = _read_state()
+        usage = state.setdefault("ai_usage", {})
+        month_rec = usage.setdefault(month, {})
+        rec = month_rec.setdefault(
+            model, {"requests": 0, "input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+        )
+        rec["requests"] += 1
+        rec["input"] += input_tokens or 0
+        rec["output"] += output_tokens or 0
+        rec["cache_read"] += cache_read or 0
+        rec["cache_creation"] += cache_creation or 0
+        if len(usage) > AI_USAGE_MAX_MONTHS:
+            for old in sorted(usage.keys())[:len(usage) - AI_USAGE_MAX_MONTHS]:
+                del usage[old]
+        _write_state(state)
+
+
+def get_ai_usage(month=None):
+    """Витрати AI: {model: rec} за місяць, або {month: {model: rec}} за всі."""
+    with _lock:
+        usage = _read_state().get("ai_usage", {})
+        return dict(usage.get(month, {})) if month else dict(usage)
+
+
 def get_traffic_spikes_state():
     """Стан детектора сплесків трафіку: профіль типового трафіку по слотах
     (день тижня + година) і час останнього алерту. Порожній dict = перший запуск."""

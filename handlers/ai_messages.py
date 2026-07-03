@@ -2,6 +2,8 @@ import anthropic
 import os
 from datetime import datetime
 
+from handlers import storage
+
 TEAM = {
     "Олег Деренюга": {
         "tg": "@derenuga",
@@ -125,8 +127,23 @@ async def fox_generate(prompt, *, system=FOX_SYSTEM_PROMPT, model=FOX_MODEL_FAST
         # для коротких стилістичних текстів воно з'їдає max_tokens без користі.
         kwargs["thinking"] = {"type": "disabled"}
     message = await async_client.messages.create(**kwargs)
+    _record_usage(model, message.usage)
     text = "".join(b.text for b in message.content if b.type == "text")
     return clean_ai_text(text)
+
+
+def _record_usage(model, usage):
+    """Облік вартості (REVIEW в.5) — тихо, збій обліку не має ламати генерацію."""
+    try:
+        storage.record_ai_usage(
+            model,
+            input_tokens=getattr(usage, "input_tokens", 0) or 0,
+            output_tokens=getattr(usage, "output_tokens", 0) or 0,
+            cache_read=getattr(usage, "cache_read_input_tokens", 0) or 0,
+            cache_creation=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        )
+    except Exception as e:
+        print(f"ai_usage: не вдалось записати — {e}")
 
 
 def clean_ai_text(text):
