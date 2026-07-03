@@ -108,8 +108,8 @@ def _builder_update_line(builder_last, editor):
     за родом). Ім'я може бути None (не знайшли в logs) — тоді лише час."""
     when = _kyiv_hhmm(builder_last)
     if editor:
-        return f"🕒 Останнє оновлення білдера: {escape_html(editor)}, {when}."
-    return f"🕒 Останнє оновлення білдера: {when}."
+        return f"🏗️ Останнє оновлення білдера: {escape_html(editor)}, {when}."
+    return f"🏗️ Останнє оновлення білдера: {when}."
 
 
 def _format_alert(gap_hours, news, builder_last, editor):
@@ -208,10 +208,10 @@ async def builder_handler(update, context):
         for r in news[:MAX_TITLES]
     )
     lines = [
-        "🦊 <b>Стан білдера головної</b>",
+        "🏗️ <b>Стан білдера головної</b>",
         "",
-        f"🕒 Оновлено: {who}{when} — {gap_hours:.1f} год тому (поріг {BUILDER_STALE_HOURS} год)",
-        f"🆕 Власних новин відтоді: {len(news)} (поріг {MIN_FRESH_NEWS})",
+        f"🕒 Оновлено: {who}{when} — {gap_hours:.1f} год тому",
+        f"🆕 Власних новин відтоді: {len(news)}",
         "",
         verdict,
     ]
