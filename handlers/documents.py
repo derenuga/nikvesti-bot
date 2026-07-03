@@ -573,7 +573,9 @@ async def _check_source(bot, source):
             print(f"Документи [{source['id']}]: помилка відправки — {e}")
             return
 
-    all_ids = list(seen_set) + [d["id"] for d in new_docs]
+    # seen_ids (не list(seen_set)) — зберігаємо хронологічний порядок:
+    # старі попереду, нові в кінці. Так кап у storage обрізає найстаріші.
+    all_ids = seen_ids + [d["id"] for d in new_docs]
     await loop.run_in_executor(None, storage.save_seen_document_ids, source["id"], all_ids)
 
 

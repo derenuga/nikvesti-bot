@@ -31,10 +31,19 @@
 import json
 import os
 import threading
+from datetime import datetime, timedelta
 
 STATE_PATH = os.environ.get("STATE_PATH", "/data/prozorro_state.json")
 
 _lock = threading.Lock()
+
+# Обмеження росту стану (REVIEW п. б.4).
+# Seen-списки — кап на джерело: свіжі ID у хвості, обрізаємо початок.
+# 1000 >> будь-якої сторінки фіду (~10-50), тому фід ніколи не "забувається".
+SEEN_IDS_MAX_PER_SOURCE = 1000
+# Тендери старші за це прюняться (звільняє tenders + message_to_tender).
+# 120 днів > this_quarter (~90) — щоб NLQ-запити по кварталу не втрачали дані.
+TENDER_RETENTION_DAYS = 120
 
 _DEFAULT_STATE = {
     "offset": None,
@@ -73,10 +82,36 @@ def get_seen_tender_ids():
         return set(state["tenders"].keys())
 
 
+def _prune_old_tenders(state, days=TENDER_RETENTION_DAYS):
+    """Прибирає тендери старші за `days` (за sent_at) разом з їх
+    message_to_tender. Реакції на тендери актуальні днями, не місяцями,
+    тому старі можна забувати без шкоди. Повертає кількість видалених."""
+    cutoff = datetime.now() - timedelta(days=days)
+    tenders = state.get("tenders", {})
+    m2t = state.get("message_to_tender", {})
+    to_delete = []
+    for tid, t in tenders.items():
+        sent = t.get("sent_at")
+        if not sent:
+            continue
+        try:
+            if datetime.fromisoformat(sent) < cutoff:
+                to_delete.append(tid)
+        except (ValueError, TypeError):
+            continue  # нерозпарсована дата — лишаємо про всяк випадок
+    for tid in to_delete:
+        mid = tenders[tid].get("message_id")
+        del tenders[tid]
+        if mid is not None:
+            m2t.pop(str(mid), None)
+    return len(to_delete)
+
+
 def bulk_save(new_tenders, new_offset=None):
     """
     Зберігає одразу кілька нових тендерів і offset ОДНИМ записом файлу.
     new_tenders: список dict {tender_id, message_id, title, amount, buyer, sent_at}
+    Заодно прюнить старі тендери (прогон Prozorro щогодини — чистка теж).
     """
     with _lock:
         state = _read_state()
@@ -94,6 +129,7 @@ def bulk_save(new_tenders, new_offset=None):
             state["message_to_tender"][str(t["message_id"])] = tender_id
         if new_offset:
             state["offset"] = new_offset
+        _prune_old_tenders(state)
         _write_state(state)
 
 
@@ -206,12 +242,13 @@ def get_seen_document_ids(source_id):
 
 
 def save_seen_document_ids(source_id, ids):
-    """Зберігає список ID для конкретного джерела документів."""
+    """Зберігає список ID для конкретного джерела документів (кап на джерело,
+    свіжі — у хвості; caller додає нові в кінець, тому обрізаємо початок)."""
     with _lock:
         state = _read_state()
         if "document_ids" not in state:
             state["document_ids"] = {}
-        state["document_ids"][source_id] = list(ids)
+        state["document_ids"][source_id] = list(ids)[-SEEN_IDS_MAX_PER_SOURCE:]
         _write_state(state)
 
 
@@ -308,11 +345,12 @@ def get_seen_competitor_ids(source_id):
 
 
 def save_seen_competitor_ids(source_id, ids):
-    """Зберігає список ID для конкретного джерела конкурента."""
+    """Зберігає список ID для конкретного джерела конкурента (кап на джерело,
+    свіжі — у хвості)."""
     with _lock:
         state = _read_state()
         if "competitor_ids" not in state:
             state["competitor_ids"] = {}
-        state["competitor_ids"][source_id] = list(ids)
+        state["competitor_ids"][source_id] = list(ids)[-SEEN_IDS_MAX_PER_SOURCE:]
         _write_state(state)
 
