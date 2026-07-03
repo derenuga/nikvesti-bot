@@ -32,7 +32,12 @@ def get_unread_emails():
 
         try:
             date = email.utils.parsedate_to_datetime(date_str)
-        except:
+            # parsedate_to_datetime іноді повертає naive datetime, коли заголовок
+            # Date: без tz — тоді порівняння з now(tz=UTC) падає (TypeError:
+            # can't compare offset-naive and offset-aware datetimes)
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+        except Exception:
             date = datetime.now(timezone.utc)
 
         emails.append({
