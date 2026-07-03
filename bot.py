@@ -1,5 +1,6 @@
 import asyncio
 import os
+import urllib.request
 from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ApplicationHandlerStop, CommandHandler, MessageHandler, MessageReactionHandler, TypeHandler, filters
@@ -91,6 +92,43 @@ async def start(update, context):
 
 async def status(update, context):
     await update.message.reply_text("Бот працює. Все під контролем.")
+
+# IP, які KEY4 додав у whitelist БД сайту (звірка для /myip).
+DB_WHITELIST_IPS = {"162.220.234.241", "162.220.234.242", "152.5.180.241"}
+
+def _fetch_outbound_ip():
+    """Реальний вихідний IP контейнера — щоб звірити з whitelist БД (діагностика timeout)."""
+    for url in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"):
+        try:
+            with urllib.request.urlopen(url, timeout=8) as r:
+                ip = r.read().decode().strip()
+                if ip:
+                    return ip
+        except Exception:
+            continue
+    return None
+
+async def myip(update, context):
+    """/myip — вихідний IP Railway + чи він у whitelist БД сайту (діагностика конекту)."""
+    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    msg = await update.message.reply_text("🦊 Дивлюсь свій вихідний IP…")
+    ip = await asyncio.to_thread(_fetch_outbound_ip)
+    if not ip:
+        await msg.edit_text("Не вдалось визначити вихідний IP (усі сервіси не відповіли).")
+        return
+    in_wl = ip in DB_WHITELIST_IPS
+    verdict = (
+        "✅ цей IP у whitelist БД — тоді причина timeout інша (порт/SSL)"
+        if in_wl else
+        "❌ цього IP НЕМАЄ у whitelist БД — саме тому 185.149.41.55 дропає конект (timeout)"
+    )
+    await msg.edit_text(
+        f"Вихідний IP Railway: <b>{ip}</b>\n"
+        f"Whitelist БД: {', '.join(sorted(DB_WHITELIST_IPS))}\n{verdict}",
+        parse_mode="HTML",
+    )
 
 async def stat_backfill(update, context):
     """Разовий бэкфіл індексу постів каналу для /stat: гортає історію t.me/s
@@ -212,6 +250,7 @@ def main():
     app.add_handler(CommandHandler("aicost", aicost_handler))
     app.add_handler(CommandHandler("dbtest", dbtest_handler))
     app.add_handler(CommandHandler("dbquery", dbquery_handler))
+    app.add_handler(CommandHandler("myip", myip))
     app.add_handler(CommandHandler("analytics", analytics_handler))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("checkmail", checkmail))
