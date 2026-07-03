@@ -108,8 +108,8 @@ def _builder_update_line(builder_last, editor):
     за родом). Ім'я може бути None (не знайшли в logs) — тоді лише час."""
     when = _kyiv_hhmm(builder_last)
     if editor:
-        return f"Останнє оновлення білдера: {escape_html(editor)}, {when}."
-    return f"Останнє оновлення білдера: {when}."
+        return f"🕒 Останнє оновлення білдера: {escape_html(editor)}, {when}."
+    return f"🕒 Останнє оновлення білдера: {when}."
 
 
 def _format_alert(gap_hours, news, builder_last, editor):
@@ -125,9 +125,9 @@ def _format_alert(gap_hours, news, builder_last, editor):
     return (
         f"🦊 Шеф, головна застоялась — білдер не оновлювався вже понад {int(gap_hours)} год.\n"
         f"{_builder_update_line(builder_last, editor)}\n"
-        f"А на сайті за цей час вийшли нові власні матеріали ({len(news)}):\n\n"
+        f"🆕 А на сайті за цей час вийшли нові власні матеріали ({len(news)}):\n\n"
         f"{chr(10).join(titles)}\n\n"
-        f"Давайте оновимо головну? Хто підхопить?"
+        f"✏️ Давайте оновимо головну? Хто підхопить?"
     )
 
 
@@ -197,18 +197,26 @@ async def builder_handler(update, context):
         )
         return
     would_alert = gap_hours >= BUILDER_STALE_HOURS and len(news) >= MIN_FRESH_NEWS
-    verdict = "🔔 умова алерту виконана" if would_alert else "🟢 поки тихо"
+    if would_alert:
+        verdict = "🔔 <b>Пора оновити головну</b> — білдер застоявся, а нові матеріали вже вийшли. Саме про це Лис і нагадає в чат."
+    else:
+        verdict = "🟢 <b>Усе гаразд</b> — умови для нагадування ще не виконані, чат не турбуватиму."
+    when = _kyiv_hhmm(builder_last)
+    who = f"{escape_html(editor)}, " if editor else ""
     titles = "\n".join(
         f"• {escape_html(_news_title(r))} — {escape_html(_author_name(r))}"
         for r in news[:MAX_TITLES]
     )
     lines = [
-        _builder_update_line(builder_last, editor),
-        f"Білдер оновлювався {gap_hours:.1f} год тому (поріг {BUILDER_STALE_HOURS} год).",
-        f"Власних новин відтоді: {len(news)} (поріг {MIN_FRESH_NEWS}).",
+        "🦊 <b>Стан білдера головної</b>",
+        "",
+        f"🕒 Оновлено: {who}{when} — {gap_hours:.1f} год тому (поріг {BUILDER_STALE_HOURS} год)",
+        f"🆕 Власних новин відтоді: {len(news)} (поріг {MIN_FRESH_NEWS})",
+        "",
         verdict,
     ]
     if titles:
         lines.append("")
+        lines.append("📰 <b>Свіжі власні матеріали:</b>")
         lines.append(titles)
     await msg.edit_text("\n".join(lines), parse_mode="HTML")
