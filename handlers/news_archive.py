@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from handlers import db, storage
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, FOX_MODEL_SMART, async_client, clean_ai_text
@@ -53,21 +54,71 @@ _ALLOWED_USER_IDS = {
 # Рестарт бота очищає — не страшно, пошук легко повторити.
 
 RESULTS_TTL_MINUTES = 30
-_last_results = {}  # (chat_id, user_id) -> {"items": [...], "at": datetime}
+# (chat_id, user_id) -> {"items": [...], "selected": set[int], "at": datetime}
+_last_results = {}
 
 
 def remember_results(dialog_key, items):
-    _last_results[dialog_key] = {"items": items, "at": datetime.now()}
+    _last_results[dialog_key] = {"items": items, "selected": set(), "at": datetime.now()}
+
+
+def _get_entry(dialog_key):
+    entry = _last_results.get(dialog_key)
+    if not entry:
+        return None
+    if datetime.now() - entry["at"] > timedelta(minutes=RESULTS_TTL_MINUTES):
+        del _last_results[dialog_key]
+        return None
+    return entry
 
 
 def get_last_results(dialog_key):
-    entry = _last_results.get(dialog_key)
+    entry = _get_entry(dialog_key)
+    return entry["items"] if entry else []
+
+
+def toggle_selection(dialog_key, n):
+    """Перемкнути вибір новини №n для беку. Повертає entry або None (застаріло)."""
+    entry = _get_entry(dialog_key)
     if not entry:
-        return []
-    if datetime.now() - entry["at"] > timedelta(minutes=RESULTS_TTL_MINUTES):
-        del _last_results[dialog_key]
-        return []
-    return entry["items"]
+        return None
+    if n in entry["selected"]:
+        entry["selected"].discard(n)
+    else:
+        entry["selected"].add(n)
+    return entry
+
+
+# ---------- Клавіатура відбору новин під результатами пошуку ----------
+#
+# Номерні кнопки — чекбокси: тап ставить/знімає ✅ біля номера, підпис кнопки
+# беку міняється на «Бек з новин 1+3…». Поки нічого не вибрано — бек з усіх.
+
+BACK_CALLBACK_DATA = "fox_news_back"
+SELECT_CALLBACK_PREFIX = "fox_news_sel:"
+KEYBOARD_ROW = 5
+
+
+def build_keyboard(dialog_key):
+    """Клавіатура під списком: номери-чекбокси + кнопка беку з динамічним підписом."""
+    entry = _get_entry(dialog_key)
+    if not entry or not entry["items"]:
+        return None
+    selected = entry["selected"]
+    number_buttons = [
+        InlineKeyboardButton(
+            f"{it['n']} ✅" if it["n"] in selected else str(it["n"]),
+            callback_data=f"{SELECT_CALLBACK_PREFIX}{it['n']}",
+        )
+        for it in entry["items"]
+    ]
+    rows = [number_buttons[i:i + KEYBOARD_ROW] for i in range(0, len(number_buttons), KEYBOARD_ROW)]
+    if selected:
+        label = "🦊 Бек з новин " + "+".join(str(n) for n in sorted(selected))
+    else:
+        label = "🦊 Бек з усіх цих новин"
+    rows.append([InlineKeyboardButton(label, callback_data=BACK_CALLBACK_DATA)])
+    return InlineKeyboardMarkup(rows)
 
 
 # ---------- Пошук ----------
@@ -234,7 +285,8 @@ def _back_prompt(items):
 - Почни з «Нагадаємо,» — далі від свіжішого до давнішого («Раніше…», «Перед тим…»), природними переходами.
 - Тільки факти з лідів і заголовків — нічого не додумуй, дати вказуй де доречно (місяць/рік, не обов'язково число).
 - Це чернетка для журналіста: чиста українська, стиль стрічки новин, без емодзі і без коментарів від себе.
-- В кінці кожного факту, взятого з конкретної новини, додай посилання в дужках у форматі (URL) — журналіст сам розставить гіперлінки."""
+- Посилання на кожну новину встав HTML-гіперлінком прямо в текст: <a href="URL">анкор</a>. Анкор — дієслівна фраза факту («повідомляли», «писали», «ставало відомо», «атакували громаду», «планували облаштувати»), НЕ «тут»/«за посиланням» і НЕ голий URL. Кожна новина — один лінк.
+- Символи & < > у звичайному тексті екрануй як &amp; &lt; &gt;. Крім тегів <a> — жодного іншого HTML."""
 
 
 async def compose_back(items):
@@ -261,32 +313,68 @@ async def compose_back(items):
     return clean_ai_text("".join(b.text for b in message.content if b.type == "text")).strip()
 
 
-# ---------- Кнопка «Написати бек» ----------
+# ---------- Колбеки кнопок ----------
 
-BACK_CALLBACK_DATA = "fox_news_back"
-
-
-async def news_back_callback(update, context):
-    """Натискання кнопки під результатами пошуку: бек з усіх знайдених новин.
-    Для беку з частини новин — відповісти Лису текстом («бек по 1 і 3»)."""
+def _callback_dialog_key(update):
     query = update.callback_query
     user_id = query.from_user.id if query.from_user else None
+    return (update.effective_chat.id, user_id), user_id
+
+
+async def news_select_callback(update, context):
+    """Тап по номерній кнопці: перемкнути ✅ вибору новини для беку
+    і перемалювати клавіатуру (текст повідомлення не чіпаємо)."""
+    query = update.callback_query
+    dialog_key, user_id = _callback_dialog_key(update)
     if _ALLOWED_USER_IDS and user_id not in _ALLOWED_USER_IDS:
         await query.answer("⛔ Тільки для редакції.", show_alert=True)
         return
-    dialog_key = (update.effective_chat.id, user_id)
-    items = get_last_results(dialog_key)
-    if not items:
+    try:
+        n = int(query.data[len(SELECT_CALLBACK_PREFIX):])
+    except (ValueError, IndexError):
+        await query.answer()
+        return
+    entry = toggle_selection(dialog_key, n)
+    if entry is None:
         await query.answer("Результати пошуку застаріли — повтори запит.", show_alert=True)
         return
     await query.answer()
-    msg = await query.message.reply_text("🦊 Читаю ліди цих новин і складаю бек…")
+    try:
+        await query.message.edit_reply_markup(reply_markup=build_keyboard(dialog_key))
+    except Exception:
+        # "Message is not modified" при подвійному тапі тощо — не страшно.
+        pass
+
+
+async def news_back_callback(update, context):
+    """Кнопка беку під результатами пошуку: бек з вибраних (✅) новин,
+    а якщо нічого не вибрано — з усіх знайдених."""
+    query = update.callback_query
+    dialog_key, user_id = _callback_dialog_key(update)
+    if _ALLOWED_USER_IDS and user_id not in _ALLOWED_USER_IDS:
+        await query.answer("⛔ Тільки для редакції.", show_alert=True)
+        return
+    entry = _get_entry(dialog_key)
+    if not entry or not entry["items"]:
+        await query.answer("Результати пошуку застаріли — повтори запит.", show_alert=True)
+        return
+    items = entry["items"]
+    selected = entry["selected"]
+    if selected:
+        items = [it for it in items if it["n"] in selected]
+    await query.answer()
+    which = "вибраних новин" if selected else "усіх знайдених новин"
+    msg = await query.message.reply_text(f"🦊 Читаю ліди {which} і складаю бек…")
     try:
         with_leads = await asyncio.to_thread(_fetch_leads, items[:BACK_MAX_ITEMS])
         text = await compose_back(with_leads)
         if len(items) > BACK_MAX_ITEMS:
-            text += f"\n\n(Взяв перші {BACK_MAX_ITEMS} новин зі списку — для інших напишіть «бек по …» з номерами.)"
-        await msg.edit_text(text, disable_web_page_preview=True)
+            text += f"\n\n(Взяв перші {BACK_MAX_ITEMS} новин — забагато для одного беку.)"
+        try:
+            await msg.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception:
+            # Битий HTML від моделі — шлемо як plain text, лінки лишаться видимими.
+            await msg.edit_text(text, disable_web_page_preview=True)
         # Кладемо бек у пам'ять діалогу NLQ, щоб працювали follow-up'и
         # («скороти», «прибери другий абзац»). Імпорт тут — щоб уникнути
         # циклічного імпорту query_router ↔ news_archive на старті.

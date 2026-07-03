@@ -23,7 +23,7 @@ from handlers.telegram_stats import index_channel_post, backfill_channel_index
 from handlers.ai_usage import aicost_handler
 from handlers.db import dbtest_handler, dbquery_handler
 from handlers.builder_monitor import builder_handler, builder_test_handler
-from handlers.news_archive import news_back_callback, BACK_CALLBACK_DATA
+from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
 from handlers import storage
 
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -284,6 +284,7 @@ def main():
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, group_reply_to_bot))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
     app.add_handler(CallbackQueryHandler(news_back_callback, pattern=f"^{BACK_CALLBACK_DATA}$"))
+    app.add_handler(CallbackQueryHandler(news_select_callback, pattern=f"^{SELECT_CALLBACK_PREFIX}"))
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.
