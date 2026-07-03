@@ -31,7 +31,7 @@ handlers/
   scheduler.py            — APScheduler, розклад всіх автозавдань (Europe/Kiev)
   storage.py              — JSON-стан на Railway Volume (/data/prozorro_state.json)
   db.py                   — тонкий read-only адаптер до MySQL-БД сайту (SELECT only, SSL), /dbtest, /dbquery
-  builder_monitor.py      — монітор оновлення білдера головної (options + nodes з БД), /builder
+  builder_monitor.py      — монітор оновлення білдера головної (options + nodes з БД), /builder, /builder_test
   ai_messages.py          — AI-шар (Anthropic Claude), FOX_SYSTEM_PROMPT, TEAM словник
   morning.py              — ранкове повідомлення: погода + події міськради + AI текст
   events.py               — парсинг календаря подій mkrada.gov.ua/calendar/
@@ -208,6 +208,7 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
 - [`docs/LAW_ENFORCEMENT_MODULE.md`](docs/LAW_ENFORCEMENT_MODULE.md) — моніторинг правоохоронців
 - [`docs/COMPETITORS_MODULE.md`](docs/COMPETITORS_MODULE.md) — моніторинг конкурентів
 - Тендери Prozorro — окремого дока немає, детальний опис у док-стрінгу [`handlers/prozorro.py`](handlers/prozorro.py)
+- [`docs/BUILDER_MONITOR_MODULE.md`](docs/BUILDER_MONITOR_MODULE.md) — монітор білдера головної + схема БД сайту (options/nodes/users/logs), розвідана 03.07
 - [`docs/STAT_MODULE.md`](docs/STAT_MODULE.md) — статистика матеріалів (/stat)
 - [`docs/ENGLISH_REPORT_MODULE.md`](docs/ENGLISH_REPORT_MODULE.md) — EN-звіт
 - [`docs/FOX_LORE.md`](docs/FOX_LORE.md) — identity frame персонажа Лиса Микити
