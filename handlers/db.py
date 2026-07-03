@@ -30,6 +30,7 @@ PyMySQL — блокуючий driver, тому всі публічні хелп
 
 import asyncio
 import os
+import socket
 import ssl as _ssl
 import time
 
@@ -113,6 +114,17 @@ async def aquery(sql, params=None):
     return await asyncio.to_thread(query, sql, params)
 
 
+def tcp_check(host, port, timeout=8):
+    """Сирий TCP-конект до host:port — щоб відділити мережу/файрвол від MySQL/SSL.
+    Повертає (True, мс) якщо порт відкрився, або (False, 'ErrorType: msg')."""
+    start = time.monotonic()
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True, int((time.monotonic() - start) * 1000)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 def ping():
     """Діагностика з'єднання для /dbtest: версія MySQL, поточна БД, користувач,
     к-сть таблиць (і їх список) та час відповіді. Один конекшн, кілька SELECT."""
@@ -160,9 +172,23 @@ async def dbtest_handler(update, context):
     try:
         info = await asyncio.to_thread(ping)
     except Exception as e:
+        # Розділяємо рівні: сирий TCP-конект окремо від MySQL/SSL, щоб знати,
+        # де саме затик — мережа/файрвол чи авторизація/SSL.
+        tcp_ok, tcp_info = await asyncio.to_thread(tcp_check, DB_HOST, DB_PORT)
+        if tcp_ok:
+            layer = (
+                f"🔌 TCP до {DB_HOST}:{DB_PORT} — відкрито ({tcp_info} мс). "
+                "Мережа/whitelist ОК → затик на рівні MySQL/SSL/авторизації."
+            )
+        else:
+            layer = (
+                f"🔌 TCP до {DB_HOST}:{DB_PORT} — НЕ відкрито ({escape_html(str(tcp_info))}). "
+                "Мережа/файрвол: пакети не доходять (whitelist по IP+порту або rate-limit "
+                "дропає конект) — це вже до KEY4."
+            )
         await msg.edit_text(
             "❌ Не вдалось під'єднатись до БД сайту:\n"
-            f"<code>{escape_html(f'{type(e).__name__}: {e}')}</code>",
+            f"<code>{escape_html(f'{type(e).__name__}: {e}')}</code>\n\n{layer}",
             parse_mode="HTML",
         )
         return
