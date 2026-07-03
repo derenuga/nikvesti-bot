@@ -34,6 +34,11 @@ OVA_BASE = "https://mk.gov.ua"
 
 DOCUMENTS_CHAT_ID = os.environ.get("DOCUMENTS_CHAT_ID") or os.environ.get("PROZORRO_CHAT_ID")
 
+# Більше стількох "нових" документів за один прогон = майже завжди збій
+# (втрачений baseline/зміна парсера), а не реальність — тоді ре-baseline
+# без відправки в канал (запобіжник від спаму).
+DOCS_SANITY_MAX = 20
+
 MONTHS_UA = {
     "Січня": "01", "Лютого": "02", "Березня": "03", "Квітня": "04",
     "Травня": "05", "Червня": "06", "Липня": "07", "Серпня": "08",
@@ -552,6 +557,26 @@ async def _check_source(bot, source):
     if not new_docs:
         return
 
+    # Запобіжник від спаму: реальних нових документів за один прогон буває
+    # одиниці. Якщо раптом їх неправдоподібно багато — це майже завжди збій
+    # (втрачений baseline, зміна парсера, обрізаний seen), а не реальні
+    # документи. Тихо оновлюємо seen (ре-baseline) БЕЗ відправки в канал,
+    # щоб не штормити, і алертимо адміна.
+    if len(new_docs) > DOCS_SANITY_MAX:
+        print(f"Документи [{source['id']}]: {len(new_docs)} 'нових' — аномалія, "
+              f"ре-baseline без відправки")
+        all_ids = seen_ids + [d["id"] for d in new_docs]
+        await loop.run_in_executor(None, storage.save_seen_document_ids, source["id"], all_ids)
+        try:
+            from handlers.notifier import notify_error
+            await notify_error(
+                bot, f"документи [{source['id']}]",
+                Exception(f"{len(new_docs)} 'нових' за прогон — ре-baseline без спаму в канал"),
+            )
+        except Exception:
+            pass
+        return
+
     print(f"Документи [{source['id']}]: знайдено {len(new_docs)} нових")
 
     if not DOCUMENTS_CHAT_ID:
@@ -597,6 +622,23 @@ async def _send_in_chunks(bot, source, docs):
             )
         except Exception as e:
             print(f"Документи [{source['id']}]: помилка відправки чанку {i//CHUNK_SIZE+1} — {e}")
+
+
+async def rebaseline_documents(bot):
+    """Разова чистка: зберігає поточні сторінки всіх джерел як 'бачені'
+    БЕЗ відправки в канал. Для гасіння спаму після збою baseline —
+    /documents_rebaseline. Повертає рядок-звіт."""
+    loop = asyncio.get_event_loop()
+    lines = []
+    for source in DOCUMENT_SOURCES:
+        try:
+            docs = await loop.run_in_executor(None, source["parser"], source)
+            ids = [d["id"] for d in docs]
+            await loop.run_in_executor(None, storage.save_seen_document_ids, source["id"], ids)
+            lines.append(f"{source['id']}: {len(ids)} записів у baseline")
+        except Exception as e:
+            lines.append(f"{source['id']}: помилка — {e}")
+    return "🧹 Ре-baseline документів (без відправки):\n" + "\n".join(lines)
 
 
 async def check_documents(bot):

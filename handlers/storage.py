@@ -40,7 +40,11 @@ _lock = threading.Lock()
 # Обмеження росту стану (REVIEW п. б.4).
 # Seen-списки — кап на джерело: свіжі ID у хвості, обрізаємо початок.
 # 1000 >> будь-якої сторінки фіду (~10-50), тому фід ніколи не "забувається".
-SEEN_IDS_MAX_PER_SOURCE = 1000
+# Кап seen-списків КОНКУРЕНТІВ: їх сторінка — стрічка (~10-50 останніх),
+# 1000 з запасом. ДОКУМЕНТИ не капляться: їх сторінки (проєкти рішень) —
+# повний історичний список на тисячі записів; кап відрізав би історію,
+# і старі документи щоразу виглядали б "новими" (баг б.4, спам за 2021).
+SEEN_COMPETITOR_IDS_MAX = 1000
 # Тендери старші за це прюняться (звільняє tenders + message_to_tender).
 # 120 днів > this_quarter (~90) — щоб NLQ-запити по кварталу не втрачали дані.
 TENDER_RETENTION_DAYS = 120
@@ -242,13 +246,15 @@ def get_seen_document_ids(source_id):
 
 
 def save_seen_document_ids(source_id, ids):
-    """Зберігає список ID для конкретного джерела документів (кап на джерело,
-    свіжі — у хвості; caller додає нові в кінець, тому обрізаємо початок)."""
+    """Зберігає список ID для конкретного джерела документів — БЕЗ капу:
+    сторінка проєктів рішень містить повну історію (тисячі записів), кап
+    відрізав би її й ті записи щоразу виглядали б 'новими'. Ріст обмежений
+    темпом публікацій, а не бот-трафіком, тому безпечно тримати все."""
     with _lock:
         state = _read_state()
         if "document_ids" not in state:
             state["document_ids"] = {}
-        state["document_ids"][source_id] = list(ids)[-SEEN_IDS_MAX_PER_SOURCE:]
+        state["document_ids"][source_id] = list(ids)
         _write_state(state)
 
 
@@ -383,6 +389,6 @@ def save_seen_competitor_ids(source_id, ids):
         state = _read_state()
         if "competitor_ids" not in state:
             state["competitor_ids"] = {}
-        state["competitor_ids"][source_id] = list(ids)[-SEEN_IDS_MAX_PER_SOURCE:]
+        state["competitor_ids"][source_id] = list(ids)[-SEEN_COMPETITOR_IDS_MAX:]
         _write_state(state)
 

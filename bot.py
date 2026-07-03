@@ -9,7 +9,7 @@ from handlers.instagram import instagram_handler, send_weekly_instagram_report
 from handlers.facebook import facebook_handler, send_weekly_facebook_report
 from handlers.morning import morning_handler, send_morning_message
 from handlers.prozorro import check_prozorro_tenders, diagnose_offset_jump, confirm_offset_jump
-from handlers.documents import check_documents, test_documents
+from handlers.documents import check_documents, test_documents, rebaseline_documents
 from handlers.competitors import check_competitors
 from handlers.law_enforcement import check_law_enforcement
 from handlers.stat import stat_handler
@@ -183,6 +183,13 @@ async def documents_test_cmd(update, context):
     sent = await test_documents(context.bot)
     await update.message.reply_text(f"Тестові пости надіслано в канал: {sent} джерела.")
 
+async def documents_rebaseline_cmd(update, context):
+    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    report = await rebaseline_documents(context.bot)
+    await update.message.reply_text(report)
+
 async def competitors_check(update, context):
     await check_competitors(context.bot)
     await update.message.reply_text("Перевірив новини конкурентів!")
@@ -216,6 +223,7 @@ def main():
     app.add_handler(CommandHandler("prozorro_reset_tender", prozorro_reset_tender))
     app.add_handler(CommandHandler("documents", documents_check))
     app.add_handler(CommandHandler("documents_test", documents_test_cmd))
+    app.add_handler(CommandHandler("documents_rebaseline", documents_rebaseline_cmd))
     app.add_handler(CommandHandler("competitors", competitors_check))
     app.add_handler(CommandHandler("law", law_check))
     app.add_handler(CommandHandler("stat", stat_handler))
