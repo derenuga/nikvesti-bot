@@ -28,7 +28,9 @@ from google.analytics.data_v1beta.types import (
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as gapi_build
 
-from handlers import storage
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+from handlers import news_archive, storage
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, clean_ai_text
 from handlers.helpers import get_author_from_url
 
@@ -91,6 +93,12 @@ def _remember_exchange(key, question, answer):
 def reset_dialog(chat_id, user_id):
     """Скидання контексту розмови — команда /reset у bot.py."""
     return _dialogs.pop((chat_id, user_id), None) is not None
+
+
+def remember_exchange(dialog_key, question, answer):
+    """Публічна обгортка для інших модулів (кнопка беку в news_archive):
+    покласти обмін у пам'ять діалогу, щоб follow-up'и працювали."""
+    _remember_exchange(dialog_key, question, answer)
 
 
 # ---------- GA4 ----------
@@ -867,6 +875,51 @@ TOOLS = [
         },
     },
     {
+        "name": "search_news_archive",
+        "description": (
+            "Пошук по архіву новин сайту nikvesti.com (пряма БД, вся 17-річна історія): "
+            "знаходить опубліковані новини, у заголовку яких є всі задані слова. "
+            "Використовуй для питань 'що ми писали про X?', 'що останнє було про Y?', "
+            "'коли ми згадували Z?'. Кожне слово шукається як підрядок, тому передавай "
+            "ОСНОВУ слова без відмінкового закінчення: 'Сєнкевич' (не 'Сєнкевича'), "
+            "'Океан' (не 'заводу Океан'). Результати зберігаються — далі можна викликати "
+            "get_news_leads для беку."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "1-3 ключові слова (основи слів), усі мають бути в заголовку. Напр. ['Сєнкевич'] або ['Океан', 'завод']",
+                },
+                "limit": {"type": "integer", "description": "Скільки новин повернути, за замовчуванням 10, максимум 20"},
+                "period_days": {"type": "integer", "description": "Опційно: шукати тільки за останні N днів. Без нього — вся історія"},
+            },
+            "required": ["keywords"],
+        },
+    },
+    {
+        "name": "get_news_leads",
+        "description": (
+            "Ліди (перші змістовні абзаци) новин з останнього пошуку search_news_archive — "
+            "щоб скласти журналістський бек («Нагадаємо, раніше…»). Викликай, коли просять "
+            "написати бек: без параметрів — по всіх знайдених новинах, або numbers — по "
+            "номерах зі списку, який ти показав ('бек по 1 і 3' → numbers=[1,3])."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "numbers": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Опційно: номери новин зі списку останнього пошуку (1-based)",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "render_chart",
         "description": (
             "Малює графік (стовпчиковий або лінійний) з даних, які ти вже отримав з інших GA4-tools, "
@@ -912,8 +965,14 @@ TOOL_FUNCTIONS = {
     "get_tender_stats": get_tender_stats,
     "get_facebook_stats": _nlq_facebook_stats,
     "get_instagram_stats": _nlq_instagram_stats,
+    "search_news_archive": news_archive.search_news,
+    "get_news_leads": news_archive.get_news_leads,
     "render_chart": render_chart,
 }
+
+# Tools архіву новин: перший аргумент — dialog_key (пам'ять останнього пошуку
+# на розмову), тому виконуються окремою гілкою в циклі tool use.
+NEWS_TOOL_NAMES = {"search_news_archive", "get_news_leads"}
 
 # Для footer'а джерел даних
 GA4_TOOL_NAMES = {
@@ -937,6 +996,8 @@ TOOL_PROGRESS = {
     "get_tender_stats": "🦊 Рахую тендерну статистику...",
     "get_facebook_stats": "🦊 Заглядаю у Facebook...",
     "get_instagram_stats": "🦊 Гортаю Instagram...",
+    "search_news_archive": "🦊 Нишпорю в архіві новин...",
+    "get_news_leads": "🦊 Перечитую ліди цих новин...",
     "render_chart": "🦊 Малюю графік...",
 }
 
@@ -949,6 +1010,10 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 Якщо питають звідки прийшов трафік на конкретну статтю (соцмережі, реферали тощо) — використай get_ga4_custom_report з dimensions ['sessionDefaultChannelGroup'] або ['sessionSource', 'sessionMedium'] і page_path_contains (ID статті з URL, наприклад "35814" з "/news/35814-..."). Не питай дату публікації — для джерел трафіку конкретної статті дата не потрібна, бери period='last_30_days' або ширше якщо невпевнений.
 Якщо питають конкретно про Google Discover, Google News чи пошукові запити Google — використай get_search_console_report (search_type='discover' для Discover). Для конкретної статті передай page_url повним URL (https://nikvesti.com/...). Це окреме джерело даних від GA4 — не плутай. Якщо просять порівняти 'до і після' події (апдейт Google, редизайн тощо) — зроби ДВА окремі виклики get_search_console_report для двох періодів однакової довжини і в тексті стисло порівняй ключові цифри (кліки, покази, CTR): підсумок > переліку.
 Якщо питають про тендери ("що там по тендерах за тиждень?", "найбільший тендер місяця", "хто взяв тендер", "які тендери нічиї?") — використай get_recent_tenders (список з фільтрами) або get_tender_stats (зведення: кількість, суми, хто скільки взяв, топ замовників). Це архів того, що бот сам виловив з Prozorro (Миколаївська область, від 1 млн грн) — чесно зазначай, що це не весь Prozorro, якщо питання ширше. Суми пиши в млн грн, коли вони великі ("32,5 млн грн", а не "32 500 000 грн").
+Якщо питають, що ми писали про когось/щось ("що ми останнє писали про Сєнкевича?", "що було про завод Океан?", "що по мерії?") — використай search_news_archive. У keywords передавай основу слова без відмінкового закінчення ("Сєнкевич", "Океан", "мері"). Якщо результатів 0 — спробуй ще раз з коротшою основою або синонімом (мерія → також "міськрад", "мер "). Відповідь — нумерований список, кожна новина ОДНИМ рядком у форматі:
+1. 📅 05.06.2026 — <a href="URL">Заголовок</a>
+Символи & < > у заголовках заміни на &amp; &lt; &gt;. Нічого не переказуй — тільки список і один короткий рядок-підсумок. Під відповіддю автоматично з'явиться кнопка «Написати бек».
+Якщо просять написати бек (бекграунд, "нагадаємо") — виклич get_news_leads (з numbers, якщо вказали номери новин) і склади бек: 2-4 короткі абзаци, починай з "Нагадаємо,", далі від свіжішого до давнішого, тільки факти з лідів і заголовків, нічого не додумуй, стиль стрічки новин, без емодзі. Після факту з конкретної новини став посилання в дужках (URL) — журналіст сам зробить гіперлінки.
 Якщо питають про соцмережі — get_facebook_stats (сторінка ФБ: підписники, охоплення, топ постів і рілзів) або get_instagram_stats (підписники з приростом/відтоком, публікації, топ за лайками). Зверни увагу на note в результатах: охоплення/взаємодії Meta віддає фіксовано за останній тиждень — якщо питали про інший період, чесно зазнач це.
 Якщо питають деталі про конкретний реферер/джерело трафіку з невеликою кількістю сесій (наприклад "звідки саме прийшли заходи з derstandard.de" або "на які наші сторінки попав трафік з X") — використай get_ga4_custom_report з filter_dimension='sessionSource', filter_value_contains=<домен>, dimensions=['pageReferrer', 'pagePath'] (або додай 'sessionSourceMedium'). Це дозволяє звузити звіт до конкретного джерела навіть якщо воно дало лише кілька сесій і не потрапляє в загальний топ. pageReferrer дає повний URL сторінки-донора, pagePath — куди саме на нашому сайті потрапив користувач.
 Відповідай коротко, по суті, з конкретними числами, простим текстом у кілька рядків — без Markdown-таблиць. Якщо викликав render_chart — графік буде надіслано окремим повідомленням автоматично, НЕ згадуй шлях до файлу, НЕ вставляй markdown-посилання чи ![]() на зображення в тексті відповіді. Якщо даних не вдалось отримати — чесно скажи про це."""
@@ -1042,9 +1107,33 @@ async def handle_natural_language_query(update, context):
                         sources.append("Facebook Graph API")
                     if "get_instagram_stats" in used_tools:
                         sources.append("Instagram API")
+                    if used_tools & NEWS_TOOL_NAMES:
+                        sources.append("архів новин nikvesti.com (БД сайту)")
                     if sources:
                         final_text += f"\n\n📊 Джерело даних: {' + '.join(sources)}{site_suffix}"
-                await placeholder.edit_text(final_text)
+
+                # Після пошуку по архіву: кнопка «Написати бек» + HTML-режим
+                # (список новин містить <a href> — так і інструктували Лиса).
+                reply_markup = None
+                if "search_news_archive" in used_tools and news_archive.get_last_results(dialog_key):
+                    reply_markup = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🦊 Написати бек з цих новин",
+                                             callback_data=news_archive.BACK_CALLBACK_DATA)
+                    ]])
+                if used_tools & NEWS_TOOL_NAMES:
+                    try:
+                        await placeholder.edit_text(
+                            final_text, parse_mode="HTML",
+                            disable_web_page_preview=True, reply_markup=reply_markup,
+                        )
+                    except Exception:
+                        # Битий HTML (неекранований символ) — шлемо як plain text,
+                        # посилання Telegram все одно підсвітить.
+                        await placeholder.edit_text(
+                            final_text, disable_web_page_preview=True, reply_markup=reply_markup,
+                        )
+                else:
+                    await placeholder.edit_text(final_text)
                 if chart_path:
                     try:
                         with open(chart_path, "rb") as f:
@@ -1065,7 +1154,12 @@ async def handle_natural_language_query(update, context):
                 if progress:
                     await _update_placeholder(placeholder, progress, last_placeholder_text)
                 try:
-                    if func:
+                    if func and block.name in NEWS_TOOL_NAMES:
+                        # Tools архіву новин отримують dialog_key першим аргументом —
+                        # пам'ять останнього пошуку живе на розмову (кнопка беку,
+                        # "бек по 1 і 3").
+                        result = await asyncio.to_thread(func, dialog_key, **block.input)
+                    elif func:
                         # GA4/Search Console/HTTP — синхронні; виконуємо в окремому
                         # потоці, щоб не заморожувати бота на час запиту (REVIEW б.1)
                         result = await asyncio.to_thread(func, **block.input)
