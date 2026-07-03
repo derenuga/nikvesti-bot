@@ -30,6 +30,7 @@ bot.py                    — реєстрація handlers, команди, Typ
 handlers/
   scheduler.py            — APScheduler, розклад всіх автозавдань (Europe/Kiev)
   storage.py              — JSON-стан на Railway Volume (/data/prozorro_state.json)
+  db.py                   — тонкий read-only адаптер до MySQL-БД сайту (SELECT only, SSL), /dbtest
   ai_messages.py          — AI-шар (Anthropic Claude), FOX_SYSTEM_PROMPT, TEAM словник
   morning.py              — ранкове повідомлення: погода + події міськради + AI текст
   events.py               — парсинг календаря подій mkrada.gov.ua/calendar/
@@ -85,6 +86,7 @@ handlers/
 | /outage | Графік відключень електроенергії (off.energy.mk.ua) |
 | /outage_probe \<path\> \[arg\] | Службова розвідка API з Railway (тимчасово) |
 | /outage_export \[idfilial\] | CSV вулиць із чергами, дефолт 15 (Миколаїв), ~7–15 хв |
+| /dbtest | Перевірка з'єднання з MySQL-БД сайту (версія, база, к-сть таблиць, час відповіді) |
 
 ---
 
@@ -137,7 +139,21 @@ SPREADSHEET_ID = 1bsKzGRsQ7O1aa4TpxmzqEfIjRM1A0dso7zueYvCXB1I
 ALLOWED_USER_IDS = 56631818,56424866,386403807   # Олег, Катя, Ліза — whitelist приватних повідомлень і NLQ
 STATE_PATH                   # опційно, дефолт /data/prozorro_state.json
 MISE_PYTHON_GITHUB_ATTESTATIONS = false
+
+# БД сайту (MySQL, read-only, SELECT only на nikvesti.*, SSL обов'язковий) — handlers/db.py
+DB_HOST                      # 185.149.41.55
+DB_PORT = 3306
+DB_NAME = nikvesti
+DB_USER                      # nikvesti_bot
+DB_PASSWORD
+DB_SSL_CA                    # опційно, шлях до CA сервера; без нього — SSL без перевірки cert
+DB_CONNECT_TIMEOUT           # опційно, сек (дефолт 10)
+DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
 ```
+
+**Доступ до БД сайту (KEY4):** whitelist за вихідними IP Railway; ліміти сервера —
+5 одночасних з'єднань, 10000 запитів/год, 1000 з'єднань/год, 0 UPDATE. Модель у `db.py` —
+з'єднання на запит (thread-safe), тільки читання. Бот стартує і без DB_* (модуль опційний).
 
 **Railway Volume:** mount path `/data`.  
 **Стан:** єдиний файл `/data/prozorro_state.json` для всіх модулів моніторингу.
