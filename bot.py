@@ -243,7 +243,11 @@ async def post_init(application):
     setup_scheduler(application.bot, last_channel_post_time)
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    # concurrent_updates: без цього PTB обробляє апдейти строго по черзі,
+    # і тап по inline-кнопці висить у "Loading", доки не дожується попередній
+    # апдейт (наприклад, NLQ tool-цикл на 10-30 сек). Handlers написані
+    # незалежними (стан — у storage під lock), паралельність безпечна.
+    app = ApplicationBuilder().token(TOKEN).post_init(post_init).concurrent_updates(True).build()
     app.add_handler(TypeHandler(Update, check_allowed), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
