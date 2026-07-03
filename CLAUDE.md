@@ -30,7 +30,8 @@ bot.py                    — реєстрація handlers, команди, Typ
 handlers/
   scheduler.py            — APScheduler, розклад всіх автозавдань (Europe/Kiev)
   storage.py              — JSON-стан на Railway Volume (/data/prozorro_state.json)
-  db.py                   — тонкий read-only адаптер до MySQL-БД сайту (SELECT only, SSL), /dbtest
+  db.py                   — тонкий read-only адаптер до MySQL-БД сайту (SELECT only, SSL), /dbtest, /dbquery
+  builder_monitor.py      — монітор оновлення білдера головної (options + nodes з БД), /builder
   ai_messages.py          — AI-шар (Anthropic Claude), FOX_SYSTEM_PROMPT, TEAM словник
   morning.py              — ранкове повідомлення: погода + події міськради + AI текст
   events.py               — парсинг календаря подій mkrada.gov.ua/calendar/
@@ -87,6 +88,8 @@ handlers/
 | /outage_probe \<path\> \[arg\] | Службова розвідка API з Railway (тимчасово) |
 | /outage_export \[idfilial\] | CSV вулиць із чергами, дефолт 15 (Миколаїв), ~7–15 хв |
 | /dbtest | Перевірка з'єднання з MySQL-БД сайту (версія, база, к-сть таблиць, час відповіді) |
+| /dbquery \<SELECT…\> | Службова розвідка схеми БД з Railway (read-only, тимчасово) |
+| /builder | Діагностика монітора білдера: коли оновлювався, скільки власних новин відтоді |
 
 ---
 
@@ -113,6 +116,7 @@ handlers/
 | Щогодини :30 | Документи органів влади |
 | Кожні 30 хв (10–18, пн–пт) | Перевірка мовчання каналу @nikvesti |
 | Щогодини :05 і :35 | Детектор сплесків трафіку (GA4 Realtime, алерт при ≥2× від типового) |
+| :10 і :40 (9–21) | Монітор білдера головної: >2 год без оновлення + ≥2 нові власні новини → нагадування |
 | Останній день місяця 19:00 | Місячний EN-звіт |
 | 1-го числа 10:00 | Звіт про вартість AI за попередній місяць (в приват Олегу) |
 
@@ -179,6 +183,9 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
   "traffic_spikes": {
     "profile": {"2_14": [312, 298, ...]},
     "last_alert_at": "2026-07-02T14:35:00+03:00"
+  },
+  "builder_monitor": {
+    "last_alert_at": 1783093933
   },
   "ai_usage": {
     "2026-07": {"claude-sonnet-5": {"requests": 42, "input": 168000, "output": 9000, "cache_read": 140000, "cache_creation": 12000}}

@@ -15,6 +15,7 @@ from handlers.english_report import send_english_report
 from handlers.law_enforcement import check_law_enforcement
 from handlers.energy_outage import check_outage_changes
 from handlers.traffic_spikes import check_traffic_spikes
+from handlers.builder_monitor import check_builder_staleness
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
 from datetime import datetime, timedelta
@@ -192,5 +193,8 @@ def setup_scheduler(bot, last_channel_post_time=None):
     scheduler.add_job(check_traffic_spikes, "cron", minute="5,35", args=[bot])
     # Вартість AI за попередній місяць — 1-го числа о 10:00, в особистий чат Олегу
     scheduler.add_job(monthly_ai_cost, "cron", day=1, hour=10, minute=0, args=[bot])
+    # Монітор білдера головної — у робочі години (9–21 Києвом), :10 і :40,
+    # щоб не збігатися з рештою задач на :00/:05/:15/:30/:35
+    scheduler.add_job(check_builder_staleness, "cron", hour="9-21", minute="10,40", args=[bot])
     scheduler.start()
     return scheduler
