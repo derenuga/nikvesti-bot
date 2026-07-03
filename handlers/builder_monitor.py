@@ -123,7 +123,7 @@ def _format_alert(gap_hours, news, builder_last, editor):
     if more > 0:
         titles.append(f"…і ще {more}")
     return (
-        f"🦊 Шеф, головна застоялась — білдер не оновлювався вже понад {int(gap_hours)} год.\n"
+        f"🦊 Народ, головна застоялась — білдер не оновлювався вже понад {int(gap_hours)} год.\n"
         f"{_builder_update_line(builder_last, editor)}\n"
         f"🆕 А на сайті за цей час вийшли нові власні матеріали ({len(news)}):\n\n"
         f"{chr(10).join(titles)}\n\n"
