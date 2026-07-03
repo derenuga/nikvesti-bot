@@ -1112,10 +1112,15 @@ async def handle_natural_language_query(update, context):
 
                 # Після пошуку по архіву: клавіатура відбору (номери-чекбокси +
                 # кнопка беку) + HTML-режим (список містить <a href>).
+                # АЛЕ якщо в цьому ж запиті Лис вже прочитав ліди (get_news_leads) —
+                # відповідь і є беком, клавіатура відбору під нею зайва.
                 reply_markup = None
-                if "search_news_archive" in used_tools:
+                if "search_news_archive" in used_tools and "get_news_leads" not in used_tools:
                     reply_markup = news_archive.build_keyboard(dialog_key)
-                if used_tools & NEWS_TOOL_NAMES:
+                # HTML-режим і без tools: відповідь "з пам'яті діалогу" може
+                # повторювати <a href>-розмітку попередньої — інакше теги
+                # покажуться голим текстом.
+                if used_tools & NEWS_TOOL_NAMES or "<a href=" in final_text:
                     try:
                         await placeholder.edit_text(
                             final_text, parse_mode="HTML",
