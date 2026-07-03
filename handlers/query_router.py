@@ -973,6 +973,9 @@ async def handle_natural_language_query(update, context):
     last_placeholder_text = ["🦊 Розбираюсь з вашим питанням, шефе..."]
     chart_path = None
     used_tools = set()
+    # Облік вартості (REVIEW в.5): сумуємо токени за весь tool-use цикл,
+    # записуємо один раз у finally (менше файлових записів)
+    usage_acc = {"input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_creation": 0}
 
     try:
         for _ in range(MAX_TOOL_ITERATIONS):
@@ -992,6 +995,12 @@ async def handle_natural_language_query(update, context):
                 tools=TOOLS,
                 messages=messages,
             )
+
+            u = response.usage
+            usage_acc["input_tokens"] += getattr(u, "input_tokens", 0) or 0
+            usage_acc["output_tokens"] += getattr(u, "output_tokens", 0) or 0
+            usage_acc["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
+            usage_acc["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0) or 0
 
             if response.stop_reason != "tool_use":
                 final_text = "".join(b.text for b in response.content if b.type == "text")
@@ -1059,3 +1068,10 @@ async def handle_natural_language_query(update, context):
         await placeholder.edit_text("Забагато кроків для відповіді на це питання — спробуй сформулювати простіше.")
     except Exception as e:
         await placeholder.edit_text(f"❌ Помилка: {e}")
+    finally:
+        # Облік вартості — один запис на весь запит (REVIEW в.5)
+        if usage_acc["input_tokens"] or usage_acc["output_tokens"]:
+            try:
+                storage.record_ai_usage(ROUTER_MODEL, **usage_acc)
+            except Exception as e:
+                print(f"ai_usage: не вдалось записати NLQ — {e}")

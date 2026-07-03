@@ -19,6 +19,7 @@ from handlers.english_report import english_report_handler
 from handlers.energy_outage import outage_handler, outage_probe_handler, outage_export_handler, outage_geocode_handler
 from handlers.traffic_spikes import traffic_handler
 from handlers.telegram_stats import index_channel_post, backfill_channel_index
+from handlers.ai_usage import aicost_handler
 from handlers import storage
 
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -200,6 +201,7 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("stat_backfill", stat_backfill))
+    app.add_handler(CommandHandler("aicost", aicost_handler))
     app.add_handler(CommandHandler("analytics", analytics_handler))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("checkmail", checkmail))
