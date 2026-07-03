@@ -22,7 +22,7 @@ from handlers.traffic_spikes import traffic_handler
 from handlers.telegram_stats import index_channel_post, backfill_channel_index
 from handlers.ai_usage import aicost_handler
 from handlers.db import dbtest_handler, dbquery_handler
-from handlers.builder_monitor import builder_handler
+from handlers.builder_monitor import builder_handler, builder_test_handler
 from handlers import storage
 
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -253,6 +253,7 @@ def main():
     app.add_handler(CommandHandler("dbquery", dbquery_handler))
     app.add_handler(CommandHandler("myip", myip))
     app.add_handler(CommandHandler("builder", builder_handler))
+    app.add_handler(CommandHandler("builder_test", builder_test_handler))
     app.add_handler(CommandHandler("analytics", analytics_handler))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("checkmail", checkmail))
