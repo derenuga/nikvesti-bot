@@ -26,18 +26,23 @@
 import asyncio
 import os
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from handlers import db, storage
 from handlers.helpers import escape_html
 from handlers.notifier import notify_error
 
 CHAT_ID = os.environ.get("CHAT_ID")
+KYIV_TZ = ZoneInfo("Europe/Kiev")
 
 BUILDER_STALE_HOURS = 2
 MIN_FRESH_NEWS = 2
 ALERT_COOLDOWN_HOURS = 2
 # Скільки заголовків показувати в пості (решта — «…і ще N»).
 MAX_TITLES = 6
+# URL, яким адмінка сайту зберігає білдер — по ньому знаходимо в logs, ХТО оновив.
+BUILDER_SAVE_URL = "/admin/builder/save/"
 
 
 def _builder_last_updated():
@@ -46,6 +51,29 @@ def _builder_last_updated():
     if not rows or rows[0].get("last") is None:
         return None
     return int(rows[0]["last"])
+
+
+def _builder_last_editor():
+    """Ім'я того, хто востаннє зберіг білдер (з logs → users), або None.
+
+    logs.url не проіндексований, тож запит важкуватий на 17-річній таблиці —
+    викликаємо тільки при формуванні повідомлення (алерт/`/builder`), не в
+    гарячому шляху перевірки. `ORDER BY id DESC LIMIT 1` дає зворотний скан по
+    PK: збереження білдера часті, тож перший збіг — близько до свіжих id."""
+    rows = db.query(
+        "SELECT u.first_name AS name FROM logs l "
+        "LEFT JOIN users u ON u.id = l.user_id "
+        "WHERE l.url = %s ORDER BY l.id DESC LIMIT 1",
+        (BUILDER_SAVE_URL,),
+    )
+    if not rows:
+        return None
+    return (rows[0].get("name") or "").strip() or None
+
+
+def _kyiv_hhmm(ts):
+    """unix → 'ГГ:ХХ' за Києвом."""
+    return datetime.fromtimestamp(int(ts), KYIV_TZ).strftime("%H:%M")
 
 
 def _fresh_own_news(since_ts, until_ts):
@@ -69,7 +97,16 @@ def _news_title(row):
     return (row.get("title_ua") or row.get("title") or "").strip() or f"новина #{row.get('id')}"
 
 
-def _format_alert(gap_hours, news):
+def _builder_update_line(builder_last, editor):
+    """Рядок «Останнє оновлення білдера: Ім'я, ГГ:ХХ» (нейтрально, без узгодження
+    за родом). Ім'я може бути None (не знайшли в logs) — тоді лише час."""
+    when = _kyiv_hhmm(builder_last)
+    if editor:
+        return f"Останнє оновлення білдера: {escape_html(editor)}, {when}."
+    return f"Останнє оновлення білдера: {when}."
+
+
+def _format_alert(gap_hours, news, builder_last, editor):
     # Автор — до кожного заголовка (і інформативніше, і уникає узгодження
     # дієслова за родом/числом, бо автор може бути один і будь-якої статі).
     titles = [
@@ -81,6 +118,7 @@ def _format_alert(gap_hours, news):
         titles.append(f"…і ще {more}")
     return (
         f"🦊 Шеф, головна застоялась — білдер не оновлювався вже понад {int(gap_hours)} год.\n"
+        f"{_builder_update_line(builder_last, editor)}\n"
         f"А на сайті за цей час вийшли нові власні матеріали ({len(news)}):\n\n"
         f"{chr(10).join(titles)}\n\n"
         f"Давайте оновимо головну? Хто підхопить?"
@@ -108,9 +146,11 @@ async def check_builder_staleness(bot):
         last_alert = state.get("last_alert_at")
         if last_alert and (now - last_alert) < ALERT_COOLDOWN_HOURS * 3600:
             return
-        text = _format_alert(gap_hours, news)
+        # Редактора тягнемо лише тут (рідкісний шлях), не в кожній перевірці.
+        editor = await asyncio.to_thread(_builder_last_editor)
+        text = _format_alert(gap_hours, news, builder_last, editor)
         await bot.send_message(
-            chat_id=CHAT_ID, text=text, disable_web_page_preview=True
+            chat_id=CHAT_ID, text=text, parse_mode="HTML", disable_web_page_preview=True
         )
         storage.save_builder_monitor_state({"last_alert_at": now})
     except Exception as e:
@@ -143,6 +183,7 @@ async def builder_handler(update, context):
             return
         gap_hours = (now - builder_last) / 3600
         news = await asyncio.to_thread(_fresh_own_news, builder_last, now)
+        editor = await asyncio.to_thread(_builder_last_editor)
     except Exception as e:
         await msg.edit_text(
             f"❌ <code>{escape_html(f'{type(e).__name__}: {e}')}</code>",
@@ -156,6 +197,7 @@ async def builder_handler(update, context):
         for r in news[:MAX_TITLES]
     )
     lines = [
+        _builder_update_line(builder_last, editor),
         f"Білдер оновлювався {gap_hours:.1f} год тому (поріг {BUILDER_STALE_HOURS} год).",
         f"Власних новин відтоді: {len(news)} (поріг {MIN_FRESH_NEWS}).",
         verdict,
@@ -163,4 +205,4 @@ async def builder_handler(update, context):
     if titles:
         lines.append("")
         lines.append(titles)
-    await msg.edit_text("\n".join(lines))
+    await msg.edit_text("\n".join(lines), parse_mode="HTML")
