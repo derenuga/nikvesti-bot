@@ -189,6 +189,9 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
   "builder_monitor": {
     "last_alert_at": 1783093933
   },
+  "news_search": {
+    "56631818:56631818": {"items": [{"n": 1, "id": 320651, "date": "03.07.2026", "title": "...", "url": "..."}], "selected": [1, 3], "at": "2026-07-03T23:51:00"}
+  },
   "ai_usage": {
     "2026-07": {"claude-sonnet-5": {"requests": 42, "input": 168000, "output": 9000, "cache_read": 140000, "cache_creation": 12000}}
   },

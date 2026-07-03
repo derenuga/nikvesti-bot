@@ -49,26 +49,36 @@ _ALLOWED_USER_IDS = {
 
 # ---------- Пам'ять останнього пошуку ----------
 #
-# Для кнопки «Написати бек» і посилань «бек по 1 і 3»: результати останнього
-# пошуку зберігаємо на (chat_id, user_id) з TTL, як пам'ять діалогу NLQ.
-# Рестарт бота очищає — не страшно, пошук легко повторити.
+# Для кнопок відбору і посилань «бек по 1 і 3»: результати останнього пошуку
+# на (chat_id, user_id) з TTL. Зберігаємо в storage (Railway Volume), а не в
+# пам'яті процесу — інакше редеплой бота між пошуком і натисканням кнопки
+# давав «Результати застаріли» одразу після деплою.
 
 RESULTS_TTL_MINUTES = 30
-# (chat_id, user_id) -> {"items": [...], "selected": set[int], "at": datetime}
-_last_results = {}
+
+
+def _dialog_id(dialog_key):
+    return f"{dialog_key[0]}:{dialog_key[1]}"
 
 
 def remember_results(dialog_key, items):
-    _last_results[dialog_key] = {"items": items, "selected": set(), "at": datetime.now()}
+    storage.save_news_search(_dialog_id(dialog_key), {
+        "items": items, "selected": [], "at": datetime.now().isoformat(),
+    })
 
 
 def _get_entry(dialog_key):
-    entry = _last_results.get(dialog_key)
-    if not entry:
+    """Останній пошук розмови або None (немає/протух). selected — set[int]."""
+    entry = storage.get_news_search(_dialog_id(dialog_key))
+    if not entry or not entry.get("items"):
         return None
-    if datetime.now() - entry["at"] > timedelta(minutes=RESULTS_TTL_MINUTES):
-        del _last_results[dialog_key]
+    try:
+        at = datetime.fromisoformat(entry.get("at", ""))
+    except (ValueError, TypeError):
         return None
+    if datetime.now() - at > timedelta(minutes=RESULTS_TTL_MINUTES):
+        return None
+    entry["selected"] = set(entry.get("selected", []))
     return entry
 
 
@@ -86,6 +96,11 @@ def toggle_selection(dialog_key, n):
         entry["selected"].discard(n)
     else:
         entry["selected"].add(n)
+    storage.save_news_search(_dialog_id(dialog_key), {
+        "items": entry["items"],
+        "selected": sorted(entry["selected"]),
+        "at": entry["at"],  # TTL рахується від часу пошуку, не від тапів
+    })
     return entry
 
 

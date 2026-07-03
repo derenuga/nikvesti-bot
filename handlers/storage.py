@@ -384,6 +384,32 @@ def save_builder_monitor_state(builder_state):
         _write_state(state)
 
 
+# Останні пошуки по архіву новин (news_archive) — по одному на розмову
+# (ключ "chat_id:user_id"). Персистимо, щоб кнопки відбору новин для беку
+# переживали редеплой/рестарт бота (інакше "Результати застаріли" одразу
+# після деплою). Кап — щоб ключі покинутих розмов не накопичувались.
+NEWS_SEARCH_MAX_ENTRIES = 8
+
+
+def get_news_search(dialog_id):
+    """Останній пошук по архіву новин для розмови dialog_id ("chat:user")."""
+    with _lock:
+        return _read_state().get("news_search", {}).get(dialog_id)
+
+
+def save_news_search(dialog_id, entry):
+    """Зберігає {"items": [...], "selected": [...], "at": iso} для розмови."""
+    with _lock:
+        state = _read_state()
+        searches = state.setdefault("news_search", {})
+        searches[dialog_id] = entry
+        if len(searches) > NEWS_SEARCH_MAX_ENTRIES:
+            oldest = sorted(searches, key=lambda k: searches[k].get("at", ""))
+            for key in oldest[:len(searches) - NEWS_SEARCH_MAX_ENTRIES]:
+                del searches[key]
+        _write_state(state)
+
+
 def get_seen_competitor_ids(source_id):
     """
     Повертає список вже бачених ID для конкретного джерела конкурента.
