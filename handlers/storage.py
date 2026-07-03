@@ -369,6 +369,21 @@ def save_traffic_spikes_state(spikes_state):
         _write_state(state)
 
 
+def get_builder_monitor_state():
+    """Стан монітора білдера головної: {'last_alert_at': unix} для кулдауну.
+    Порожній dict = ще не алертили."""
+    with _lock:
+        state = _read_state()
+        return state.get("builder_monitor", {})
+
+
+def save_builder_monitor_state(builder_state):
+    with _lock:
+        state = _read_state()
+        state["builder_monitor"] = builder_state
+        _write_state(state)
+
+
 def get_seen_competitor_ids(source_id):
     """
     Повертає список вже бачених ID для конкретного джерела конкурента.
