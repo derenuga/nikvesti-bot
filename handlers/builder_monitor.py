@@ -61,14 +61,20 @@ def _builder_last_editor():
     гарячому шляху перевірки. `ORDER BY id DESC LIMIT 1` дає зворотний скан по
     PK: збереження білдера часті, тож перший збіг — близько до свіжих id."""
     rows = db.query(
-        "SELECT u.first_name AS name FROM logs l "
+        "SELECT u.first_name, u.last_name FROM logs l "
         "LEFT JOIN users u ON u.id = l.user_id "
         "WHERE l.url = %s ORDER BY l.id DESC LIMIT 1",
         (BUILDER_SAVE_URL,),
     )
     if not rows:
         return None
-    return (rows[0].get("name") or "").strip() or None
+    full = " ".join(
+        p for p in (
+            (rows[0].get("first_name") or "").strip(),
+            (rows[0].get("last_name") or "").strip(),
+        ) if p
+    )
+    return full or None
 
 
 def _kyiv_hhmm(ts):
