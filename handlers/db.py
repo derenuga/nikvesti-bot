@@ -103,7 +103,13 @@ def query(sql, params=None):
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, params or ())
+            # Без параметрів викликаємо execute(sql) БЕЗ другого аргументу:
+            # інакше pymysql трактує літеральні '%' (напр. LIKE '%x%') як плейсхолдери
+            # і падає з "not enough arguments for format string".
+            if params:
+                cur.execute(sql, params)
+            else:
+                cur.execute(sql)
             return cur.fetchall()
     finally:
         conn.close()
