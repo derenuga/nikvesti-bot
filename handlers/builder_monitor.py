@@ -77,6 +77,21 @@ def _builder_last_editor():
     return full or None
 
 
+def _recent_own_news(limit):
+    """Останні `limit` власних опублікованих новин (для /builder_test) —
+    хронологічно, щоб тестове нагадування виглядало як справжнє."""
+    sql = (
+        "SELECT n.id, n.published, n.title_ua, n.title, u.first_name "
+        "FROM nodes n "
+        "LEFT JOIN users u ON u.id = n.owner_id "
+        "WHERE n.own_material = 1 AND n.status = 1 AND n.published <= %s "
+        "ORDER BY n.published DESC LIMIT %s"
+    )
+    rows = db.query(sql, (int(time.time()), limit))
+    rows.reverse()
+    return rows
+
+
 def _kyiv_hhmm(ts):
     """unix → 'ГГ:ХХ' за Києвом."""
     return datetime.fromtimestamp(int(ts), KYIV_TZ).strftime("%H:%M")
@@ -220,3 +235,32 @@ async def builder_handler(update, context):
         lines.append("📰 <b>Свіжі власні матеріали:</b>")
         lines.append(titles)
     await msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+
+async def builder_test_handler(update, context):
+    """/builder_test — надіслати зразок нагадування в чат редакції зараз, в обхід
+    порогів (щоб перевірити доставку й формат у реальному чаті). Тільки для редакції."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not db.is_configured():
+        await update.message.reply_text("🦊 БД сайту ще не налаштована (DB_* env).")
+        return
+    msg = await update.message.reply_text("🦊 Надсилаю тестове нагадування в чат редакції…")
+    try:
+        now = int(time.time())
+        builder_last = await asyncio.to_thread(_builder_last_updated)
+        editor = await asyncio.to_thread(_builder_last_editor)
+        news = await asyncio.to_thread(_recent_own_news, 3)
+        gap_hours = (now - builder_last) / 3600 if builder_last else 0
+        text = _format_alert(gap_hours, news, builder_last or now, editor)
+        await context.bot.send_message(
+            chat_id=CHAT_ID, text=text, parse_mode="HTML", disable_web_page_preview=True
+        )
+    except Exception as e:
+        await msg.edit_text(
+            f"❌ <code>{escape_html(f'{type(e).__name__}: {e}')}</code>",
+            parse_mode="HTML",
+        )
+        return
+    await msg.edit_text("✅ Надіслав тестове нагадування в чат редакції.")
