@@ -293,7 +293,9 @@ async def check_competitors(bot):
 
             all_new_ids = [i["id"] for i in items if i["id"] not in seen_set]
             if all_new_ids:
-                updated_ids = list(seen_set) + all_new_ids
+                # seen_ids (не list(seen_set)) — хронологічний порядок:
+                # старі попереду, нові в кінці, щоб кап у storage обрізав найстаріші
+                updated_ids = seen_ids + all_new_ids
                 await loop.run_in_executor(
                     None, storage.save_seen_competitor_ids, source["id"], updated_ids
                 )
