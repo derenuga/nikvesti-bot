@@ -181,3 +181,57 @@ async def dbtest_handler(update, context):
     if tables:
         lines.append(f"\n<i>{escape_html(preview)}</i>")
     await msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+
+def _format_rows(rows, max_rows=40, max_chars=3500):
+    """Компактний вивід результату для /dbquery: рядок = 'col=val | col=val'."""
+    if not rows:
+        return "(0 рядків)"
+    lines = []
+    for row in rows[:max_rows]:
+        lines.append(" | ".join(f"{k}={v}" for k, v in row.items()))
+    text = "\n".join(lines)
+    if len(rows) > max_rows:
+        text += f"\n… (+{len(rows) - max_rows} рядків)"
+    if len(text) > max_chars:
+        text = text[:max_chars] + "…"
+    return text
+
+
+async def dbquery_handler(update, context):
+    """/dbquery <SELECT...> — службова розвідка схеми БД з Railway (тимчасово).
+
+    Тільки для редакції, тільки читання (guard у query). Потрібна, щоб побачити
+    реальну структуру таблиць (options, nodes тощо) перед написанням модулів —
+    з локального оточення БД недоступна (whitelist за IP Railway). Той самий
+    підхід, що /outage_probe. Прибрати, коли схема зафіксована в модулях."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not is_configured():
+        await update.message.reply_text("🦊 БД сайту ще не налаштована (DB_* env).")
+        return
+    # Беремо весь текст після команди, щоб зберегти SQL з комами й пробілами.
+    sql = update.message.text.partition(" ")[2].strip()
+    if not sql:
+        await update.message.reply_text(
+            "Використання: /dbquery <SELECT…>\n"
+            "Напр.: /dbquery SHOW TABLES\n"
+            "/dbquery DESCRIBE options\n"
+            "/dbquery SELECT * FROM options LIMIT 5"
+        )
+        return
+    msg = await update.message.reply_text("🦊 Виконую…")
+    try:
+        rows = await aquery(sql)
+    except Exception as e:
+        await msg.edit_text(
+            f"❌ <code>{escape_html(f'{type(e).__name__}: {e}')}</code>",
+            parse_mode="HTML",
+        )
+        return
+    body = _format_rows(rows)
+    await msg.edit_text(
+        f"<b>{len(rows)} рядк(ів):</b>\n<pre>{escape_html(body)}</pre>",
+        parse_mode="HTML",
+    )
