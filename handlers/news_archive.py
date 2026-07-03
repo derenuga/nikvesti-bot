@@ -349,13 +349,17 @@ async def news_select_callback(update, context):
     except (ValueError, IndexError):
         await query.answer()
         return
-    entry = toggle_selection(dialog_key, n)
+    # Файлові операції storage — у потоці, щоб не підвішувати event loop.
+    entry = await asyncio.to_thread(toggle_selection, dialog_key, n)
     if entry is None:
         await query.answer("Результати пошуку застаріли — повтори запит.", show_alert=True)
         return
+    # Відповідаємо Telegram ДО перемальовування клавіатури: спінер на кнопці
+    # гасне одразу, а ✅ доїжджає наступним запитом.
     await query.answer()
     try:
-        await query.message.edit_reply_markup(reply_markup=build_keyboard(dialog_key))
+        keyboard = await asyncio.to_thread(build_keyboard, dialog_key)
+        await query.message.edit_reply_markup(reply_markup=keyboard)
     except Exception:
         # "Message is not modified" при подвійному тапі тощо — не страшно.
         pass
@@ -369,7 +373,7 @@ async def news_back_callback(update, context):
     if _ALLOWED_USER_IDS and user_id not in _ALLOWED_USER_IDS:
         await query.answer("⛔ Тільки для редакції.", show_alert=True)
         return
-    entry = _get_entry(dialog_key)
+    entry = await asyncio.to_thread(_get_entry, dialog_key)
     if not entry or not entry["items"]:
         await query.answer("Результати пошуку застаріли — повтори запит.", show_alert=True)
         return
