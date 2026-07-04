@@ -72,13 +72,40 @@ def _fmt_item(n, row):
     slug = (row.get("slug") or "").strip()
     url = f"{BASE_URL}/news/{slug}" if slug else f"{BASE_URL}/news/{row['id']}"
     date = datetime.fromtimestamp(int(row["published"])).strftime("%d.%m.%Y") if row.get("published") else "—"
-    return {"n": n, "id": row["id"], "date": date, "title": title, "url": url}
+    item = {"n": n, "id": row["id"], "date": date, "title": title, "url": url}
+    if "own_material" in row:
+        item["own"] = bool(row.get("own_material"))
+    return item
+
+
+def _filter_conditions(own_material=None, category=None, region=None, tag=None):
+    """Спільні SQL-умови фільтрів (own_material/category/region/tag) + params.
+    Кожна умова написана для аліаса таблиці `a`."""
+    conds, params = [], []
+    if own_material:
+        conds.append("a.own_material = 1")
+    if category:
+        conds.append("a.category = %s")
+        params.append(str(category))
+    if region is not None:
+        conds.append("a.region = %s")
+        params.append(int(region))
+    if tag:
+        # Точний тег (без урахування регістру) по канонічній назві ua/ru.
+        conds.append(
+            "EXISTS (SELECT 1 FROM article_tags at JOIN tags t ON t.id = at.tag_id "
+            "WHERE at.article_id = a.id AND (t.name_ua ILIKE %s OR t.name_ru ILIKE %s))"
+        )
+        params.extend([tag, tag])
+    return conds, params
 
 
 def search_items(query, limit=10, year_from=None, year_to=None,
-                 spread_years=False, per_year=3):
-    """Ядро пошуку: повертає list[dict] (n/id/date/title/url) без побічних
-    ефектів. Використовується і NLQ-tool'ом (з пам'яттю), і /dossier (без)."""
+                 spread_years=False, per_year=3,
+                 own_material=None, category=None, region=None, tag=None):
+    """Ядро пошуку: повертає list[dict] (n/id/date/title/url/own) без побічних
+    ефектів. Використовується і NLQ-tool'ом (з пам'яттю), і /dossier (без).
+    Фільтри: own_material (тільки власні), category (слаг), region (код), tag (назва)."""
     tsquery = _build_tsquery(query)
     if not tsquery:
         return []
@@ -93,13 +120,16 @@ def search_items(query, limit=10, year_from=None, year_to=None,
     if year_to:
         conds.append("a.published < %s")
         params.append(int(datetime(int(year_to) + 1, 1, 1).timestamp()))
+    fconds, fparams = _filter_conditions(own_material, category, region, tag)
+    conds += fconds
+    params += fparams
     where = " AND ".join(conds)
 
     if spread_years:
         sql = f"""
             WITH q AS (SELECT to_tsquery('simple', %s) AS query),
             ranked AS (
-                SELECT a.id, a.published, a.title_ua, a.title_ru, a.slug,
+                SELECT a.id, a.published, a.title_ua, a.title_ru, a.slug, a.own_material,
                        ts_rank(a.fts, q.query) AS rank,
                        EXTRACT(YEAR FROM to_timestamp(a.published))::int AS yr,
                        ROW_NUMBER() OVER (
@@ -109,7 +139,7 @@ def search_items(query, limit=10, year_from=None, year_to=None,
                 FROM articles a, q
                 WHERE {where}
             )
-            SELECT id, published, title_ua, title_ru, slug
+            SELECT id, published, title_ua, title_ru, slug, own_material
             FROM ranked WHERE rn <= %s
             ORDER BY yr ASC, rank DESC
             LIMIT %s
@@ -118,7 +148,7 @@ def search_items(query, limit=10, year_from=None, year_to=None,
     else:
         sql = f"""
             WITH q AS (SELECT to_tsquery('simple', %s) AS query)
-            SELECT a.id, a.published, a.title_ua, a.title_ru, a.slug
+            SELECT a.id, a.published, a.title_ua, a.title_ru, a.slug, a.own_material
             FROM articles a, q
             WHERE {where}
             ORDER BY ts_rank(a.fts, q.query) DESC, a.published DESC
@@ -131,30 +161,37 @@ def search_items(query, limit=10, year_from=None, year_to=None,
 
 
 def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
-                   spread_years=False, per_year=3):
-    """Повнотекстовий пошук по дзеркалу архіву (заголовки + текст, 17 років) —
+                   spread_years=False, per_year=3,
+                   own_material=None, category=None, region=None, tag=None):
+    """Повнотекстовий пошук по «лисячій норі» (заголовки + теги + текст, 17 років) —
     tool для NLQ-роутера.
 
     query — фраза або ключові слова (бажано базові форми, але закінчення
     прощаються — див. _stem). spread_years=True — режим "історія питання":
     до per_year результатів з кожного року, від давніх до свіжих.
+    Фільтри: own_material — тільки власні матеріали; category — слаг рубрики;
+    region — код регіону; tag — точна назва тегу.
     Результати запам'ятовуються для кнопок відбору і беку
     (та сама пам'ять, що в search_news_archive)."""
     if not bot_db.is_configured():
         return {"error": (
-            "Дзеркало архіву ще не налаштоване (BOT_DATABASE_URL). "
+            "Лисяча нора ще не налаштована (BOT_DATABASE_URL). "
             "Скористайся search_news_archive (пошук по заголовках напряму в БД сайту)."
         )}
     try:
-        items = search_items(query, limit=limit, year_from=year_from,
-                             year_to=year_to, spread_years=spread_years, per_year=per_year)
+        items = search_items(
+            query, limit=limit, year_from=year_from, year_to=year_to,
+            spread_years=spread_years, per_year=per_year,
+            own_material=own_material, category=category, region=region, tag=tag,
+        )
     except Exception as e:
-        return {"error": f"Пошук по дзеркалу не вдався: {e}"}
+        return {"error": f"Пошук по норі не вдався: {e}"}
     if not items and not _build_tsquery(query):
         return {"error": "Порожній пошуковий запит."}
     news_archive.remember_results(dialog_key, items)
     note = (
-        "Повнотекстовий пошук по дзеркалу архіву (заголовки + текст, вся історія). "
+        "Повнотекстовий пошук по «лисячій норі» — архіву nikvesti.com "
+        "(заголовки + теги + текст, зважене ранжування, вся історія). "
         + ("Режим історії питання: до кількох результатів з кожного року, від давніх до свіжих. "
            if spread_years else "")
         + "Якщо результатів мало — спробуй синоніми або російське написання (старі матеріали російською)."

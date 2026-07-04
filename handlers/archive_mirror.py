@@ -50,7 +50,7 @@ CURSOR_OVERLAP_SEC = 120
 
 _NODE_COLUMNS = (
     "id, published, updated, status, own_material, owner_id, "
-    "title_ua, title, slug_ua, slug, content_ua, content"
+    "title_ua, title, slug_ua, slug, content_ua, content, category, region"
 )
 
 _backfill_running = {"flag": False}
@@ -92,11 +92,13 @@ def html_to_text(html):
     return text[:bot_db.TEXT_CAP] or None
 
 
-def _row_to_tuple(row):
+def _row_to_tuple(row, tags_text=None):
     """MySQL-рядок nodes → tuple для bot_db.upsert_articles.
     Мовні версії РОЗДІЛЕНІ: content_ua → text_ua, content (рос.) → text_ru;
     так само title_ua / title (рос.). Нічого не змішуємо і не втрачаємо —
-    матеріал може бути лише рос. (до 2023), лише укр., або мати обидві версії."""
+    матеріал може бути лише рос. (до 2023), лише укр., або мати обидві версії.
+    tags_text — назви тегів статті одним рядком (ua+ru) для пошукового індексу;
+    None для старих матеріалів без тегів (теги наслоювались пізніше)."""
     slug = (row.get("slug_ua") or row.get("slug") or "").strip() or None
     return (
         row["id"],
@@ -110,12 +112,120 @@ def _row_to_tuple(row):
         slug,
         html_to_text(row.get("content_ua")),
         html_to_text(row.get("content")),
+        (row.get("category") or "").strip() or None,
+        row.get("region"),
+        tags_text or None,
     )
 
 
 def _change_marker(row):
     """"Момент останньої зміни" рядка nodes — max(updated, published)."""
     return max(row.get("updated") or 0, row.get("published") or 0)
+
+
+# ---------- Теги (довідник tag + звʼязки node_tag) ----------
+#
+# Теги наслоювались із роками — у старих (2008-2009) матеріалів їх немає, це
+# нормально. Довідник tag малий (тисячі рядків), тягнемо його раз на прогін.
+# node_tag читаємо ПАЧКАМИ (на кожні BACKFILL_BATCH статей — один запит),
+# а не по одній статті, інакше 320 тис. запитів вбили б бекфіл.
+
+async def _refresh_tags():
+    """Заливає канонічні теги в нору і повертає (resolve_map, names_map):
+      resolve_map — будь-який tag_id → канонічний id (розмерджені зведені);
+      names_map   — канонічний id → рядок назв (ua + ru) для tags_text.
+    None, якщо довідник tag недоступний (тоді синк іде без тегів — не падає)."""
+    try:
+        rows = await db.aquery(
+            "SELECT id, redirect_tag_id, name, name_ru, name_en, "
+            "google_category, description FROM tag"
+        )
+    except Exception as e:
+        print(f"archive: довідник tag недоступний ({e}) — синк без тегів")
+        return None
+
+    redirect = {r["id"]: r.get("redirect_tag_id") for r in rows}
+
+    def canon(tid):
+        # Зводимо ланцюг редиректів до канонічного тега (із запобіжником циклів)
+        seen = set()
+        while redirect.get(tid) and tid not in seen:
+            seen.add(tid)
+            tid = redirect[tid]
+        return tid
+
+    resolve_map = {r["id"]: canon(r["id"]) for r in rows}
+    by_id = {r["id"]: r for r in rows}
+
+    tag_rows, names_map = [], {}
+    for cid in set(resolve_map.values()):
+        r = by_id.get(cid)
+        if not r:
+            continue
+        name_ua = (r.get("name") or "").strip() or None
+        name_ru = (r.get("name_ru") or "").strip() or None
+        name_en = (r.get("name_en") or "").strip() or None
+        tag_rows.append((
+            cid, name_ua, name_ru, name_en,
+            (r.get("google_category") or "").strip() or None,
+            (r.get("description") or "").strip() or None,
+        ))
+        names = " ".join(x for x in (name_ua, name_ru) if x)
+        if names:
+            names_map[cid] = names
+
+    await asyncio.to_thread(bot_db.upsert_tags, tag_rows)
+    return resolve_map, names_map
+
+
+async def _fetch_node_tags(ids):
+    """Рядки node_tag для пачки node_id (один запит). [] якщо порожньо/помилка."""
+    if not ids:
+        return []
+    placeholders = ", ".join(["%s"] * len(ids))
+    try:
+        return await db.aquery(
+            f"SELECT node_id, tag_id FROM node_tag WHERE node_id IN ({placeholders})",
+            tuple(ids),
+        )
+    except Exception as e:
+        print(f"archive: node_tag недоступний ({e}) — пачка без тегів")
+        return []
+
+
+def _build_batch(rows, node_tag_rows, resolve_map, names_map):
+    """CPU-частина синку пачки (чистка HTML + збирання тегів) — у to_thread.
+    Повертає (tuples для upsert_articles, pairs для article_tags)."""
+    tags_by_node = {}
+    for p in node_tag_rows:
+        cid = resolve_map.get(p["tag_id"], p["tag_id"])
+        if cid in names_map:
+            tags_by_node.setdefault(p["node_id"], set()).add(cid)
+    tuples, pairs = [], []
+    for r in rows:
+        cids = tags_by_node.get(r["id"], ())
+        tags_text = " ".join(names_map[c] for c in cids) if cids else None
+        tuples.append(_row_to_tuple(r, tags_text))
+        for c in cids:
+            pairs.append((r["id"], c))
+    return tuples, pairs
+
+
+async def _sync_rows(rows, tags_ctx):
+    """Заливає пачку nodes-рядків у нору: статті + (якщо теги доступні) звʼязки.
+    tags_ctx = (resolve_map, names_map) або None (синк без тегів)."""
+    ids = [r["id"] for r in rows]
+    if tags_ctx:
+        resolve_map, names_map = tags_ctx
+        node_tag_rows = await _fetch_node_tags(ids)
+        tuples, pairs = await asyncio.to_thread(
+            _build_batch, rows, node_tag_rows, resolve_map, names_map
+        )
+        await asyncio.to_thread(bot_db.upsert_articles, tuples)
+        await asyncio.to_thread(bot_db.replace_article_tags, ids, pairs)
+    else:
+        tuples = await asyncio.to_thread(lambda: [_row_to_tuple(r) for r in rows])
+        await asyncio.to_thread(bot_db.upsert_articles, tuples)
 
 
 # ---------- Первинний бекфіл ----------
@@ -131,24 +241,26 @@ async def run_backfill(limit=None, progress_cb=None):
     _backfill_running["flag"] = True
     try:
         await asyncio.to_thread(bot_db.ensure_schema)
+        tags_ctx = await _refresh_tags()
         last_id = int(await asyncio.to_thread(bot_db.get_state, "backfill_last_id", "0"))
         done = 0
         reached_end = False
         while limit is None or done < limit:
             batch = BACKFILL_BATCH if limit is None else min(BACKFILL_BATCH, limit - done)
+            now_ts = int(datetime.now().timestamp())
+            # Тільки реально опубліковані: status=1, published — валідний unix-час
+            # у минулому. Чернетки (status=0), недатовані й відкладені (published
+            # у майбутньому) в нору не беремо (за рішенням Олега, 04.07).
             rows = await db.aquery(
                 f"SELECT {_NODE_COLUMNS} FROM nodes "
-                "WHERE type = 'news' AND status = 1 AND id > %s "
-                "ORDER BY id LIMIT %s",
-                (last_id, batch),
+                "WHERE type = 'news' AND status = 1 AND published > 0 AND published <= %s "
+                "AND id > %s ORDER BY id LIMIT %s",
+                (now_ts, last_id, batch),
             )
             if not rows:
                 reached_end = True  # джерело вичерпано — це справжнє завершення
                 break
-            tuples = await asyncio.to_thread(
-                lambda: [_row_to_tuple(r) for r in rows]
-            )
-            await asyncio.to_thread(bot_db.upsert_articles, tuples)
+            await _sync_rows(rows, tags_ctx)
             last_id = rows[-1]["id"]
             done += len(rows)
             await asyncio.to_thread(bot_db.set_state, "backfill_last_id", last_id)
@@ -189,8 +301,8 @@ async def load_sample():
         (now_ts, SAMPLE_PER_EDGE),
     )
     rows = oldest + newest
-    tuples = await asyncio.to_thread(lambda: [_row_to_tuple(r) for r in rows])
-    await asyncio.to_thread(bot_db.upsert_articles, tuples)
+    tags_ctx = await _refresh_tags()
+    await _sync_rows(rows, tags_ctx)
     return [r["id"] for r in rows]
 
 
@@ -208,8 +320,8 @@ async def sync_incremental():
     if cursor is None:
         return 0  # дзеркала ще немає — чекаємо /archive_backfill
     since = int(cursor) - CURSOR_OVERLAP_SEC
-    # Без фільтра status: якщо матеріал зняли з публікації (status=0),
-    # дзеркало має це віддзеркалити — пошук фільтрує status=1 сам.
+    # Тягнемо змінене БЕЗ фільтра status — щоб побачити й зняті з публікації
+    # (status 1→0) та відкладені, і прибрати їх з нори.
     rows = await db.aquery(
         f"SELECT {_NODE_COLUMNS} FROM nodes "
         "WHERE type = 'news' AND GREATEST(COALESCE(updated,0), COALESCE(published,0)) >= %s "
@@ -218,9 +330,26 @@ async def sync_incremental():
     )
     if not rows:
         return 0
-    tuples = await asyncio.to_thread(lambda: [_row_to_tuple(r) for r in rows])
-    await asyncio.to_thread(bot_db.upsert_articles, tuples)
-    new_cursor = max(_change_marker(r) for r in rows)
+    now_ts = int(datetime.now().timestamp())
+    # «Живі» = ті, що мають бути в норі: опубліковані, не майбутні. Решта
+    # (чернетки, зняті, відкладені) — видаляємо з нори, якщо там були.
+    live = [r for r in rows
+            if r.get("status") == 1 and (r.get("published") or 0) > 0
+            and (r.get("published") or 0) <= now_ts]
+    live_ids = {r["id"] for r in live}
+    dead_ids = [r["id"] for r in rows if r["id"] not in live_ids]
+
+    tags_ctx = await _refresh_tags()
+    if live:
+        await _sync_rows(live, tags_ctx)
+    if dead_ids:
+        await asyncio.to_thread(bot_db.delete_articles, dead_ids)
+
+    # Курсор клампуємо на «зараз»: відкладений пост має published у майбутньому,
+    # і без клампа курсор стрибнув би туди, пропустивши все до того часу.
+    # Такі пости лишаються в вікні (їх щоразу перечитуємо кілька штук — дешево),
+    # доки не стануть опублікованими й не потраплять у live.
+    new_cursor = min(max(_change_marker(r) for r in rows), now_ts)
     if new_cursor > since:
         await asyncio.to_thread(bot_db.set_state, "mirror_cursor", new_cursor)
     return len(rows)
@@ -338,8 +467,9 @@ async def archive_sample_handler(update, context):
             return
         rows = await asyncio.to_thread(
             bot_db.query,
-            "SELECT id, published, title_ua, title_ru, slug, "
-            "left(text_ua, 320) AS tua, left(text_ru, 320) AS tru, "
+            "SELECT id, published, title_ua, title_ru, slug, category, region, "
+            "own_material, tags_text, "
+            "left(text_ua, 300) AS tua, left(text_ru, 300) AS tru, "
             "length(text_ua) AS lua, length(text_ru) AS lru "
             "FROM articles WHERE id = ANY(%s) ORDER BY published ASC",
             (ids,),
@@ -348,14 +478,17 @@ async def archive_sample_handler(update, context):
         await msg.edit_text(f"❌ Не вдалось узяти зразок: {e}")
         return
 
-    parts = [f"🦊 Зразок дзеркала ({len(rows)} статей) — звір із сайтом:\n"]
+    parts = [f"🦊 Зразок нори ({len(rows)} статей) — звір із сайтом:\n"]
     for r in rows:
         url = f"{BASE_URL}/news/{r['slug']}" if r.get("slug") else f"{BASE_URL}/news/{r['id']}"
-        parts.append(f"— {_fmt_ts(r['published'])} · id {r['id']}\n{url}")
+        own = "власний" if r.get("own_material") else "рерайт/агентське"
+        meta = f"рубрика={r.get('category') or '—'} · регіон={r.get('region') if r.get('region') is not None else '—'} · {own}"
+        parts.append(f"— {_fmt_ts(r['published'])} · id {r['id']}\n{url}\n  [{meta}]")
         if r.get("title_ua"):
             parts.append(f"  UA заголовок: {r['title_ua']}")
         if r.get("title_ru"):
             parts.append(f"  RU заголовок: {r['title_ru']}")
+        parts.append(f"  теги: {r.get('tags_text') or '— (не було)'}")
         if r.get("tua"):
             parts.append(f"  UA текст [{r['lua']} симв.]: {r['tua']}…")
         if r.get("tru"):
@@ -395,7 +528,8 @@ async def archive_status_handler(update, context):
     lines = [
         "🦊 <b>Дзеркало архіву</b>",
         f"Postgres: <b>{escape_html(str(info['version']))}</b> ({info['elapsed_ms']} мс)",
-        f"Статей у дзеркалі: <b>{info['articles']}</b>",
+        f"Статей у нopі: <b>{info['articles']}</b> (з тегами: {info.get('tagged_articles', 0)})",
+        f"Довідник тегів: <b>{info.get('tags', 0)}</b>",
         f"Діапазон публікацій: {_fmt_ts(info['oldest_published'])} — {_fmt_ts(info['newest_published'])}",
         f"Бекфіл завершено: {_fmt_ts(sync.get('backfill_done_at'))}",
         f"Бекфіл дійшов до id: {sync.get('backfill_last_id', '—')} (зараз іде: {running})",

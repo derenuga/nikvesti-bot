@@ -1,9 +1,10 @@
 """
 Власна БД бота — Postgres на Railway (хвиля A, docs/ARCHIVE_INTELLIGENCE.md).
 
-Перший мешканець бази — дзеркало 17-річного архіву новин сайту (таблиця
-articles) з повнотекстовим пошуком. Згодом сюди переїде і стан модулів
-моніторингу з /data/prozorro_state.json (окремим кроком, без поспіху).
+«Лисяча нора» (foxhole) — збагачений корпус 17-річного архіву новин сайту:
+таблиця articles (текст обома мовами, рубрика, регіон, теги) з повнотекстовим
+зваженим пошуком, плюс довідники tags / article_tags. Згодом сюди переїде і
+стан модулів моніторингу з /data/prozorro_state.json (окремим кроком).
 
 Чому Postgres, а не MySQL/SQLite — обґрунтування в ARCHIVE_INTELLIGENCE.md:
 FTS (tsvector+GIN) + нечіткий збіг (pg_trgm) + у майбутньому вектори (pgvector)
@@ -47,12 +48,17 @@ TEXT_CAP = 60_000
 # До ~2023 матеріали були лише російською, потім українською, бувають і обидві —
 # тому в одне поле їх не звалюємо, інакше версії губляться або змішуються.
 #
-# articles.fts — generated column: Postgres сам перераховує tsvector при
-# кожному upsert, окремого кроку індексації не існує в принципі. Індекс
-# будується з УСІХ чотирьох текстових полів, тож пошук знаходить незалежно
-# від того, якою мовою (чи обома) вийшов матеріал.
-# Конфіг 'simple' (без стемінгу): українського стемера в Postgres немає,
-# морфологію закриваємо префіксним пошуком (слово:*) на боці archive_search.
+# Збагачення (за запитом Олега, 04.07): own_material (власне/рерайт), category
+# (слаг рубрики), region (код регіону), tags_text (назви тегів статті) + окремі
+# довідники tags / article_tags. tags_text денормалізовано в рядок статті САМЕ
+# щоб вкласти теги в пошуковий індекс — тег стає частиною пошуку («нерухомість»
+# знайде статтю з таким тегом, навіть якщо слова немає в тексті).
+#
+# articles.fts — generated column, ЗВАЖЕНИЙ: заголовок (A) > теги (B) > текст (C).
+# ts_rank за замовчуванням дає A=1.0, B=0.4, C=0.2 — збіг у заголовку/тезі
+# ранжується вище за випадкову згадку в тілі. Postgres перераховує вектор сам
+# при кожному upsert. Конфіг 'simple' (без стемінгу): українського стемера
+# немає, морфологію закриваємо префіксним пошуком (слово:*) в archive_search.
 
 _SCHEMA_STATEMENTS = [
     (
@@ -69,13 +75,16 @@ _SCHEMA_STATEMENTS = [
             slug         TEXT,
             text_ua      TEXT,
             text_ru      TEXT,
+            category     TEXT,
+            region       INTEGER,
+            tags_text    TEXT,
             synced_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
             fts          tsvector GENERATED ALWAYS AS (
-                to_tsvector('simple',
-                    coalesce(title_ua, '') || ' ' ||
-                    coalesce(title_ru, '') || ' ' ||
-                    coalesce(text_ua, '') || ' ' ||
-                    coalesce(text_ru, ''))
+                setweight(to_tsvector('simple',
+                    coalesce(title_ua, '') || ' ' || coalesce(title_ru, '')), 'A') ||
+                setweight(to_tsvector('simple', coalesce(tags_text, '')), 'B') ||
+                setweight(to_tsvector('simple',
+                    coalesce(text_ua, '') || ' ' || coalesce(text_ru, '')), 'C')
             ) STORED
         )
         """,
@@ -83,10 +92,40 @@ _SCHEMA_STATEMENTS = [
     ),
     ("CREATE INDEX IF NOT EXISTS idx_articles_fts ON articles USING gin (fts)", True),
     ("CREATE INDEX IF NOT EXISTS idx_articles_published ON articles (published DESC)", True),
+    ("CREATE INDEX IF NOT EXISTS idx_articles_category ON articles (category)", True),
+    ("CREATE INDEX IF NOT EXISTS idx_articles_region ON articles (region)", True),
     (
         "CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value TEXT)",
         True,
     ),
+    # Довідник тегів: канонічні (розмерджені зведені до цільового id у sync).
+    # iptc = google_category сайту (IPTC Media Topics — міжнародний стандарт).
+    (
+        """
+        CREATE TABLE IF NOT EXISTS tags (
+            id          BIGINT PRIMARY KEY,
+            name_ua     TEXT,
+            name_ru     TEXT,
+            name_en     TEXT,
+            iptc        TEXT,
+            description TEXT
+        )
+        """,
+        True,
+    ),
+    # Звʼязок стаття↔тег (many-to-many). Для «усі матеріали з тегом X»,
+    # спільних тегів, майбутньої аналітики за IPTC.
+    (
+        """
+        CREATE TABLE IF NOT EXISTS article_tags (
+            article_id BIGINT,
+            tag_id     BIGINT,
+            PRIMARY KEY (article_id, tag_id)
+        )
+        """,
+        True,
+    ),
+    ("CREATE INDEX IF NOT EXISTS idx_article_tags_tag ON article_tags (tag_id)", True),
     # pg_trgm — для нечіткого збігу імен (Сєнкевич/Сенкевич) у майбутньому.
     # Опційно: якщо у Postgres-інстансу немає прав на CREATE EXTENSION,
     # модуль працює без trgm (тільки FTS).
@@ -174,7 +213,7 @@ def execute(sql, params=None):
 _UPSERT_SQL = """
 INSERT INTO articles
     (id, published, updated, status, own_material, owner_id,
-     title_ua, title_ru, slug, text_ua, text_ru, synced_at)
+     title_ua, title_ru, slug, text_ua, text_ru, category, region, tags_text, synced_at)
 VALUES %s
 ON CONFLICT (id) DO UPDATE SET
     published = EXCLUDED.published,
@@ -187,10 +226,13 @@ ON CONFLICT (id) DO UPDATE SET
     slug = EXCLUDED.slug,
     text_ua = EXCLUDED.text_ua,
     text_ru = EXCLUDED.text_ru,
+    category = EXCLUDED.category,
+    region = EXCLUDED.region,
+    tags_text = EXCLUDED.tags_text,
     synced_at = now()
 """
 
-_UPSERT_TEMPLATE = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())"
+_UPSERT_TEMPLATE = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())"
 
 
 def upsert_articles(rows):
@@ -206,6 +248,77 @@ def upsert_articles(rows):
                 cur, _UPSERT_SQL, rows, template=_UPSERT_TEMPLATE, page_size=200
             )
         return len(rows)
+    finally:
+        conn.close()
+
+
+# ---------- Теги ----------
+
+_TAGS_UPSERT_SQL = """
+INSERT INTO tags (id, name_ua, name_ru, name_en, iptc, description)
+VALUES %s
+ON CONFLICT (id) DO UPDATE SET
+    name_ua = EXCLUDED.name_ua,
+    name_ru = EXCLUDED.name_ru,
+    name_en = EXCLUDED.name_en,
+    iptc = EXCLUDED.iptc,
+    description = EXCLUDED.description
+"""
+
+
+def upsert_tags(rows):
+    """Батчевий upsert довідника тегів. rows — list[(id, name_ua, name_ru,
+    name_en, iptc, description)]. Повертає кількість."""
+    if not rows:
+        return 0
+    ensure_schema()
+    conn = _connect()
+    try:
+        with conn, conn.cursor() as cur:
+            psycopg2.extras.execute_values(cur, _TAGS_UPSERT_SQL, rows, page_size=500)
+        return len(rows)
+    finally:
+        conn.close()
+
+
+def delete_articles(ids):
+    """Прибирає статті з нори (і їхні звʼязки з тегами) — коли матеріал зняли
+    з публікації або він більше не проходить у корпус. Ідемпотентно."""
+    if not ids:
+        return 0
+    ensure_schema()
+    conn = _connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM article_tags WHERE article_id = ANY(%s)", (list(ids),))
+            cur.execute("DELETE FROM articles WHERE id = ANY(%s)", (list(ids),))
+            return cur.rowcount
+    finally:
+        conn.close()
+
+
+def replace_article_tags(article_ids, pairs):
+    """Перезаписує звʼязки стаття↔тег для пачки статей: видаляє старі звʼязки
+    цих статей і вставляє нові. DELETE-then-INSERT — щоб зняті теги теж
+    зникали при ре-синку. pairs — list[(article_id, tag_id)]."""
+    if not article_ids:
+        return
+    ensure_schema()
+    conn = _connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM article_tags WHERE article_id = ANY(%s)",
+                (list(article_ids),),
+            )
+            if pairs:
+                psycopg2.extras.execute_values(
+                    cur,
+                    "INSERT INTO article_tags (article_id, tag_id) VALUES %s "
+                    "ON CONFLICT DO NOTHING",
+                    pairs,
+                    page_size=500,
+                )
     finally:
         conn.close()
 
@@ -235,12 +348,16 @@ def ping():
         "SELECT count(*) AS total, min(published) AS oldest, max(published) AS newest "
         "FROM articles"
     )[0]
+    tags_total = query("SELECT count(*) AS c FROM tags")[0]["c"]
+    tagged = query("SELECT count(DISTINCT article_id) AS c FROM article_tags")[0]["c"]
     cursors = {r["key"]: r["value"] for r in query("SELECT key, value FROM sync_state")}
     return {
         "version": version,
         "articles": stats["total"],
         "oldest_published": stats["oldest"],
         "newest_published": stats["newest"],
+        "tags": tags_total,
+        "tagged_articles": tagged,
         "sync_state": cursors,
         "elapsed_ms": int((time.monotonic() - start) * 1000),
     }
