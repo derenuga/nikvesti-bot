@@ -31,6 +31,10 @@ handlers/
   scheduler.py            — APScheduler, розклад всіх автозавдань (Europe/Kiev)
   storage.py              — JSON-стан на Railway Volume (/data/prozorro_state.json)
   db.py                   — тонкий read-only адаптер до MySQL-БД сайту (SELECT only, SSL), /dbtest, /dbquery
+  bot_db.py               — власна Postgres-БД бота (Railway): дзеркало архіву, tsvector FTS, sync_state
+  archive_mirror.py       — синк дзеркала архіву з БД сайту: /archive_backfill (разово), інкремент щогодини :50
+  archive_search.py       — повнотекстовий пошук по дзеркалу (17 років, заголовки+текст), NLQ-tool search_archive_fulltext
+  dossier.py              — /dossier <тема>: історія питання з архіву, таймлайн по роках з лінками
   builder_monitor.py      — монітор оновлення білдера головної (options + nodes з БД), /builder, /builder_test
   ai_messages.py          — AI-шар (Anthropic Claude), FOX_SYSTEM_PROMPT, TEAM словник
   morning.py              — ранкове повідомлення: погода + події міськради + AI текст
@@ -92,6 +96,9 @@ handlers/
 | /dbquery \<SELECT…\> | Службова розвідка схеми БД з Railway (read-only, тимчасово) |
 | /builder | Діагностика монітора білдера: коли оновлювався, скільки власних новин відтоді |
 | /builder_test | Надіслати зразок нагадування про білдер у чат редакції (в обхід порогів) |
+| /dossier \<тема\> | Історія питання з 17-річного архіву: таймлайн по роках з лінками на матеріали |
+| /archive_backfill | Разова заливка архіву сайту в дзеркало (Postgres бота), resumable |
+| /archive_status | Стан дзеркала архіву: скільки статей, діапазон дат, курсори синку |
 
 ---
 
@@ -119,6 +126,7 @@ handlers/
 | Кожні 30 хв (10–18, пн–пт) | Перевірка мовчання каналу @nikvesti |
 | Щогодини :05 і :35 | Детектор сплесків трафіку (GA4 Realtime, алерт при ≥2× від типового) |
 | :10 і :40 (9–21) | Монітор білдера головної: >2 год без оновлення + ≥2 нові власні новини → нагадування |
+| Щогодини :50 | Інкрементальний sync дзеркала архіву (тихо пропускається без BOT_DATABASE_URL) |
 | Останній день місяця 19:00 | Місячний EN-звіт |
 | 1-го числа 10:00 | Звіт про вартість AI за попередній місяць (в приват Олегу) |
 
@@ -145,6 +153,9 @@ SPREADSHEET_ID = 1bsKzGRsQ7O1aa4TpxmzqEfIjRM1A0dso7zueYvCXB1I
 ALLOWED_USER_IDS = 56631818,56424866,386403807   # Олег, Катя, Ліза — whitelist приватних повідомлень і NLQ
 STATE_PATH                   # опційно, дефолт /data/prozorro_state.json
 MISE_PYTHON_GITHUB_ATTESTATIONS = false
+
+# БД бота (Postgres на Railway) — handlers/bot_db.py, дзеркало архіву + /dossier
+BOT_DATABASE_URL             # референс на DATABASE_URL Postgres-плагіна (фолбек: DATABASE_URL)
 
 # БД сайту (MySQL, read-only, SELECT only на nikvesti.*, SSL обов'язковий) — handlers/db.py
 DB_HOST                      # 185.149.41.55
@@ -219,6 +230,8 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
 - [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md) — природномовні запити (Agentic Query Layer): GA4 + Search Console, tool use, whitelist
 - [`docs/ENERGY_OUTAGE_MODULE.md`](docs/ENERGY_OUTAGE_MODULE.md) — графік відключень: API off.energy.mk.ua, адресний каскад, CSV-експорт, наступні кроки
 - [`docs/LONG_TERM_VISION.md`](docs/LONG_TERM_VISION.md) — довгострокові ідеї: підписки, перехід на власний сервер+MySQL, AI-доступ до 17-річного архіву новин
+- [`docs/ARCHIVE_INTELLIGENCE.md`](docs/ARCHIVE_INTELLIGENCE.md) — стратегія інституційної пам'яті: рівні, вартість, дорожня карта, продукти
+- [`docs/ARCHIVE_MIRROR_MODULE.md`](docs/ARCHIVE_MIRROR_MODULE.md) — дзеркало архіву в Postgres бота, FTS-пошук, /dossier (хвиля A)
 - [`docs/REVIEW_2026_07.md`](docs/REVIEW_2026_07.md) — ревізія липня 2026: апрувнутий план оптимізацій і розвитку (хвилі впровадження)
 
 ---

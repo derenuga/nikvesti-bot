@@ -28,7 +28,7 @@ from google.analytics.data_v1beta.types import (
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as gapi_build
 
-from handlers import news_archive, storage
+from handlers import archive_search, news_archive, storage
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, clean_ai_text
 from handlers.helpers import get_author_from_url
 
@@ -898,6 +898,33 @@ TOOLS = [
         },
     },
     {
+        "name": "search_archive_fulltext",
+        "description": (
+            "Повнотекстовий пошук по дзеркалу архіву nikvesti.com (вся 17-річна історія): "
+            "шукає і в заголовках, і в ПОВНОМУ ТЕКСТІ матеріалів — знаходить те, чого немає "
+            "в заголовку. Це основний пошук по архіву; search_news_archive (тільки заголовки) — "
+            "фолбек, якщо цей поверне помилку про неналаштоване дзеркало. "
+            "query — ключові слова в базовій формі (закінчення прощаються). "
+            "spread_years=true — режим 'історія питання': до кількох результатів з КОЖНОГО року, "
+            "від давніх до свіжих; використовуй для 'вся історія X', 'що було з Y за роки'. "
+            "Старі матеріали часто російською — якщо мало результатів, повтори пошук з "
+            "російським написанням назв/прізвищ. Результати зберігаються — далі можна "
+            "викликати get_news_leads для беку."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Ключові слова/фраза, базові форми: 'стадіон Центральний', 'Сєнкевич бювет'"},
+                "limit": {"type": "integer", "description": "Скільки повернути, за замовчуванням 10, максимум 30"},
+                "year_from": {"type": "integer", "description": "Опційно: з якого року шукати (напр. 2014)"},
+                "year_to": {"type": "integer", "description": "Опційно: по який рік включно"},
+                "spread_years": {"type": "boolean", "description": "true — розкидати результати по роках (історія питання), false (дефолт) — найрелевантніші"},
+                "per_year": {"type": "integer", "description": "При spread_years: скільки максимум з одного року, за замовчуванням 3"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "get_news_leads",
         "description": (
             "Ліди (перші змістовні абзаци) новин з останнього пошуку search_news_archive — "
@@ -964,13 +991,15 @@ TOOL_FUNCTIONS = {
     "get_facebook_stats": _nlq_facebook_stats,
     "get_instagram_stats": _nlq_instagram_stats,
     "search_news_archive": news_archive.search_news,
+    "search_archive_fulltext": archive_search.search_archive,
     "get_news_leads": news_archive.get_news_leads,
     "render_chart": render_chart,
 }
 
 # Tools архіву новин: перший аргумент — dialog_key (пам'ять останнього пошуку
 # на розмову), тому виконуються окремою гілкою в циклі tool use.
-NEWS_TOOL_NAMES = {"search_news_archive", "get_news_leads"}
+NEWS_TOOL_NAMES = {"search_news_archive", "search_archive_fulltext", "get_news_leads"}
+SEARCH_TOOL_NAMES = {"search_news_archive", "search_archive_fulltext"}
 
 # Для footer'а джерел даних
 GA4_TOOL_NAMES = {
@@ -995,6 +1024,7 @@ TOOL_PROGRESS = {
     "get_facebook_stats": "🦊 Заглядаю у Facebook...",
     "get_instagram_stats": "🦊 Гортаю Instagram...",
     "search_news_archive": "🦊 Нишпорю в архіві новин...",
+    "search_archive_fulltext": "🦊 Перегортаю 17 років архіву...",
     "get_news_leads": "🦊 Перечитую ліди цих новин...",
     "render_chart": "🦊 Малюю графік...",
 }
@@ -1008,7 +1038,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 Якщо питають звідки прийшов трафік на конкретну статтю (соцмережі, реферали тощо) — використай get_ga4_custom_report з dimensions ['sessionDefaultChannelGroup'] або ['sessionSource', 'sessionMedium'] і page_path_contains (ID статті з URL, наприклад "35814" з "/news/35814-..."). Не питай дату публікації — для джерел трафіку конкретної статті дата не потрібна, бери period='last_30_days' або ширше якщо невпевнений.
 Якщо питають конкретно про Google Discover, Google News чи пошукові запити Google — використай get_search_console_report (search_type='discover' для Discover). Для конкретної статті передай page_url повним URL (https://nikvesti.com/...). Це окреме джерело даних від GA4 — не плутай. Якщо просять порівняти 'до і після' події (апдейт Google, редизайн тощо) — зроби ДВА окремі виклики get_search_console_report для двох періодів однакової довжини і в тексті стисло порівняй ключові цифри (кліки, покази, CTR): підсумок > переліку.
 Якщо питають про тендери ("що там по тендерах за тиждень?", "найбільший тендер місяця", "хто взяв тендер", "які тендери нічиї?") — використай get_recent_tenders (список з фільтрами) або get_tender_stats (зведення: кількість, суми, хто скільки взяв, топ замовників). Це архів того, що бот сам виловив з Prozorro (Миколаївська область, від 1 млн грн) — чесно зазначай, що це не весь Prozorro, якщо питання ширше. Суми пиши в млн грн, коли вони великі ("32,5 млн грн", а не "32 500 000 грн").
-Якщо питають, що ми писали про когось/щось ("що ми останнє писали про Сєнкевича?", "що було про завод Океан?", "що по мерії?") — використай search_news_archive. У keywords передавай основу слова без відмінкового закінчення ("Сєнкевич", "Океан", "мері"). Якщо результатів 0 — спробуй ще раз з коротшою основою або синонімом (мерія → також "міськрад", "мер "). Відповідь — нумерований список, кожна новина ОДНИМ рядком у форматі:
+Якщо питають, що ми писали про когось/щось ("що ми останнє писали про Сєнкевича?", "що було про завод Океан?", "що по мерії?") — використай search_archive_fulltext (шукає в заголовках І повному тексті всієї 17-річної історії). query — базові форми слів ("Сєнкевич", "завод Океан"). Якщо просять всю історію питання ("що взагалі було з X за ці роки", "історія питання") — постав spread_years=true, щоб результати покривали різні роки. Якщо результатів мало — повтори з російським написанням (старі матеріали російською: "Сенкевич") або синонімом. Якщо search_archive_fulltext повертає помилку про неналаштоване дзеркало — використай search_news_archive (пошук по заголовках; у keywords — основи слів без закінчень). Відповідь — нумерований список, кожна новина ОДНИМ рядком у форматі:
 1. 📅 05.06.2026 — <a href="URL">Заголовок</a>
 Символи & < > у заголовках заміни на &amp; &lt; &gt;. Нічого не переказуй — тільки список і один короткий рядок-підсумок. Під відповіддю автоматично з'являться кнопки відбору новин і кнопка беку — про них не пиши.
 Якщо просять написати бек (бекграунд, "нагадаємо") — виклич get_news_leads (з numbers, якщо вказали номери новин) і склади бек: 2-4 короткі абзаци, починай з "Нагадаємо,", далі від свіжішого до давнішого, тільки факти з лідів і заголовків, нічого не додумуй, стиль стрічки новин, без емодзі. Посилання на кожну новину — HTML-гіперлінк <a href="URL">…</a>, яким обгортаєш 1-3 слова, що ВЖЕ стоять у реченні (зазвичай дієслівну фразу факту): "Ільюк <a href="URL">пропонував провести ротацію</a> керівників адміністрацій". ЗАБОРОНЕНО дописувати анкор окремим хвостом через тире чи кому ("…, — заявляв про дитсадки") — речення має читатись однаково і з лінком, і без нього. Не "тут", не голий URL; одна новина — один лінк.
@@ -1106,7 +1136,7 @@ async def handle_natural_language_query(update, context):
                     if "get_instagram_stats" in used_tools:
                         sources.append("Instagram API")
                     if used_tools & NEWS_TOOL_NAMES:
-                        sources.append("архів новин nikvesti.com (БД сайту)")
+                        sources.append("архів новин nikvesti.com")
                     if sources:
                         final_text += f"\n\n📊 Джерело даних: {' + '.join(sources)}{site_suffix}"
 
@@ -1115,7 +1145,7 @@ async def handle_natural_language_query(update, context):
                 # АЛЕ якщо в цьому ж запиті Лис вже прочитав ліди (get_news_leads) —
                 # відповідь і є беком, клавіатура відбору під нею зайва.
                 reply_markup = None
-                if "search_news_archive" in used_tools and "get_news_leads" not in used_tools:
+                if used_tools & SEARCH_TOOL_NAMES and "get_news_leads" not in used_tools:
                     reply_markup = news_archive.build_keyboard(dialog_key)
                 # HTML-режим і без tools: відповідь "з пам'яті діалогу" може
                 # повторювати <a href>-розмітку попередньої — інакше теги

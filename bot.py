@@ -22,6 +22,8 @@ from handlers.traffic_spikes import traffic_handler
 from handlers.telegram_stats import index_channel_post, backfill_channel_index
 from handlers.ai_usage import aicost_handler
 from handlers.db import dbtest_handler, dbquery_handler
+from handlers.archive_mirror import archive_backfill_handler, archive_status_handler
+from handlers.dossier import dossier_handler
 from handlers.builder_monitor import builder_handler, builder_test_handler
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
 from handlers import storage
@@ -89,6 +91,7 @@ async def start(update, context):
         "/stat <url> — статистика матеріалу (Facebook + GA4)\n"
         "/english — місячний звіт англійської версії сайту\n"
         "/traffic — хто зараз на сайті + типовий трафік для цієї години\n"
+        "/dossier <тема> — історія питання з 17-річного архіву\n"
         "/reset — забути контекст розмови з Лисом"
     )
 
@@ -256,6 +259,9 @@ def main():
     app.add_handler(CommandHandler("aicost", aicost_handler))
     app.add_handler(CommandHandler("dbtest", dbtest_handler))
     app.add_handler(CommandHandler("dbquery", dbquery_handler))
+    app.add_handler(CommandHandler("dossier", dossier_handler))
+    app.add_handler(CommandHandler("archive_backfill", archive_backfill_handler))
+    app.add_handler(CommandHandler("archive_status", archive_status_handler))
     app.add_handler(CommandHandler("myip", myip))
     app.add_handler(CommandHandler("builder", builder_handler))
     app.add_handler(CommandHandler("builder_test", builder_test_handler))

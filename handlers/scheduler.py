@@ -16,6 +16,7 @@ from handlers.law_enforcement import check_law_enforcement
 from handlers.energy_outage import check_outage_changes
 from handlers.traffic_spikes import check_traffic_spikes
 from handlers.builder_monitor import check_builder_staleness
+from handlers.archive_mirror import run_archive_sync
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
 from datetime import datetime, timedelta
@@ -196,5 +197,8 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # Монітор білдера головної — у робочі години (9–21 Києвом), :10 і :40,
     # щоб не збігатися з рештою задач на :00/:05/:15/:30/:35
     scheduler.add_job(check_builder_staleness, "cron", hour="9-21", minute="10,40", args=[bot])
+    # Інкрементальний sync дзеркала архіву — :50 (вільна хвилина в розкладі);
+    # тихо пропускається, поки BOT_DATABASE_URL не задано або бекфіл не зроблено
+    scheduler.add_job(run_archive_sync, "cron", minute=50, args=[bot])
     scheduler.start()
     return scheduler
