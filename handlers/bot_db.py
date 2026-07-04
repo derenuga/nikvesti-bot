@@ -60,9 +60,27 @@ TEXT_CAP = 60_000
 # при кожному upsert. Конфіг 'simple' (без стемінгу): українського стемера
 # немає, морфологію закриваємо префіксним пошуком (слово:*) в archive_search.
 
+# Версія схеми: піднімати при зміні forma таблиці, що потребує міграції.
+# 1 = базова нора (text_ua/text_ru); 2 = теги + рубрика/регіон + зважений fts.
+SCHEMA_VERSION = 2
+
+# Вираз пошукового вектора — ОДИН на CREATE і на перебудову, щоб не розійшлись.
+# Зважений: заголовок (A) > теги (B) > текст (C).
+_FTS_EXPR = (
+    "setweight(to_tsvector('simple', "
+    "coalesce(title_ua,'') || ' ' || coalesce(title_ru,'')), 'A') || "
+    "setweight(to_tsvector('simple', coalesce(tags_text,'')), 'B') || "
+    "setweight(to_tsvector('simple', "
+    "coalesce(text_ua,'') || ' ' || coalesce(text_ru,'')), 'C')"
+)
+
+# Базові CREATE ... IF NOT EXISTS — цільова схема для чистої БД. Індекси
+# рубрики/регіону і сам fts-індекс сюди НЕ входять: вони залежать від колонок,
+# яких у старій таблиці ще немає, тож створюються в міграціях (нижче) вже після
+# ADD COLUMN — інакше на старій нopі CREATE INDEX впав би з "column does not exist".
 _SCHEMA_STATEMENTS = [
     (
-        """
+        f"""
         CREATE TABLE IF NOT EXISTS articles (
             id           BIGINT PRIMARY KEY,
             published    BIGINT,
@@ -79,21 +97,12 @@ _SCHEMA_STATEMENTS = [
             region       INTEGER,
             tags_text    TEXT,
             synced_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-            fts          tsvector GENERATED ALWAYS AS (
-                setweight(to_tsvector('simple',
-                    coalesce(title_ua, '') || ' ' || coalesce(title_ru, '')), 'A') ||
-                setweight(to_tsvector('simple', coalesce(tags_text, '')), 'B') ||
-                setweight(to_tsvector('simple',
-                    coalesce(text_ua, '') || ' ' || coalesce(text_ru, '')), 'C')
-            ) STORED
+            fts          tsvector GENERATED ALWAYS AS ({_FTS_EXPR}) STORED
         )
         """,
         True,  # обов'язковий statement — без нього модуль не працює
     ),
-    ("CREATE INDEX IF NOT EXISTS idx_articles_fts ON articles USING gin (fts)", True),
     ("CREATE INDEX IF NOT EXISTS idx_articles_published ON articles (published DESC)", True),
-    ("CREATE INDEX IF NOT EXISTS idx_articles_category ON articles (category)", True),
-    ("CREATE INDEX IF NOT EXISTS idx_articles_region ON articles (region)", True),
     (
         "CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value TEXT)",
         True,
@@ -137,6 +146,28 @@ _SCHEMA_STATEMENTS = [
     ),
 ]
 
+# Ідемпотентні міграції — виконуються ЗАВЖДИ після базових CREATE. CREATE TABLE
+# IF NOT EXISTS не додає колонок до вже наявної таблиці, тому нові колонки й
+# залежні від них індекси доводимо тут (ADD COLUMN IF NOT EXISTS безпечний і на
+# чистій БД, і на старій).
+_MIGRATIONS = [
+    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS category TEXT",
+    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS region INTEGER",
+    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS tags_text TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_articles_category ON articles (category)",
+    "CREATE INDEX IF NOT EXISTS idx_articles_region ON articles (region)",
+]
+
+# Версійна перебудова fts: у старої таблиці fts був без tags_text і без ваг.
+# Вираз generated-колонки не змінити ALTER-ом — тільки drop+add. На порожній
+# норі миттєво; на заповненій (апгрейд) — одноразовий перерахунок вектора.
+# Виконується лише коли збережена версія схеми < SCHEMA_VERSION.
+_FTS_REBUILD = [
+    "ALTER TABLE articles DROP COLUMN IF EXISTS fts",
+    f"ALTER TABLE articles ADD COLUMN fts tsvector GENERATED ALWAYS AS ({_FTS_EXPR}) STORED",
+    "CREATE INDEX IF NOT EXISTS idx_articles_fts ON articles USING gin (fts)",
+]
+
 _schema_lock = threading.Lock()
 _schema_ready = False
 
@@ -174,6 +205,23 @@ def ensure_schema():
                         if required:
                             raise
                         print(f"bot_db: опційний крок схеми пропущено — {e}")
+                # Ідемпотентні міграції (доводять стару таблицю до поточної схеми)
+                for sql in _MIGRATIONS:
+                    cur.execute(sql)
+                # Версійна перебудова fts — лише коли схема застаріла.
+                # Читаємо/пишемо sync_state сирим SQL (не через query/get_state —
+                # ті самі викликали б ensure_schema і зациклили б).
+                cur.execute("SELECT value FROM sync_state WHERE key = 'schema_version'")
+                row = cur.fetchone()
+                version = int(row[0]) if row and row[0] else 0
+                if version < SCHEMA_VERSION:
+                    for sql in _FTS_REBUILD:
+                        cur.execute(sql)
+                    cur.execute(
+                        "INSERT INTO sync_state (key, value) VALUES ('schema_version', %s) "
+                        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                        (str(SCHEMA_VERSION),),
+                    )
         finally:
             conn.close()
         _schema_ready = True
