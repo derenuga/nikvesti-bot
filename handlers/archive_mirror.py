@@ -34,6 +34,7 @@ from handlers.helpers import escape_html
 from handlers.notifier import notify_error
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
+BASE_URL = "https://nikvesti.com"
 
 # Порція бекфілу: 150 рядків з longtext-контентом — це одиниці МБ на запит,
 # вкладається в read_timeout 30с production-БД. ~2000 запитів на 300 тис.
@@ -63,26 +64,39 @@ _ALLOWED_USER_IDS = {
 
 # ---------- HTML → чистий текст ----------
 
+# Службові блоки, які прибираємо з тіла (не текст статті): скрипти, стилі,
+# фрейми, фото з підписами (figure/imgbox/lightbox), галереї, рекламні й
+# «читайте також»-врізки за типовими класами сайту. Список свідомо
+# консервативний — краще лишити трохи шуму, ніж вирізати справжній абзац.
+# ⚠️ Перевірити на реальних статтях через /archive_sample і за потреби
+# розширити (структуру старого HTML з dev-середовища не видно).
+_JUNK_TAGS = ["script", "style", "iframe", "figure", "noscript", "form"]
+_JUNK_CLASS_RE = re.compile(
+    r"imgbox|lightbox|gallery|related|read-?also|readmore|banner|advert|social|share|subscribe",
+    re.IGNORECASE,
+)
+
+
 def html_to_text(html):
-    """Чистий текст тіла матеріалу: без скриптів/стилів/підписів до фото,
-    пробіли схлопнуті, кап TEXT_PLAIN_CAP (захист tsvector від переповнення)."""
+    """Чистий текст тіла матеріалу: без скриптів/стилів/фото/врізок,
+    пробіли схлопнуті, кап TEXT_CAP (захист tsvector від переповнення)."""
     if not html:
         return None
     soup = BeautifulSoup(html, "html.parser")
-    for tag in soup.find_all(["script", "style", "iframe", "figure"]):
+    for tag in soup.find_all(_JUNK_TAGS):
         tag.decompose()
-    # Ті самі службові блоки, що ріже news_archive.extract_lead
-    for tag in soup.find_all(class_=re.compile(r"imgbox|lightbox")):
+    for tag in soup.find_all(class_=_JUNK_CLASS_RE):
         tag.decompose()
     text = soup.get_text(" ", strip=True)
     text = re.sub(r"\s+", " ", text).strip()
-    return text[:bot_db.TEXT_PLAIN_CAP] or None
+    return text[:bot_db.TEXT_CAP] or None
 
 
 def _row_to_tuple(row):
     """MySQL-рядок nodes → tuple для bot_db.upsert_articles.
-    Текст: українська версія, фолбек — російська (старі матеріали)."""
-    text = html_to_text(row.get("content_ua")) or html_to_text(row.get("content"))
+    Мовні версії РОЗДІЛЕНІ: content_ua → text_ua, content (рос.) → text_ru;
+    так само title_ua / title (рос.). Нічого не змішуємо і не втрачаємо —
+    матеріал може бути лише рос. (до 2023), лише укр., або мати обидві версії."""
     slug = (row.get("slug_ua") or row.get("slug") or "").strip() or None
     return (
         row["id"],
@@ -94,7 +108,8 @@ def _row_to_tuple(row):
         (row.get("title_ua") or "").strip() or None,
         (row.get("title") or "").strip() or None,
         slug,
-        text,
+        html_to_text(row.get("content_ua")),
+        html_to_text(row.get("content")),
     )
 
 
@@ -105,8 +120,10 @@ def _change_marker(row):
 
 # ---------- Первинний бекфіл ----------
 
-async def run_backfill(progress_cb=None):
-    """Повний бекфіл дзеркала. Resumable: курсор backfill_last_id у sync_state.
+async def run_backfill(limit=None, progress_cb=None):
+    """Бекфіл дзеркала. Resumable: курсор backfill_last_id у sync_state.
+    limit — скільки статей залити ЗА ЦЕЙ ЗАПУСК (для фазування; None — усі
+    решта). Наступний виклик продовжить з того ж місця.
     progress_cb(done_total, last_id) — опційний async-колбек для прогресу.
     Повертає кількість залитих за цей запуск рядків."""
     if _backfill_running["flag"]:
@@ -116,14 +133,17 @@ async def run_backfill(progress_cb=None):
         await asyncio.to_thread(bot_db.ensure_schema)
         last_id = int(await asyncio.to_thread(bot_db.get_state, "backfill_last_id", "0"))
         done = 0
-        while True:
+        reached_end = False
+        while limit is None or done < limit:
+            batch = BACKFILL_BATCH if limit is None else min(BACKFILL_BATCH, limit - done)
             rows = await db.aquery(
                 f"SELECT {_NODE_COLUMNS} FROM nodes "
                 "WHERE type = 'news' AND status = 1 AND id > %s "
                 "ORDER BY id LIMIT %s",
-                (last_id, BACKFILL_BATCH),
+                (last_id, batch),
             )
             if not rows:
+                reached_end = True  # джерело вичерпано — це справжнє завершення
                 break
             tuples = await asyncio.to_thread(
                 lambda: [_row_to_tuple(r) for r in rows]
@@ -135,14 +155,43 @@ async def run_backfill(progress_cb=None):
             if progress_cb:
                 await progress_cb(done, last_id)
             await asyncio.sleep(BACKFILL_PAUSE)
-        # Бекфіл дійшов до кінця → ставимо курсор інкременту на "зараз",
-        # далі дотягуватиме тільки нове/відредаговане.
-        now_ts = int(datetime.now().timestamp())
-        await asyncio.to_thread(bot_db.set_state, "mirror_cursor", now_ts)
-        await asyncio.to_thread(bot_db.set_state, "backfill_done_at", now_ts)
-        return done
+        # Позначку «завершено» і курсор інкременту ставимо ЛИШЕ коли справді
+        # дійшли до кінця. При частковій порції (спрацював limit) — ні, інакше
+        # інкремент вирішив би, що дзеркало повне, і решту архіву не долив би.
+        if reached_end:
+            now_ts = int(datetime.now().timestamp())
+            await asyncio.to_thread(bot_db.set_state, "mirror_cursor", now_ts)
+            await asyncio.to_thread(bot_db.set_state, "backfill_done_at", now_ts)
+        return done, reached_end
     finally:
         _backfill_running["flag"] = False
+
+
+# ---------- Тестовий зразок (перевірка чистки і розділення мов) ----------
+
+SAMPLE_PER_EDGE = 3  # скільки найстаріших і скільки найновіших брати
+
+
+async def load_sample():
+    """Заливає в дзеркало кілька найстаріших (рос. епоха) і найновіших (укр.)
+    опублікованих новин — щоб очима перевірити чистку HTML і що мовні версії
+    розклались по правильних полях. Це реальні статті, лишаються в базі
+    (при повному бекфілі просто перезапишуться). Повертає list[id]."""
+    now_ts = int(datetime.now().timestamp())
+    oldest = await db.aquery(
+        f"SELECT {_NODE_COLUMNS} FROM nodes WHERE type='news' AND status=1 "
+        "AND published > 0 AND published <= %s ORDER BY published ASC LIMIT %s",
+        (now_ts, SAMPLE_PER_EDGE),
+    )
+    newest = await db.aquery(
+        f"SELECT {_NODE_COLUMNS} FROM nodes WHERE type='news' AND status=1 "
+        "AND published > 0 AND published <= %s ORDER BY published DESC LIMIT %s",
+        (now_ts, SAMPLE_PER_EDGE),
+    )
+    rows = oldest + newest
+    tuples = await asyncio.to_thread(lambda: [_row_to_tuple(r) for r in rows])
+    await asyncio.to_thread(bot_db.upsert_articles, tuples)
+    return [r["id"] for r in rows]
 
 
 # ---------- Інкрементальний sync (scheduler, щогодини о :50) ----------
@@ -217,7 +266,16 @@ async def archive_backfill_handler(update, context):
         await update.message.reply_text("🦊 Бекфіл уже йде — дивись прогрес у попередньому повідомленні.")
         return
 
-    msg = await update.message.reply_text("🦊 Починаю заливати архів у дзеркало… (це на 1-2 години, resumable)")
+    # Необов'язковий ліміт: /archive_backfill 5000 — залити 5000 за цей запуск
+    # і зупинитись (фазування; наступний виклик продовжить з місця).
+    limit = None
+    if context.args:
+        try:
+            limit = max(1, int(context.args[0]))
+        except ValueError:
+            pass
+    scope = f"порцію на {limit} статей" if limit else "весь архів (~1-2 год)"
+    msg = await update.message.reply_text(f"🦊 Починаю заливати {scope}, resumable…")
     state = {"last_edit": 0.0}
 
     async def progress(done, last_id):
@@ -227,19 +285,26 @@ async def archive_backfill_handler(update, context):
             return
         state["last_edit"] = now
         try:
-            await msg.edit_text(f"🦊 Заливаю архів: {done} статей за цей запуск, дійшов до id {last_id}…")
+            await msg.edit_text(f"🦊 Заливаю: {done} статей за цей запуск, дійшов до id {last_id}…")
         except Exception:
             pass
 
     async def task():
         try:
-            done = await run_backfill(progress_cb=progress)
+            done, reached_end = await run_backfill(limit=limit, progress_cb=progress)
             info = await asyncio.to_thread(bot_db.ping)
+            if reached_end:
+                tail = "Далі дзеркало оновлюється само щогодини о :50."
+                head = f"✅ Бекфіл завершено: +{done} статей за цей запуск."
+            else:
+                tail = ("Порцію залито. Наступний /archive_backfill "
+                        f"[N] продовжить з id {info['sync_state'].get('backfill_last_id', '?')}.")
+                head = f"✅ Порцію залито: +{done} статей."
             await msg.edit_text(
-                f"✅ Бекфіл завершено: +{done} статей за цей запуск.\n"
+                f"{head}\n"
                 f"У дзеркалі всього: {info['articles']} статей "
                 f"({_fmt_ts(info['oldest_published'])} — {_fmt_ts(info['newest_published'])}).\n"
-                "Далі дзеркало оновлюється само щогодини о :50."
+                f"{tail}"
             )
         except Exception as e:
             try:
@@ -252,6 +317,57 @@ async def archive_backfill_handler(update, context):
 
     # У фон: команда відповідає одразу, заливка живе своїм життям.
     asyncio.create_task(task())
+
+
+async def archive_sample_handler(update, context):
+    """/archive_sample — залити кілька найстаріших і найновіших статей і показати,
+    що осіло в базі (перевірка чистки HTML і розділення мовних версій)."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not (bot_db.is_configured() and db.is_configured()):
+        await update.message.reply_text(
+            "🦊 Потрібні обидві БД: BOT_DATABASE_URL (Postgres бота) і DB_* (БД сайту)."
+        )
+        return
+    msg = await update.message.reply_text("🦊 Беру зразок статей з обох епох і чищу…")
+    try:
+        ids = await load_sample()
+        if not ids:
+            await msg.edit_text("🦊 Дивно — жодної опублікованої новини не знайшлось.")
+            return
+        rows = await asyncio.to_thread(
+            bot_db.query,
+            "SELECT id, published, title_ua, title_ru, slug, "
+            "left(text_ua, 320) AS tua, left(text_ru, 320) AS tru, "
+            "length(text_ua) AS lua, length(text_ru) AS lru "
+            "FROM articles WHERE id = ANY(%s) ORDER BY published ASC",
+            (ids,),
+        )
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось узяти зразок: {e}")
+        return
+
+    parts = [f"🦊 Зразок дзеркала ({len(rows)} статей) — звір із сайтом:\n"]
+    for r in rows:
+        url = f"{BASE_URL}/news/{r['slug']}" if r.get("slug") else f"{BASE_URL}/news/{r['id']}"
+        parts.append(f"— {_fmt_ts(r['published'])} · id {r['id']}\n{url}")
+        if r.get("title_ua"):
+            parts.append(f"  UA заголовок: {r['title_ua']}")
+        if r.get("title_ru"):
+            parts.append(f"  RU заголовок: {r['title_ru']}")
+        if r.get("tua"):
+            parts.append(f"  UA текст [{r['lua']} симв.]: {r['tua']}…")
+        if r.get("tru"):
+            parts.append(f"  RU текст [{r['lru']} симв.]: {r['tru']}…")
+        if not r.get("tua") and not r.get("tru"):
+            parts.append("  ⚠️ текст не витягся (обидві версії порожні)")
+        parts.append("")
+    text = "\n".join(parts)
+    if len(text) > 4000:
+        text = text[:4000].rsplit("\n", 1)[0] + "\n…(обрізано)"
+    # Plain text: у превʼю сирий текст статей із будь-якими символами
+    await msg.edit_text(text, disable_web_page_preview=True)
 
 
 async def archive_status_handler(update, context):

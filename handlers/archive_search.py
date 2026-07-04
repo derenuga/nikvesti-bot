@@ -168,7 +168,8 @@ def get_excerpts(ids, max_chars=EXCERPT_CHARS):
     if not ids:
         return []
     rows = bot_db.query(
-        "SELECT id, published, title_ua, title_ru, slug, left(text_plain, %s) AS excerpt "
+        "SELECT id, published, title_ua, title_ru, slug, "
+        "left(coalesce(text_ua, text_ru), %s) AS excerpt "
         "FROM articles WHERE id = ANY(%s)",
         (int(max_chars), [int(i) for i in ids]),
     )

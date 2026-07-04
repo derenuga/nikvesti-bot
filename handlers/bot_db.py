@@ -35,15 +35,22 @@ BOT_DATABASE_URL = os.environ.get("BOT_DATABASE_URL") or os.environ.get("DATABAS
 
 CONNECT_TIMEOUT = int(os.environ.get("BOT_DB_CONNECT_TIMEOUT", "10"))
 
-# Скільки символів чистого тексту статті зберігаємо в дзеркалі. Кап потрібен,
+# Скільки символів чистого тексту статті зберігаємо НА КОЖНУ МОВУ. Кап потрібен,
 # щоб generated-колонка fts (tsvector, ліміт 1 МБ) ніколи не переповнювалась;
 # 60к символів покривають навіть найдовші лонгріди.
-TEXT_PLAIN_CAP = 60_000
+TEXT_CAP = 60_000
 
 # ---------- Схема ----------
 #
+# Мовні версії зберігаються СУВОРО ОКРЕМО: title_ua/text_ua — українська,
+# title_ru/text_ru — російська (nodes.title / nodes.content без суфікса — рос.).
+# До ~2023 матеріали були лише російською, потім українською, бувають і обидві —
+# тому в одне поле їх не звалюємо, інакше версії губляться або змішуються.
+#
 # articles.fts — generated column: Postgres сам перераховує tsvector при
-# кожному upsert, окремого кроку індексації не існує в принципі.
+# кожному upsert, окремого кроку індексації не існує в принципі. Індекс
+# будується з УСІХ чотирьох текстових полів, тож пошук знаходить незалежно
+# від того, якою мовою (чи обома) вийшов матеріал.
 # Конфіг 'simple' (без стемінгу): українського стемера в Postgres немає,
 # морфологію закриваємо префіксним пошуком (слово:*) на боці archive_search.
 
@@ -60,13 +67,15 @@ _SCHEMA_STATEMENTS = [
             title_ua     TEXT,
             title_ru     TEXT,
             slug         TEXT,
-            text_plain   TEXT,
+            text_ua      TEXT,
+            text_ru      TEXT,
             synced_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
             fts          tsvector GENERATED ALWAYS AS (
                 to_tsvector('simple',
                     coalesce(title_ua, '') || ' ' ||
                     coalesce(title_ru, '') || ' ' ||
-                    coalesce(text_plain, ''))
+                    coalesce(text_ua, '') || ' ' ||
+                    coalesce(text_ru, ''))
             ) STORED
         )
         """,
@@ -165,7 +174,7 @@ def execute(sql, params=None):
 _UPSERT_SQL = """
 INSERT INTO articles
     (id, published, updated, status, own_material, owner_id,
-     title_ua, title_ru, slug, text_plain, synced_at)
+     title_ua, title_ru, slug, text_ua, text_ru, synced_at)
 VALUES %s
 ON CONFLICT (id) DO UPDATE SET
     published = EXCLUDED.published,
@@ -176,11 +185,12 @@ ON CONFLICT (id) DO UPDATE SET
     title_ua = EXCLUDED.title_ua,
     title_ru = EXCLUDED.title_ru,
     slug = EXCLUDED.slug,
-    text_plain = EXCLUDED.text_plain,
+    text_ua = EXCLUDED.text_ua,
+    text_ru = EXCLUDED.text_ru,
     synced_at = now()
 """
 
-_UPSERT_TEMPLATE = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())"
+_UPSERT_TEMPLATE = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())"
 
 
 def upsert_articles(rows):
