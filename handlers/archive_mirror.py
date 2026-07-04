@@ -65,25 +65,31 @@ _ALLOWED_USER_IDS = {
 # ---------- HTML → чистий текст ----------
 
 # Службові блоки, які прибираємо з тіла (не текст статті): скрипти, стилі,
-# фрейми, фото з підписами (figure/imgbox/lightbox), галереї, рекламні й
-# «читайте також»-врізки за типовими класами сайту. Список свідомо
-# консервативний — краще лишити трохи шуму, ніж вирізати справжній абзац.
-# ⚠️ Перевірити на реальних статтях через /archive_sample і за потреби
-# розширити (структуру старого HTML з dev-середовища не видно).
+# фрейми, фото з підписами, галереї, рекламні й «читайте також»-врізки.
+# Список свідомо консервативний — краще лишити трохи шуму, ніж вирізати абзац.
+# Перевірено на реальному HTML сайту (id 80912 2016, id 262482 2023).
 _JUNK_TAGS = ["script", "style", "iframe", "figure", "noscript", "form"]
+# Фото-контейнер старого движка: <div id="imgbox-N" class="photo right"> з
+# <span class="title"> підписом усередині. imgbox тут в ID (клас — 'photo'),
+# тому ловимо і по id, і по класу; заодно ріжемо підписи caption/title
+# (на випадок, якщо підпис поза imgbox) і сучасний lightbox-блок.
+_JUNK_ID_RE = re.compile(r"imgbox", re.IGNORECASE)
 _JUNK_CLASS_RE = re.compile(
-    r"imgbox|lightbox|gallery|related|read-?also|readmore|banner|advert|social|share|subscribe",
+    r"imgbox|lightbox|gallery|related|read-?also|readmore|banner|advert|"
+    r"social|share|subscribe|caption|\btitle\b",
     re.IGNORECASE,
 )
 
 
 def html_to_text(html):
-    """Чистий текст тіла матеріалу: без скриптів/стилів/фото/врізок,
+    """Чистий текст тіла матеріалу: без скриптів/стилів/фото/підписів/врізок,
     пробіли схлопнуті, кап TEXT_CAP (захист tsvector від переповнення)."""
     if not html:
         return None
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup.find_all(_JUNK_TAGS):
+        tag.decompose()
+    for tag in soup.find_all(id=_JUNK_ID_RE):   # фото-контейнер разом із підписом
         tag.decompose()
     for tag in soup.find_all(class_=_JUNK_CLASS_RE):
         tag.decompose()
