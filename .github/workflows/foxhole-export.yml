@@ -1,18 +1,17 @@
 # Разовий службовий workflow для прототипу глибокого досьє
 # (ENTITY_LAYER_PLAN §2.2). Дістає статті по темі з Postgres бота
 # і комітить вигрузку в цю ж гілку. Видалити після експерименту.
+#
+# Тригер: пуш файлу dossier_export/RUN у цю гілку (workflow_dispatch
+# недоступний, поки файл не на main). Формат RUN — два рядки:
+#   TSQUERY=Воронов:*
+#   DB_URL=postgresql://...
 name: foxhole-export
 
 on:
-  workflow_dispatch:
-    inputs:
-      tsquery:
-        description: "to_tsquery('simple', ...) вираз, напр. Воронов:*"
-        required: true
-        default: "Воронов:*"
-      db_url:
-        description: "Публічний connection string Railway Postgres (ключ ротується після експерименту)"
-        required: true
+  push:
+    branches: [claude/deep-dossier-prototype-b2jo2b]
+    paths: [dossier_export/RUN]
 
 permissions:
   contents: write
@@ -27,17 +26,14 @@ jobs:
           python-version: "3.12"
       - run: pip install psycopg2-binary
       - name: Export from foxhole
-        env:
-          FOXHOLE_DB_URL: ${{ github.event.inputs.db_url }}
-          TOPIC_TSQUERY: ${{ github.event.inputs.tsquery }}
-          OUT_PREFIX: dossier_export/topic
         run: |
-          mkdir -p dossier_export
+          set -a; source dossier_export/RUN; set +a
+          export FOXHOLE_DB_URL="$DB_URL" TOPIC_TSQUERY="$TSQUERY" OUT_PREFIX=dossier_export/topic
           python scripts/foxhole_export.py
       - name: Commit export
         run: |
           git config user.name "foxhole-export"
           git config user.email "actions@github.com"
-          git add dossier_export/
-          git commit -m "foxhole export: ${{ github.event.inputs.tsquery }}"
+          git add dossier_export/topic*
+          git commit -m "foxhole export"
           git push

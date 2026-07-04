@@ -1,0 +1,2 @@
+TSQUERY=Воронов:*
+DB_URL=postgresql://postgres:CpPLrFSvrzUhcbTElzlptEcubDGVIWnY@reseau.proxy.rlwy.net:46884/railway
