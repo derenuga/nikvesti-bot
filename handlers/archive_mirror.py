@@ -176,9 +176,12 @@ async def _refresh_tags():
             (r.get("google_category") or "").strip() or None,
             (r.get("description") or "").strip() or None,
         ))
-        names = " ".join(x for x in (name_ua, name_ru) if x)
+        # Локалізації ОДНОГО тегу для tags_text: якщо ua==ru ('ДТП'/'ДТП') —
+        # один екземпляр, якщо різні ('Миколаїв'/'Николаев') — обидва. Тег як
+        # сутність не чіпаємо (обидві назви є в tags), це лише рядок для індексу.
+        names = list(dict.fromkeys(x for x in (name_ua, name_ru) if x))
         if names:
-            names_map[cid] = names
+            names_map[cid] = " ".join(names)
 
     await asyncio.to_thread(bot_db.upsert_tags, tag_rows)
     return resolve_map, names_map
@@ -199,19 +202,6 @@ async def _fetch_node_tags(ids):
         return []
 
 
-def _dedup_words(text):
-    """Прибирає повтори слів (без урахування регістру), зберігаючи порядок.
-    Назва тегу — 'ua ru'; коли ua==ru ('ДТП ДТП') або слово спільне між тегами,
-    у tags_text лишається один екземпляр — чистіший індекс і показ."""
-    seen, out = set(), []
-    for w in text.split():
-        k = w.lower()
-        if k not in seen:
-            seen.add(k)
-            out.append(w)
-    return " ".join(out)
-
-
 def _build_batch(rows, node_tag_rows, resolve_map, names_map):
     """CPU-частина синку пачки (чистка HTML + збирання тегів) — у to_thread.
     Повертає (tuples для upsert_articles, pairs для article_tags)."""
@@ -223,7 +213,9 @@ def _build_batch(rows, node_tag_rows, resolve_map, names_map):
     tuples, pairs = [], []
     for r in rows:
         cids = tags_by_node.get(r["id"], ())
-        tags_text = _dedup_words(" ".join(names_map[c] for c in cids)) if cids else None
+        # Кожен тег дає свої (вже дедупнуті per-tag) локалізації; між різними
+        # тегами не склеюємо — tsvector сам зберігає кожну лексему один раз.
+        tags_text = " ".join(names_map[c] for c in cids) if cids else None
         t = _row_to_tuple(r, tags_text or None)
         if t is None:
             continue  # порожня заглушка — не в корпус (і теги для неї не пишемо)
