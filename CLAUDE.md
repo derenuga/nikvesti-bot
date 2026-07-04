@@ -233,6 +233,7 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
 - [`docs/LONG_TERM_VISION.md`](docs/LONG_TERM_VISION.md) — довгострокові ідеї: підписки, перехід на власний сервер+MySQL, AI-доступ до 17-річного архіву новин
 - [`docs/ARCHIVE_INTELLIGENCE.md`](docs/ARCHIVE_INTELLIGENCE.md) — стратегія інституційної пам'яті: рівні, вартість, дорожня карта, продукти
 - [`docs/ARCHIVE_MIRROR_MODULE.md`](docs/ARCHIVE_MIRROR_MODULE.md) — дзеркало архіву в Postgres бота, FTS-пошук, /dossier (хвиля A)
+- [`docs/ENTITY_LAYER_PLAN.md`](docs/ENTITY_LAYER_PLAN.md) — план Досьє v2 (індекс-файл, /dossier_deep) і сутнісного шару (хвиля D); бриф для нової сесії, «кодь» не давався
 - [`docs/REVIEW_2026_07.md`](docs/REVIEW_2026_07.md) — ревізія липня 2026: апрувнутий план оптимізацій і розвитку (хвилі впровадження)
 
 ---
