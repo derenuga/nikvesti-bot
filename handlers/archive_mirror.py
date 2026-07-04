@@ -93,12 +93,18 @@ def html_to_text(html):
 
 
 def _row_to_tuple(row, tags_text=None):
-    """MySQL-рядок nodes → tuple для bot_db.upsert_articles.
+    """MySQL-рядок nodes → tuple для bot_db.upsert_articles, або None якщо
+    статтю не беремо в корпус.
     Мовні версії РОЗДІЛЕНІ: content_ua → text_ua, content (рос.) → text_ru;
     так само title_ua / title (рос.). Нічого не змішуємо і не втрачаємо —
     матеріал може бути лише рос. (до 2023), лише укр., або мати обидві версії.
-    tags_text — назви тегів статті одним рядком (ua+ru) для пошукового індексу;
-    None для старих матеріалів без тегів (теги наслоювались пізніше)."""
+    Порожні заглушки (обидві текстові версії порожні — напр. технічні записи
+    2001-го, самі заголовки без тіла) в корпус НЕ беремо: для пошуку/досьє вони
+    марні. tags_text — назви тегів статті одним рядком для індексу."""
+    text_ua = html_to_text(row.get("content_ua"))
+    text_ru = html_to_text(row.get("content"))
+    if not text_ua and not text_ru:
+        return None
     slug = (row.get("slug_ua") or row.get("slug") or "").strip() or None
     return (
         row["id"],
@@ -110,8 +116,8 @@ def _row_to_tuple(row, tags_text=None):
         (row.get("title_ua") or "").strip() or None,
         (row.get("title") or "").strip() or None,
         slug,
-        html_to_text(row.get("content_ua")),
-        html_to_text(row.get("content")),
+        text_ua,
+        text_ru,
         (row.get("category") or "").strip() or None,
         row.get("region"),
         tags_text or None,
@@ -193,6 +199,19 @@ async def _fetch_node_tags(ids):
         return []
 
 
+def _dedup_words(text):
+    """Прибирає повтори слів (без урахування регістру), зберігаючи порядок.
+    Назва тегу — 'ua ru'; коли ua==ru ('ДТП ДТП') або слово спільне між тегами,
+    у tags_text лишається один екземпляр — чистіший індекс і показ."""
+    seen, out = set(), []
+    for w in text.split():
+        k = w.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(w)
+    return " ".join(out)
+
+
 def _build_batch(rows, node_tag_rows, resolve_map, names_map):
     """CPU-частина синку пачки (чистка HTML + збирання тегів) — у to_thread.
     Повертає (tuples для upsert_articles, pairs для article_tags)."""
@@ -204,8 +223,11 @@ def _build_batch(rows, node_tag_rows, resolve_map, names_map):
     tuples, pairs = [], []
     for r in rows:
         cids = tags_by_node.get(r["id"], ())
-        tags_text = " ".join(names_map[c] for c in cids) if cids else None
-        tuples.append(_row_to_tuple(r, tags_text))
+        tags_text = _dedup_words(" ".join(names_map[c] for c in cids)) if cids else None
+        t = _row_to_tuple(r, tags_text or None)
+        if t is None:
+            continue  # порожня заглушка — не в корпус (і теги для неї не пишемо)
+        tuples.append(t)
         for c in cids:
             pairs.append((r["id"], c))
     return tuples, pairs
@@ -213,7 +235,8 @@ def _build_batch(rows, node_tag_rows, resolve_map, names_map):
 
 async def _sync_rows(rows, tags_ctx):
     """Заливає пачку nodes-рядків у нору: статті + (якщо теги доступні) звʼязки.
-    tags_ctx = (resolve_map, names_map) або None (синк без тегів)."""
+    Порожні заглушки пропускаються (_row_to_tuple → None). tags_ctx =
+    (resolve_map, names_map) або None (синк без тегів). Повертає list залитих id."""
     ids = [r["id"] for r in rows]
     if tags_ctx:
         resolve_map, names_map = tags_ctx
@@ -221,11 +244,19 @@ async def _sync_rows(rows, tags_ctx):
         tuples, pairs = await asyncio.to_thread(
             _build_batch, rows, node_tag_rows, resolve_map, names_map
         )
-        await asyncio.to_thread(bot_db.upsert_articles, tuples)
-        await asyncio.to_thread(bot_db.replace_article_tags, ids, pairs)
+        kept_ids = [t[0] for t in tuples]
+        if tuples:
+            await asyncio.to_thread(bot_db.upsert_articles, tuples)
+        if kept_ids:
+            await asyncio.to_thread(bot_db.replace_article_tags, kept_ids, pairs)
+        return kept_ids
     else:
-        tuples = await asyncio.to_thread(lambda: [_row_to_tuple(r) for r in rows])
-        await asyncio.to_thread(bot_db.upsert_articles, tuples)
+        tuples = await asyncio.to_thread(
+            lambda: [t for t in (_row_to_tuple(r) for r in rows) if t is not None]
+        )
+        if tuples:
+            await asyncio.to_thread(bot_db.upsert_articles, tuples)
+        return [t[0] for t in tuples]
 
 
 # ---------- Первинний бекфіл ----------
@@ -280,30 +311,43 @@ async def run_backfill(limit=None, progress_cb=None):
 
 
 # ---------- Тестовий зразок (перевірка чистки і розділення мов) ----------
+#
+# Беремо статті з РІЗНИХ ЕПОХ, а не тільки з країв: найстаріші — часто порожні
+# заглушки 2001-го, найновіші — сучасний укр. HTML. Найголовніше перевірити
+# середину (2008-2015, російськомовний старий HTML) — саме там ризик чистки.
 
-SAMPLE_PER_EDGE = 3  # скільки найстаріших і скільки найновіших брати
+SAMPLE_YEARS = [2008, 2012, 2016, 2020, 2023]  # «зонди» по роках + oldest/newest
 
 
 async def load_sample():
-    """Заливає в дзеркало кілька найстаріших (рос. епоха) і найновіших (укр.)
-    опублікованих новин — щоб очима перевірити чистку HTML і що мовні версії
-    розклались по правильних полях. Це реальні статті, лишаються в базі
-    (при повному бекфілі просто перезапишуться). Повертає list[id]."""
+    """Заливає в нору по 1-2 опублікованих новини з кількох епох (найстаріші,
+    по роках-зондах, найновіші) — щоб очима перевірити чистку HTML і розділення
+    мовних версій на різному історичному HTML. Реальні статті, лишаються в базі
+    (повний бекфіл їх перезапише). Повертає list[id]."""
     now_ts = int(datetime.now().timestamp())
-    oldest = await db.aquery(
-        f"SELECT {_NODE_COLUMNS} FROM nodes WHERE type='news' AND status=1 "
-        "AND published > 0 AND published <= %s ORDER BY published ASC LIMIT %s",
-        (now_ts, SAMPLE_PER_EDGE),
-    )
-    newest = await db.aquery(
-        f"SELECT {_NODE_COLUMNS} FROM nodes WHERE type='news' AND status=1 "
-        "AND published > 0 AND published <= %s ORDER BY published DESC LIMIT %s",
-        (now_ts, SAMPLE_PER_EDGE),
-    )
-    rows = oldest + newest
+    seen = {}
+
+    async def grab(extra_where, params, order, limit):
+        rows = await db.aquery(
+            f"SELECT {_NODE_COLUMNS} FROM nodes WHERE type='news' AND status=1 "
+            f"AND published > 0 AND published <= %s {extra_where} "
+            f"ORDER BY published {order} LIMIT %s",
+            params,
+        )
+        for r in rows:
+            seen.setdefault(r["id"], r)
+
+    await grab("", (now_ts, 2), "ASC", 2)  # найстаріші
+    for y in SAMPLE_YEARS:
+        floor = int(datetime(y, 1, 1).timestamp())
+        if floor < now_ts:
+            await grab("AND published >= %s", (now_ts, floor, 1), "ASC", 1)  # перша у році y
+    await grab("", (now_ts, 2), "DESC", 2)  # найновіші
+
+    rows = list(seen.values())
+    rows.sort(key=lambda r: r.get("published") or 0)
     tags_ctx = await _refresh_tags()
-    await _sync_rows(rows, tags_ctx)
-    return [r["id"] for r in rows]
+    return await _sync_rows(rows, tags_ctx)  # лише реально залиті (без порожніх)
 
 
 # ---------- Інкрементальний sync (scheduler, щогодини о :50) ----------
@@ -526,9 +570,9 @@ async def archive_status_handler(update, context):
     sync = info["sync_state"]
     running = "так (зараз іде)" if _backfill_running["flag"] else "ні"
     lines = [
-        "🦊 <b>Дзеркало архіву</b>",
+        "🦊 <b>Лисяча нора</b> (корпус архіву)",
         f"Postgres: <b>{escape_html(str(info['version']))}</b> ({info['elapsed_ms']} мс)",
-        f"Статей у нopі: <b>{info['articles']}</b> (з тегами: {info.get('tagged_articles', 0)})",
+        f"Статей у норі: <b>{info['articles']}</b> (з тегами: {info.get('tagged_articles', 0)})",
         f"Довідник тегів: <b>{info.get('tags', 0)}</b>",
         f"Діапазон публікацій: {_fmt_ts(info['oldest_published'])} — {_fmt_ts(info['newest_published'])}",
         f"Бекфіл завершено: {_fmt_ts(sync.get('backfill_done_at'))}",
