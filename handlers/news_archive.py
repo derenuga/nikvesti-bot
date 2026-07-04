@@ -140,7 +140,14 @@ def build_keyboard(dialog_key):
 # ---------- Пошук ----------
 
 def _news_url(row):
+    """Канонічний URL: /news/{category}/{slug}. Без рубрики двіжок сайту
+    редиректить (/news/{slug} → /news/incidents/{slug}), але такі лінки
+    розходяться по репостах і плодять дублі шляхів у GA4 — тому рубрику
+    (nodes.category) вставляємо одразу."""
     slug = (row.get("slug_ua") or row.get("slug") or "").strip()
+    category = (row.get("category") or "").strip()
+    if slug and category:
+        return f"{BASE_URL}/news/{category}/{slug}"
     if slug:
         return f"{BASE_URL}/news/{slug}"
     return f"{BASE_URL}/news/{row['id']}"
@@ -171,7 +178,7 @@ def search_news(dialog_key, keywords, limit=10, period_days=None, turn_id=None):
 
     now = int(datetime.now().timestamp())
     sql = (
-        "SELECT id, published, title_ua, title, slug_ua, slug "
+        "SELECT id, published, title_ua, title, slug_ua, slug, category "
         "FROM nodes WHERE status = 1 AND type = 'news' AND published <= %s"
     )
     params = [now]
