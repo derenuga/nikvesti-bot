@@ -151,6 +151,10 @@ _SCHEMA_STATEMENTS = [
 # залежні від них індекси доводимо тут (ADD COLUMN IF NOT EXISTS безпечний і на
 # чистій БД, і на старій).
 _MIGRATIONS = [
+    # text_ua/text_ru — з найпершої версії нора мала одну колонку text_plain;
+    # додаємо роздільні мовні колонки (fts-перебудова нижче на них спирається).
+    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS text_ua TEXT",
+    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS text_ru TEXT",
     "ALTER TABLE articles ADD COLUMN IF NOT EXISTS category TEXT",
     "ALTER TABLE articles ADD COLUMN IF NOT EXISTS region INTEGER",
     "ALTER TABLE articles ADD COLUMN IF NOT EXISTS tags_text TEXT",
