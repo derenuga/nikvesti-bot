@@ -19,6 +19,7 @@ from handlers.builder_monitor import check_builder_staleness
 from handlers.archive_mirror import run_archive_sync
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
+from handlers.weekly_digest import send_weekly_digest
 from handlers import analytics_store
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -65,6 +66,22 @@ async def send_daily_report(bot):
         parse_mode="HTML",
         disable_web_page_preview=True
     )
+
+async def capture_daily_stats(bot):
+    """Тихий щоденний захват вчорашньої аналітики в daily_stats (без поста).
+    Щоденний звіт у чат прибрано (замість нього — тижневик), але пам'ять
+    аналітики має наповнюватись щодня — інакше тижневик і NLQ-тренди без даних."""
+    try:
+        await analytics_store.capture_yesterday()
+    except Exception as e:
+        print(f"Помилка захвату щоденної аналітики: {e}")
+        await notify_error(bot, "захват щоденної аналітики", e)
+
+
+async def weekly_fox_digest(bot):
+    """Тижневик Лиса — понеділок 09:30, у чат редакції."""
+    await send_weekly_digest(bot, CHAT_ID)
+
 
 async def check_email(bot, time_of_day):
     try:
@@ -178,7 +195,12 @@ def setup_scheduler(bot, last_channel_post_time=None):
         last_channel_post_time = {"time": datetime.now()}
     scheduler = AsyncIOScheduler(timezone="Europe/Kiev")
     scheduler.add_listener(lambda event: _on_job_error(bot, event), EVENT_JOB_ERROR)
-    scheduler.add_job(send_daily_report, "cron", hour=9, minute=0, args=[bot])
+    # Щоденний звіт 09:00 у чат прибрано — замість нього тижневик (нижче).
+    # О 09:00 лишається тихий захват вчорашнього дня в daily_stats (без поста),
+    # щоб пам'ять аналітики наповнювалась і тижневик мав що порівнювати.
+    scheduler.add_job(capture_daily_stats, "cron", hour=9, minute=0, args=[bot])
+    # Тижневик Лиса — понеділок 09:30 (тиждень до тижня, топ, тендери, AI)
+    scheduler.add_job(weekly_fox_digest, "cron", day_of_week="mon", hour=9, minute=30, args=[bot])
     scheduler.add_job(check_email, "cron", hour=13, minute=0, args=[bot, "afternoon"])
     scheduler.add_job(check_email, "cron", hour=16, minute=50, args=[bot, "evening"])
     scheduler.add_job(weekly_instagram, "cron", day_of_week="sun", hour=18, minute=0, args=[bot])

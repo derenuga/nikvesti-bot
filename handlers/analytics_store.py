@@ -28,7 +28,7 @@ from google.analytics.data_v1beta.types import (
 )
 
 from handlers import bot_db
-from handlers.google_analytics import get_ga4_client, GA4_PROPERTY_ID
+from handlers.google_analytics import get_ga4_client, get_stats, get_top_pages, GA4_PROPERTY_ID
 from handlers.notifier import notify_error
 
 _ALLOWED_USER_IDS = {
@@ -67,6 +67,21 @@ async def record_day(date_str, users, sessions, pageviews, top_pages=None):
         return
     row = (date_str, users, sessions, pageviews, _top_pages_json(top_pages))
     await asyncio.to_thread(bot_db.upsert_daily_stats, [row])
+
+
+async def capture_yesterday():
+    """Тихо тягне вчорашній день з GA4 (users/sessions/pageviews + топ сторінок)
+    і кладе в daily_stats — БЕЗ поста в чат. Це заміна запису, який раніше робив
+    щоденний звіт о 09:00: сам звіт прибрано (замість нього — тижневик), але
+    пам'ять аналітики має наповнюватись щодня, інакше тижневик і NLQ-тренди
+    лишаться без свіжих даних. Тихо виходить без БД бота."""
+    if not is_ready():
+        return
+    client = await asyncio.to_thread(get_ga4_client)
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    users, sessions, pageviews = await asyncio.to_thread(get_stats, client, yesterday, yesterday)
+    top_pages = await asyncio.to_thread(get_top_pages, client, yesterday, yesterday)
+    await record_day(yesterday, users, sessions, pageviews, top_pages)
 
 
 # ---------- Бекфіл з GA4 ----------

@@ -44,7 +44,8 @@ handlers/
   law_enforcement.py      — моніторинг новин правоохоронних органів (прокуратура тощо)
   competitors.py          — моніторинг новин конкурентів (news.pn тощо)
   google_analytics.py     — GA4 щоденна аналітика, /analytics, /report
-  analytics_store.py      — пам'ять щоденної аналітики GA4 у Postgres (daily_stats): запис зі щоденного звіту, /analytics_backfill, серія для NLQ-tool get_traffic_history
+  analytics_store.py      — пам'ять щоденної аналітики GA4 у Postgres (daily_stats): тихий щоденний захват (capture_yesterday), /analytics_backfill, серія для NLQ-tool get_traffic_history
+  weekly_digest.py        — «Тижневик Лиса»: понеділковий дайджест тижня сайту з порівнянням тиждень-до-тижня (заміна щоденного 09:00-звіту), /weekly
   traffic_spikes.py       — детектор сплесків трафіку (GA4 Realtime, самонавчальний профіль), /traffic
   stat.py                 — /stat <url>: статистика матеріалу (Facebook + Telegram + GA4)
   telegram_stats.py       — перегляди постів каналу @nikvesti (індекс + парсинг t.me/s)
@@ -68,8 +69,9 @@ handlers/
 | /start | Привітання зі списком команд |
 | /status | Перевірка що бот живий |
 | /analytics | GA4 статистика за вчора + топ-5 статей |
-| /analytics_backfill \[N\] | Залити N днів історії трафіку з GA4 у daily_stats (дефолт 90); далі наповнюється сам щоденним звітом |
-| /report | GA4 звіт в чат редакції |
+| /analytics_backfill \[N\] | Залити N днів історії трафіку з GA4 у daily_stats (дефолт 90); далі наповнюється сам тихим захватом о 09:00 |
+| /weekly | Тижневик Лиса вручну в чат редакції |
+| /report | GA4 звіт за вчора в чат редакції (щоденний авто-пост прибрано, лишилась ручна команда) |
 | /checkmail | Перевірити Gmail |
 | /instagram | Тижнева статистика Instagram |
 | /igreport | Тижневий Instagram звіт з AI в чат |
@@ -116,7 +118,8 @@ handlers/
 | Час | Що запускається |
 |---|---|
 | 08:15 щодня | Ранкове повідомлення в чат редакції |
-| 09:00 щодня | GA4 звіт за вчора (заодно осідає в daily_stats: users/sessions/pageviews + топ сторінок) |
+| 09:00 щодня | Тихий захват вчорашньої аналітики в daily_stats (users/sessions/pageviews + топ сторінок), БЕЗ поста — щоденний звіт у чат прибрано на користь тижневика |
+| Понеділок 09:30 | Тижневик Лиса: тиждень сайту до тижня (users/sessions/pageviews) + топ-5 матеріалів + винюхані тендери + AI-підводка |
 | 10:00 щодня | Перевірка правоохоронних органів |
 | 13:00 щодня | Перевірка Gmail + правоохоронні органи |
 | 16:00 щодня | Перевірка правоохоронних органів |
