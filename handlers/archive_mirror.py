@@ -143,15 +143,17 @@ def _change_marker(row):
 # node_tag читаємо ПАЧКАМИ (на кожні BACKFILL_BATCH статей — один запит),
 # а не по одній статті, інакше 320 тис. запитів вбили б бекфіл.
 
-async def _refresh_tags():
+async def _refresh_tags(conn=None):
     """Заливає канонічні теги в нору і повертає (resolve_map, names_map):
       resolve_map — будь-який tag_id → канонічний id (розмерджені зведені);
       names_map   — канонічний id → рядок назв (ua + ru) для tags_text.
-    None, якщо довідник tag недоступний (тоді синк іде без тегів — не падає)."""
+    None, якщо довідник tag недоступний (тоді синк іде без тегів — не падає).
+    conn — спільне з'єднання бекфілу (щоб не відкривати нове)."""
     try:
         rows = await db.aquery(
             "SELECT id, redirect_tag_id, name, name_ru, name_en, "
-            "google_category, description FROM tag"
+            "google_category, description FROM tag",
+            conn=conn,
         )
     except Exception as e:
         print(f"archive: довідник tag недоступний ({e}) — синк без тегів")
@@ -194,7 +196,7 @@ async def _refresh_tags():
     return resolve_map, names_map
 
 
-async def _fetch_node_tags(ids):
+async def _fetch_node_tags(ids, conn=None):
     """Рядки node_tag для пачки node_id (один запит). [] якщо порожньо/помилка."""
     if not ids:
         return []
@@ -203,6 +205,7 @@ async def _fetch_node_tags(ids):
         return await db.aquery(
             f"SELECT node_id, tag_id FROM node_tag WHERE node_id IN ({placeholders})",
             tuple(ids),
+            conn=conn,
         )
     except Exception as e:
         print(f"archive: node_tag недоступний ({e}) — пачка без тегів")
@@ -232,14 +235,15 @@ def _build_batch(rows, node_tag_rows, resolve_map, names_map):
     return tuples, pairs
 
 
-async def _sync_rows(rows, tags_ctx):
+async def _sync_rows(rows, tags_ctx, conn=None):
     """Заливає пачку nodes-рядків у нору: статті + (якщо теги доступні) звʼязки.
     Порожні заглушки пропускаються (_row_to_tuple → None). tags_ctx =
-    (resolve_map, names_map) або None (синк без тегів). Повертає list залитих id."""
+    (resolve_map, names_map) або None (синк без тегів). conn — спільне з'єднання
+    бекфілу для читання node_tag. Повертає list залитих id."""
     ids = [r["id"] for r in rows]
     if tags_ctx:
         resolve_map, names_map = tags_ctx
-        node_tag_rows = await _fetch_node_tags(ids)
+        node_tag_rows = await _fetch_node_tags(ids, conn=conn)
         tuples, pairs = await asyncio.to_thread(
             _build_batch, rows, node_tag_rows, resolve_map, names_map
         )
@@ -270,9 +274,13 @@ async def run_backfill(limit=None, progress_cb=None):
         raise RuntimeError("Бекфіл уже запущено — другий паралельно не потрібен.")
     _backfill_running["flag"] = True
     _backfill_stop["flag"] = False  # новий запуск скидає попередній сигнал стопу
+    conn = None
     try:
         await asyncio.to_thread(bot_db.ensure_schema)
-        tags_ctx = await _refresh_tags()
+        # ОДНЕ з'єднання з БД сайту на весь бекфіл — інакше «з'єднання на запит»
+        # × тисячі пачок впирається в ліміт 1000 з'єднань/год (помилка 1226).
+        conn = await asyncio.to_thread(db.open_bulk_connection)
+        tags_ctx = await _refresh_tags(conn)
         last_id = int(await asyncio.to_thread(bot_db.get_state, "backfill_last_id", "0"))
         done = 0
         reached_end = False
@@ -289,11 +297,12 @@ async def run_backfill(limit=None, progress_cb=None):
                 "WHERE type = 'news' AND status = 1 AND published > 0 AND published <= %s "
                 "AND id > %s ORDER BY id LIMIT %s",
                 (now_ts, last_id, batch),
+                conn=conn,
             )
             if not rows:
                 reached_end = True  # джерело вичерпано — це справжнє завершення
                 break
-            await _sync_rows(rows, tags_ctx)
+            await _sync_rows(rows, tags_ctx, conn=conn)
             last_id = rows[-1]["id"]
             done += len(rows)
             await asyncio.to_thread(bot_db.set_state, "backfill_last_id", last_id)
@@ -310,6 +319,11 @@ async def run_backfill(limit=None, progress_cb=None):
         return done, reached_end
     finally:
         _backfill_running["flag"] = False
+        if conn is not None:
+            try:
+                await asyncio.to_thread(conn.close)
+            except Exception:
+                pass
 
 
 # ---------- Тестовий зразок (перевірка чистки і розділення мов) ----------

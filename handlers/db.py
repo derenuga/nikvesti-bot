@@ -89,18 +89,32 @@ def _connect():
     )
 
 
-def query(sql, params=None):
+def open_bulk_connection():
+    """Одне з'єднання для СЕРІЇ читань (бекфіл). Модель «з'єднання на запит»
+    добра для рідких запитів бота, але масова операція (тисячі запитів) так
+    впирається в ліміт сайту 1000 з'єднань/год. Тримаючи одне з'єднання на весь
+    прогін, обходимося ~1 з'єднанням замість тисяч. Викликати .close() по
+    завершенні. Використовувати ПОСЛІДОВНО (без одночасного доступу з потоків)."""
+    return _connect()
+
+
+def query(sql, params=None, conn=None):
     """Прочитати рядки з БД. Повертає list[dict] (DictCursor).
 
     Параметри — через `params` (плейсхолдери %s), не конкатенацією рядків:
         db.query("SELECT * FROM articles WHERE id = %s", (article_id,))
+
+    conn — опційне вже відкрите з'єднання (open_bulk_connection) для серії
+    запитів без відкриття нового щоразу; без нього — з'єднання на запит.
 
     Дозволені тільки читальні запити (SELECT/SHOW/DESCRIBE/EXPLAIN/WITH) —
     решта відхиляється до звернення в БД."""
     stripped = sql.lstrip().lower()
     if not stripped.startswith(_READ_ONLY_PREFIXES):
         raise ValueError("db.query дозволяє тільки читання (SELECT/SHOW/...)")
-    conn = _connect()
+    own = conn is None
+    if own:
+        conn = _connect()
     try:
         with conn.cursor() as cur:
             # Без параметрів викликаємо execute(sql) БЕЗ другого аргументу:
@@ -112,12 +126,13 @@ def query(sql, params=None):
                 cur.execute(sql)
             return cur.fetchall()
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
-async def aquery(sql, params=None):
+async def aquery(sql, params=None, conn=None):
     """Async-обгортка над query — щоб не блокувати event loop бота."""
-    return await asyncio.to_thread(query, sql, params)
+    return await asyncio.to_thread(query, sql, params, conn)
 
 
 def tcp_check(host, port, timeout=8):
