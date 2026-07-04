@@ -602,3 +602,160 @@ async def archive_status_handler(update, context):
         f"Курсор інкременту: {_fmt_ts(sync.get('mirror_cursor'))}",
     ]
     await msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+
+# ---------- Нагляд: /archive_report і /nora_sql ----------
+
+def _fmt_k(n):
+    """Компактно: 1234 → '1.2к', 980 → '980'."""
+    n = int(n or 0)
+    return f"{n/1000:.1f}к".replace(".0к", "к") if n >= 1000 else str(n)
+
+
+def _build_report():
+    """Кураторне здоровкове зведення нори — синхронне (у to_thread)."""
+    q = bot_db.query
+    base = q(
+        "SELECT count(*) AS total, "
+        "count(*) FILTER (WHERE text_ua IS NOT NULL AND text_ru IS NOT NULL) AS both_lang, "
+        "count(*) FILTER (WHERE text_ua IS NOT NULL AND text_ru IS NULL) AS ua_only, "
+        "count(*) FILTER (WHERE text_ua IS NULL AND text_ru IS NOT NULL) AS ru_only, "
+        "count(*) FILTER (WHERE own_material = 1) AS own, "
+        "count(*) FILTER (WHERE title_ua IS NULL AND title_ru IS NULL) AS no_title, "
+        "count(*) FILTER (WHERE length(coalesce(text_ua, text_ru)) < 100) AS very_short, "
+        "round(avg(length(coalesce(text_ua, text_ru)))) AS avg_len, "
+        "max(length(coalesce(text_ua, text_ru))) AS max_len "
+        "FROM articles"
+    )[0]
+    total = base["total"] or 0
+    if not total:
+        return "🦊 Нора порожня — спершу /archive_backfill."
+    tagged = q("SELECT count(DISTINCT article_id) AS c FROM article_tags")[0]["c"]
+    by_year = q(
+        "SELECT EXTRACT(YEAR FROM to_timestamp(published))::int AS yr, count(*) AS c, "
+        "round(avg(length(coalesce(text_ua, text_ru)))) AS al "
+        "FROM articles WHERE published > 0 GROUP BY yr ORDER BY yr"
+    )
+    cats = q(
+        "SELECT coalesce(category, '—') AS category, count(*) AS c "
+        "FROM articles GROUP BY category ORDER BY c DESC LIMIT 12"
+    )
+    regions = q(
+        "SELECT coalesce(region::text, '—') AS region, count(*) AS c "
+        "FROM articles GROUP BY region ORDER BY c DESC LIMIT 8"
+    )
+
+    def pct(n):
+        return f"{100 * (n or 0) / total:.0f}%"
+
+    lines = [
+        f"🦊 <b>Звіт по норі</b> — {total} статей\n",
+        "<b>Мови:</b> "
+        f"обидві {base['both_lang']} ({pct(base['both_lang'])}) · "
+        f"лише укр {base['ua_only']} · лише рос {base['ru_only']}",
+        f"<b>Теги:</b> {tagged} статей ({pct(tagged)}) мають теги",
+        f"<b>Власні (own_material=1):</b> {base['own']} ({pct(base['own'])})",
+        f"<b>Текст:</b> середній {int(base['avg_len'] or 0)} симв., макс {int(base['max_len'] or 0)}",
+    ]
+    # Сигнали ризику
+    warns = []
+    if base["no_title"]:
+        warns.append(f"без заголовка: {base['no_title']}")
+    if base["very_short"]:
+        warns.append(f"дуже короткий текст (&lt;100): {base['very_short']}")
+    if warns:
+        lines.append("⚠️ <b>Увага:</b> " + " · ".join(warns))
+
+    # По роках: кількість + середня довжина (детектор проблем чистки)
+    yr_parts = [f"{r['yr']}: {r['c']} (~{_fmt_k(r['al'])})" for r in by_year]
+    lines.append("\n<b>По роках</b> (к-сть, ~середня довжина тексту):\n"
+                 + escape_html(" · ".join(yr_parts)))
+
+    cat_parts = [f"{escape_html(r['category'])}: {r['c']}" for r in cats]
+    lines.append("\n<b>Рубрики:</b> " + " · ".join(cat_parts))
+
+    reg_parts = [f"{escape_html(r['region'])}: {r['c']}" for r in regions]
+    lines.append("<b>Регіони:</b> " + " · ".join(reg_parts))
+
+    return "\n".join(lines)
+
+
+async def archive_report_handler(update, context):
+    """/archive_report — здоровкове зведення нори для нагляду за бекфілом:
+    розподіл по роках (рівномірність), мови, теги, рубрики, регіони,
+    середня довжина тексту по роках (детектор проблем чистки)."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 БД бота не налаштована (BOT_DATABASE_URL).")
+        return
+    msg = await update.message.reply_text("🦊 Рахую зведення по норі…")
+    try:
+        report = await asyncio.to_thread(_build_report)
+    except Exception as e:
+        await msg.edit_text(
+            f"❌ <code>{escape_html(f'{type(e).__name__}: {e}')}</code>", parse_mode="HTML"
+        )
+        return
+    if len(report) > 4000:
+        report = report[:4000].rsplit("\n", 1)[0] + "\n…(обрізано)"
+    await msg.edit_text(report, parse_mode="HTML", disable_web_page_preview=True)
+
+
+# read-only guard: тільки читальні запити (нора — БД бота, писати теоретично
+# можна, тому захист тут, а не лише в bot_db). Prefix + заборона DML-ключів
+# (щоб не пройшло WITH ... DELETE).
+_NORA_READ_PREFIXES = ("select", "with", "explain", "show", "table")
+_NORA_FORBIDDEN_RE = re.compile(
+    r"\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|comment|copy)\b",
+    re.IGNORECASE,
+)
+
+
+def _fmt_sql_rows(rows, max_rows=40, max_chars=3500):
+    if not rows:
+        return "(0 рядків)"
+    out = []
+    for row in rows[:max_rows]:
+        out.append(" | ".join(f"{k}={v}" for k, v in row.items()))
+    text = "\n".join(out)
+    if len(rows) > max_rows:
+        text += f"\n… (+{len(rows) - max_rows} рядків)"
+    return text[:max_chars] + ("…" if len(text) > max_chars else "")
+
+
+async def nora_sql_handler(update, context):
+    """/nora_sql <SELECT…> — read-only запит до нори (Postgres бота).
+    Тільки для редакції. Для ad-hoc нагляду: складаю запит — ти виконуєш —
+    я читаю вивід. Той самий підхід, що /dbquery для БД сайту."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 БД бота не налаштована (BOT_DATABASE_URL).")
+        return
+    sql = update.message.text.partition(" ")[2].strip()
+    if not sql:
+        await update.message.reply_text(
+            "Використання: /nora_sql <SELECT…>\n"
+            "Напр.: /nora_sql SELECT count(*) FROM articles\n"
+            "/nora_sql SELECT id, title_ua FROM articles ORDER BY published DESC LIMIT 5"
+        )
+        return
+    low = sql.lstrip().lower()
+    if not low.startswith(_NORA_READ_PREFIXES) or _NORA_FORBIDDEN_RE.search(sql):
+        await update.message.reply_text("⛔ Дозволені тільки читальні запити (SELECT/WITH/EXPLAIN…).")
+        return
+    msg = await update.message.reply_text("🦊 Виконую…")
+    try:
+        rows = await bot_db.aquery(sql)
+    except Exception as e:
+        await msg.edit_text(
+            f"❌ <code>{escape_html(f'{type(e).__name__}: {e}')}</code>", parse_mode="HTML"
+        )
+        return
+    body = _fmt_sql_rows(rows)
+    await msg.edit_text(
+        f"<b>{len(rows)} рядк(ів):</b>\n<pre>{escape_html(body)}</pre>", parse_mode="HTML"
+    )
