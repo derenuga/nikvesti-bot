@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from datetime import datetime, timedelta
@@ -322,18 +323,22 @@ async def build_english_report(year=None, month=None):
 
     prev_start, prev_end = get_prev_month_range(year, month)
 
-    ga4 = get_ga4_client()
-    sc = get_sc_client()
+    # GA4/Search Console — блокуючі клієнти й запити; усе в окремому потоці,
+    # щоб не морозити event loop бота на час збору звіту
+    ga4 = await asyncio.to_thread(get_ga4_client)
+    sc = await asyncio.to_thread(get_sc_client)
 
     # GA4 дані
-    users, sessions, pageviews, returning, eng_rate, pps = get_en_summary(ga4, start_date, end_date)
-    users_prev, sessions_prev, pageviews_prev, _, _, _ = get_en_summary(ga4, prev_start, prev_end)
-    top_en_pages = get_en_top_pages(ga4, start_date, end_date)
-    top_countries = get_en_top_countries(ga4, start_date, end_date)
-    top_referrers = get_en_top_referrers(ga4, start_date, end_date)
+    users, sessions, pageviews, returning, eng_rate, pps = await asyncio.to_thread(
+        get_en_summary, ga4, start_date, end_date)
+    users_prev, sessions_prev, pageviews_prev, _, _, _ = await asyncio.to_thread(
+        get_en_summary, ga4, prev_start, prev_end)
+    top_en_pages = await asyncio.to_thread(get_en_top_pages, ga4, start_date, end_date)
+    top_countries = await asyncio.to_thread(get_en_top_countries, ga4, start_date, end_date)
+    top_referrers = await asyncio.to_thread(get_en_top_referrers, ga4, start_date, end_date)
 
     # Search Console
-    top_queries = get_sc_top_queries(sc, start_date, end_date)
+    top_queries = await asyncio.to_thread(get_sc_top_queries, sc, start_date, end_date)
 
     # Похідні метрики
     returning_pct = round(returning / users * 100) if users > 0 else 0

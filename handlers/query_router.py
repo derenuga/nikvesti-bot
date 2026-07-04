@@ -28,7 +28,7 @@ from google.analytics.data_v1beta.types import (
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as gapi_build
 
-from handlers import archive_search, news_archive, storage
+from handlers import analytics_store, archive_search, news_archive, storage
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, clean_ai_text
 from handlers.helpers import get_author_from_url
 
@@ -429,6 +429,55 @@ def get_search_console_report(period, dimensions=None, page_url=None, search_typ
     return {"start_date": start, "end_date": end, "search_type": search_type, "rows": results}
 
 
+def get_traffic_history(period, start_date=None, end_date=None, compare_previous=False):
+    """Історія трафіку сайту з пам'яті бота (Postgres daily_stats): щоденна серія
+    users/sessions/pageviews за період + підсумок. Дешево і швидко — читає з
+    локальної БД, без запиту в GA4. compare_previous — додати підсумок за
+    попередній рівний період (для 'тиждень до тижня', 'місяць до місяця')."""
+    start, end = _resolve_period(period, start_date, end_date)
+    series = analytics_store.get_daily_series(start, end)
+    if not series:
+        return {
+            "start_date": start, "end_date": end, "days": 0,
+            "note": "У пам'яті аналітики (daily_stats) немає даних за цей період. "
+                    "Для свіжих чисел використай get_ga4_metric (пряме GA4), "
+                    "або запусти /analytics_backfill, щоб залити історію.",
+        }
+
+    def _sum(rows):
+        return {
+            "users": sum(r["users"] or 0 for r in rows),
+            "sessions": sum(r["sessions"] or 0 for r in rows),
+            "pageviews": sum(r["pageviews"] or 0 for r in rows),
+        }
+
+    result = {
+        "start_date": start,
+        "end_date": end,
+        "days": len(series),
+        "totals": _sum(series),
+        "daily": series,
+        "note": "Джерело — локальна пам'ять бота (daily_stats), денний розріз GA4.",
+    }
+
+    if compare_previous:
+        s = datetime.strptime(start, "%Y-%m-%d")
+        e = datetime.strptime(end, "%Y-%m-%d")
+        length = (e - s).days + 1
+        prev_end = s - timedelta(days=1)
+        prev_start = prev_end - timedelta(days=length - 1)
+        prev_series = analytics_store.get_daily_series(
+            prev_start.strftime("%Y-%m-%d"), prev_end.strftime("%Y-%m-%d")
+        )
+        result["previous_period"] = {
+            "start_date": prev_start.strftime("%Y-%m-%d"),
+            "end_date": prev_end.strftime("%Y-%m-%d"),
+            "days": len(prev_series),
+            "totals": _sum(prev_series),
+        }
+    return result
+
+
 # ---------- Тендери Prozorro (архів бота) ----------
 #
 # Джерело — власний стан бота (/data/prozorro_state.json): усе, що моніторинг
@@ -655,6 +704,32 @@ TOOLS = [
                 "end_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
             },
             "required": ["metric", "period"],
+        },
+    },
+    {
+        "name": "get_traffic_history",
+        "description": (
+            "Історія трафіку сайту nikvesti.com з локальної пам'яті бота (daily_stats): "
+            "щоденна серія користувачів/сесій/переглядів за період + підсумки. Дешевше і "
+            "швидше за GA4 — читає з БД бота, без запиту в Google. Використовуй для трендів "
+            "і динаміки ('покажи трафік за місяць по днях', 'як змінювалась відвідуваність'), "
+            "а особливо для порівнянь період-до-періоду: постав compare_previous=true, щоб "
+            "отримати ще й попередній рівний період ('тиждень до тижня', 'цей місяць проти "
+            "минулого'). Гарно лягає на render_chart (масив daily). Якщо повертає days=0 — "
+            "даних за період у пам'яті немає, тоді бери get_ga4_metric (пряме GA4)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "enum": ["today", "yesterday", "last_7_days", "last_30_days", "this_month", "last_month", "this_quarter", "custom"],
+                },
+                "compare_previous": {"type": "boolean", "description": "true — додати підсумок за попередній рівний період (для порівнянь тиждень/місяць до тижня/місяця)"},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+            },
+            "required": ["period"],
         },
     },
     {
@@ -991,6 +1066,7 @@ TOOLS = [
 
 TOOL_FUNCTIONS = {
     "get_ga4_metric": get_ga4_metric,
+    "get_traffic_history": get_traffic_history,
     "get_ga4_top_articles": get_ga4_top_articles,
     "get_ga4_geo_breakdown": get_ga4_geo_breakdown,
     "get_ga4_hourly_breakdown": get_ga4_hourly_breakdown,
@@ -1014,7 +1090,7 @@ SEARCH_TOOL_NAMES = {"search_news_archive", "search_archive_fulltext"}
 
 # Для footer'а джерел даних
 GA4_TOOL_NAMES = {
-    "get_ga4_metric", "get_ga4_top_articles", "get_ga4_geo_breakdown",
+    "get_ga4_metric", "get_traffic_history", "get_ga4_top_articles", "get_ga4_geo_breakdown",
     "get_ga4_hourly_breakdown", "get_ga4_custom_report", "get_ga4_article_stats",
 }
 TENDER_TOOL_NAMES = {"get_recent_tenders", "get_tender_stats"}
@@ -1024,6 +1100,7 @@ META_TOOL_NAMES = {"get_facebook_stats", "get_instagram_stats"}
 # щоб під час довгого запиту було видно, що Лис зараз робить.
 TOOL_PROGRESS = {
     "get_ga4_metric": "🦊 Дивлюсь метрики GA4...",
+    "get_traffic_history": "🦊 Гортаю історію трафіку...",
     "get_ga4_top_articles": "🦊 Збираю топ статей...",
     "get_ga4_geo_breakdown": "🦊 Дивлюсь географію аудиторії...",
     "get_ga4_hourly_breakdown": "🦊 Розкладаю трафік по годинах...",
@@ -1044,6 +1121,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 
 Зараз ти відповідаєш на природномовне запитання про статистику сайту nikvesti.com (Google Analytics). Сьогоднішня дата: {today}.
 Використовуй доступні tools щоб отримати реальні дані — не вигадуй цифр. Якщо період сформульований розмовно ("середньомісячна", "за останній тиждень", "у вересні") — сам визнач відповідний period або start_date/end_date.
+Для трендів і динаміки по днях ("покажи трафік за місяць", "як змінювалась відвідуваність") і для порівнянь період-до-періоду ("тиждень до тижня", "цей місяць проти минулого") бери get_traffic_history (compare_previous=true для порівняння) — це локальна пам'ять бота, дешевше і швидше за GA4, і масив daily зручно передати в render_chart. Якщо get_traffic_history поверне days=0 (немає даних за період) — тоді бери get_ga4_metric (пряме GA4). Для одного числа за один період простіше одразу get_ga4_metric.
 Якщо перед поточним питанням є попередні репліки — це продовження розмови: короткі уточнення ("а за минулий місяць?", "а по містах?", "порівняй з попереднім") стосуються теми і параметрів попереднього питання. Але цифри для нового періоду завжди отримуй tools заново — не переоцінюй по пам'яті.
 Якщо питання не покривається жодним із спеціалізованих tools (наприклад про пристрої, браузери, джерела трафіку, дні тижня) — використай get_ga4_custom_report з точними назвами GA4 dimensions/metrics. Якщо він поверне помилку через невірну назву — спробуй іншу назву ще раз, не здавайся одразу.
 Якщо питають звідки прийшов трафік на конкретну статтю (соцмережі, реферали тощо) — використай get_ga4_custom_report з dimensions ['sessionDefaultChannelGroup'] або ['sessionSource', 'sessionMedium'] і page_path_contains (ID статті з URL, наприклад "35814" з "/news/35814-..."). Не питай дату публікації — для джерел трафіку конкретної статті дата не потрібна, бери period='last_30_days' або ширше якщо невпевнений.

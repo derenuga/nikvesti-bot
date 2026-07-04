@@ -1,3 +1,4 @@
+import asyncio
 import os
 import requests
 from datetime import datetime, timedelta
@@ -111,20 +112,21 @@ async def instagram_handler(update, context):
         args = context.args
         start_dt, end_dt, period_label = parse_month_arg(args)
 
-        profile = get_instagram_profile()
+        # Мережеві виклики Graph API — в окремому потоці, щоб не блокувати event loop
+        profile = await asyncio.to_thread(get_instagram_profile)
         followers_now = profile.get("followers_count", 0)
 
         if start_dt:
             since_ts = int(start_dt.timestamp())
             until_ts = int(end_dt.timestamp())
-            follows, unfollows = get_follows_week(since_ts, until_ts)
-            top_media = get_top_media(since_ts)
-            counts = get_media_counts(since_ts)
+            follows, unfollows = await asyncio.to_thread(get_follows_week, since_ts, until_ts)
+            top_media = await asyncio.to_thread(get_top_media, since_ts)
+            counts = await asyncio.to_thread(get_media_counts, since_ts)
             header = f"📱 Instagram МикВісті ({period_label}):\n\n"
         else:
-            follows, unfollows = get_follows_week()
-            top_media = get_top_media()
-            counts = get_media_counts()
+            follows, unfollows = await asyncio.to_thread(get_follows_week)
+            top_media = await asyncio.to_thread(get_top_media)
+            counts = await asyncio.to_thread(get_media_counts)
             week_end = datetime.now().strftime("%d.%m.%Y")
             week_start = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
             header = f"📱 Instagram МикВісті ({week_start} — {week_end}):\n\n"
@@ -136,7 +138,7 @@ async def instagram_handler(update, context):
                 header += f" ({diff} за тиждень)"
             header += "\n\n"
 
-        stats = get_instagram_stats()
+        stats = await asyncio.to_thread(get_instagram_stats)
         photos = counts.get("IMAGE", 0)
         reels = counts.get("VIDEO", 0)
         carousels = counts.get("CAROUSEL_ALBUM", 0)
@@ -174,11 +176,11 @@ async def instagram_handler(update, context):
 async def send_weekly_instagram_report(bot, chat_id):
     from handlers.ai_messages import generate_instagram_weekly_comment
     try:
-        profile = get_instagram_profile()
-        stats = get_instagram_stats()
-        top_media = get_top_media()
-        counts = get_media_counts()
-        follows, unfollows = get_follows_week()
+        profile = await asyncio.to_thread(get_instagram_profile)
+        stats = await asyncio.to_thread(get_instagram_stats)
+        top_media = await asyncio.to_thread(get_top_media)
+        counts = await asyncio.to_thread(get_media_counts)
+        follows, unfollows = await asyncio.to_thread(get_follows_week)
 
         followers_now = profile.get("followers_count", 0)
         if follows is not None:

@@ -19,6 +19,7 @@ from handlers.builder_monitor import check_builder_staleness
 from handlers.archive_mirror import run_archive_sync
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
+from handlers import analytics_store
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -30,16 +31,23 @@ OUTAGE_DEBUG_CHAT_ID = int(_allowed.split(",")[0]) if _allowed else 56631818
 CHANNEL_USERNAME = "nikvesti"
 
 async def send_daily_report(bot):
-    client = get_ga4_client()
+    client = await asyncio.to_thread(get_ga4_client)
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     day_before = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
     yesterday_label = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
-    users, sessions, pageviews = get_stats(client, yesterday, yesterday)
-    u2, s2, p2 = get_stats(client, day_before, day_before)
+    users, sessions, pageviews = await asyncio.to_thread(get_stats, client, yesterday, yesterday)
+    u2, s2, p2 = await asyncio.to_thread(get_stats, client, day_before, day_before)
     def diff(a, b):
         d = a - b
         return f"+{d}" if d > 0 else str(d)
-    top_pages = get_top_pages(client, yesterday, yesterday)
+    top_pages = await asyncio.to_thread(get_top_pages, client, yesterday, yesterday)
+    # Осідання в пам'ять аналітики (Postgres): вчорашній день з топом сторінок.
+    # Без зайвого GA4-запиту — цифри вже зібрані. Помилку ковтаємо, щоб збій
+    # БД бота не зламав сам звіт у чат.
+    try:
+        await analytics_store.record_day(yesterday, users, sessions, pageviews, top_pages)
+    except Exception as e:
+        print(f"analytics_store: не вдалось зберегти день — {e}")
     top_text = "\n".join([
         f'  {i+1}. <a href="{BASE_URL}{path}">{title}</a> — {views}'
         + (f'\n      👤 {author}' if author else '')
