@@ -1,0 +1,43 @@
+# Разовий службовий workflow для прототипу глибокого досьє
+# (ENTITY_LAYER_PLAN §2.2). Дістає статті по темі з Postgres бота
+# і комітить вигрузку в цю ж гілку. Видалити після експерименту.
+name: foxhole-export
+
+on:
+  workflow_dispatch:
+    inputs:
+      tsquery:
+        description: "to_tsquery('simple', ...) вираз, напр. Воронов:*"
+        required: true
+        default: "Воронов:*"
+      db_url:
+        description: "Публічний connection string Railway Postgres (ключ ротується після експерименту)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install psycopg2-binary
+      - name: Export from foxhole
+        env:
+          FOXHOLE_DB_URL: ${{ github.event.inputs.db_url }}
+          TOPIC_TSQUERY: ${{ github.event.inputs.tsquery }}
+          OUT_PREFIX: dossier_export/topic
+        run: |
+          mkdir -p dossier_export
+          python scripts/foxhole_export.py
+      - name: Commit export
+        run: |
+          git config user.name "foxhole-export"
+          git config user.email "actions@github.com"
+          git add dossier_export/
+          git commit -m "foxhole export: ${{ github.event.inputs.tsquery }}"
+          git push
