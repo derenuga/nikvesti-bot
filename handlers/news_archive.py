@@ -61,9 +61,10 @@ def _dialog_id(dialog_key):
     return f"{dialog_key[0]}:{dialog_key[1]}"
 
 
-def remember_results(dialog_key, items):
+def remember_results(dialog_key, items, turn_id=None):
     storage.save_news_search(_dialog_id(dialog_key), {
         "items": items, "selected": [], "at": datetime.now().isoformat(),
+        "turn_id": turn_id,
     })
 
 
@@ -149,12 +150,19 @@ def _fmt_date(published):
     return datetime.fromtimestamp(int(published), KYIV_TZ).strftime("%d.%m.%Y")
 
 
-def search_news(dialog_key, keywords, limit=10, period_days=None):
+def search_news(dialog_key, keywords, limit=10, period_days=None, turn_id=None):
     """Пошук опублікованих новин по заголовку.
 
     keywords — список слів/фраз, всі мають зустрітись у заголовку (AND).
     Кожне слово шукається як підрядок (LIKE %слово%), тому передавати
     варто основу слова без відмінкового закінчення ("Сєнкевич", "Океан").
+
+    turn_id — маркер одного NLQ-запиту (передає query_router): якщо Лис
+    робить КІЛЬКА пошуків за один запит ("дорога на Одесу" + "траса"),
+    результати зливаються в один список з наскрізною нумерацією (дублікати
+    по id відкидаються). Інакше другий пошук затирав перший, і номери на
+    кнопках не збігалися з тим, що Лис показав у тексті (баг з бекем по
+    трасі: галочки застосувались до іншого списку, новини "губились").
     """
     words = [w.strip() for w in (keywords or []) if w and w.strip()]
     if not words:
@@ -180,25 +188,43 @@ def search_news(dialog_key, keywords, limit=10, period_days=None):
     params.append(limit)
 
     rows = db.query(sql, tuple(params))
-    items = []
-    for i, row in enumerate(rows, start=1):
+
+    # Той самий NLQ-запит вже шукав? Доклеюємо до існуючого списку
+    # (наскрізна нумерація), а не затираємо його.
+    prev_items = []
+    entry = _get_entry(dialog_key)
+    if turn_id and entry and entry.get("turn_id") == turn_id:
+        prev_items = entry["items"]
+    seen_ids = {it["id"] for it in prev_items}
+
+    new_items = []
+    next_n = len(prev_items) + 1
+    for row in rows:
+        if row["id"] in seen_ids:
+            continue
         title = (row.get("title_ua") or row.get("title") or "").strip()
-        items.append({
-            "n": i,
+        new_items.append({
+            "n": next_n,
             "id": row["id"],
             "date": _fmt_date(row["published"]),
             "title": title,
             "url": _news_url(row),
         })
-    remember_results(dialog_key, items)
+        next_n += 1
+    all_items = prev_items + new_items
+    remember_results(dialog_key, all_items, turn_id=turn_id)
     return {
         "query": words,
-        "found": len(items),
+        "found_new": len(new_items),
         "note": (
             "Пошук по заголовках опублікованих новин сайту (БД). "
-            "Якщо результатів мало — спробуй коротшу основу слова або синонім."
+            "Якщо результатів мало — спробуй коротшу основу слова або синонім. "
+            "У items — ПОВНИЙ накопичений список цього запиту (кілька пошуків "
+            "зливаються). Показуй користувачу ВСІ items рівно під цими номерами n — "
+            "не пропускай, не перенумеровуй: кнопки під повідомленням прив'язані "
+            "саме до цих номерів."
         ),
-        "items": items,
+        "items": all_items,
     }
 
 
