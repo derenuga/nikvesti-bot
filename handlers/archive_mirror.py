@@ -54,6 +54,7 @@ _NODE_COLUMNS = (
 )
 
 _backfill_running = {"flag": False}
+_backfill_stop = {"flag": False}  # сигнал «зупинити поточний бекфіл» (/archive_stop)
 
 _ALLOWED_USER_IDS = {
     int(uid)
@@ -268,6 +269,7 @@ async def run_backfill(limit=None, progress_cb=None):
     if _backfill_running["flag"]:
         raise RuntimeError("Бекфіл уже запущено — другий паралельно не потрібен.")
     _backfill_running["flag"] = True
+    _backfill_stop["flag"] = False  # новий запуск скидає попередній сигнал стопу
     try:
         await asyncio.to_thread(bot_db.ensure_schema)
         tags_ctx = await _refresh_tags()
@@ -275,6 +277,8 @@ async def run_backfill(limit=None, progress_cb=None):
         done = 0
         reached_end = False
         while limit is None or done < limit:
+            if _backfill_stop["flag"]:
+                break  # зупинено вручну; reached_end=False → «завершено» не ставимо, курсор збережено
             batch = BACKFILL_BATCH if limit is None else min(BACKFILL_BATCH, limit - done)
             now_ts = int(datetime.now().timestamp())
             # Тільки реально опубліковані: status=1, published — валідний unix-час
@@ -467,6 +471,10 @@ async def archive_backfill_handler(update, context):
             if reached_end:
                 tail = "Далі дзеркало оновлюється само щогодини о :50."
                 head = f"✅ Бекфіл завершено: +{done} статей за цей запуск."
+            elif _backfill_stop["flag"]:
+                tail = ("Наступний /archive_backfill [N] продовжить з id "
+                        f"{info['sync_state'].get('backfill_last_id', '?')}.")
+                head = f"⏹ Зупинено вручну: +{done} статей за цей запуск."
             else:
                 tail = ("Порцію залито. Наступний /archive_backfill "
                         f"[N] продовжить з id {info['sync_state'].get('backfill_last_id', '?')}.")
@@ -488,6 +496,22 @@ async def archive_backfill_handler(update, context):
 
     # У фон: команда відповідає одразу, заливка живе своїм життям.
     asyncio.create_task(task())
+
+
+async def archive_stop_handler(update, context):
+    """/archive_stop — м'яко зупинити поточний бекфіл (після поточної пачки).
+    Resumable: повторний /archive_backfill продовжить з місця зупинки."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not _backfill_running["flag"]:
+        await update.message.reply_text("🦊 Зараз бекфіл не йде — зупиняти нічого.")
+        return
+    _backfill_stop["flag"] = True
+    await update.message.reply_text(
+        "🦊 Зупиняю бекфіл після поточної пачки (кілька секунд).\n"
+        "Курсор збережено — /archive_backfill [N] продовжить з місця зупинки."
+    )
 
 
 async def archive_sample_handler(update, context):

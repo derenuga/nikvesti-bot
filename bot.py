@@ -22,7 +22,7 @@ from handlers.traffic_spikes import traffic_handler
 from handlers.telegram_stats import index_channel_post, backfill_channel_index
 from handlers.ai_usage import aicost_handler
 from handlers.db import dbtest_handler, dbquery_handler
-from handlers.archive_mirror import archive_backfill_handler, archive_status_handler, archive_sample_handler
+from handlers.archive_mirror import archive_backfill_handler, archive_status_handler, archive_sample_handler, archive_stop_handler
 from handlers.dossier import dossier_handler
 from handlers.builder_monitor import builder_handler, builder_test_handler
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
@@ -261,6 +261,7 @@ def main():
     app.add_handler(CommandHandler("dbquery", dbquery_handler))
     app.add_handler(CommandHandler("dossier", dossier_handler))
     app.add_handler(CommandHandler("archive_backfill", archive_backfill_handler))
+    app.add_handler(CommandHandler("archive_stop", archive_stop_handler))
     app.add_handler(CommandHandler("archive_sample", archive_sample_handler))
     app.add_handler(CommandHandler("archive_status", archive_status_handler))
     app.add_handler(CommandHandler("myip", myip))
