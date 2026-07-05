@@ -271,6 +271,14 @@ async def send_weekly_facebook_report(bot, chat_id):
             build_facebook_report, page, stats, top_posts, total_posts, top_reels, total_reels
         )
 
+        # Знімок у пам'ять соцаналітики (Postgres) — дані вже зібрані, без
+        # зайвого виклику Meta. Помилку ковтаємо, щоб не зламати сам звіт.
+        try:
+            from handlers import social_store
+            await social_store.capture_facebook(page, stats, total_posts, total_reels)
+        except Exception as e:
+            print(f"social_store: не вдалось зберегти FB-знімок — {e}")
+
         ai_comment = await generate_facebook_weekly_comment(stats, top_authors, total_posts, total_reels)
 
         await bot.send_message(

@@ -198,6 +198,14 @@ async def send_weekly_instagram_report(bot, chat_id):
         carousels = counts.get("CAROUSEL_ALBUM", 0)
         total_posts = photos + reels + carousels
 
+        # Знімок у пам'ять соцаналітики (Postgres) — дані вже зібрані, без
+        # зайвого виклику Meta. Помилку ковтаємо, щоб не зламати сам звіт.
+        try:
+            from handlers import social_store
+            await social_store.capture_instagram(profile, stats, follows, unfollows, total_posts, reels)
+        except Exception as e:
+            print(f"social_store: не вдалось зберегти IG-знімок — {e}")
+
         top_text = ""
         for i, m in enumerate(top_media):
             media_type = {"IMAGE": "📸", "VIDEO": "🎬", "CAROUSEL_ALBUM": "🗂"}.get(m.get("media_type"), "📄")

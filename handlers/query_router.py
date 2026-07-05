@@ -28,7 +28,7 @@ from google.analytics.data_v1beta.types import (
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as gapi_build
 
-from handlers import analytics_store, archive_search, news_archive, storage
+from handlers import analytics_store, archive_search, news_archive, social_store, storage
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, clean_ai_text
 from handlers.helpers import get_author_from_url
 
@@ -567,6 +567,28 @@ def get_tender_stats(period_days=30):
     }
 
 
+def get_social_history(platform=None, limit=12):
+    """Історія тижневих зрізів соцмереж з пам'яті бота (social_stats): підписники,
+    охоплення/перегляди, взаємодії по тижнях. Для трендів і порівнянь у часі —
+    дешево з локальної БД. Для ПОТОЧНОГО тижня є окремі live-tools."""
+    rows = social_store.get_history(platform, limit)
+    if not rows:
+        return {
+            "note": "У пам'яті соцаналітики (social_stats) поки немає зрізів. "
+                    "Знімок п'ється щонеділі зі звітів FB/IG (або команда "
+                    "/social_capture). Для поточних цифр — get_facebook_stats / "
+                    "get_instagram_stats.",
+        }
+    return {
+        "count": len(rows),
+        "snapshots": rows,
+        "note": "Тижневі зрізи FB/IG з пам'яті бота (Meta не дає історію заднім "
+                "числом, тому накопичуємо знімки). IG перейшов з reach на views — "
+                "для Instagram орієнтуйся на views. followers — знімок на дату "
+                "week_end; reach/views/engagement — за тижневе вікно Meta.",
+    }
+
+
 # ---------- Meta: Facebook + Instagram (обгортки над facebook.py/instagram.py) ----------
 
 def _nlq_facebook_stats(period_days=7):
@@ -948,6 +970,26 @@ TOOLS = [
         },
     },
     {
+        "name": "get_social_history",
+        "description": (
+            "Історія тижневих зрізів соцмереж (Facebook/Instagram) з пам'яті бота: підписники, "
+            "охоплення/перегляди, взаємодії по тижнях. Використовуй для ТРЕНДІВ і динаміки в часі "
+            "('як росла інста за пів року', 'динаміка охоплення фейсбуку', 'скільки підписників "
+            "було місяць тому', 'порівняй соцмережі з минулим місяцем'). Це накопичена історія "
+            "знімків (Meta не віддає її заднім числом). Для ПОТОЧНОГО тижня бери get_facebook_stats / "
+            "get_instagram_stats. Для Instagram орієнтуйся на views (Meta перейшов з reach на views). "
+            "Гарно лягає на render_chart. Якщо порожньо — зрізів ще немає."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string", "enum": ["facebook", "instagram"], "description": "Опційно: одна платформа. Без нього — обидві."},
+                "limit": {"type": "integer", "description": "Скільки останніх тижнів повернути, за замовчуванням 12"},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "search_news_archive",
         "description": (
             "Пошук по архіву новин сайту nikvesti.com (пряма БД, вся 17-річна історія): "
@@ -1077,6 +1119,7 @@ TOOL_FUNCTIONS = {
     "get_tender_stats": get_tender_stats,
     "get_facebook_stats": _nlq_facebook_stats,
     "get_instagram_stats": _nlq_instagram_stats,
+    "get_social_history": get_social_history,
     "search_news_archive": news_archive.search_news,
     "search_archive_fulltext": archive_search.search_archive,
     "get_news_leads": news_archive.get_news_leads,
@@ -1111,6 +1154,7 @@ TOOL_PROGRESS = {
     "get_tender_stats": "🦊 Рахую тендерну статистику...",
     "get_facebook_stats": "🦊 Заглядаю у Facebook...",
     "get_instagram_stats": "🦊 Гортаю Instagram...",
+    "get_social_history": "🦊 Піднімаю історію соцмереж...",
     "search_news_archive": "🦊 Нишпорю в архіві новин...",
     "search_archive_fulltext": "🦊 Перегортаю 17 років архіву...",
     "get_news_leads": "🦊 Перечитую ліди цих новин...",
@@ -1131,7 +1175,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 1. 📅 05.06.2026 — <a href="URL">Заголовок</a>
 КРИТИЧНО: показуй УСІ новини з поля items останнього результату search_news_archive і рівно під їх номерами n — не пропускай, не фільтруй, не перенумеровуй і не зливай кілька пошуків у власний список: кнопки відбору під повідомленням прив'язані до номерів n, розбіжність ламає вибір новин для беку. Якщо робив кілька пошуків — items останнього виклику вже містить накопичений повний список. Символи & < > у заголовках заміни на &amp; &lt; &gt;. Нічого не переказуй — тільки список і один короткий рядок-підсумок. Під відповіддю автоматично з'являться кнопки відбору новин і кнопка беку — про них не пиши.
 Якщо просять написати бек (бекграунд, "нагадаємо") — виклич get_news_leads (з numbers, якщо вказали номери новин) і склади бек: 2-4 короткі абзаци, починай з "Нагадаємо,", далі від свіжішого до давнішого, тільки факти з лідів і заголовків, нічого не додумуй, стиль стрічки новин, без емодзі. Посилання на кожну новину — HTML-гіперлінк <a href="URL">…</a>, яким обгортаєш 1-3 слова, що ВЖЕ стоять у реченні (зазвичай дієслівну фразу факту): "Ільюк <a href="URL">пропонував провести ротацію</a> керівників адміністрацій". ЗАБОРОНЕНО дописувати анкор окремим хвостом через тире чи кому ("…, — заявляв про дитсадки") — речення має читатись однаково і з лінком, і без нього. Не "тут", не голий URL; одна новина — один лінк.
-Якщо питають про соцмережі — get_facebook_stats (сторінка ФБ: підписники, охоплення, топ постів і рілзів) або get_instagram_stats (підписники з приростом/відтоком, публікації, топ за лайками). Зверни увагу на note в результатах: охоплення/взаємодії Meta віддає фіксовано за останній тиждень — якщо питали про інший період, чесно зазнач це.
+Якщо питають про соцмережі — get_facebook_stats (сторінка ФБ: підписники, охоплення, топ постів і рілзів) або get_instagram_stats (підписники з приростом/відтоком, публікації, топ за лайками). Зверни увагу на note в результатах: охоплення/взаємодії Meta віддає фіксовано за останній тиждень — якщо питали про інший період, чесно зазнач це. Для трендів і динаміки соцмереж у часі ("як росла інста за пів року", "динаміка охоплення ФБ", "скільки підписників було місяць тому", "соцмережі місяць до місяця") бери get_social_history — це накопичена історія тижневих зрізів у пам'яті бота (Meta не дає її заднім числом). Для Instagram орієнтуйся на views (Meta перейшов з reach на views). Масив snapshots зручно передати в render_chart.
 Якщо питають деталі про конкретний реферер/джерело трафіку з невеликою кількістю сесій (наприклад "звідки саме прийшли заходи з derstandard.de" або "на які наші сторінки попав трафік з X") — використай get_ga4_custom_report з filter_dimension='sessionSource', filter_value_contains=<домен>, dimensions=['pageReferrer', 'pagePath'] (або додай 'sessionSourceMedium'). Це дозволяє звузити звіт до конкретного джерела навіть якщо воно дало лише кілька сесій і не потрапляє в загальний топ. pageReferrer дає повний URL сторінки-донора, pagePath — куди саме на нашому сайті потрапив користувач.
 Відповідай коротко, по суті, з конкретними числами, простим текстом у кілька рядків — без Markdown-таблиць. Якщо викликав render_chart — графік буде надіслано окремим повідомленням автоматично, НЕ згадуй шлях до файлу, НЕ вставляй markdown-посилання чи ![]() на зображення в тексті відповіді. Якщо даних не вдалось отримати — чесно скажи про це."""
 
@@ -1227,6 +1271,8 @@ async def handle_natural_language_query(update, context):
                         sources.append("Facebook Graph API")
                     if "get_instagram_stats" in used_tools:
                         sources.append("Instagram API")
+                    if "get_social_history" in used_tools:
+                        sources.append("пам'ять соцмереж Лиса (FB/IG)")
                     if used_tools & NEWS_TOOL_NAMES:
                         sources.append("архів новин nikvesti.com")
                     if sources:

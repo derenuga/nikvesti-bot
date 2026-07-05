@@ -154,6 +154,30 @@ _SCHEMA_STATEMENTS = [
         """,
         True,
     ),
+    # Тижневі зрізи соцмереж (Facebook/Instagram). Meta НЕ дає бекфілити —
+    # віддає метрики лише за недавнє фіксоване вікно, тож історію можна лише
+    # накопичувати знімками. Знімок п'ємо піггібеком на недільні звіти FB/IG
+    # (без зайвих викликів API). Ядро — колонки, решта (fans, accounts_engaged,
+    # follows/unfollows тощо) у raw JSONB: Meta регулярно перейменовує поля,
+    # тож сирий знімок рятує майбутні запити (напр. IG reach → views).
+    # reach і views зберігаємо ОБИДВА (IG перейшов з reach на views).
+    (
+        """
+        CREATE TABLE IF NOT EXISTS social_stats (
+            platform    TEXT NOT NULL,
+            week_end    DATE NOT NULL,
+            followers   INTEGER,
+            reach       INTEGER,
+            views       INTEGER,
+            engagement  INTEGER,
+            posts       INTEGER,
+            raw         JSONB,
+            snapshot_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (platform, week_end)
+        )
+        """,
+        True,
+    ),
     # pg_trgm — для нечіткого збігу імен (Сєнкевич/Сенкевич) у майбутньому.
     # Опційно: якщо у Postgres-інстансу немає прав на CREATE EXTENSION,
     # модуль працює без trgm (тільки FTS).
@@ -425,6 +449,44 @@ def upsert_daily_stats(rows):
             psycopg2.extras.execute_values(
                 cur, _DAILY_STATS_UPSERT_SQL, rows,
                 template=_DAILY_STATS_TEMPLATE, page_size=200,
+            )
+        return len(rows)
+    finally:
+        conn.close()
+
+
+# ---------- Тижневі зрізи соцмереж ----------
+
+_SOCIAL_STATS_UPSERT_SQL = """
+INSERT INTO social_stats
+    (platform, week_end, followers, reach, views, engagement, posts, raw, snapshot_at)
+VALUES %s
+ON CONFLICT (platform, week_end) DO UPDATE SET
+    followers = EXCLUDED.followers,
+    reach = EXCLUDED.reach,
+    views = EXCLUDED.views,
+    engagement = EXCLUDED.engagement,
+    posts = EXCLUDED.posts,
+    raw = EXCLUDED.raw,
+    snapshot_at = now()
+"""
+
+_SOCIAL_STATS_TEMPLATE = "(%s, %s, %s, %s, %s, %s, %s, %s, now())"
+
+
+def upsert_social_stats(rows):
+    """Батчевий upsert тижневих зрізів соцмереж. rows — list[(platform, week_end,
+    followers, reach, views, engagement, posts, raw_json)]; raw_json — рядок JSON
+    або None. Повертає кількість рядків."""
+    if not rows:
+        return 0
+    ensure_schema()
+    conn = _connect()
+    try:
+        with conn, conn.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur, _SOCIAL_STATS_UPSERT_SQL, rows,
+                template=_SOCIAL_STATS_TEMPLATE, page_size=100,
             )
         return len(rows)
     finally:
