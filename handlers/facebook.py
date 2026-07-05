@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import requests
@@ -233,20 +234,24 @@ async def facebook_handler(update, context):
         args = context.args
         start_dt, end_dt, period_label = parse_month_arg(args)
 
-        page = get_page_followers()
-        stats = get_page_stats()
+        # Усі мережеві виклики Graph API — в окремому потоці, щоб не блокувати event loop
+        page = await asyncio.to_thread(get_page_followers)
+        stats = await asyncio.to_thread(get_page_stats)
 
         if start_dt:
             since_ts = int(start_dt.timestamp())
             until_ts = int(end_dt.timestamp())
-            top_posts, total_posts = get_top_posts(since_ts, until_ts)
-            top_reels, total_reels = get_top_reels(start_dt)
+            top_posts, total_posts = await asyncio.to_thread(get_top_posts, since_ts, until_ts)
+            top_reels, total_reels = await asyncio.to_thread(get_top_reels, start_dt)
         else:
             period_label = None
-            top_posts, total_posts = get_top_posts()
-            top_reels, total_reels = get_top_reels()
+            top_posts, total_posts = await asyncio.to_thread(get_top_posts)
+            top_reels, total_reels = await asyncio.to_thread(get_top_reels)
 
-        text, _ = build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_reels, period_label)
+        # build_facebook_report тягне автора статей по HTTP — теж у потік
+        text, _ = await asyncio.to_thread(
+            build_facebook_report, page, stats, top_posts, total_posts, top_reels, total_reels, period_label
+        )
         await update.message.reply_text(
             text,
             parse_mode="HTML",
@@ -258,11 +263,21 @@ async def facebook_handler(update, context):
 async def send_weekly_facebook_report(bot, chat_id):
     from handlers.ai_messages import generate_facebook_weekly_comment
     try:
-        page = get_page_followers()
-        stats = get_page_stats()
-        top_posts, total_posts = get_top_posts()
-        top_reels, total_reels = get_top_reels()
-        report_text, top_authors = build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_reels)
+        page = await asyncio.to_thread(get_page_followers)
+        stats = await asyncio.to_thread(get_page_stats)
+        top_posts, total_posts = await asyncio.to_thread(get_top_posts)
+        top_reels, total_reels = await asyncio.to_thread(get_top_reels)
+        report_text, top_authors = await asyncio.to_thread(
+            build_facebook_report, page, stats, top_posts, total_posts, top_reels, total_reels
+        )
+
+        # Знімок у пам'ять соцаналітики (Postgres) — дані вже зібрані, без
+        # зайвого виклику Meta. Помилку ковтаємо, щоб не зламати сам звіт.
+        try:
+            from handlers import social_store
+            await social_store.capture_facebook(page, stats, total_posts, total_reels)
+        except Exception as e:
+            print(f"social_store: не вдалось зберегти FB-знімок — {e}")
 
         ai_comment = await generate_facebook_weekly_comment(stats, top_authors, total_posts, total_reels)
 

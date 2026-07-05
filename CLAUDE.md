@@ -31,7 +31,7 @@ handlers/
   scheduler.py            — APScheduler, розклад всіх автозавдань (Europe/Kiev)
   storage.py              — JSON-стан на Railway Volume (/data/prozorro_state.json)
   db.py                   — тонкий read-only адаптер до MySQL-БД сайту (SELECT only, SSL), /dbtest, /dbquery
-  bot_db.py               — власна Postgres-БД бота (Railway): дзеркало архіву, tsvector FTS, sync_state
+  bot_db.py               — власна Postgres-БД бота (Railway): дзеркало архіву, tsvector FTS, sync_state, daily_stats (історія трафіку GA4), social_stats (тижневі зрізи соцмереж)
   archive_mirror.py       — синк дзеркала архіву з БД сайту: /archive_backfill (разово), інкремент щогодини :50
   archive_search.py       — повнотекстовий пошук по дзеркалу (17 років, заголовки+текст), NLQ-tool search_archive_fulltext
   dossier.py              — /dossier <тема>: історія питання з архіву, таймлайн по роках з лінками
@@ -44,12 +44,15 @@ handlers/
   law_enforcement.py      — моніторинг новин правоохоронних органів (прокуратура тощо)
   competitors.py          — моніторинг новин конкурентів (news.pn тощо)
   google_analytics.py     — GA4 щоденна аналітика, /analytics, /report
+  analytics_store.py      — пам'ять щоденної аналітики GA4 у Postgres (daily_stats): тихий щоденний захват (capture_yesterday), /analytics_backfill, серія для NLQ-tool get_traffic_history
+  weekly_digest.py        — «Тижневик Лиса»: понеділковий дайджест тижня сайту з порівнянням тиждень-до-тижня (заміна щоденного 09:00-звіту), /weekly
   traffic_spikes.py       — детектор сплесків трафіку (GA4 Realtime, самонавчальний профіль), /traffic
   stat.py                 — /stat <url>: статистика матеріалу (Facebook + Telegram + GA4)
   telegram_stats.py       — перегляди постів каналу @nikvesti (індекс + парсинг t.me/s)
   english_report.py       — місячний звіт EN-версії (GA4 + Search Console + AI коментар)
   instagram.py            — тижнева статистика Instagram
   facebook.py             — тижнева статистика Facebook
+  social_store.py         — пам'ять тижневих зрізів соцмереж у Postgres (social_stats): знімок піггібеком на недільні звіти FB/IG, /social_capture, історія для NLQ-tool get_social_history
   gmail.py                — перевірка Gmail
   sheets.py               — запис у Google Sheets (Prozorro)
   reactions.py            — обробка реакцій на повідомлення про тендери
@@ -67,7 +70,10 @@ handlers/
 | /start | Привітання зі списком команд |
 | /status | Перевірка що бот живий |
 | /analytics | GA4 статистика за вчора + топ-5 статей |
-| /report | GA4 звіт в чат редакції |
+| /analytics_backfill \[N\] | Залити N днів історії трафіку з GA4 у daily_stats (дефолт 90); далі наповнюється сам тихим захватом о 09:00 |
+| /weekly | Тижневик Лиса вручну в чат редакції |
+| /social_capture | Зняти зріз FB+IG зараз у social_stats (засів першої точки; далі знімок сам щонеділі) |
+| /report | GA4 звіт за вчора в чат редакції (щоденний авто-пост прибрано, лишилась ручна команда) |
 | /checkmail | Перевірити Gmail |
 | /instagram | Тижнева статистика Instagram |
 | /igreport | Тижневий Instagram звіт з AI в чат |
@@ -105,7 +111,7 @@ handlers/
 
 ## Природномовні запити (Intent Router)
 
-Приватне повідомлення боту (від `ALLOWED_USER_IDS`), або reply на повідомлення бота в чаті редакції — йде в `handle_natural_language_query` (`handlers/query_router.py`), Claude сам обирає tool через tool use (GA4, Search Console, архів тендерів Prozorro, Facebook/Instagram, архів новин сайту) і відповідає живою мовою. Питання "що ми писали про X?" шукає по заголовках новин у БД сайту (`handlers/news_archive.py`) і відповідає списком "дата — заголовок (лінк)" з кнопками відбору: номерні чекбокси ✅ + кнопка "🦊 Бек з усіх цих новин"/"Бек з новин 1+3"; бек ("Нагадаємо, раніше…") складається з лідів вибраних новин, лінки — анкорами (≤3 слова) всередині речень. Стан пошуку/вибору — в storage (`news_search`), переживає редеплой. Лис пам'ятає останні 6 обмінів протягом 30 хв (follow-up'и "а за минулий місяць?" працюють), `/reset` скидає. Деталі — [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md).
+Приватне повідомлення боту (від `ALLOWED_USER_IDS`), або reply на повідомлення бота в чаті редакції — йде в `handle_natural_language_query` (`handlers/query_router.py`), Claude сам обирає tool через tool use (GA4, історія трафіку з daily_stats через `get_traffic_history` — тренди й порівняння період-до-періоду дешево з локальної БД, Search Console, архів тендерів Prozorro, Facebook/Instagram поточні + історія соцмереж через `get_social_history` з social_stats, архів новин сайту) і відповідає живою мовою. Питання "що ми писали про X?" шукає по заголовках новин у БД сайту (`handlers/news_archive.py`) і відповідає списком "дата — заголовок (лінк)" з кнопками відбору: номерні чекбокси ✅ + кнопка "🦊 Бек з усіх цих новин"/"Бек з новин 1+3"; бек ("Нагадаємо, раніше…") складається з лідів вибраних новин, лінки — анкорами (≤3 слова) всередині речень. Стан пошуку/вибору — в storage (`news_search`), переживає редеплой. Лис пам'ятає останні 6 обмінів протягом 30 хв (follow-up'и "а за минулий місяць?" працюють), `/reset` скидає. Деталі — [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md).
 
 ---
 
@@ -114,13 +120,14 @@ handlers/
 | Час | Що запускається |
 |---|---|
 | 08:15 щодня | Ранкове повідомлення в чат редакції |
-| 09:00 щодня | GA4 звіт за вчора |
+| 09:00 щодня | Тихий захват вчорашньої аналітики в daily_stats (users/sessions/pageviews + топ сторінок), БЕЗ поста — щоденний звіт у чат прибрано на користь тижневика |
+| Понеділок 09:30 | Тижневик Лиса: тиждень сайту до тижня (users/sessions/pageviews) + топ-5 матеріалів + винюхані тендери + соцмережі тиждень-до-тижня (з social_stats) + AI-підводка |
 | 10:00 щодня | Перевірка правоохоронних органів |
 | 13:00 щодня | Перевірка Gmail + правоохоронні органи |
 | 16:00 щодня | Перевірка правоохоронних органів |
 | 16:50 щодня | Перевірка Gmail |
-| 15:00 щонеділі | Facebook тижневий звіт з AI |
-| 18:00 щонеділі | Instagram тижневий звіт з AI |
+| 15:00 щонеділі | Facebook тижневий звіт з AI (заодно знімок у social_stats) |
+| 18:00 щонеділі | Instagram тижневий звіт з AI (заодно знімок у social_stats) |
 | Щогодини :00 | Тендери Prozorro |
 | Щогодини :15 | Новини конкурентів (00:00–07:00 — у нічний буфер, дайджест о 07:15) |
 | Щогодини :30 | Документи органів влади |

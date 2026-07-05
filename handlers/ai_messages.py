@@ -275,6 +275,33 @@ async def generate_english_monthly_comment(
     return await fox_generate(prompt, model=FOX_MODEL_SMART, max_tokens=250)
 
 
+async def generate_weekly_digest_comment(period_label, cur, prev, top_titles,
+                                         tender_count, tender_amount_mln):
+    """AI-підводка для «Тижневика Лиса»: тиждень сайту в цифрах з порівнянням
+    тиждень-до-тижня. cur/prev — dict users/sessions/pageviews."""
+
+    def pct(c, p):
+        if not p:
+            return "н/д"
+        d = round((c - p) / p * 100)
+        return f"+{d}%" if d >= 0 else f"{d}%"
+
+    titles = "\n".join(f"- {t}" for t in top_titles[:3]) or "—"
+    prompt = f"""Тижневий редакційний дайджест МикВісті ({period_label}) — коротка аналітична підводка Лиса.
+
+Сайт, тиждень до тижня:
+- Користувачі: {cur['users']} ({pct(cur['users'], prev['users'])})
+- Сесії: {cur['sessions']} ({pct(cur['sessions'], prev['sessions'])})
+- Перегляди: {cur['pageviews']} ({pct(cur['pageviews'], prev['pageviews'])})
+Топ матеріали тижня:
+{titles}
+Тендери винюхано: {tender_count} на {tender_amount_mln} млн грн
+
+3-4 речення. Чесно оціни тиждень для сайту (зростання чи спад — не прикрашай), підсвіть одну-дві деталі: що витягнуло трафік, помітний тренд. Без переліку всіх цифр — вони вже є вище. 1-2 емодзі."""
+
+    return await fox_generate(prompt, model=FOX_MODEL_SMART, max_tokens=300)
+
+
 async def generate_silence_reminder(channel_username, silence_hours):
     """Нагадування редакції про мовчання телеграм-каналу (викликається з scheduler)."""
     prompt = f"""Телеграм-канал @{channel_username} мовчить вже {int(silence_hours)} годин(и).

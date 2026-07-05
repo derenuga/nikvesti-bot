@@ -135,6 +135,49 @@ _SCHEMA_STATEMENTS = [
         True,
     ),
     ("CREATE INDEX IF NOT EXISTS idx_article_tags_tag ON article_tags (tag_id)", True),
+    # Історія щоденної аналітики GA4 (users/sessions/pageviews + топ сторінок).
+    # Раніше не зберігалась ніде — щоденний звіт тягнув GA4 і викидав; тепер
+    # осідає тут, щоб порівняння тиждень-до-тижня / місяць-до-місяця й тренди
+    # рахувались з локальної БД, без повторних запитів у GA4. top_pages — JSONB
+    # список {path,title,views,author}; наповнюється щоденним звітом (бекфіл лишає
+    # NULL, бо історичний топ по днях — надто багато GA4-запитів).
+    (
+        """
+        CREATE TABLE IF NOT EXISTS daily_stats (
+            date       DATE PRIMARY KEY,
+            users      INTEGER,
+            sessions   INTEGER,
+            pageviews  INTEGER,
+            top_pages  JSONB,
+            synced_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        True,
+    ),
+    # Тижневі зрізи соцмереж (Facebook/Instagram). Meta НЕ дає бекфілити —
+    # віддає метрики лише за недавнє фіксоване вікно, тож історію можна лише
+    # накопичувати знімками. Знімок п'ємо піггібеком на недільні звіти FB/IG
+    # (без зайвих викликів API). Ядро — колонки, решта (fans, accounts_engaged,
+    # follows/unfollows тощо) у raw JSONB: Meta регулярно перейменовує поля,
+    # тож сирий знімок рятує майбутні запити (напр. IG reach → views).
+    # reach і views зберігаємо ОБИДВА (IG перейшов з reach на views).
+    (
+        """
+        CREATE TABLE IF NOT EXISTS social_stats (
+            platform    TEXT NOT NULL,
+            week_end    DATE NOT NULL,
+            followers   INTEGER,
+            reach       INTEGER,
+            views       INTEGER,
+            engagement  INTEGER,
+            posts       INTEGER,
+            raw         JSONB,
+            snapshot_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (platform, week_end)
+        )
+        """,
+        True,
+    ),
     # pg_trgm — для нечіткого збігу імен (Сєнкевич/Сенкевич) у майбутньому.
     # Опційно: якщо у Postgres-інстансу немає прав на CREATE EXTENSION,
     # модуль працює без trgm (тільки FTS).
@@ -375,6 +418,81 @@ def replace_article_tags(article_ids, pairs):
         conn.close()
 
 
+# ---------- Щоденна аналітика GA4 ----------
+
+_DAILY_STATS_UPSERT_SQL = """
+INSERT INTO daily_stats (date, users, sessions, pageviews, top_pages, synced_at)
+VALUES %s
+ON CONFLICT (date) DO UPDATE SET
+    users = EXCLUDED.users,
+    sessions = EXCLUDED.sessions,
+    pageviews = EXCLUDED.pageviews,
+    -- top_pages не затираємо NULL-ом: бекфіл лишає його порожнім, а щоденний
+    -- звіт наповнює — COALESCE зберігає вже записаний топ при повторному бекфілі.
+    top_pages = COALESCE(EXCLUDED.top_pages, daily_stats.top_pages),
+    synced_at = now()
+"""
+
+_DAILY_STATS_TEMPLATE = "(%s, %s, %s, %s, %s, now())"
+
+
+def upsert_daily_stats(rows):
+    """Батчевий upsert щоденної аналітики. rows — list[(date, users, sessions,
+    pageviews, top_pages_json)]; top_pages_json — рядок JSON або None.
+    Повертає кількість рядків."""
+    if not rows:
+        return 0
+    ensure_schema()
+    conn = _connect()
+    try:
+        with conn, conn.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur, _DAILY_STATS_UPSERT_SQL, rows,
+                template=_DAILY_STATS_TEMPLATE, page_size=200,
+            )
+        return len(rows)
+    finally:
+        conn.close()
+
+
+# ---------- Тижневі зрізи соцмереж ----------
+
+_SOCIAL_STATS_UPSERT_SQL = """
+INSERT INTO social_stats
+    (platform, week_end, followers, reach, views, engagement, posts, raw, snapshot_at)
+VALUES %s
+ON CONFLICT (platform, week_end) DO UPDATE SET
+    followers = EXCLUDED.followers,
+    reach = EXCLUDED.reach,
+    views = EXCLUDED.views,
+    engagement = EXCLUDED.engagement,
+    posts = EXCLUDED.posts,
+    raw = EXCLUDED.raw,
+    snapshot_at = now()
+"""
+
+_SOCIAL_STATS_TEMPLATE = "(%s, %s, %s, %s, %s, %s, %s, %s, now())"
+
+
+def upsert_social_stats(rows):
+    """Батчевий upsert тижневих зрізів соцмереж. rows — list[(platform, week_end,
+    followers, reach, views, engagement, posts, raw_json)]; raw_json — рядок JSON
+    або None. Повертає кількість рядків."""
+    if not rows:
+        return 0
+    ensure_schema()
+    conn = _connect()
+    try:
+        with conn, conn.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur, _SOCIAL_STATS_UPSERT_SQL, rows,
+                template=_SOCIAL_STATS_TEMPLATE, page_size=100,
+            )
+        return len(rows)
+    finally:
+        conn.close()
+
+
 # ---------- sync_state (курсори синхронізації) ----------
 
 def get_state(key, default=None):
@@ -402,6 +520,9 @@ def ping():
     )[0]
     tags_total = query("SELECT count(*) AS c FROM tags")[0]["c"]
     tagged = query("SELECT count(DISTINCT article_id) AS c FROM article_tags")[0]["c"]
+    daily = query(
+        "SELECT count(*) AS c, min(date) AS oldest, max(date) AS newest FROM daily_stats"
+    )[0]
     cursors = {r["key"]: r["value"] for r in query("SELECT key, value FROM sync_state")}
     return {
         "version": version,
@@ -410,6 +531,9 @@ def ping():
         "newest_published": stats["newest"],
         "tags": tags_total,
         "tagged_articles": tagged,
+        "daily_stats": daily["c"],
+        "daily_stats_oldest": daily["oldest"],
+        "daily_stats_newest": daily["newest"],
         "sync_state": cursors,
         "elapsed_ms": int((time.monotonic() - start) * 1000),
     }

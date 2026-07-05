@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime, timedelta
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
@@ -67,13 +68,14 @@ async def analytics_handler(update, context):
         args = context.args
         start_dt, end_dt, period_label = parse_month_arg(args)
 
-        client = get_ga4_client()
+        # GA4-виклики блокуючі — виконуємо в окремому потоці, щоб не морозити бот
+        client = await asyncio.to_thread(get_ga4_client)
 
         if start_dt:
             start_date = start_dt.strftime("%Y-%m-%d")
             end_date = end_dt.strftime("%Y-%m-%d")
-            users, sessions, pageviews = get_stats(client, start_date, end_date)
-            top_pages = get_top_pages(client, start_date, end_date)
+            users, sessions, pageviews = await asyncio.to_thread(get_stats, client, start_date, end_date)
+            top_pages = await asyncio.to_thread(get_top_pages, client, start_date, end_date)
             top_text = "\n".join([
                 f'  {i+1}. <a href="{BASE_URL}{path}">{title}</a> — {views}'
                 + (f'\n      👤 {author}' if author else '')
@@ -93,14 +95,14 @@ async def analytics_handler(update, context):
             day_before = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
             yesterday_label = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
 
-            users, sessions, pageviews = get_stats(client, yesterday, yesterday)
-            u2, s2, p2 = get_stats(client, day_before, day_before)
+            users, sessions, pageviews = await asyncio.to_thread(get_stats, client, yesterday, yesterday)
+            u2, s2, p2 = await asyncio.to_thread(get_stats, client, day_before, day_before)
 
             def diff(a, b):
                 d = a - b
                 return f"+{d}" if d > 0 else str(d)
 
-            top_pages = get_top_pages(client, yesterday, yesterday)
+            top_pages = await asyncio.to_thread(get_top_pages, client, yesterday, yesterday)
             top_text = "\n".join([
                 f'  {i+1}. <a href="{BASE_URL}{path}">{title}</a> — {views}'
                 + (f'\n      👤 {author}' if author else '')
