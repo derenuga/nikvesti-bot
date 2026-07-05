@@ -420,8 +420,26 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
         f"📊 <b>Статистика матеріалу</b>",
         f'<a href="{clean}">{clean}</a>',
         "",
-        "📘 <b>Facebook</b>",
     ]
+
+    # ---- Сайт (GA4) — перше, це першоджерело переглядів ----
+    lines.append("🌐 <b>Сайт</b>")
+    site_total = None
+    if not ga4_stat:
+        lines.append("Даних не знайдено")
+    else:
+        site_total = sum(ga4_stat.values())
+        for lang in ["ua", "ru", "en"]:
+            if lang in ga4_stat:
+                flag = LANG_FLAGS[lang]
+                lines.append(f'{flag} {ga4_stat[lang]:,}'.replace(",", " "))
+        lines.append("──────")
+        lines.append(f'Всього: {site_total:,}'.replace(",", " "))
+
+    # ---- Facebook ----
+    lines.append("")
+    lines.append("📘 <b>Facebook</b>")
+    fb_views_total = None
 
     if not fb_stats and fb_error:
         # Помилка API — це НЕ "поста немає". Кажемо чесно й радимо повторити.
@@ -446,44 +464,44 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
             num = f"{i + 1}. " if several else ""
             lines.append(f'{num}<a href="{item["permalink"]}">{label} від {item["date"]}</a>')
             if item["views"] is not None:
-                lines.append(f'👁 Перегляди: {item["views"]:,}'.replace(",", "\u00a0"))
+                lines.append(f'👁 Перегляди: {item["views"]:,}'.replace(",", " "))
             lines.append(f'❤️ Реакції: {item["reactions"]}')
             lines.append(f'💬 Коментарі: {item["comments"]}')
             lines.append(f'🔄 Шери: {item["shares"]}')
         views_known = [it["views"] for it in fb_stats if it["views"] is not None]
-        if several and views_known:
-            total_views = sum(views_known)
-            lines.append("")
-            lines.append(f'Разом переглядів: {total_views:,}'.replace(",", "\u00a0"))
+        if views_known:
+            fb_views_total = sum(views_known)
+            if several:
+                lines.append("")
+                lines.append(f'Разом переглядів: {fb_views_total:,}'.replace(",", " "))
 
+    # ---- Telegram ----
     lines.append("")
     lines.append("📣 <b>Telegram</b>")
+    tg_views = None
 
     if tg_stat is None:
         lines.append(f"Пост не знайдено (індекс + останні ~{SEARCH_MAX_PAGES * 20} постів каналу)")
     else:
         lines.append(f'<a href="{tg_stat["url"]}">{tg_stat["url"].replace("https://", "")}</a>')
         if tg_stat["views"] is not None:
-            lines.append(f'👁 Перегляди: {tg_stat["views"]:,}'.replace(",", "\u00a0"))
+            tg_views = tg_stat["views"]
+            lines.append(f'👁 Перегляди: {tg_views:,}'.replace(",", " "))
         else:
             lines.append("👁 Перегляди: не вдалося зчитати")
 
-    lines.append("")
-    lines.append("📈 <b>GA4</b>")
-
-    if not ga4_stat:
-        lines.append("Даних не знайдено")
-    else:
-        total = sum(ga4_stat.values())
-        for lang in ["ua", "ru", "en"]:
-            if lang in ga4_stat:
-                flag = LANG_FLAGS[lang]
-                lines.append(f'{flag} {ga4_stat[lang]:,}'.replace(",", "\u00a0"))
-        lines.append(f'──────')
-        lines.append(f'Всього: {total:,}'.replace(",", "\u00a0"))
+    # ---- Сукупно по всіх каналах ----
+    # Сумуємо перегляди звідусіль, де є дані: сайт + Facebook + Telegram
+    channel_totals = [v for v in (site_total, fb_views_total, tg_views) if v is not None]
+    if channel_totals:
+        grand_total = sum(channel_totals)
+        lines.append("")
+        lines.append("═══════")
+        lines.append(
+            f'🧮 <b>Сукупно по всіх каналах: {grand_total:,}</b>'.replace(",", " ")
+        )
 
     return "\n".join(lines)
-
 
 # ---------- Handler ----------
 
