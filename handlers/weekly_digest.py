@@ -110,7 +110,7 @@ def _social_lines():
     якщо зрізів ще немає. IG: основне охоплення — views (Meta перейшов з reach)."""
     out = []
     for platform, emoji, name, primary in (
-        (social_store.FACEBOOK, "📘", "FB", "reach"),
+        (social_store.FACEBOOK, "📘", "FB", "views"),
         (social_store.INSTAGRAM, "📱", "IG", "views"),
     ):
         rows = social_store.get_history(platform, limit=2)

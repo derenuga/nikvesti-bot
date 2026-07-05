@@ -626,11 +626,10 @@ def _nlq_facebook_stats(period_days=7):
 
     return {
         "period_days": period_days,
-        "followers": page.get("followers_count"),
-        "fans": page.get("fan_count"),
-        "weekly_reach": stats.get("page_impressions_unique"),
+        "followers": page.get("followers_count") or stats.get("page_follows"),
+        "weekly_views": stats.get("page_media_view"),
         "weekly_engagements": stats.get("page_post_engagements"),
-        "note": "weekly_reach і weekly_engagements Meta віддає фіксовано за останній тиждень, незалежно від period_days. Топ постів — тільки пости з посиланням на nikvesti.com.",
+        "note": "weekly_views (перегляди контенту, page_media_view — замінило охоплення/impressions, яке Meta задепрекейтила лист.2025) і weekly_engagements Meta віддає фіксовано за останній тиждень, незалежно від period_days. Топ постів — тільки пости з посиланням на nikvesti.com.",
         "total_posts": total_posts,
         "top_posts": [fmt_post(p) for p in posts],
         "total_reels": total_reels,

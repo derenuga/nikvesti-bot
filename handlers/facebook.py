@@ -22,22 +22,32 @@ def get_page_followers():
         raise Exception(data["error"]["message"])
     return data
 
+# Метрики Page Insights (period=week). impressions-родину (page_impressions*)
+# Meta задепрекейтила (лист. 2025) — охоплення тепер через page_media_view
+# («перегляди контенту», прямий аналог IG views; звірено з Graph API v25 reference).
+# Тягнемо КОЖНУ метрику окремо і пропускаємо ту, що API відхилив (#100 valid
+# insights metric), щоб одна задепрекейчена назва не валила весь звіт — саме так
+# упав старий page_impressions_unique. page_post_engagements і page_follows живі.
+FB_PAGE_METRICS = ["page_media_view", "page_post_engagements", "page_follows"]
+
+
 def get_page_stats():
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/insights"
-    params = {
-        "metric": "page_impressions_unique,page_post_engagements,page_follows",
-        "period": "week",
-        "access_token": FACEBOOK_PAGE_TOKEN
-    }
-    response = requests.get(url, params=params)
-    data = response.json()
-    if "error" in data:
-        raise Exception(data["error"]["message"])
     stats = {}
-    for item in data.get("data", []):
-        values = item.get("values", [])
-        if values:
-            stats[item["name"]] = values[-1]["value"]
+    for metric in FB_PAGE_METRICS:
+        try:
+            data = requests.get(url, params={
+                "metric": metric, "period": "week", "access_token": FACEBOOK_PAGE_TOKEN,
+            }, timeout=15).json()
+            if "error" in data:
+                print(f"facebook: метрику {metric} відхилено — {data['error'].get('message')}")
+                continue
+            for item in data.get("data", []):
+                values = item.get("values", [])
+                if values:
+                    stats[item["name"]] = values[-1]["value"]
+        except Exception as e:
+            print(f"facebook: помилка метрики {metric} — {e}")
     return stats
 
 def fix_permalink(url):
@@ -218,7 +228,7 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
     text = (
         header +
         f"📊 Статистика:\n"
-        f"  👁 Охоплення: {stats.get('page_impressions_unique', 'н/д')}\n"
+        f"  👁 Перегляди: {stats.get('page_media_view', 'н/д')}\n"
         f"  🤝 Взаємодії: {stats.get('page_post_engagements', 'н/д')}\n\n"
     )
 

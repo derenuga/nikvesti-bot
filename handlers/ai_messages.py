@@ -225,7 +225,7 @@ async def generate_facebook_weekly_comment(stats, top_authors, total_posts, tota
     prompt = f"""Тижневий звіт Facebook МикВісті — напиши коротку підводку.
 
 Дані:
-- Охоплення: {stats.get('page_impressions_unique', 0)}
+- Перегляди: {stats.get('page_media_view', 0)}
 - Взаємодії: {stats.get('page_post_engagements', 0)}
 - Публікацій: {total_posts}, рілзів: {total_reels}
 - Автори топ публікацій: {authors_text}

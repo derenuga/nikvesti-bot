@@ -59,22 +59,23 @@ async def _record(platform, followers, reach, views, engagement, posts, raw):
 
 
 async def capture_facebook(page, stats, total_posts, total_reels):
-    """Знімок FB зі зібраних даних недільного звіту. Охоплення FB —
-    page_impressions_unique, взаємодії — page_post_engagements. FB не має
-    окремих 'views' сторінки, тому views=None."""
-    followers = page.get("followers_count") or page.get("fan_count")
-    reach = stats.get("page_impressions_unique")
+    """Знімок FB зі зібраних даних недільного звіту. Meta задепрекейтила
+    impressions-родину (лист. 2025) → охоплення тепер page_media_view (перегляди
+    контенту), тому пишемо у колонку views (reach=None, як і IG). Взаємодії —
+    page_post_engagements; підписники — followers_count (page_fans задепрекейчено,
+    альтернатива page_follows)."""
+    followers = page.get("followers_count") or stats.get("page_follows")
+    views = stats.get("page_media_view")
     engagement = stats.get("page_post_engagements")
     raw = {
-        "fan_count": page.get("fan_count"),
         "followers_count": page.get("followers_count"),
-        "page_impressions_unique": stats.get("page_impressions_unique"),
+        "page_media_view": stats.get("page_media_view"),
         "page_post_engagements": stats.get("page_post_engagements"),
         "page_follows": stats.get("page_follows"),
         "total_posts": total_posts,
         "total_reels": total_reels,
     }
-    await _record(FACEBOOK, followers, reach, None, engagement,
+    await _record(FACEBOOK, followers, None, views, engagement,
                   (total_posts or 0) + (total_reels or 0), raw)
 
 
@@ -149,8 +150,8 @@ async def social_capture_handler(update, context):
         _, total_reels = await asyncio.to_thread(fb.get_top_reels)
         await capture_facebook(page, stats, total_posts, total_reels)
         results.append(
-            f"📘 FB ✅ підписників {page.get('followers_count') or page.get('fan_count')}, "
-            f"охоплення {stats.get('page_impressions_unique')}"
+            f"📘 FB ✅ підписників {page.get('followers_count') or stats.get('page_follows')}, "
+            f"переглядів {stats.get('page_media_view')}"
         )
     except Exception as e:
         results.append(f"📘 FB ❌ {e}")
