@@ -16,7 +16,7 @@ users/sessions/pageviews за минулий тиждень проти поза�
 import asyncio
 from datetime import datetime, timedelta
 
-from handlers import analytics_store, storage
+from handlers import analytics_store, social_store, storage
 from handlers.google_analytics import get_ga4_client, get_stats, get_top_pages, BASE_URL
 from handlers.ai_messages import generate_weekly_digest_comment
 from handlers.helpers import escape_html
@@ -86,6 +86,63 @@ def _num(n):
     return f"{int(n or 0):,}".replace(",", " ")
 
 
+def _absdiff(cur, prev):
+    """' (+120)' / ' (−30)' — абсолютний приріст; порожньо, якщо нема з чим порівняти."""
+    if cur is None or prev is None:
+        return ""
+    d = cur - prev
+    sign = "+" if d >= 0 else "−"
+    return f" ({sign}{_num(abs(d))})"
+
+
+def _pctdiff(cur, prev):
+    """' (+12%)' / ' (−5%)' — відносний приріст; порожньо, якщо нема з чим порівняти."""
+    if cur is None or not prev:
+        return ""
+    d = round((cur - prev) / prev * 100)
+    sign = "+" if d >= 0 else "−"
+    return f" ({sign}{abs(d)}%)"
+
+
+def _social_lines():
+    """Рядки соцмереж для тижневика: FB/IG підписники + охоплення/перегляди з
+    порівнянням тиждень-до-тижня (два останні зрізи з social_stats). Порожньо,
+    якщо зрізів ще немає. IG: основне охоплення — views (Meta перейшов з reach)."""
+    out = []
+    for platform, emoji, name, primary in (
+        (social_store.FACEBOOK, "📘", "FB", "reach"),
+        (social_store.INSTAGRAM, "📱", "IG", "views"),
+    ):
+        rows = social_store.get_history(platform, limit=2)
+        if not rows:
+            continue
+        cur = rows[0]
+        prev = rows[1] if len(rows) > 1 else None
+        bits = []
+
+        followers = cur.get("followers")
+        if followers is not None:
+            bits.append(f"підписників {_num(followers)}"
+                        + _absdiff(followers, prev.get("followers") if prev else None))
+
+        # Охоплення: IG — views (фолбек reach), FB — reach
+        reach_val = cur.get(primary)
+        reach_label = "переглядів" if primary == "views" else "охоплення"
+        if reach_val is None and primary == "views":
+            reach_val, reach_label = cur.get("reach"), "охоплення"
+        if reach_val is not None:
+            prev_reach = None
+            if prev:
+                prev_reach = prev.get(primary)
+                if prev_reach is None and primary == "views":
+                    prev_reach = prev.get("reach")
+            bits.append(f"{reach_label} {_num(reach_val)}" + _pctdiff(reach_val, prev_reach))
+
+        if bits:
+            out.append(f"{emoji} {name}: " + ", ".join(bits))
+    return out
+
+
 async def build_weekly_digest():
     """Складає текст тижневика. Повертає рядок (HTML)."""
     now = datetime.now()
@@ -136,6 +193,14 @@ async def build_weekly_digest():
         taken_note = f", {tender_taken} взято в роботу" if tender_taken else ""
         lines.append("")
         lines.append(f"🏛 <b>Винюхано:</b> {tender_count} тендер(ів) на {tender_mln} млн грн{taken_note}")
+
+    # Соцмережі — тиждень до тижня з накопичених зрізів (social_stats).
+    # Порожньо, поки не набралось хоча б одного знімка (див. /social_capture).
+    social = await asyncio.to_thread(_social_lines)
+    if social:
+        lines.append("")
+        lines.append("📣 <b>Соцмережі</b> (тиждень до тижня):")
+        lines.extend(f"  {s}" for s in social)
 
     lines.append("")
     lines.append(f"🦊 {ai_comment}")
