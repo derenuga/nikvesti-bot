@@ -209,7 +209,11 @@ def setup_scheduler(bot, last_channel_post_time=None):
     scheduler.add_job(check_channel_silence, "cron", minute="*/30", args=[bot, last_channel_post_time])
     scheduler.add_job(check_prozorro, "cron", minute=0, args=[bot])
     scheduler.add_job(run_check_documents, "cron", minute=30, args=[bot])
-    scheduler.add_job(run_check_competitors, "cron", minute=15, args=[bot])
+    # Конкуренти — раз на 3 год (замість щогодини). Слоти включають 07:15:
+    # це перша денна перевірка після нічного вікна (00:00–07:00), яка віддає
+    # нічний буфер одним ранковим дайджестом. Нічні слоти (01:15, 04:15) не
+    # шлють одразу, а складають у буфер до 07:15.
+    scheduler.add_job(run_check_competitors, "cron", hour="1,4,7,10,13,16,19,22", minute=15, args=[bot])
     # Правоохоронці — три рази на день: 10:00, 13:00, 16:00
     scheduler.add_job(run_check_law_enforcement, "cron", hour=10, minute=0, args=[bot])
     scheduler.add_job(run_check_law_enforcement, "cron", hour=13, minute=0, args=[bot])
