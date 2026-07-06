@@ -462,13 +462,24 @@ INSERT INTO social_stats
     (platform, week_end, followers, reach, views, engagement, posts, raw, snapshot_at)
 VALUES %s
 ON CONFLICT (platform, week_end) DO UPDATE SET
-    followers = EXCLUDED.followers,
-    reach = EXCLUDED.reach,
-    views = EXCLUDED.views,
-    engagement = EXCLUDED.engagement,
-    posts = EXCLUDED.posts,
-    raw = EXCLUDED.raw,
+    -- COALESCE, а не пряме EXCLUDED: якщо повторний запис приносить NULL по метриці
+    -- (напр. невдалий ре-захват або розріджений бекфіл), не затираємо вже збережене.
+    followers = COALESCE(EXCLUDED.followers, social_stats.followers),
+    reach = COALESCE(EXCLUDED.reach, social_stats.reach),
+    views = COALESCE(EXCLUDED.views, social_stats.views),
+    engagement = COALESCE(EXCLUDED.engagement, social_stats.engagement),
+    posts = COALESCE(EXCLUDED.posts, social_stats.posts),
+    raw = COALESCE(EXCLUDED.raw, social_stats.raw),
     snapshot_at = now()
+"""
+
+# Бекфіл історії: вставляємо ЛИШЕ відсутні тижні, наявні знімки не чіпаємо
+# (реальний недільний захват — авторитетний, бекфіл лише добирає діри).
+_SOCIAL_STATS_INSERT_MISSING_SQL = """
+INSERT INTO social_stats
+    (platform, week_end, followers, reach, views, engagement, posts, raw, snapshot_at)
+VALUES %s
+ON CONFLICT (platform, week_end) DO NOTHING
 """
 
 _SOCIAL_STATS_TEMPLATE = "(%s, %s, %s, %s, %s, %s, %s, %s, now())"
@@ -489,6 +500,25 @@ def upsert_social_stats(rows):
                 template=_SOCIAL_STATS_TEMPLATE, page_size=100,
             )
         return len(rows)
+    finally:
+        conn.close()
+
+
+def insert_social_stats_missing(rows):
+    """Вставляє тижневі зрізи, ПРОПУСКАЮЧИ вже наявні (platform, week_end) —
+    для історичного бекфілу, щоб не перетерти реальні знімки. rows — той самий
+    формат, що upsert_social_stats. Повертає кількість РЕАЛЬНО вставлених рядків."""
+    if not rows:
+        return 0
+    ensure_schema()
+    conn = _connect()
+    try:
+        with conn, conn.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur, _SOCIAL_STATS_INSERT_MISSING_SQL, rows,
+                template=_SOCIAL_STATS_TEMPLATE, page_size=100,
+            )
+            return cur.rowcount
     finally:
         conn.close()
 

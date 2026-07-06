@@ -17,7 +17,9 @@
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
+
+import requests
 
 from handlers import bot_db
 
@@ -122,6 +124,105 @@ def get_history(platform=None, limit=12):
         "FROM social_stats ORDER BY week_end DESC, platform LIMIT %s",
         (limit,),
     )
+
+
+# ---------- Історичний бекфіл FB (експериментальний) ----------
+#
+# Meta НЕ віддає історію IG-охоплення, а от FB Page Insights приймає since/until
+# і МОЖЕ повернути тижневі бакети за ~1-2 роки: page_post_engagements (взаємодії)
+# має довгу історію, page_media_view (перегляди) — лише відколи Meta його рахує
+# (~2025). Що віддасть — те й збережемо; чого нема — просто пропуститься.
+# Followers/reach історично недоступні (лишаються NULL). Вставляємо ЛИШЕ відсутні
+# тижні (insert_social_stats_missing) — реальні недільні знімки не чіпаємо.
+
+FB_HISTORY_METRICS = {"page_media_view": "views", "page_post_engagements": "engagement"}
+FB_WINDOW_DAYS = 90  # Meta обмежує вікно insights-запиту ~93 днями — гортаємо по 90
+
+
+def _fetch_fb_weekly(metric, since_ts, until_ts):
+    """Тижневі бакети однієї FB-метрики за вікно [since, until]. Повертає
+    list[(week_end 'YYYY-MM-DD', value)]. Кидає при помилці API."""
+    page_id = os.environ.get("FACEBOOK_PAGE_ID")
+    token = os.environ.get("FACEBOOK_PAGE_TOKEN")
+    url = f"https://graph.facebook.com/v19.0/{page_id}/insights"
+    data = requests.get(url, params={
+        "metric": metric, "period": "week",
+        "since": since_ts, "until": until_ts, "access_token": token,
+    }, timeout=30).json()
+    if "error" in data:
+        raise Exception(data["error"].get("message"))
+    out = []
+    for item in data.get("data", []):
+        for v in item.get("values", []):
+            end_time = v.get("end_time")
+            if end_time:
+                out.append((end_time[:10], v.get("value")))  # ISO → YYYY-MM-DD
+    return out
+
+
+async def backfill_facebook(months=24):
+    """Історичний бекфіл FB: гортає вікна по FB_WINDOW_DAYS назад на `months`
+    місяців, збирає тижневі перегляди/взаємодії. Вставляє лише відсутні тижні.
+    Повертає (кількість вставлених рядків, список помилок метрик)."""
+    if not is_ready():
+        raise RuntimeError("БД бота не налаштована (BOT_DATABASE_URL).")
+    now = datetime.now()
+    start = now - timedelta(days=int(months * 30.5))
+    buckets = {}   # week_end -> {"views": .., "engagement": ..}
+    errors = []
+    for metric, col in FB_HISTORY_METRICS.items():
+        cursor = start
+        while cursor < now:
+            window_end = min(cursor + timedelta(days=FB_WINDOW_DAYS), now)
+            try:
+                pairs = await asyncio.to_thread(
+                    _fetch_fb_weekly, metric,
+                    int(cursor.timestamp()), int(window_end.timestamp()),
+                )
+            except Exception as e:
+                errors.append(f"{metric}: {e}")
+                break  # метрика історично недоступна — далі не мучимо
+            for week_end, value in pairs:
+                buckets.setdefault(week_end, {})[col] = _to_int(value)
+            cursor = window_end
+    rows = [
+        (FACEBOOK, week_end, None, None, m.get("views"), m.get("engagement"), None,
+         json.dumps({"backfilled": True, **m}, ensure_ascii=False))
+        for week_end, m in sorted(buckets.items())
+    ]
+    inserted = await asyncio.to_thread(bot_db.insert_social_stats_missing, rows) if rows else 0
+    return inserted, errors
+
+
+async def social_backfill_fb_handler(update, context):
+    """/social_backfill_fb [місяців] — спроба залити історію FB (перегляди/взаємодії
+    по тижнях) за N місяців (дефолт 24). IG історію Meta не віддає — тільки вперед."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not is_ready():
+        await update.message.reply_text("🦊 БД бота не налаштована (BOT_DATABASE_URL).")
+        return
+    months = 24
+    if context.args:
+        try:
+            months = max(1, int(context.args[0]))
+        except ValueError:
+            pass
+    msg = await update.message.reply_text(
+        f"🦊 Пробую витягти історію FB за ~{months} міс (Meta може віддати не все)…"
+    )
+    try:
+        inserted, errors = await backfill_facebook(months)
+        note = f"✅ FB: додано {inserted} історичних тижнів."
+        if errors:
+            note += "\n⚠️ Частину метрик Meta не віддала: " + "; ".join(errors[:3])
+        if not inserted and not errors:
+            note = "🦊 Meta не повернула історичних тижнів (типово для агрегованих метрик)."
+        note += "\nIG історію Meta не віддає — там тільки знімки вперед."
+        await msg.edit_text(note)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось: {e}")
 
 
 # ---------- Ручний засів (/social_capture) ----------

@@ -101,7 +101,7 @@ def _fetch_daily_series_from_ga4(start_date, end_date):
             Metric(name="screenPageViews"),
         ],
         order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="date"))],
-        limit=400,
+        limit=100000,  # рядок = день; з запасом на будь-який чанк (кап знято)
     )
     response = client.run_report(request)
     rows = []
@@ -121,18 +121,33 @@ def _fetch_daily_series_from_ga4(start_date, end_date):
     return rows
 
 
+# Розмір чанка бекфілу: GA4 не семплить денний розріз базових метрик, але великі
+# діапазони ріжемо на ~річні шматки — стійкіше до лімітів і легше стежити за прогресом.
+BACKFILL_CHUNK_DAYS = 365
+
+
 async def backfill(days=DEFAULT_BACKFILL_DAYS):
-    """Бекфіл N останніх днів історії трафіку з GA4 у daily_stats.
-    Повертає кількість залитих днів. Кидає, якщо БД бота не налаштована."""
+    """Бекфіл N останніх днів історії трафіку з GA4 у daily_stats. Великі
+    діапазони заливає чанками по BACKFILL_CHUNK_DAYS (можна роками — GA4 тримає
+    стандартні звіти весь час існування ресурсу). Повертає кількість залитих днів.
+    Кидає, якщо БД бота не налаштована."""
     if not is_ready():
         raise RuntimeError("БД бота не налаштована (BOT_DATABASE_URL).")
     today = datetime.now()
-    start = (today - timedelta(days=days)).strftime("%Y-%m-%d")
-    end = (today - timedelta(days=1)).strftime("%Y-%m-%d")  # вчора — останній повний день
-    rows = await asyncio.to_thread(_fetch_daily_series_from_ga4, start, end)
-    if rows:
-        await asyncio.to_thread(bot_db.upsert_daily_stats, rows)
-    return len(rows)
+    end = today - timedelta(days=1)                # вчора — останній повний день
+    chunk_start = today - timedelta(days=days)
+    total = 0
+    while chunk_start <= end:
+        chunk_end = min(chunk_start + timedelta(days=BACKFILL_CHUNK_DAYS - 1), end)
+        rows = await asyncio.to_thread(
+            _fetch_daily_series_from_ga4,
+            chunk_start.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d"),
+        )
+        if rows:
+            await asyncio.to_thread(bot_db.upsert_daily_stats, rows)
+            total += len(rows)
+        chunk_start = chunk_end + timedelta(days=1)
+    return total
 
 
 # ---------- Читання (для NLQ-tool get_traffic_history) ----------
