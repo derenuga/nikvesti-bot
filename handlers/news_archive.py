@@ -205,20 +205,27 @@ def search_news(dialog_key, keywords, limit=10, period_days=None, turn_id=None):
     seen_ids = {it["id"] for it in prev_items}
 
     new_items = []
-    next_n = len(prev_items) + 1
     for row in rows:
         if row["id"] in seen_ids:
             continue
         title = (row.get("title_ua") or row.get("title") or "").strip()
         new_items.append({
-            "n": next_n,
+            "n": None,  # проставляється після сортування всього списку
             "id": row["id"],
+            "published": int(row["published"]),
             "date": _fmt_date(row["published"]),
             "title": title,
             "url": _news_url(row),
         })
-        next_n += 1
+    # Кілька пошуків одного запиту зливаються (turn_id). Кожен пошук окремо
+    # відсортований DESC, але склеєні блоки давали немонотонний по датах
+    # список (найсвіжіша новина опинялась усередині). Тому сортуємо ВЕСЬ
+    # накопичений список за датою публікації (найсвіжіше зверху) і лише тоді
+    # проставляємо наскрізні номери n — щоб і текст, і кнопки йшли хронологічно.
     all_items = prev_items + new_items
+    all_items.sort(key=lambda it: it.get("published", 0), reverse=True)
+    for i, it in enumerate(all_items, start=1):
+        it["n"] = i
     remember_results(dialog_key, all_items, turn_id=turn_id)
     return {
         "query": words,
