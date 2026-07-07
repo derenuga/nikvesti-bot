@@ -206,6 +206,91 @@ def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
     return {"query": query, "found": len(items), "note": note, "items": items}
 
 
+_MONTHS_UK = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер",
+              "Лип", "Сер", "Вер", "Жов", "Лис", "Гру"]
+
+
+def count_by_month(query, year_from=None, year_to=None,
+                   own_material=None, category=None, region=None, tag=None):
+    """Кількість новин за запитом, згрупована по роках і місяцях — АГРЕГАТ
+    (COUNT(*) GROUP BY), а не перелік. Тому без капу на 30: рахує весь збіг.
+
+    Для питань «скільки новин про X по місяцях», «динаміка згадувань»,
+    «порівняй роки». Повертає готові дані під render_chart: labels — 12
+    коротких назв місяців, series — по ряду на КОЖЕН рік (counts: 12 значень
+    Січ→Гру, total: за рік). Клод малює порівняння років, не перелічуючи новини
+    текстом (саме перелік раніше переповнював ліміт відповіді)."""
+    if not bot_db.is_configured():
+        return {"error": (
+            "Лисяча нора ще не налаштована (BOT_DATABASE_URL) — підрахунок недоступний."
+        )}
+    tsquery = _build_tsquery(query)
+    if not tsquery:
+        return {"error": "Порожній пошуковий запит."}
+    now = int(datetime.now().timestamp())
+
+    conds = ["a.fts @@ q.query", "a.status = 1", "a.published > 0", "a.published <= %s"]
+    params = [tsquery, now]
+    if year_from:
+        conds.append("a.published >= %s")
+        params.append(int(datetime(int(year_from), 1, 1).timestamp()))
+    if year_to:
+        conds.append("a.published < %s")
+        params.append(int(datetime(int(year_to) + 1, 1, 1).timestamp()))
+    fconds, fparams = _filter_conditions(own_material, category, region, tag)
+    conds += fconds
+    params += fparams
+    where = " AND ".join(conds)
+
+    sql = f"""
+        WITH q AS (SELECT to_tsquery('simple', %s) AS query)
+        SELECT EXTRACT(YEAR FROM to_timestamp(a.published))::int AS yr,
+               EXTRACT(MONTH FROM to_timestamp(a.published))::int AS mo,
+               count(*) AS c
+        FROM articles a, q
+        WHERE {where}
+        GROUP BY yr, mo
+        ORDER BY yr, mo
+    """
+    try:
+        rows = bot_db.query(sql, tuple(params))
+    except Exception as e:
+        return {"error": f"Підрахунок по норі не вдався: {e}"}
+
+    counts = {}
+    years_seen = set()
+    for r in rows:
+        yr, mo, c = int(r["yr"]), int(r["mo"]), int(r["c"])
+        counts[(yr, mo)] = c
+        years_seen.add(yr)
+
+    if year_from and year_to:
+        years = list(range(int(year_from), int(year_to) + 1))
+    elif year_from:
+        top = max(years_seen) if years_seen else int(year_from)
+        years = list(range(int(year_from), top + 1))
+    else:
+        years = sorted(years_seen)
+
+    series = []
+    for yr in years:
+        monthly = [counts.get((yr, m), 0) for m in range(1, 13)]
+        series.append({"year": yr, "counts": monthly, "total": sum(monthly)})
+
+    return {
+        "query": query,
+        "labels": _MONTHS_UK,
+        "series": series,
+        "note": (
+            "Кількість новин за запитом по місяцях (агрегат по дзеркалу архіву, "
+            "весь збіг, без обмеження на 30). У series — по ряду на кожен рік "
+            "(counts: 12 значень Січ→Гру, total: за рік). Для графіка передай у "
+            "render_chart labels і series=[{name:'2026', values: counts, color:'#2e6ee8'}, "
+            "{name:'2025', values: counts, color:'#e8402e'}]. Новини текстом НЕ перелічуй."
+        ),
+    }
+
+
 def get_excerpts(ids, max_chars=EXCERPT_CHARS):
     """Початки текстів статей з дзеркала (для складання досьє).
     ids — список node id. Повертає list[dict] з excerpt."""
