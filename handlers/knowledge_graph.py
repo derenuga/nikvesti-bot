@@ -143,7 +143,9 @@ async def kg_handler(update, context):
             "/kg МикВісті  (пошук за назвою)"
         )
         return
-    msg = await update.message.reply_text("🦊 Питаю граф Google…")
+    # Маркер версії у першому повідомленні — щоб очима бачити, що працює саме
+    # новий код (з wait_for), а не старий деплой без нього.
+    msg = await update.message.reply_text("🦊 Питаю граф Google (v2)…")
     try:
         # Жорсткий загальний таймаут: таймаут requests не покриває DNS-резолвінг,
         # тому wait_for — єдиний захист від вічного «Питаю граф…».
