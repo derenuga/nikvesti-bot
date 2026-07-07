@@ -55,7 +55,7 @@ from datetime import datetime
 
 import requests
 
-from handlers import db
+from handlers import db, storage
 from handlers.ai_messages import FOX_MODEL_SMART, async_client, _record_usage
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
@@ -298,48 +298,73 @@ async def _map_batch(batch):
 
 # ---------- Складання прогону ----------
 
-async def run_mapping(n, progress_cb=None):
-    """Повний прогін: топ-N тегів → кандидати Wikidata → рішення Claude.
-    Повертає list рядків результату (по одному на тег), збагачених рішенням.
-    progress_cb(done, total) — опційний async-колбек прогресу."""
+async def run_mapping(n, progress_cb=None, use_cache=True):
+    """Прогін: топ-N тегів → кандидати Wikidata → рішення Claude.
+
+    Кеш (storage.tags_wikidata) за tag_id: уже зіставлені теги НЕ
+    перепроходяться — Wikidata і Claude чіпають лише нові. Тому /tags_wiki 300
+    після /tags_wiki 100 обробить тільки ~200 нових, а файли віддасть на всі 300.
+    Повертає (rows, reused): rows — рядки по всіх N тегах; reused — скільки з кешу."""
     tags = await asyncio.to_thread(_fetch_top_tags, n)
     total = len(tags)
+    cache = await asyncio.to_thread(storage.get_tags_wikidata_cache) if use_cache else {}
 
-    # Кандидати Wikidata по кожному тегу (мережа — у потоці).
+    # Нові = ті, яких ще немає в кеші. Решту беремо готовими.
+    todo = [t for t in tags if str(t["id"]) not in cache]
+    reused = total - len(todo)
+
+    # Кандидати Wikidata лише для нових (мережа — у потоці).
     enriched = []
-    for i, tag in enumerate(tags, 1):
+    for i, tag in enumerate(todo, 1):
         candidates = await asyncio.to_thread(_candidates_for, tag)
         enriched.append({"tag": tag, "candidates": candidates})
-        if progress_cb and (i % 10 == 0 or i == total):
-            await progress_cb("wiki", i, total)
+        if progress_cb and (i % 10 == 0 or i == len(todo)):
+            await progress_cb("wiki", i, len(todo))
 
-    # Рішення Claude батчами.
-    decisions = {}
+    # Рішення Claude батчами лише для нових.
+    fresh = {}
     done = 0
-    for start in range(0, total, BATCH):
+    for start in range(0, len(enriched), BATCH):
         batch = enriched[start:start + BATCH]
         try:
-            decisions.update(await _map_batch(batch))
+            fresh.update(await _map_batch(batch))
         except Exception as e:
             print(f"tags_wiki: батч {start}-{start+len(batch)} не вдався — {e}")
         done += len(batch)
         if progress_cb:
-            await progress_cb("ai", done, total)
+            await progress_cb("ai", done, len(enriched))
 
-    rows = []
+    # Нові рішення (разом із кандидатами для ревʼю) → у кеш.
+    new_entries = {}
     for item in enriched:
         t = item["tag"]
-        d = decisions.get(t["id"], {})
-        rows.append({
-            **t,
-            "candidates": item["candidates"],
+        d = fresh.get(t["id"], {})
+        new_entries[str(t["id"])] = {
             "qid": d.get("qid"),
             "type": d.get("type"),
             "chosen_label": d.get("label"),
             "confidence": d.get("confidence", 0.0),
             "reason": d.get("reason", ""),
+            "candidates": item["candidates"],
+        }
+    if new_entries:
+        await asyncio.to_thread(storage.update_tags_wikidata_cache, new_entries)
+
+    # Рядки по ВСІХ запитаних тегах: кеш + свіжі (свіжі мають пріоритет).
+    merged = {**cache, **new_entries}
+    rows = []
+    for t in tags:
+        c = merged.get(str(t["id"]), {})
+        rows.append({
+            **t,
+            "candidates": c.get("candidates", []),
+            "qid": c.get("qid"),
+            "type": c.get("type"),
+            "chosen_label": c.get("chosen_label"),
+            "confidence": c.get("confidence", 0.0),
+            "reason": c.get("reason", ""),
         })
-    return rows
+    return rows, reused
 
 
 # ---------- Файли на вихід ----------
@@ -483,7 +508,8 @@ async def tags_wiki_handler(update, context):
             pass
 
     msg = await update.message.reply_text(
-        f"🦊 Зіставляю топ-{n} тегів із Wikidata. Це кілька хвилин…"
+        f"🦊 Зіставляю топ-{n} тегів із Wikidata. Уже зіставлені беру з кешу, "
+        "нові — шукаю. Це кілька хвилин…"
     )
     state = {"last_edit": 0.0}
 
@@ -501,9 +527,10 @@ async def tags_wiki_handler(update, context):
     async def task():
         _running["flag"] = True
         try:
-            rows = await run_mapping(n, progress_cb=progress)
+            rows, reused = await run_mapping(n, progress_cb=progress)
             matched = sum(1 for r in rows if r["qid"])
             strong = sum(1 for r in rows if r["qid"] and r["confidence"] >= CONF_APPLY)
+            reused_note = f" (з них {reused} узято з кешу)" if reused else ""
             review = await asyncio.to_thread(_review_csv, rows)
             sql = await asyncio.to_thread(_sql_script, rows)
             stamp = datetime.now().strftime("%Y%m%d")
@@ -512,7 +539,7 @@ async def tags_wiki_handler(update, context):
                 filename=f"tags_wikidata_review_{stamp}.csv",
                 caption=(
                     f"🦊 Зіставлено {matched}/{len(rows)} тегів "
-                    f"({strong} впевнено ≥{CONF_APPLY:.0%}).\n"
+                    f"({strong} впевнено ≥{CONF_APPLY:.0%}){reused_note}.\n"
                     "Це ревʼю: звір кандидатів і впевненість очима."
                 ),
             )
@@ -537,3 +564,16 @@ async def tags_wiki_handler(update, context):
             _running["flag"] = False
 
     asyncio.create_task(task())
+
+
+async def tags_wiki_reset_handler(update, context):
+    """/tags_wiki_reset — скинути кеш зіставлення (наступний /tags_wiki
+    перерахує все з нуля). Потрібно, якщо змінилась логіка добору чи хочеш
+    свіжі рішення Claude на вже оброблених тегах."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    n = await asyncio.to_thread(storage.clear_tags_wikidata_cache)
+    await update.message.reply_text(
+        f"🦊 Кеш зіставлення скинуто ({n} тегів). Наступний /tags_wiki — з нуля."
+    )

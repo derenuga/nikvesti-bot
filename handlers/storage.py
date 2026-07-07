@@ -433,3 +433,35 @@ def save_seen_competitor_ids(source_id, ids):
         state["competitor_ids"][source_id] = list(ids)[-SEEN_COMPETITOR_IDS_MAX:]
         _write_state(state)
 
+
+# ---------- Кеш зіставлення тегів із Wikidata (/tags_wiki) ----------
+#
+# Дороге в прогоні — пошук у Wikidata і рішення Claude. Кешуємо їх за tag_id,
+# щоб повторний /tags_wiki на більший N не перепроходив уже зіставлені теги.
+# Назви/ужиток НЕ кешуємо — вони беруться з БД щоразу (ужиток змінюється).
+
+def get_tags_wikidata_cache():
+    """dict tag_id(str) → {qid, type, chosen_label, confidence, reason, candidates}."""
+    with _lock:
+        return _read_state().get("tags_wikidata", {})
+
+
+def update_tags_wikidata_cache(mapping):
+    """Домержити результати прогону (dict tag_id(str) → рішення) у кеш."""
+    with _lock:
+        state = _read_state()
+        cache = state.setdefault("tags_wikidata", {})
+        for tid, decision in mapping.items():
+            cache[str(tid)] = decision
+        _write_state(state)
+
+
+def clear_tags_wikidata_cache():
+    """Скинути кеш зіставлення (для повного свіжого прогону). Повертає к-сть."""
+    with _lock:
+        state = _read_state()
+        n = len(state.get("tags_wikidata", {}))
+        state["tags_wikidata"] = {}
+        _write_state(state)
+        return n
+
