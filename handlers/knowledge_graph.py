@@ -44,7 +44,12 @@ def kg_lookup(arg, languages="uk,ru,en", limit=5):
     """Запит до KG Search API. Якщо arg схожий на ID — шукаємо по ids,
     інакше — по тексту. Повертає list елементів itemListElement.
     Синхронно (requests) — викликати через to_thread."""
-    params = {"key": KG_API_KEY, "languages": languages, "limit": limit}
+    # languages — ПОВТОРЮВАНИЙ параметр (languages=uk&languages=ru), а не через
+    # кому: кома валить запит у 400. requests сам повторює ключ зі списку.
+    langs = [x.strip() for x in languages.split(",") if x.strip()]
+    params = {"key": KG_API_KEY, "limit": limit}
+    if langs:
+        params["languages"] = langs
     a = arg.strip()
     if _is_id(a):
         # ids приймає «сирий» mid без префікса kg:
@@ -52,7 +57,15 @@ def kg_lookup(arg, languages="uk,ru,en", limit=5):
     else:
         params["query"] = a
     r = requests.get(KG_API, params=params, timeout=15)
-    r.raise_for_status()
+    if not r.ok:
+        # Витягуємо зрозуміле повідомлення Google ({"error":{"message":...}}),
+        # інакше HTTPError без тіла нічого не пояснює.
+        detail = ""
+        try:
+            detail = (r.json().get("error", {}) or {}).get("message", "")
+        except Exception:
+            detail = (r.text or "")[:300]
+        raise RuntimeError(f"KG API {r.status_code}: {detail or 'без деталей'}")
     return r.json().get("itemListElement", [])
 
 
