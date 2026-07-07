@@ -84,38 +84,82 @@ def _plain(text):
                 .replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
 
 
+def _lang_value(v, langs=("uk", "ru", "en")):
+    """KG-поле при запиті КІЛЬКОХ мов приходить не рядком, а списком мовних
+    варіантів ([{"@language":"en","@value":"BBC"}, …]) або {"@value":…}.
+    Витягуємо один рядок, віддаючи перевагу порядку langs. Це й був баг:
+    escape_html(список) падав, хендлер помирав, повідомлення «висіло»."""
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        return str(v.get("@value") or "")
+    if isinstance(v, list):
+        by_lang, plain = {}, []
+        for item in v:
+            if isinstance(item, dict):
+                val = str(item.get("@value") or "")
+                lang = item.get("@language")
+                if lang:
+                    by_lang[lang] = val
+                elif val:
+                    plain.append(val)
+            elif isinstance(item, str):
+                plain.append(item)
+        for l in langs:
+            if by_lang.get(l):
+                return by_lang[l]
+        if by_lang:
+            return next(iter(by_lang.values()))
+        return plain[0] if plain else ""
+    return str(v)
+
+
+def _first_obj(v):
+    """detailedDescription/image теж бувають списком (по мові) — беремо перший
+    словник, інакше сам словник, інакше порожній."""
+    if isinstance(v, list):
+        return next((x for x in v if isinstance(x, dict)), {})
+    return v if isinstance(v, dict) else {}
+
+
 def _format_element(el):
     """Один результат KG → HTML-блок для Telegram."""
     res = el.get("result", {})
     score = el.get("resultScore")
-    name = res.get("name") or "(без назви)"
+    name = _lang_value(res.get("name")) or "(без назви)"
     types = res.get("@type") or []
     if isinstance(types, str):
         types = [types]
     # @type містить і технічний 'Thing' — лишаємо все, це саме те, чим Google
     # вважає сутність.
-    types_str = ", ".join(types) if types else "—"
+    types_str = ", ".join(str(t) for t in types) if types else "—"
     kg_id = res.get("@id", "")
     lines = [f"<b>{escape_html(name)}</b>"]
     if score is not None:
-        lines[0] += f"  <i>(score {score:.1f})</i>"
+        try:
+            lines[0] += f"  <i>(score {float(score):.1f})</i>"
+        except (TypeError, ValueError):
+            pass
     lines.append(f"@type: <code>{escape_html(types_str)}</code>")
     if kg_id:
-        lines.append(f"KG ID: <code>{escape_html(kg_id)}</code>")
-    if res.get("description"):
-        lines.append(f"Ярлик: {escape_html(res['description'])}")
-    detailed = res.get("detailedDescription") or {}
-    if detailed.get("articleBody"):
-        body = detailed["articleBody"]
+        lines.append(f"KG ID: <code>{escape_html(str(kg_id))}</code>")
+    desc = _lang_value(res.get("description"))
+    if desc:
+        lines.append(f"Ярлик: {escape_html(desc)}")
+    detailed = _first_obj(res.get("detailedDescription"))
+    body = _lang_value(detailed.get("articleBody"))
+    if body:
         body = body[:400] + ("…" if len(body) > 400 else "")
         lines.append(f"Опис (Вікіпедія): {escape_html(body)}")
     if detailed.get("url"):
-        lines.append(f"Вікі: {escape_html(detailed['url'])}")
+        lines.append(f"Вікі: {escape_html(str(detailed['url']))}")
     if res.get("url"):
-        lines.append(f"Сайт (за версією Google): {escape_html(res['url'])}")
-    image = res.get("image") or {}
+        lines.append(f"Сайт (за версією Google): {escape_html(str(res['url']))}")
+    image = _first_obj(res.get("image"))
     if image.get("contentUrl"):
-        lines.append(f"Зображення: {escape_html(image['contentUrl'])}")
+        lines.append(f"Зображення: {escape_html(str(image['contentUrl']))}")
     return "\n".join(lines)
 
 
@@ -145,7 +189,7 @@ async def kg_handler(update, context):
         return
     # Маркер версії у першому повідомленні — щоб очима бачити, що працює саме
     # новий код (з wait_for), а не старий деплой без нього.
-    msg = await update.message.reply_text("🦊 Питаю граф Google (v2)…")
+    msg = await update.message.reply_text("🦊 Питаю граф Google (v3)…")
     try:
         # Жорсткий загальний таймаут: таймаут requests не покриває DNS-резолвінг,
         # тому wait_for — єдиний захист від вічного «Питаю граф…».
@@ -170,17 +214,23 @@ async def kg_handler(update, context):
             "Або сутності немає в пошуковій підмножині KG API, або ID/запит невірний."
         )
         return
-    blocks = [_format_element(el) for el in elements[:5]]
-    text = "🦊 <b>Knowledge Graph</b>\n\n" + "\n\n".join(blocks)
-    if len(text) > 4000:
-        text = text[:4000].rsplit("\n", 1)[0] + "\n…(обрізано)"
+    # Форматування + відправка в одному захисті: будь-яка несподіванка в даних
+    # KG не має лишати повідомлення «висіти» — редагуємо його хоч чимось.
     try:
-        await msg.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception as e:
-        # Битий HTML від Google-описів не має лишати повідомлення «висіти» —
-        # шлемо plain text, лінки/текст лишаються видимими.
-        print(f"/kg: HTML edit не вдався ({e}) — фолбек plain")
+        blocks = [_format_element(el) for el in elements[:5]]
+        text = "🦊 <b>Knowledge Graph</b>\n\n" + "\n\n".join(blocks)
+        if len(text) > 4000:
+            text = text[:4000].rsplit("\n", 1)[0] + "\n…(обрізано)"
         try:
+            await msg.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception as e:
+            # Битий HTML від Google-описів → plain text (лінки/текст лишаються).
+            print(f"/kg: HTML edit не вдався ({e}) — фолбек plain")
             await msg.edit_text(_plain(text), disable_web_page_preview=True)
-        except Exception as e2:
-            await msg.edit_text(f"❌ Не вдалось показати відповідь: {e2}")
+    except Exception as e:
+        print(f"/kg: рендер {len(elements)} результатів упав — {type(e).__name__}: {e}")
+        await msg.edit_text(
+            f"❌ Є {len(elements)} результат(ів), але рендер упав: "
+            f"{escape_html(f'{type(e).__name__}: {e}')}",
+            parse_mode="HTML",
+        )
