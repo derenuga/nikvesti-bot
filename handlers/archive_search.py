@@ -157,6 +157,13 @@ def search_items(query, limit=10, year_from=None, year_to=None,
         params.append(limit)
 
     rows = bot_db.query(sql, tuple(params))
+    # Релевантністю (ts_rank) вибираємо, ЯКІ новини показати (топ-N), але
+    # користувачу віддаємо їх хронологічно — найсвіжіше зверху. Інакше дати
+    # в списку скачуть (05.07 після 21.06 після 23.03…), і номери кнопок не
+    # читаються як стрічка. spread_years має власний таймлайн по роках
+    # (yr ASC) — його не чіпаємо.
+    if not spread_years:
+        rows = sorted(rows, key=lambda r: int(r["published"] or 0), reverse=True)
     return [_fmt_item(i, row) for i, row in enumerate(rows, start=1)]
 
 
