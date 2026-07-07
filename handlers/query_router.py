@@ -695,8 +695,8 @@ def _stamp_logo(fig):
     try:
         import matplotlib.image as mpimg
         logo = mpimg.imread(LOGO_PATH)
-        ax_logo = fig.add_axes([0.80, 0.90, 0.16, 0.09], anchor="NE", zorder=10)
-        ax_logo.imshow(logo, alpha=0.55)
+        ax_logo = fig.add_axes([0.84, 0.945, 0.14, 0.06], anchor="NE", zorder=10)
+        ax_logo.imshow(logo, alpha=0.6)
         ax_logo.axis("off")
     except Exception:
         pass
@@ -751,7 +751,8 @@ def render_chart(labels, values=None, chart_type="bar", title="", ylabel="",
     # Легенда лише при кількох серіях (порівнянні) — одно-серійним графікам
     # (звичайні GA4) вона зайва.
     if series and len(norm) > 1:
-        ax.legend()
+        # Легенда — у верхній лівий кут: правий верх зайнятий логотипом-вотермарком.
+        ax.legend(loc="upper left")
     if chart_type != "bar" or not horizontal:
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
     fig.tight_layout()
