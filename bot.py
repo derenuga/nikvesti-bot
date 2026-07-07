@@ -30,6 +30,7 @@ from handlers.archive_mirror import (
     archive_stop_handler, archive_report_handler, nora_sql_handler,
 )
 from handlers.dossier import dossier_handler
+from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler
 from handlers.builder_monitor import builder_handler, builder_test_handler
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
 from handlers import storage
@@ -272,6 +273,8 @@ def main():
     app.add_handler(CommandHandler("archive_status", archive_status_handler))
     app.add_handler(CommandHandler("archive_report", archive_report_handler))
     app.add_handler(CommandHandler("nora_sql", nora_sql_handler))
+    app.add_handler(CommandHandler("tags_export", tags_export_handler))
+    app.add_handler(CommandHandler("tags_wiki", tags_wiki_handler))
     app.add_handler(CommandHandler("myip", myip))
     app.add_handler(CommandHandler("builder", builder_handler))
     app.add_handler(CommandHandler("builder_test", builder_test_handler))

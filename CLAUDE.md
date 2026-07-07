@@ -59,6 +59,7 @@ handlers/
   helpers.py              — спільні утиліти (парсинг місяців, get_author_from_url)
   query_router.py         — Intent Router: природномовні запити до Лиса (GA4 + Search Console, tool use)
   news_archive.py         — архів новин сайту (БД): пошук "що ми писали про X", ліди, генерація беку, кнопка "Написати бек"
+  tags_wikidata.py        — прив'язка тегів сайту до Q-сутностей Wikidata для schema.org about: /tags_export (топ-N тегів у CSV), /tags_wiki (топ-N → Wikidata wbsearchentities → Claude добирає QID+@type → CSV на ревʼю + готовий ALTER/UPDATE .sql, бо БД сайту read-only)
 ```
 
 ---
@@ -104,6 +105,8 @@ handlers/
 | /builder | Діагностика монітора білдера: коли оновлювався, скільки власних новин відтоді |
 | /builder_test | Надіслати зразок нагадування про білдер у чат редакції (в обхід порогів) |
 | /dossier \<тема\> | Історія питання з 17-річного архіву: таймлайн по роках з лінками на матеріали |
+| /tags_export \[N\] | Топ-N тегів сайту за ужитком у CSV (дефолт 300), з розмерджуванням redirect_tag_id |
+| /tags_wiki \[N\] | Зіставити топ-N тегів (дефолт 100) із Wikidata: CSV на ревʼю + готовий ALTER/UPDATE .sql для PHPMyAdmin (БД сайту read-only) |
 | /archive_sample | Залити кілька старих+нових статей і показати збережений текст (перевірка чистки/розділення мов) |
 | /archive_backfill \[N\] | Заливка архіву в дзеркало; N — порція за запуск (фазування), без N — усе; resumable |
 | /archive_status | Стан дзеркала архіву: скільки статей, діапазон дат, курсори синку |
