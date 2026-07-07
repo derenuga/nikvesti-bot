@@ -56,7 +56,11 @@ def kg_lookup(arg, languages="uk,ru,en", limit=5):
         params["ids"] = a[3:] if a.startswith("kg:") else a
     else:
         params["query"] = a
-    r = requests.get(KG_API, params=params, timeout=15)
+    # (connect, read) окремо. УВАГА: жоден із них не покриває DNS-резолвінг —
+    # якщо резолвер Railway залипає, це ловить лише asyncio.wait_for у хендлері.
+    print(f"/kg lookup: {'ids' if _is_id(a) else 'query'}={a!r} langs={langs}")
+    r = requests.get(KG_API, params=params, timeout=(8, 12))
+    print(f"/kg lookup: HTTP {r.status_code}")
     if not r.ok:
         # Витягуємо зрозуміле повідомлення Google ({"error":{"message":...}}),
         # інакше HTTPError без тіла нічого не пояснює.
@@ -66,7 +70,18 @@ def kg_lookup(arg, languages="uk,ru,en", limit=5):
         except Exception:
             detail = (r.text or "")[:300]
         raise RuntimeError(f"KG API {r.status_code}: {detail or 'без деталей'}")
-    return r.json().get("itemListElement", [])
+    elements = r.json().get("itemListElement", [])
+    print(f"/kg lookup: {len(elements)} результат(ів)")
+    return elements
+
+
+def _plain(text):
+    """Груба деескейпизація HTML-картки у plain text — фолбек, якщо Telegram
+    не приймає розмітку (щоб повідомлення не «висіло» вічно)."""
+    return (text.replace("<b>", "").replace("</b>", "")
+                .replace("<i>", "").replace("</i>", "")
+                .replace("<code>", "").replace("</code>", "")
+                .replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
 
 
 def _format_element(el):
@@ -130,7 +145,16 @@ async def kg_handler(update, context):
         return
     msg = await update.message.reply_text("🦊 Питаю граф Google…")
     try:
-        elements = await asyncio.to_thread(kg_lookup, arg)
+        # Жорсткий загальний таймаут: таймаут requests не покриває DNS-резолвінг,
+        # тому wait_for — єдиний захист від вічного «Питаю граф…».
+        elements = await asyncio.wait_for(asyncio.to_thread(kg_lookup, arg), timeout=20)
+    except asyncio.TimeoutError:
+        await msg.edit_text(
+            "🦊 Google не відповів за 20 с — схоже, залип DNS/мережа Railway "
+            "(таймаут requests DNS не покриває). Спробуй ще раз; якщо повторюється — "
+            "у логах Railway буде видно, на якому кроці затик."
+        )
+        return
     except Exception as e:
         await msg.edit_text(
             f"❌ <code>{escape_html(f'{type(e).__name__}: {e}')}</code>",
@@ -141,11 +165,20 @@ async def kg_handler(update, context):
         await msg.edit_text(
             "🦊 Google нічого не повернув по цьому "
             f"{'ID' if _is_id(arg) else 'запиту'}. "
-            "Або сутності немає в графі, або ID/запит невірний."
+            "Або сутності немає в пошуковій підмножині KG API, або ID/запит невірний."
         )
         return
     blocks = [_format_element(el) for el in elements[:5]]
     text = "🦊 <b>Knowledge Graph</b>\n\n" + "\n\n".join(blocks)
     if len(text) > 4000:
         text = text[:4000].rsplit("\n", 1)[0] + "\n…(обрізано)"
-    await msg.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
+    try:
+        await msg.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as e:
+        # Битий HTML від Google-описів не має лишати повідомлення «висіти» —
+        # шлемо plain text, лінки/текст лишаються видимими.
+        print(f"/kg: HTML edit не вдався ({e}) — фолбек plain")
+        try:
+            await msg.edit_text(_plain(text), disable_web_page_preview=True)
+        except Exception as e2:
+            await msg.edit_text(f"❌ Не вдалось показати відповідь: {e2}")
