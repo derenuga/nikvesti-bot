@@ -708,7 +708,8 @@ def _stamp_logo(fig):
     try:
         import matplotlib.image as mpimg
         logo = mpimg.imread(LOGO_PATH)
-        ax_logo = fig.add_axes([0.84, 0.905, 0.14, 0.075], anchor="NE", zorder=10)
+        # У зарезервованій верхній смузі (rect top=0.88), праворуч від заголовка.
+        ax_logo = fig.add_axes([0.82, 0.905, 0.15, 0.07], anchor="NE", zorder=10)
         ax_logo.imshow(logo)
         ax_logo.axis("off")
     except Exception:
@@ -760,15 +761,19 @@ def render_chart(labels, values=None, chart_type="bar", title="", ylabel="",
             ax.set_xticklabels(labels)
             ax.set_ylabel(ylabel)
 
-    ax.set_title(title)
+    # Заголовок — у зарезервовану верхню смугу (suptitle), не на осі: там же
+    # праворуч сідає логотип, і жоден з них не налазить на поле графіка.
+    fig.suptitle(title, y=0.955, fontsize=12)
     # Легенда лише при кількох серіях (порівнянні) — одно-серійним графікам
     # (звичайні GA4) вона зайва.
     if series and len(norm) > 1:
-        # Легенда — у верхній лівий кут: правий верх зайнятий логотипом-вотермарком.
+        # Легенда — у верхній лівий кут: правий верх зайнятий логотипом.
         ax.legend(loc="upper left")
     if chart_type != "bar" or not horizontal:
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
-    fig.tight_layout()
+    # rect лишає верхні ~12% фігури під шапку (заголовок + логотип), щоб поле
+    # графіка туди не заходило.
+    fig.tight_layout(rect=[0, 0, 1, 0.88])
     _stamp_logo(fig)
 
     filename = f"{uuid.uuid4().hex}.png"
