@@ -687,16 +687,29 @@ LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "
 _SERIES_COLORS = ["#2e6ee8", "#e8402e", "#e8a72e", "#2ea36e", "#8b2ee8", "#2ec5e8"]
 
 
+def _to_floats(vals):
+    """Числа для matplotlib: None/'null'/невалідне → nan (лінія — розрив,
+    стовпець — порожньо), щоб майбутні місяці не малювались нулем."""
+    out = []
+    for v in vals:
+        try:
+            out.append(float(v))  # None і 'null' кидають → nan
+        except (TypeError, ValueError):
+            out.append(float("nan"))
+    return out
+
+
 def _stamp_logo(fig):
-    """Напівпрозорий логотип у правому верхньому куті. Тихо пропускається,
-    якщо файлу немає або matplotlib не зміг його прочитати."""
+    """Логотип МикВісті у правому верхньому куті (суцільний). Опущений трохи
+    нижче краю, щоб не обрізався. Тихо пропускається, якщо файлу немає або
+    matplotlib не зміг його прочитати."""
     if not os.path.exists(LOGO_PATH):
         return
     try:
         import matplotlib.image as mpimg
         logo = mpimg.imread(LOGO_PATH)
-        ax_logo = fig.add_axes([0.84, 0.945, 0.14, 0.06], anchor="NE", zorder=10)
-        ax_logo.imshow(logo, alpha=0.6)
+        ax_logo = fig.add_axes([0.84, 0.905, 0.14, 0.075], anchor="NE", zorder=10)
+        ax_logo.imshow(logo)
         ax_logo.axis("off")
     except Exception:
         pass
@@ -725,7 +738,7 @@ def render_chart(labels, values=None, chart_type="bar", title="", ylabel="",
     if chart_type == "line":
         for i, s in enumerate(norm):
             color = s["color"] or _SERIES_COLORS[i % len(_SERIES_COLORS)]
-            ax.plot(labels, s["values"], marker="o", color=color, label=s["name"])
+            ax.plot(labels, _to_floats(s["values"]), marker="o", color=color, label=s["name"])
         ax.set_ylabel(ylabel)
     else:
         total_w = 0.8
@@ -734,9 +747,9 @@ def render_chart(labels, values=None, chart_type="bar", title="", ylabel="",
             color = s["color"] or _SERIES_COLORS[i % len(_SERIES_COLORS)]
             offs = [x - total_w / 2 + bar_w * (i + 0.5) for x in idx]
             if horizontal:
-                ax.barh(offs, s["values"], height=bar_w, color=color, label=s["name"])
+                ax.barh(offs, _to_floats(s["values"]), height=bar_w, color=color, label=s["name"])
             else:
-                ax.bar(offs, s["values"], width=bar_w, color=color, label=s["name"])
+                ax.bar(offs, _to_floats(s["values"]), width=bar_w, color=color, label=s["name"])
         if horizontal:
             ax.set_yticks(idx)
             ax.set_yticklabels(labels)

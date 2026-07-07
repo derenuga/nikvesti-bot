@@ -272,10 +272,25 @@ def count_by_month(query, year_from=None, year_to=None,
     else:
         years = sorted(years_seen)
 
+    now_dt = datetime.now()
+    cur_year, cur_month = now_dt.year, now_dt.month
+
     series = []
     for yr in years:
-        monthly = [counts.get((yr, m), 0) for m in range(1, 13)]
-        series.append({"year": yr, "counts": monthly, "total": sum(monthly)})
+        monthly = []
+        for m in range(1, 13):
+            # Майбутні місяці (ще не настали) — null, а не 0: інакше на графіку
+            # лінія поточного року падала б у нуль до кінця року. render_chart
+            # малює null як розрив (лінія обривається на поточному місяці).
+            if yr > cur_year or (yr == cur_year and m > cur_month):
+                monthly.append(None)
+            else:
+                monthly.append(counts.get((yr, m), 0))
+        series.append({
+            "year": yr,
+            "counts": monthly,
+            "total": sum(c for c in monthly if c is not None),
+        })
 
     return {
         "query": query,
@@ -284,9 +299,12 @@ def count_by_month(query, year_from=None, year_to=None,
         "note": (
             "Кількість новин за запитом по місяцях (агрегат по дзеркалу архіву, "
             "весь збіг, без обмеження на 30). У series — по ряду на кожен рік "
-            "(counts: 12 значень Січ→Гру, total: за рік). Для графіка передай у "
-            "render_chart labels і series=[{name:'2026', values: counts, color:'#2e6ee8'}, "
-            "{name:'2025', values: counts, color:'#e8402e'}]. Новини текстом НЕ перелічуй."
+            "(counts: 12 значень Січ→Гру, total: за рік). УВАГА: майбутні місяці "
+            "поточного року — null (ще не настали); передавай counts у render_chart "
+            "ЯК Є разом з null, НЕ заміняй null на 0 — інакше лінія року впаде в нуль "
+            "до грудня. Для графіка: render_chart з labels і series=[{name:'2026', "
+            "values: counts, color:'#2e6ee8'}, {name:'2025', values: counts, "
+            "color:'#e8402e'}]. Новини текстом НЕ перелічуй."
         ),
     }
 
