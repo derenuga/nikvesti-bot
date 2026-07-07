@@ -43,6 +43,8 @@ ALERT_COOLDOWN_HOURS = 2
 MAX_TITLES = 6
 # URL, яким адмінка сайту зберігає білдер — по ньому знаходимо в logs, ХТО оновив.
 BUILDER_SAVE_URL = "/admin/builder/save/"
+# Базовий URL сайту — з slug_ua складаємо посилання на матеріал.
+BASE_URL = "https://nikvesti.com"
 
 
 def _builder_last_updated():
@@ -81,7 +83,8 @@ def _recent_own_news(limit):
     """Останні `limit` власних опублікованих новин (для /builder_test) —
     хронологічно, щоб тестове нагадування виглядало як справжнє."""
     sql = (
-        "SELECT n.id, n.published, n.title_ua, n.title, u.first_name "
+        "SELECT n.id, n.published, n.title_ua, n.title, n.slug_ua, "
+        "u.first_name, u.last_name "
         "FROM nodes n "
         "LEFT JOIN users u ON u.id = n.owner_id "
         "WHERE n.own_material = 1 AND n.status = 1 AND n.published <= %s "
@@ -100,7 +103,8 @@ def _kyiv_hhmm(ts):
 def _fresh_own_news(since_ts, until_ts):
     """Власні новини (own_material=1, опубліковані), published у вікні (since, until]."""
     sql = (
-        "SELECT n.id, n.published, n.title_ua, n.title, u.first_name "
+        "SELECT n.id, n.published, n.title_ua, n.title, n.slug_ua, "
+        "u.first_name, u.last_name "
         "FROM nodes n "
         "LEFT JOIN users u ON u.id = n.owner_id "
         "WHERE n.own_material = 1 AND n.status = 1 "
@@ -111,11 +115,34 @@ def _fresh_own_news(since_ts, until_ts):
 
 
 def _author_name(row):
-    return (row.get("first_name") or "").strip() or "хтось із редакції"
+    full = " ".join(
+        p for p in (
+            (row.get("first_name") or "").strip(),
+            (row.get("last_name") or "").strip(),
+        ) if p
+    )
+    return full or "хтось із редакції"
 
 
 def _news_title(row):
     return (row.get("title_ua") or row.get("title") or "").strip() or f"новина #{row.get('id')}"
+
+
+def _news_url(row):
+    """Посилання на матеріал з slug_ua (уже містить id), або None."""
+    slug = (row.get("slug_ua") or "").strip()
+    return f"{BASE_URL}/news/{slug}" if slug else None
+
+
+def _news_line(row):
+    """Рядок матеріалу: 📰 <a>заголовок</a> — 👤 Автор Прізвище.
+
+    Заголовок — анкор посилання (📰 перед ним), автор з прізвищем (👤 перед ним).
+    Без slug_ua лінка нема — показуємо заголовок текстом."""
+    title = escape_html(_news_title(row))
+    url = _news_url(row)
+    head = f'📰 <a href="{escape_html(url)}">{title}</a>' if url else f"📰 {title}"
+    return f"• {head} — 👤 {escape_html(_author_name(row))}"
 
 
 def _builder_update_line(builder_last, editor):
@@ -130,10 +157,8 @@ def _builder_update_line(builder_last, editor):
 def _format_alert(gap_hours, news, builder_last, editor):
     # Автор — до кожного заголовка (і інформативніше, і уникає узгодження
     # дієслова за родом/числом, бо автор може бути один і будь-якої статі).
-    titles = [
-        f"• {escape_html(_news_title(row))} — {escape_html(_author_name(row))}"
-        for row in news[:MAX_TITLES]
-    ]
+    # Заголовок — анкор-посилання на матеріал (📰), автор з прізвищем (👤).
+    titles = [_news_line(row) for row in news[:MAX_TITLES]]
     more = len(news) - MAX_TITLES
     if more > 0:
         titles.append(f"…і ще {more}")
@@ -218,10 +243,7 @@ async def builder_handler(update, context):
         verdict = "🟢 <b>Усе гаразд</b> — умови для нагадування ще не виконані, чат не турбуватиму."
     when = _kyiv_hhmm(builder_last)
     who = f"{escape_html(editor)}, " if editor else ""
-    titles = "\n".join(
-        f"• {escape_html(_news_title(r))} — {escape_html(_author_name(r))}"
-        for r in news[:MAX_TITLES]
-    )
+    titles = "\n".join(_news_line(r) for r in news[:MAX_TITLES])
     lines = [
         "🏗️ <b>Стан білдера головної</b>",
         "",
