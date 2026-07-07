@@ -35,9 +35,13 @@
 3. Claude семантично добирає найкращий QID СУВОРО з-поміж кандидатів (щоб не
    вигадати неіснуючий Q-номер) + тип schema.org (Thing/Place/Person/…), або
    null, якщо жоден не пасує — краще без лінка, ніж хибний сигнал для Google;
-4. на виході два файли в Telegram: CSV на ревʼю (з кандидатами й впевненістю)
-   та .sql (ALTER + UPDATE; невпевнені — закоментовані, щоб нічого хибного не
-   застосувалось автоматично).
+4. для обраного QID добираємо з Wikidata (безкоштовно, без Google API):
+   посилання на Вікіпедію (sitelinks uk→ru→en, для другого sameAs — сильніший
+   сигнал за KG ID) і Google KG ID (властивість P2671). Долити встигаємо й тим
+   тегам, що зіставлені ще до цієї фічі (кеш без лінків) — БЕЗ повторного Claude;
+5. на виході два файли в Telegram: CSV на ревʼю (кандидати, впевненість,
+   Вікіпедія, KG ID) та .sql (ALTER 4 колонки + UPDATE; невпевнені закоментовані,
+   щоб нічого хибного не застосувалось автоматично).
 
 Команди:
   /tags_export [N]   — топ-N тегів за ужитком у CSV (за замовч. 300), без Wikidata
@@ -80,6 +84,10 @@ SCHEMA_TYPES = {
 }
 
 _QID_RE = re.compile(r"^Q[1-9][0-9]*$")
+# Google Knowledge Graph ID (Wikidata P2671): /g/… або /m/… (Freebase MID).
+_KG_ID_RE = re.compile(r"^/(g|m)/[A-Za-z0-9_]+$")
+# Вікі для sameAs, у порядку переваги.
+WIKI_SITES = (("ukwiki", "uk"), ("ruwiki", "ru"), ("enwiki", "en"))
 
 _ALLOWED_USER_IDS = {
     int(uid)
@@ -195,6 +203,52 @@ def _candidates_for(tag):
         # Пауза після кожного HTTP — ввічливість до Wikidata.
         time.sleep(WIKI_PAUSE)
     return merged
+
+
+def _wikidata_enrich(qid):
+    """Для канонічного QID тягне з Wikidata посилання на Вікіпедію (uk→ru→en)
+    і Google KG ID (властивість P2671) — усе безкоштовно з Wikidata, без Google API.
+    Повертає {"wikipedia_url": str|None, "kg_id": str|None}. Помилки не валять
+    прогін (повертаємо що вдалося). Синхронно; викликати через to_thread."""
+    out = {"wikipedia_url": None, "kg_id": None}
+    if not qid or not _QID_RE.match(qid):
+        return out
+    headers = {"User-Agent": WIKIDATA_UA}
+
+    # 1) Вікіпедія: sitelinks/urls одразу дають готові URL (не будуємо руками).
+    try:
+        r = requests.get(WIKIDATA_API, params={
+            "action": "wbgetentities", "ids": qid, "props": "sitelinks/urls",
+            "sitefilter": "|".join(s for s, _ in WIKI_SITES), "format": "json",
+        }, headers=headers, timeout=15)
+        r.raise_for_status()
+        ent = (r.json().get("entities", {}) or {}).get(qid, {}) or {}
+        sitelinks = ent.get("sitelinks", {}) or {}
+        for site, _ in WIKI_SITES:
+            url = (sitelinks.get(site, {}) or {}).get("url")
+            if url:
+                out["wikipedia_url"] = url
+                break
+    except Exception as e:
+        print(f"tags_wiki: sitelinks {qid} — {e}")
+    time.sleep(WIKI_PAUSE)
+
+    # 2) Google KG ID: точковий wbgetclaims по P2671 (дешевше за повні claims).
+    try:
+        r = requests.get(WIKIDATA_API, params={
+            "action": "wbgetclaims", "entity": qid, "property": "P2671",
+            "format": "json",
+        }, headers=headers, timeout=15)
+        r.raise_for_status()
+        for c in r.json().get("claims", {}).get("P2671", []) or []:
+            val = (((c.get("mainsnak") or {}).get("datavalue") or {}).get("value"))
+            if isinstance(val, str) and _KG_ID_RE.match(val):
+                out["kg_id"] = val
+                break
+    except Exception as e:
+        print(f"tags_wiki: P2671 {qid} — {e}")
+    time.sleep(WIKI_PAUSE)
+    return out
 
 
 # ---------- Claude: семантичний вибір сутності ----------
@@ -334,7 +388,7 @@ async def run_mapping(n, progress_cb=None, use_cache=True):
         if progress_cb:
             await progress_cb("ai", done, len(enriched))
 
-    # Нові рішення (разом із кандидатами для ревʼю) → у кеш.
+    # Нові рішення (разом із кандидатами для ревʼю). Лінки доллємо нижче.
     new_entries = {}
     for item in enriched:
         t = item["tag"]
@@ -347,10 +401,49 @@ async def run_mapping(n, progress_cb=None, use_cache=True):
             "reason": d.get("reason", ""),
             "candidates": item["candidates"],
         }
-    if new_entries:
-        await asyncio.to_thread(storage.update_tags_wikidata_cache, new_entries)
 
-    # Рядки по ВСІХ запитаних тегах: кеш + свіжі (свіжі мають пріоритет).
+    # Збагачення лінками (Вікіпедія + KG ID) з Wikidata. Чіпаємо:
+    #  - нові записи з qid;
+    #  - СТАРІ кеш-записи (у межах цього N) з qid, але без ключа wikipedia_url —
+    #    так B застосовується і до тегів, зіставлених ще до цієї фічі, БЕЗ
+    #    повторного Claude (беремо готовий qid, тягнемо лише лінки).
+    scope_ids = {str(t["id"]) for t in tags}
+    targets = {}  # tag_id → mutable entry (буде оновлено лінками)
+    for tid, e in new_entries.items():
+        if e.get("qid"):
+            targets[tid] = e
+    for tid in scope_ids:
+        if tid in new_entries:
+            continue
+        e = cache.get(tid)
+        if e and e.get("qid") and "wikipedia_url" not in e:
+            targets[tid] = e
+
+    # Унікальні QID (кілька тегів можуть мати той самий) → один запит на QID.
+    uniq_qids = list({e["qid"] for e in targets.values() if e.get("qid")})
+    links = {}
+    for i, qid in enumerate(uniq_qids, 1):
+        links[qid] = await asyncio.to_thread(_wikidata_enrich, qid)
+        if progress_cb and (i % 10 == 0 or i == len(uniq_qids)):
+            await progress_cb("links", i, len(uniq_qids))
+
+    stale_updates = {}  # старі кеш-записи, які ми оновили → перезаписати
+    for tid, e in targets.items():
+        lk = links.get(e.get("qid"), {}) or {}
+        e["wikipedia_url"] = lk.get("wikipedia_url")
+        e["kg_id"] = lk.get("kg_id")
+        if tid not in new_entries:
+            stale_updates[tid] = e
+    # Записи без qid теж фіксуємо ключі (щоб наступний прогін не пробував їх збагачувати).
+    for e in new_entries.values():
+        e.setdefault("wikipedia_url", None)
+        e.setdefault("kg_id", None)
+
+    to_persist = {**stale_updates, **new_entries}
+    if to_persist:
+        await asyncio.to_thread(storage.update_tags_wikidata_cache, to_persist)
+
+    # Рядки по ВСІХ запитаних тегах: кеш (з долитими лінками) + свіжі.
     merged = {**cache, **new_entries}
     rows = []
     for t in tags:
@@ -363,6 +456,8 @@ async def run_mapping(n, progress_cb=None, use_cache=True):
             "chosen_label": c.get("chosen_label"),
             "confidence": c.get("confidence", 0.0),
             "reason": c.get("reason", ""),
+            "wikipedia_url": c.get("wikipedia_url"),
+            "kg_id": c.get("kg_id"),
         })
     return rows, reused
 
@@ -386,8 +481,8 @@ def _review_csv(rows):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["tag_id", "usage", "name_ua", "name_ru", "qid", "type",
-                "chosen_label", "confidence", "wikidata_url", "reason",
-                "candidates"])
+                "chosen_label", "confidence", "wikidata_url", "wikipedia_url",
+                "google_kg_id", "reason", "candidates"])
     for r in rows:
         url = f"https://www.wikidata.org/wiki/{r['qid']}" if r["qid"] else ""
         cand = " | ".join(
@@ -396,7 +491,8 @@ def _review_csv(rows):
         w.writerow([
             r["id"], r["usage"], r["name"], r["name_ru"],
             r["qid"] or "", r["type"] or "", r["chosen_label"] or "",
-            f"{r['confidence']:.2f}", url, r["reason"], cand,
+            f"{r['confidence']:.2f}", url, r.get("wikipedia_url") or "",
+            r.get("kg_id") or "", r["reason"], cand,
         ])
     return buf.getvalue().encode("utf-8")
 
@@ -406,21 +502,33 @@ def _sanitize_comment(text):
     return (text or "").replace("\n", " ").replace("*/", "* /").strip()
 
 
+def _sql_str(v):
+    """Безпечний MySQL-літерал рядка або NULL. Екрануємо \\ і ' (Вікіпедія-URL
+    може містити апостроф, напр. .../O'Brien) — інʼєкція неможлива."""
+    if not v:
+        return "NULL"
+    s = str(v).replace("\\", "\\\\").replace("'", "''")
+    return f"'{s}'"
+
+
 def _sql_script(rows):
     """SQL: ALTER (додати колонки) + UPDATE по кожному впевненому тегу.
     Невпевнені (confidence < CONF_APPLY) — закоментовані для ручного ревʼю.
-    В UPDATE потрапляють ЛИШЕ валідовані qid (^Q\\d+$) і type з білого списку
-    + числовий id — вільний текст іде тільки в коментарі. Інʼєкція неможлива."""
+    В UPDATE потрапляють ЛИШЕ валідовані qid (^Q\\d+$), type з білого списку,
+    kg_id (^/[gm]/…$) і екранований wikipedia_url + числовий id — вільний текст
+    іде тільки в коментарі. Інʼєкція неможлива."""
     lines = [
-        "-- Прив'язка тегів до Wikidata (schema.org about). Згенеровано ботом.",
-        f"-- Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "-- Прив'язка тегів до Wikidata + Вікіпедія + Google KG (schema.org about).",
+        f"-- Згенеровано ботом. Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "-- Застосувати в PHPMyAdmin на БД сайту (bot має тільки SELECT).",
         "--",
-        "-- 1) Додати колонки (якщо ще немає). Якщо колонки вже є — цей рядок",
+        "-- 1) Додати колонки (якщо ще немає). Якщо колонки вже є — цей блок",
         "--    дасть помилку 'Duplicate column' — тоді просто пропусти його.",
         "ALTER TABLE `tag`",
         "  ADD COLUMN `wikidata_qid` VARCHAR(20) NULL,",
-        "  ADD COLUMN `wikidata_type` VARCHAR(32) NULL;",
+        "  ADD COLUMN `wikidata_type` VARCHAR(32) NULL,",
+        "  ADD COLUMN `wikipedia_url` VARCHAR(255) NULL,",
+        "  ADD COLUMN `google_kg_id` VARCHAR(32) NULL;",
         "",
         "-- 2) Наповнення. Закоментовані рядки (-- LOW) — низька впевненість,",
         "--    звір вручну по CSV перед розкоментуванням.",
@@ -435,9 +543,13 @@ def _sql_script(rows):
             f"{r['name']} → {r['chosen_label'] or ''} "
             f"[{r['type']}] conf {r['confidence']:.2f}"
         )
+        kg = r.get("kg_id")
+        kg_sql = f"'{kg}'" if kg and _KG_ID_RE.match(str(kg)) else "NULL"
         stmt = (
             f"UPDATE `tag` SET `wikidata_qid`='{r['qid']}', "
-            f"`wikidata_type`='{r['type']}' WHERE `id`={int(r['id'])};"
+            f"`wikidata_type`='{r['type']}', "
+            f"`wikipedia_url`={_sql_str(r.get('wikipedia_url'))}, "
+            f"`google_kg_id`={kg_sql} WHERE `id`={int(r['id'])};"
         )
         if r["confidence"] >= CONF_APPLY:
             lines.append(f"{stmt}  -- {note}")
@@ -518,7 +630,11 @@ async def tags_wiki_handler(update, context):
         if now - state["last_edit"] < 8 and done < total:
             return
         state["last_edit"] = now
-        label = "шукаю у Wikidata" if phase == "wiki" else "Claude добирає сутності"
+        label = {
+            "wiki": "шукаю у Wikidata",
+            "ai": "Claude добирає сутності",
+            "links": "тягну Вікіпедію + KG ID",
+        }.get(phase, "обробляю")
         try:
             await msg.edit_text(f"🦊 {label}: {done}/{total}…")
         except Exception:
@@ -530,6 +646,8 @@ async def tags_wiki_handler(update, context):
             rows, reused = await run_mapping(n, progress_cb=progress)
             matched = sum(1 for r in rows if r["qid"])
             strong = sum(1 for r in rows if r["qid"] and r["confidence"] >= CONF_APPLY)
+            wiki_n = sum(1 for r in rows if r.get("wikipedia_url"))
+            kg_n = sum(1 for r in rows if r.get("kg_id"))
             reused_note = f" (з них {reused} узято з кешу)" if reused else ""
             review = await asyncio.to_thread(_review_csv, rows)
             sql = await asyncio.to_thread(_sql_script, rows)
@@ -540,6 +658,7 @@ async def tags_wiki_handler(update, context):
                 caption=(
                     f"🦊 Зіставлено {matched}/{len(rows)} тегів "
                     f"({strong} впевнено ≥{CONF_APPLY:.0%}){reused_note}.\n"
+                    f"Вікіпедія: {wiki_n} · Google KG ID: {kg_n}.\n"
                     "Це ревʼю: звір кандидатів і впевненість очима."
                 ),
             )
@@ -548,7 +667,7 @@ async def tags_wiki_handler(update, context):
                 filename=f"tags_wikidata_{stamp}.sql",
                 caption=(
                     "🦊 Готовий SQL. Застосуй у PHPMyAdmin:\n"
-                    "1) ALTER додасть колонки wikidata_qid/type;\n"
+                    "1) ALTER додасть 4 колонки (wikidata_qid/type, wikipedia_url, google_kg_id);\n"
                     "2) UPDATE наповнить упевнені теги;\n"
                     f"3) рядки «-- LOW» (впевненість <{CONF_APPLY:.0%}) — "
                     "звір вручну й розкоментуй за потреби."
