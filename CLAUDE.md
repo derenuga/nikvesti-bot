@@ -108,6 +108,7 @@ handlers/
 | /tags_export \[N\] | Топ-N тегів сайту за ужитком у CSV (дефолт 300), з розмерджуванням redirect_tag_id |
 | /tags_wiki \[N\] | Зіставити топ-N тегів (дефолт 100) із Wikidata: CSV на ревʼю + готовий ALTER/UPDATE .sql для PHPMyAdmin (БД сайту read-only). Кешується за tag_id — повторний прогін на більший N чіпає лише нові теги, файли віддає на весь N |
 | /tags_wiki_reset | Скинути кеш зіставлення тегів (наступний /tags_wiki перерахує все з нуля) |
+| /kg \<KG ID або запит\> | Картка сутності з Google Knowledge Graph Search API: name, @type, опис, Вікіпедія, сайт, score. По ID (/g/…, /m/…) або за назвою. Потребує GOOGLE_KG_API_KEY |
 | /archive_sample | Залити кілька старих+нових статей і показати збережений текст (перевірка чистки/розділення мов) |
 | /archive_backfill \[N\] | Заливка архіву в дзеркало; N — порція за запуск (фазування), без N — усе; resumable |
 | /archive_status | Стан дзеркала архіву: скільки статей, діапазон дат, курсори синку |
@@ -162,6 +163,7 @@ FACEBOOK_PAGE_TOKEN
 FACEBOOK_PAGE_ID = 301719373180657
 ANTHROPIC_API_KEY
 OPENWEATHER_API_KEY
+GOOGLE_KG_API_KEY            # опційно, простий API key (не сервісний акаунт) для /kg — Google Knowledge Graph Search API
 SPREADSHEET_ID = 1bsKzGRsQ7O1aa4TpxmzqEfIjRM1A0dso7zueYvCXB1I
 ALLOWED_USER_IDS = 56631818,56424866,386403807   # Олег, Катя, Ліза — whitelist приватних повідомлень і NLQ
 STATE_PATH                   # опційно, дефолт /data/prozorro_state.json
