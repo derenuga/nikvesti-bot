@@ -1301,7 +1301,10 @@ async def _update_placeholder(placeholder, text, last_text):
 async def handle_natural_language_query(update, context):
     question = update.message.text
     today = datetime.now().strftime("%Y-%m-%d")
-    system_prompt = QUERY_ROUTER_SYSTEM_PROMPT.format(today=today)
+    # .replace, а не .format: у промпті є літеральні фігурні дужки (приклади
+    # series=[{name:…}] для render_chart), які .format сприйняв би як поля
+    # підстановки й падав би з KeyError ще до плейсхолдера (тиха відмова NLQ).
+    system_prompt = QUERY_ROUTER_SYSTEM_PROMPT.replace("{today}", today)
 
     dialog_key = (update.effective_chat.id, update.effective_user.id)
     # Маркер цього запиту для search_news_archive: кілька пошуків одного
