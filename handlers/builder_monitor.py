@@ -45,6 +45,15 @@ MAX_TITLES = 6
 BUILDER_SAVE_URL = "/admin/builder/save/"
 # Базовий URL сайту — з slug_ua складаємо посилання на матеріал.
 BASE_URL = "https://nikvesti.com"
+# Стабільний маркер тексту нагадування про білдер. Reply на такий пост —
+# це відповідь редакції одне одному («хто оновить?»), а НЕ запит до Лиса,
+# тому Intent Router (group_reply_to_bot у bot.py) має його пропускати.
+BUILDER_NUDGE_MARKER = "білдер не оновлювався вже понад"
+
+
+def is_builder_nudge(text):
+    """Чи є текст нагадуванням монітора білдера (щоб NLQ не відповідав на reply)."""
+    return bool(text) and BUILDER_NUDGE_MARKER in text
 
 
 def _builder_last_updated():
@@ -163,7 +172,7 @@ def _format_alert(gap_hours, news, builder_last, editor):
     if more > 0:
         titles.append(f"…і ще {more}")
     return (
-        f"🦊 Народ, головна застоялась — білдер не оновлювався вже понад {int(gap_hours)} год.\n"
+        f"🦊 Народ, головна застоялась — {BUILDER_NUDGE_MARKER} {int(gap_hours)} год.\n"
         f"{_builder_update_line(builder_last, editor)}\n"
         f"🆕 А на сайті за цей час вийшли нові власні матеріали ({len(news)}):\n\n"
         f"{chr(10).join(titles)}\n\n"

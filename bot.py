@@ -32,7 +32,7 @@ from handlers.archive_mirror import (
 from handlers.dossier import dossier_handler
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.knowledge_graph import kg_handler
-from handlers.builder_monitor import builder_handler, builder_test_handler
+from handlers.builder_monitor import builder_handler, builder_test_handler, is_builder_nudge
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
 from handlers import storage
 
@@ -73,6 +73,11 @@ async def group_reply_to_bot(update, context):
     if str(update.effective_chat.id) != str(CHAT_ID):
         return
     if msg.reply_to_message.from_user.id != context.bot.id:
+        return
+    # Нагадування про білдер («хто оновить головну?») — це заклик до редакції,
+    # а не питання до Лиса. Reply на нього («хто обновит?») не має йти в NLQ.
+    if is_builder_nudge(msg.reply_to_message.text or msg.reply_to_message.caption):
+        print(f"NLQ group reply: пропущено (reply на нагадування білдера) user_id={update.effective_user.id if update.effective_user else None}")
         return
     # Лог для розслідування group-reply leak (NLQ-дока, "Відомі проблеми"):
     # фіксуємо кожен reply на бота, щоб при повторенні інциденту була фактура
