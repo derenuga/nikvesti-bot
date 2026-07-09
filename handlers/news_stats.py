@@ -73,7 +73,7 @@ def _views_column():
     тож не гадаємо: пробуємо однозначні кандидати за пріоритетом. 'rating' та
     подібні НЕ беремо — вони можуть означати редакційну оцінку, а не перегляди."""
     cols = {c.lower(): c for c in _table_columns("nodes")}
-    for cand in ("views", "hits", "view_count", "count_views", "count_view",
+    for cand in ("counter", "views", "hits", "view_count", "count_views", "count_view",
                  "viewed", "count_show", "show_count", "shows", "read_count"):
         if cand in cols:
             return cols[cand]
