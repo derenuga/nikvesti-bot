@@ -1240,8 +1240,14 @@ TOOLS = [
             "language: 'ua'/'ru'/'en' — матеріали, що мають текст цієї мовної версії "
             "('en' рахується саме тут, у норі EN немає). own_material=true — лише "
             "власні. group_by дає розбивку по осі: category, author, year, month, "
-            "own_material, language, region. Для тематичного підрахунку однієї теми "
-            "по місяцях під графік краще count_archive_by_month (там пошук і по тексту)."
+            "own_material, language, region. "
+            "metric='views' — замість кількості матеріалів сумує ПЕРЕГЛЯДИ (власний "
+            "лічильник сайту, накопичений за весь час; GA4 тут не потрібен). Саме "
+            "для питань 'який журналіст набрав більше переглядів своїми матеріалами' "
+            "(metric='views', group_by='author', own_material=true) або 'скільки "
+            "переглядів у рубрики'. У відповіді breakdown містить views і materials. "
+            "Для тематичного підрахунку однієї теми по місяцях під графік краще "
+            "count_archive_by_month (там пошук і по тексту)."
         ),
         "input_schema": {
             "type": "object",
@@ -1260,6 +1266,11 @@ TOOLS = [
                     "type": "string",
                     "enum": ["category", "author", "year", "month", "own_material", "language", "region"],
                     "description": "Опційно: вісь розбивки. Без нього — одне сумарне число",
+                },
+                "metric": {
+                    "type": "string",
+                    "enum": ["count", "views"],
+                    "description": "count — кількість матеріалів (дефолт); views — сума переглядів (лічильник сайту, за весь час). Для 'хто набрав більше переглядів' — views + group_by='author'",
                 },
             },
             "required": [],

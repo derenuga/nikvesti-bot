@@ -59,7 +59,7 @@ handlers/
   helpers.py              — спільні утиліти (парсинг місяців, get_author_from_url)
   query_router.py         — Intent Router: природномовні запити до Лиса (GA4 + Search Console, tool use)
   news_archive.py         — архів новин сайту (БД): пошук "що ми писали про X", ліди, генерація беку, кнопка "Написати бек"
-  news_stats.py           — підрахунки по БД сайту (nodes): NLQ-tool count_news — скільки матеріалів за період / власних (own) / по рубриках / по авторах (owner_id→users) / мовою (ua/ru/en, EN-колонку визначає інтроспекцією). Джерело істини, свіже, рахує й англ. версію (якої немає в норі)
+  news_stats.py           — підрахунки по БД сайту (nodes): NLQ-tool count_news — скільки матеріалів за період / власних (own) / по рубриках / по авторах (owner_id→users) / мовою (ua/ru/en, EN-колонку визначає інтроспекцією); metric=views сумує перегляди (лічильник сайту, за весь час) — «хто з журналістів набрав більше переглядів». Джерело істини, свіже, рахує й англ. версію (якої немає в норі)
   tags_wikidata.py        — прив'язка тегів сайту до Q-сутностей Wikidata для schema.org about: /tags_export (топ-N тегів у CSV), /tags_wiki (топ-N → Wikidata wbsearchentities → Claude добирає QID+@type → CSV на ревʼю + готовий ALTER/UPDATE .sql, бо БД сайту read-only)
 ```
 
