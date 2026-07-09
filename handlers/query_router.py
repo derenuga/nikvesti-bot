@@ -28,7 +28,7 @@ from google.analytics.data_v1beta.types import (
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as gapi_build
 
-from handlers import analytics_store, archive_search, news_archive, social_store, storage
+from handlers import analytics_store, archive_search, news_archive, news_stats, social_store, storage
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, clean_ai_text
 from handlers.helpers import get_author_from_url
 
@@ -1226,6 +1226,45 @@ TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "count_news",
+        "description": (
+            "Скільки ОПУБЛІКОВАНИХ матеріалів nikvesti.com за фільтрами — одне число "
+            "АБО розбивка. Джерело — БД сайту напряму (свіже, джерело істини), тому "
+            "рахує і англійську версію. Усі параметри опційні й комбінуються. "
+            "Використовуй для будь-яких питань про КІЛЬКІСТЬ матеріалів: 'скільки "
+            "новин вийшло у червні', 'скільки наших власних за рік', 'скільки "
+            "англійською в червні', 'скільки написала Катя Середа за місяць', "
+            "'скільки по кожній рубриці', 'скільки українською vs російською'. "
+            "author — ім'я або прізвище автора (напр. 'Середа' чи 'Катерина'). "
+            "language: 'ua'/'ru'/'en' — матеріали, що мають текст цієї мовної версії "
+            "('en' рахується саме тут, у норі EN немає). own_material=true — лише "
+            "власні. group_by дає розбивку по осі: category, author, year, month, "
+            "own_material, language, region. Для тематичного підрахунку однієї теми "
+            "по місяцях під графік краще count_archive_by_month (там пошук і по тексту)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title_contains": {"type": "string", "description": "Опційно: підрядок у заголовку (пошук лише по заголовку; для пошуку й по тексту бери count_archive_by_month)"},
+                "year": {"type": "integer", "description": "Опційно: конкретний рік"},
+                "month": {"type": "integer", "description": "Опційно: місяць (1-12), разом з year — конкретний місяць"},
+                "year_from": {"type": "integer", "description": "Опційно: з якого року (діапазон)"},
+                "year_to": {"type": "integer", "description": "Опційно: по який рік включно (діапазон)"},
+                "own_material": {"type": "boolean", "description": "true — тільки власні матеріали (own_material=1)"},
+                "category": {"type": "string", "description": "Опційно: слаг рубрики (напр. 'politics')"},
+                "region": {"type": "integer", "description": "Опційно: числовий код регіону"},
+                "author": {"type": "string", "description": "Опційно: ім'я або прізвище автора (напр. 'Середа', 'Юлія Бойченко')"},
+                "language": {"type": "string", "enum": ["ua", "ru", "en"], "description": "Опційно: ua/ru/en — матеріали, що мають текст цієї мовної версії"},
+                "group_by": {
+                    "type": "string",
+                    "enum": ["category", "author", "year", "month", "own_material", "language", "region"],
+                    "description": "Опційно: вісь розбивки. Без нього — одне сумарне число",
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 TOOL_FUNCTIONS = {
@@ -1245,6 +1284,7 @@ TOOL_FUNCTIONS = {
     "search_news_archive": news_archive.search_news,
     "search_archive_fulltext": archive_search.search_archive,
     "count_archive_by_month": archive_search.count_by_month,
+    "count_news": news_stats.count_news,
     "get_news_leads": news_archive.get_news_leads,
     "render_chart": render_chart,
 }
@@ -1281,6 +1321,7 @@ TOOL_PROGRESS = {
     "search_news_archive": "🦊 Нишпорю в архіві новин...",
     "search_archive_fulltext": "🦊 Перегортаю 17 років архіву...",
     "count_archive_by_month": "🦊 Рахую новини по місяцях...",
+    "count_news": "🦊 Рахую матеріали в базі сайту...",
     "get_news_leads": "🦊 Перечитую ліди цих новин...",
     "render_chart": "🦊 Малюю графік...",
 }
@@ -1299,6 +1340,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 1. 📅 05.06.2026 — <a href="URL">Заголовок</a>
 КРИТИЧНО: показуй УСІ новини з поля items останнього результату search_news_archive і рівно під їх номерами n — не пропускай, не фільтруй, не перенумеровуй і не зливай кілька пошуків у власний список: кнопки відбору під повідомленням прив'язані до номерів n, розбіжність ламає вибір новин для беку. Якщо робив кілька пошуків — items останнього виклику вже містить накопичений повний список. Символи & < > у заголовках заміни на &amp; &lt; &gt;. Нічого не переказуй — тільки список і один короткий рядок-підсумок. Під відповіддю автоматично з'являться кнопки відбору новин і кнопка беку — про них не пиши.
 Якщо питають про КІЛЬКІСТЬ чи ДИНАМІКУ новин ("скільки новин про ДТП по місяцях", "динаміка згадувань X", "порівняй 2025 і 2026 по місяцях", "графік кількості публікацій про Y") — бери count_archive_by_month (агрегат COUNT по місяцях, весь збіг без обмеження на 30), НЕ search_archive_fulltext (той віддає лише перелік ≤30 новин і для підрахунку не годиться). Результат уже готовий під графік: одразу виклич render_chart, передавши labels і кожен рік окремою серією (series=[{name:'2026', values:…, color:'#2e6ee8'}, {name:'2025', values:…, color:'#e8402e'}]), horizontal=true для горизонтальних смуг. Новини при цьому текстом НЕ перелічуй — тільки короткий підсумок (напр. "у 2026-му помітний сплеск у червні-липні") і графік.
+Якщо питають про КІЛЬКІСТЬ матеріалів за структурною ознакою (без прив'язки до теми) — скільки новин вийшло за період, скільки власних (own), скільки по рубриках, скільки конкретною мовою (укр/рос/англ), скільки написав конкретний автор ("скільки Катя Середа написала за місяць") — бери count_news (рахує напряму з БД сайту, свіже, вміє й англійську версію). author — ім'я/прізвище; language — 'ua'/'ru'/'en'; own_material=true — лише власні; group_by дає розбивку (category/author/year/month/own_material/language/region). Це відповідь на "скільки EN-матеріалів у червні" (language='en'). Якщо потрібна саме тематична кількість по місяцях під графік — count_archive_by_month (той шукає й по тексту). Якщо count_news поверне помилку, що EN-колонки немає — чесно передай: англійські локалізації в БД зберігаються інакше або їх немає, точну цифру треба брати з CMS.
 Якщо просять написати бек (бекграунд, "нагадаємо") — виклич get_news_leads (з numbers, якщо вказали номери новин) і склади бек: 2-4 короткі абзаци, починай з "Нагадаємо,", далі від свіжішого до давнішого, тільки факти з лідів і заголовків, нічого не додумуй, стиль стрічки новин, без емодзі. Посилання на кожну новину — HTML-гіперлінк <a href="URL">…</a>, яким обгортаєш 1-3 слова, що ВЖЕ стоять у реченні (зазвичай дієслівну фразу факту): "Ільюк <a href="URL">пропонував провести ротацію</a> керівників адміністрацій". ЗАБОРОНЕНО дописувати анкор окремим хвостом через тире чи кому ("…, — заявляв про дитсадки") — речення має читатись однаково і з лінком, і без нього. Не "тут", не голий URL; одна новина — один лінк.
 Якщо питають про соцмережі — get_facebook_stats (сторінка ФБ: підписники, охоплення, топ постів і рілзів) або get_instagram_stats (підписники з приростом/відтоком, публікації, топ за лайками). Зверни увагу на note в результатах: охоплення/взаємодії Meta віддає фіксовано за останній тиждень — якщо питали про інший період, чесно зазнач це. Для трендів і динаміки соцмереж у часі ("як росла інста за пів року", "динаміка охоплення ФБ", "скільки підписників було місяць тому", "соцмережі місяць до місяця") бери get_social_history — це накопичена історія тижневих зрізів у пам'яті бота (Meta не дає її заднім числом). Для Instagram орієнтуйся на views (Meta перейшов з reach на views). Масив snapshots зручно передати в render_chart.
 Якщо питають деталі про конкретний реферер/джерело трафіку з невеликою кількістю сесій (наприклад "звідки саме прийшли заходи з derstandard.de" або "на які наші сторінки попав трафік з X") — використай get_ga4_custom_report з filter_dimension='sessionSource', filter_value_contains=<домен>, dimensions=['pageReferrer', 'pagePath'] (або додай 'sessionSourceMedium'). Це дозволяє звузити звіт до конкретного джерела навіть якщо воно дало лише кілька сесій і не потрапляє в загальний топ. pageReferrer дає повний URL сторінки-донора, pagePath — куди саме на нашому сайті потрапив користувач.
@@ -1401,7 +1443,8 @@ async def handle_natural_language_query(update, context):
                         sources.append("Instagram API")
                     if "get_social_history" in used_tools:
                         sources.append("пам'ять соцмереж Лиса (FB/IG)")
-                    if used_tools & NEWS_TOOL_NAMES or "count_archive_by_month" in used_tools:
+                    if (used_tools & NEWS_TOOL_NAMES or "count_archive_by_month" in used_tools
+                            or "count_news" in used_tools):
                         sources.append("архів новин nikvesti.com")
                     if sources:
                         final_text += f"\n\n📊 Джерело даних: {' + '.join(sources)}{site_suffix}"
