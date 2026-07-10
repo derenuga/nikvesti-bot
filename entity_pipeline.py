@@ -112,11 +112,20 @@ def connect():
     return psycopg2.connect(get_url(), connect_timeout=10)
 
 
+# Декоративні лапки прибираємо з ключа злиття, щоб КП «Парки» / КП "Парки" /
+# КП «Парки» (різні стилі лапок) не плодили окремих сутностей. Зберігається
+# при цьому оригінальне написання (лапки лишаються в name_ua/name_ru для показу).
+_QUOTES = dict.fromkeys(map(ord, "«»“”„‟\"'‘’`"), None)
+
+
 def norm(s):
-    """Нормалізоване ім'я для точного злиття: trim + collapse spaces + lower."""
+    """Нормалізоване ім'я для точного злиття: trim + collapse spaces + lower +
+    прибирання декоративних лапок."""
     if not s:
         return None
-    return re.sub(r"\s+", " ", s.strip()).lower() or None
+    s = re.sub(r"\s+", " ", s.strip()).lower().translate(_QUOTES)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s or None
 
 
 # Курований словник канону ключових локацій (домен: Миколаївщина + топ-згадувані).
