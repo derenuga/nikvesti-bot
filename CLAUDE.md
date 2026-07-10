@@ -56,11 +56,15 @@ handlers/
   gmail.py                — перевірка Gmail
   sheets.py               — запис у Google Sheets (Prozorro)
   reactions.py            — обробка реакцій на повідомлення про тендери
+  energy_outage.py        — графік відключень електроенергії (off.energy.mk.ua): /outage, /outage_probe, /outage_export (CSV вулиць із чергами)
+  notifier.py             — сповіщення про збої scheduled-задач у приват адміну (слухач EVENT_JOB_ERROR + прямий notify_error у модулях з власним try/except)
+  ai_usage.py             — звіт про вартість AI-шару: /aicost за місяць + авто-звіт Олегу 1-го числа; оцінка за прайсом моделей із токенів у storage (record_ai_usage)
   helpers.py              — спільні утиліти (парсинг місяців, get_author_from_url)
   query_router.py         — Intent Router: природномовні запити до Лиса (GA4 + Search Console, tool use)
   news_archive.py         — архів новин сайту (БД): пошук "що ми писали про X", ліди, генерація беку, кнопка "Написати бек"
   news_stats.py           — підрахунки по БД сайту (nodes): NLQ-tool count_news — скільки матеріалів за період / власних (own) / по рубриках / по авторах (owner_id→users) / мовою (ua/ru/en, EN-колонку визначає інтроспекцією); metric=views сумує перегляди (лічильник сайту, за весь час) — «хто з журналістів набрав більше переглядів». Джерело істини, свіже, рахує й англ. версію (якої немає в норі)
   tags_wikidata.py        — прив'язка тегів сайту до Q-сутностей Wikidata для schema.org about: /tags_export (топ-N тегів у CSV), /tags_wiki (топ-N → Wikidata wbsearchentities → Claude добирає QID+@type → CSV на ревʼю + готовий ALTER/UPDATE .sql, бо БД сайту read-only)
+  knowledge_graph.py      — розвідка Google Knowledge Graph Search API: /kg <KG ID або запит> дістає канонічну картку сутності (name, @type, опис, Вікіпедія, сайт, resultScore), перевірка як Google бачить бренд/тег; простий API key GOOGLE_KG_API_KEY
 ```
 
 ---
@@ -101,6 +105,8 @@ handlers/
 | /outage | Графік відключень електроенергії (off.energy.mk.ua) |
 | /outage_probe \<path\> \[arg\] | Службова розвідка API з Railway (тимчасово) |
 | /outage_export \[idfilial\] | CSV вулиць із чергами, дефолт 15 (Миколаїв), ~7–15 хв |
+| /outage_geocode \[idfilial\] | Геокодує вулиці по мікрорайонах (дефолт 15, Миколаїв) |
+| /myip | Вихідний IP Railway + чи він у whitelist БД сайту (діагностика конекту) |
 | /dbtest | Перевірка з'єднання з MySQL-БД сайту (версія, база, к-сть таблиць, час відповіді) |
 | /dbquery \<SELECT…\> | Службова розвідка схеми БД з Railway (read-only, тимчасово) |
 | /builder | Діагностика монітора білдера: коли оновлювався, скільки власних новин відтоді |
@@ -112,7 +118,10 @@ handlers/
 | /kg \<KG ID або запит\> | Картка сутності з Google Knowledge Graph Search API: name, @type, опис, Вікіпедія, сайт, score. По ID (/g/…, /m/…) або за назвою. Потребує GOOGLE_KG_API_KEY |
 | /archive_sample | Залити кілька старих+нових статей і показати збережений текст (перевірка чистки/розділення мов) |
 | /archive_backfill \[N\] | Заливка архіву в дзеркало; N — порція за запуск (фазування), без N — усе; resumable |
+| /archive_stop | М'яко зупинити поточний бекфіл (після поточної пачки); resumable — повторний /archive_backfill продовжить з місця зупинки |
 | /archive_status | Стан дзеркала архіву: скільки статей, діапазон дат, курсори синку |
+| /archive_report | Здоровкове зведення нори для нагляду за бекфілом: розподіл по роках, мови, теги, рубрики, регіони, середня довжина тексту по роках (детектор проблем чистки) |
+| /nora_sql \<SELECT…\> | Read-only запит до нори (Postgres бота) для ad-hoc нагляду; той самий підхід, що /dbquery для БД сайту |
 
 ---
 
