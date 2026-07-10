@@ -16,10 +16,19 @@ URL нори береться з env NORA_URL (щоб пароль не лежа
         застосувати DDL (entities + article_entities + курсор entity_last_id).
 
     python3 entity_pipeline.py fetch 100 batch.json
-        вивантажити N свіжих опублікованих статей 2024–2026 у JSON
+        [ТЕСТ] вивантажити N свіжих опублікованих статей 2024–2026 у JSON
         [{id, published, title_ua, title_ru, text_ua, text_ru}].
+        БЕЗ курсора — разова тестова вибірка (крок 2 §3.3.1).
 
-    python3 entity_pipeline.py write results.json
+    python3 entity_pipeline.py next 10000 batch.json
+        [ПРОДАКШН, фазовий прогін] взяти наступні N необроблених статей,
+        йдучи по id ВНИЗ від курсора entity_last_id (id ≈ хронологічний, тож
+        це newest→oldest: 2026→…→2009, ровно фазування §3.3). Курсор НЕ рухає
+        (щоб обрив до write не пропустив пачку) — рухає його write. Пише
+        {"cursor_from": …, "articles": [...]}. Коли статей нижче курсора нема —
+        друкує "прогін завершено".
+
+    python3 entity_pipeline.py write results.json [batch.json]
         злити результат витягу. Формат results.json:
         [{"article_id": 320651,
           "entities": [
@@ -29,6 +38,9 @@ URL нори береться з env NORA_URL (щоб пароль не лежа
         Злиття: точний збіг нормалізованого імені в межах kind (однофамільців
         НЕ зливаємо). mentions/first_seen/last_seen/role_last перераховуються з
         даних (ідемпотентно — повторний write безпечний).
+        Якщо передано batch.json (продакшн-цикл) — курсор entity_last_id
+        опускається до мінімального id пачки (весь діапазон позначається
+        обробленим, навіть статті без сутностей), і друкується покриття.
 
     python3 entity_pipeline.py stats
         зведення: скільки сутностей по kind, топ за згадками, к-сть зв'язків.
@@ -102,6 +114,20 @@ def norm(s):
     return re.sub(r"\s+", " ", s.strip()).lower() or None
 
 
+def get_state(cur, key, default=None):
+    cur.execute("SELECT value FROM sync_state WHERE key = %s", (key,))
+    row = cur.fetchone()
+    return row[0] if row else default
+
+
+def set_state(cur, key, value):
+    cur.execute(
+        "INSERT INTO sync_state (key, value) VALUES (%s, %s) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        (key, str(value)),
+    )
+
+
 # ---------- schema ----------
 
 def cmd_schema():
@@ -157,6 +183,50 @@ def cmd_fetch(n, outpath):
         print(f"діапазон дат (unix): {out[-1]['published']} … {out[0]['published']}")
 
 
+# ---------- next (продакшн-цикл по курсору, newest→oldest) ----------
+
+def cmd_next(n, outpath):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT max(id) FROM articles")
+    maxid = cur.fetchone()[0] or 0
+    stored = int(get_state(cur, "entity_last_id", "0") or "0")
+    # 0 = ще не починали → стеля вище за max(id); інакше йдемо нижче курсора.
+    ceiling = (maxid + 1) if stored == 0 else stored
+    cur.execute(
+        """
+        SELECT id, published, title_ua, title_ru, text_ua, text_ru
+        FROM articles
+        WHERE id < %s
+        ORDER BY id DESC
+        LIMIT %s
+        """,
+        (ceiling, n),
+    )
+    arts = []
+    for aid, pub, tua, tru, xua, xru in cur.fetchall():
+        arts.append({
+            "id": aid,
+            "published": int(pub) if pub is not None else None,
+            "title_ua": tua,
+            "title_ru": tru,
+            "text_ua": (xua or "")[:TEXT_CAP] or None,
+            "text_ru": (xru or "")[:TEXT_CAP] or None,
+        })
+    cur.close()
+    conn.close()
+    if not arts:
+        print("прогін завершено: статей нижче курсора немає "
+              f"(курсор entity_last_id = {stored})")
+        return
+    payload = {"cursor_from": ceiling, "articles": arts}
+    with open(outpath, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=1)
+    low, high = arts[-1]["id"], arts[0]["id"]
+    print(f"взято {len(arts)} статей id {high}…{low} → {outpath}")
+    print(f"курсор поки НЕ рухаю (рухне write). Після write буде: {low}")
+
+
 # ---------- write ----------
 
 def _find_or_create(cur, kind, subtype, name_ua, name_ru):
@@ -205,18 +275,20 @@ def _find_or_create(cur, kind, subtype, name_ua, name_ru):
     return cur.fetchone()[0]
 
 
-def cmd_write(path):
+def cmd_write(path, batch_path=None):
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     conn = connect()
     cur = conn.cursor()
     n_articles = n_links = n_skipped = 0
     touched = set()
+    got_ids = set()
     for art in data:
         aid = art.get("article_id") or art.get("id")
         if aid is None:
             continue
         n_articles += 1
+        got_ids.add(aid)
         for e in art.get("entities", []):
             kind = (e.get("kind") or "").strip().lower()
             sal = (e.get("salience") or "").strip().lower()
@@ -270,6 +342,25 @@ def cmd_write(path):
         WHERE e.id = sub.entity_id
         """
     )
+    # Продакшн-цикл: якщо передано пачку fetch/next — опустити курсор до її
+    # мінімального id (весь діапазон оброблено, включно зі статтями без
+    # сутностей) і звірити покриття.
+    if batch_path:
+        with open(batch_path, encoding="utf-8") as f:
+            batch = json.load(f)
+        batch_arts = batch["articles"] if isinstance(batch, dict) else batch
+        batch_ids = [a.get("id") for a in batch_arts if a.get("id") is not None]
+        if batch_ids:
+            new_cur = min(batch_ids)
+            set_state(cur, "entity_last_id", new_cur)
+            covered = len(got_ids & set(batch_ids))
+            print(f"курсор entity_last_id → {new_cur} "
+                  f"(оброблено діапазон до цього id включно)")
+            print(f"покриття пачки: у пачці {len(batch_ids)}, "
+                  f"є результат по {covered}")
+            if covered < len(batch_ids):
+                print(f"  увага: {len(batch_ids) - covered} статей без результату "
+                      f"(нуль сутностей або суб-агент їх не повернув) — теж позначені обробленими")
     conn.commit()
     cur.close()
     conn.close()
@@ -346,8 +437,10 @@ def main():
         cmd_schema()
     elif cmd == "fetch":
         cmd_fetch(int(sys.argv[2]), sys.argv[3])
+    elif cmd == "next":
+        cmd_next(int(sys.argv[2]), sys.argv[3])
     elif cmd == "write":
-        cmd_write(sys.argv[2])
+        cmd_write(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
     elif cmd == "stats":
         cmd_stats()
     elif cmd == "sample":
