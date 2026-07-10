@@ -274,59 +274,83 @@ def cmd_next(n, outpath):
 
 # ---------- write ----------
 
-def _find_or_create(cur, kind, subtype, name_ua, name_ru):
-    nu, nr = norm(name_ua), norm(name_ru)
-    conds, params = [], [kind]
-    if nu:
-        conds.append("lower(name_ua) = %s")
-        params.append(nu)
-    if nr:
-        conds.append("lower(name_ru) = %s")
-        params.append(nr)
-    if not conds:
-        return None  # сутність без імені — пропускаємо
-    cur.execute(
-        "SELECT id, name_ua, name_ru, subtype, aliases FROM entities "
-        "WHERE kind = %s AND (" + " OR ".join(conds) + ") "
-        "ORDER BY mentions DESC LIMIT 1",
-        params,
-    )
-    row = cur.fetchone()
-    if row:
-        eid, cua, cru, csub, aliases = row
-        canon_norms = {norm(cua), norm(cru)}
-        new_aliases = set(aliases or [])
-        set_ua = name_ua if (not cua and name_ua) else None
-        set_ru = name_ru if (not cru and name_ru) else None
-        # варіанти написання, що відрізняються від канонічних, — в aliases
-        for nm in (name_ua, name_ru):
-            if nm and norm(nm) not in canon_norms and nm not in new_aliases:
-                new_aliases.add(nm)
-        cur.execute(
-            "UPDATE entities SET "
-            "name_ua = COALESCE(%s, name_ua), "
-            "name_ru = COALESCE(%s, name_ru), "
-            "subtype = COALESCE(subtype, %s), "
-            "aliases = %s "
-            "WHERE id = %s",
-            (set_ua, set_ru, subtype, sorted(new_aliases), eid),
-        )
-        return eid
-    cur.execute(
-        "INSERT INTO entities (kind, subtype, name_ua, name_ru, aliases) "
-        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-        (kind, subtype, name_ua, name_ru, []),
-    )
-    return cur.fetchone()[0]
-
-
 def cmd_write(path, batch_path=None):
+    """Пакетний запис: існуючі сутності підвантажуються в пам'ять один раз,
+    зіставлення (те саме — точний збіг нормалізованого імені в межах kind,
+    для place через CANON_PLACE) робиться в Python, вставки йдуть execute_values
+    пачкою. Семантика злиття ідентична побудовному варіанту, але замість тисяч
+    round-trip'ів до нори — кілька запитів. Для place застосовується canon_place."""
+    from psycopg2.extras import execute_values
+
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     conn = connect()
     cur = conn.cursor()
-    n_articles = n_links = n_skipped = 0
-    touched = set()
+
+    # 1. Підвантажити наявні сутності в пам'ять (індекс за (kind, norm-ім'я)).
+    cur.execute("SELECT id, kind, name_ua, name_ru, subtype, aliases, mentions FROM entities")
+    recs = {}   # id -> запис (мутабельний)
+    index = {}  # (kind, norm) -> id (за найбільшою кількістю згадок)
+    for eid, kind, nua, nru, sub, aliases, mentions in cur.fetchall():
+        rec = {"id": eid, "kind": kind, "name_ua": nua, "name_ru": nru,
+               "subtype": sub, "aliases": set(aliases or []),
+               "mentions": mentions or 0, "dirty": False, "new": False}
+        recs[eid] = rec
+        for nm in (nua, nru):
+            k = (kind, norm(nm))
+            if k[1] is None:
+                continue
+            best = index.get(k)
+            if best is None or recs[best]["mentions"] < rec["mentions"]:
+                index[k] = eid
+
+    new_recs = []       # записи на INSERT
+    tmp_seq = [-1]      # тимчасові від'ємні id для нових (мапляться після вставки)
+
+    def find_or_stage(kind, subtype, name_ua, name_ru):
+        if kind == "place":
+            name_ua, name_ru = canon_place(name_ua, name_ru)
+        nu, nr = norm(name_ua), norm(name_ru)
+        if not nu and not nr:
+            return None
+        hit = None
+        for k in ((kind, nu), (kind, nr)):
+            if k[1] and k in index:
+                hit = index[k]
+                break
+        if hit is not None:
+            rec = recs[hit]
+            if not rec["name_ua"] and name_ua:
+                rec["name_ua"] = name_ua; rec["dirty"] = True
+            if not rec["name_ru"] and name_ru:
+                rec["name_ru"] = name_ru; rec["dirty"] = True
+            if not rec["subtype"] and subtype:
+                rec["subtype"] = subtype; rec["dirty"] = True
+            canon_norms = {norm(rec["name_ua"]), norm(rec["name_ru"])}
+            for nm in (name_ua, name_ru):
+                if nm and norm(nm) not in canon_norms and nm not in rec["aliases"]:
+                    rec["aliases"].add(nm); rec["dirty"] = True
+            for nm in (rec["name_ua"], rec["name_ru"]):
+                kk = (kind, norm(nm))
+                if kk[1] and kk not in index:
+                    index[kk] = rec["id"]
+            return rec["id"]
+        tid = tmp_seq[0]
+        tmp_seq[0] -= 1
+        rec = {"id": tid, "kind": kind, "name_ua": name_ua, "name_ru": name_ru,
+               "subtype": subtype, "aliases": set(), "mentions": 0,
+               "dirty": True, "new": True}
+        recs[tid] = rec
+        new_recs.append(rec)
+        for nm in (name_ua, name_ru):
+            kk = (kind, norm(nm))
+            if kk[1]:
+                index.setdefault(kk, tid)
+        return tid
+
+    # 2. Пройти результат, зібрати зв'язки (з тимчасовими id для нових сутностей).
+    links = []   # [article_id, eid(may be temp), role, salience]
+    n_articles = n_skipped = 0
     got_ids = set()
     for art in data:
         aid = art.get("article_id") or art.get("id")
@@ -340,24 +364,58 @@ def cmd_write(path, batch_path=None):
             if kind not in ALLOWED_KINDS or sal not in ALLOWED_SALIENCE:
                 n_skipped += 1
                 continue
-            eid = _find_or_create(
-                cur, kind, e.get("subtype"),
-                e.get("name_ua"), e.get("name_ru"),
-            )
+            eid = find_or_stage(kind, e.get("subtype"),
+                                e.get("name_ua"), e.get("name_ru"))
             if eid is None:
                 n_skipped += 1
                 continue
-            role = (e.get("role") or e.get("role_at_time") or None)
-            cur.execute(
-                "INSERT INTO article_entities (article_id, entity_id, role_at_time, salience) "
-                "VALUES (%s, %s, %s, %s) "
-                "ON CONFLICT (article_id, entity_id) DO UPDATE SET "
-                "role_at_time = EXCLUDED.role_at_time, salience = EXCLUDED.salience",
-                (aid, eid, role, sal),
-            )
-            n_links += 1
-            touched.add(eid)
-    # Перерахунок агрегатів із даних — ідемпотентно, не залежить від порядку.
+            role = e.get("role") or e.get("role_at_time") or None
+            links.append([aid, eid, role, sal])
+
+    # 3. Вставити нові сутності пачкою, змапити тимчасові id -> реальні.
+    idmap = {}
+    if new_recs:
+        rows = [(r["kind"], r["subtype"], r["name_ua"], r["name_ru"],
+                 sorted(r["aliases"])) for r in new_recs]
+        inserted = execute_values(
+            cur,
+            "INSERT INTO entities (kind, subtype, name_ua, name_ru, aliases) "
+            "VALUES %s RETURNING id",
+            rows, fetch=True,
+        )
+        for r, row in zip(new_recs, inserted):
+            idmap[r["id"]] = row[0]
+
+    # 4. Оновити наявні сутності, що набули імені/алiаса/subtype цієї пачки.
+    for rec in recs.values():
+        if rec["new"] or not rec["dirty"]:
+            continue
+        cur.execute(
+            "UPDATE entities SET name_ua = %s, name_ru = %s, subtype = %s, aliases = %s "
+            "WHERE id = %s",
+            (rec["name_ua"], rec["name_ru"], rec["subtype"],
+             sorted(rec["aliases"]), rec["id"]),
+        )
+
+    # 5. Вставити зв'язки пачкою (тимчасові id -> реальні).
+    touched = set()
+    resolved = []
+    for aid, eid, role, sal in links:
+        rid = idmap.get(eid, eid)
+        resolved.append((aid, rid, role, sal))
+        touched.add(rid)
+    if resolved:
+        execute_values(
+            cur,
+            "INSERT INTO article_entities (article_id, entity_id, role_at_time, salience) "
+            "VALUES %s "
+            "ON CONFLICT (article_id, entity_id) DO UPDATE SET "
+            "role_at_time = EXCLUDED.role_at_time, salience = EXCLUDED.salience",
+            resolved,
+        )
+    n_links = len(resolved)
+
+    # 6. Перерахунок агрегатів із даних — ідемпотентно, не залежить від порядку.
     cur.execute(
         """
         UPDATE entities e SET
