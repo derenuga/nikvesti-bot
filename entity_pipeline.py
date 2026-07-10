@@ -48,6 +48,11 @@ URL нори береться з env NORA_URL (щоб пароль не лежа
     python3 entity_pipeline.py sample 50 qa.txt
         вибірка N випадкових статей з їх сутностями + врізка тексту — для
         ручної перевірки якості (§3.6: точність ≥90%, вигадані ролі ≤2%).
+
+    python3 entity_pipeline.py reset
+        ОЧИСТИТИ entities + article_entities і скинути курсор entity_last_id=0.
+        Для чистого перегону тесту (щоб v2 не злився поверх v1-даних). Схему
+        (таблиці) не чіпає. Питає підтвердження.
 """
 
 import sys
@@ -428,6 +433,27 @@ def cmd_sample(n, outpath):
     print(f"вибірка {len(ids)} статей → {outpath} (звірити очима: точність ≥90%, вигадані ролі ≤2%)")
 
 
+def cmd_reset():
+    conn = connect()
+    conn.autocommit = True
+    cur = conn.cursor()
+    cur.execute("SELECT count(*) FROM entities")
+    ne = cur.fetchone()[0]
+    cur.execute("SELECT count(*) FROM article_entities")
+    nl = cur.fetchone()[0]
+    ans = input(f"Очистити entities ({ne}) та article_entities ({nl}) "
+                f"і скинути курсор? Введи 'yes': ")
+    if ans.strip().lower() != "yes":
+        print("скасовано")
+        return
+    cur.execute("TRUNCATE entities RESTART IDENTITY")
+    cur.execute("TRUNCATE article_entities")
+    set_state(cur, "entity_last_id", "0")
+    print("очищено: entities, article_entities; курсор entity_last_id=0")
+    cur.close()
+    conn.close()
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -435,6 +461,8 @@ def main():
     cmd = sys.argv[1]
     if cmd == "schema":
         cmd_schema()
+    elif cmd == "reset":
+        cmd_reset()
     elif cmd == "fetch":
         cmd_fetch(int(sys.argv[2]), sys.argv[3])
     elif cmd == "next":
