@@ -527,7 +527,11 @@ def cmd_sample(n, outpath):
         )
         r = cur.fetchone()
         title = (r[0] or r[1] or "—") if r else "—"
-        body = (r[2] or "")[:600] if r else ""
+        # ПОВНИЙ текст (не врізка): сутності бувають у концівці статті («Нагадаємо…»),
+        # коротка врізка давала ложні «галюцинації» при QA. Кап на патологічні лонгріди.
+        body = (r[2] or "")[:12000] if r else ""
+        if r and r[2] and len(r[2]) > 12000:
+            body += "\n…[текст обрізано на 12000 симв. — довша стаття]"
         lines.append(f"===== article {aid}: {title}")
         lines.append(body)
         cur.execute(
