@@ -398,12 +398,18 @@ def cmd_write(path, batch_path=None):
         )
 
     # 5. Вставити зв'язки пачкою (тимчасові id -> реальні).
+    # Дедуп (article_id, entity_id) last-wins ПЕРЕД вставкою: дві сутності
+    # однієї статті можуть звестись до одного entity_id (напр. Миколаїв+Миколаєв
+    # після canon_place). execute_values з ON CONFLICT не терпить дубль ключа в
+    # одній пачці (CardinalityViolation) — тож згортаємо тут, як робив ON CONFLICT
+    # у побудовному варіанті.
     touched = set()
-    resolved = []
+    dedup = {}
     for aid, eid, role, sal in links:
         rid = idmap.get(eid, eid)
-        resolved.append((aid, rid, role, sal))
+        dedup[(aid, rid)] = (role, sal)   # останній перемагає
         touched.add(rid)
+    resolved = [(aid, rid, role, sal) for (aid, rid), (role, sal) in dedup.items()]
     if resolved:
         execute_values(
             cur,
