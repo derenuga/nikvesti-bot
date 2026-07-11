@@ -270,6 +270,9 @@ _TITLE_YEAR_RE = re.compile(r"на\s+(20\d{2})\s+рік")
 _TITLE_BASE_RE = re.compile(r"від\s+(\d{2}\.\d{2}\.\d{4})\s*№\s*([\d/]+)")
 _TITLE_DODATOK_RE = re.compile(r"додатк\w*\s+(\d+)", re.I)
 _SFI_RE = re.compile(r"s[\s_-]*fi[\s_-]*(\d+)", re.I)
+# Токени з підпису до ZIP: дата ухвалення й ухвалений номер рішення (XX/YY)
+_DATE_TOKEN = re.compile(r"\b(\d{2}\.\d{2}\.\d{4})\b")
+_DECISION_TOKEN = re.compile(r"\b(\d{1,3}/\d{1,4})\b")
 
 
 def _num_code(value, width):
@@ -670,6 +673,12 @@ def _get_or_create_revision(cur, fiscal_year, decision_number, decision_date,
     )
     row = cur.fetchone()
     if row:
+        # повторне завантаження з датою (у першому проході її не було)
+        if decision_date:
+            cur.execute(
+                "UPDATE budget.plan_revision SET decision_date = %s WHERE id = %s",
+                (decision_date, row[0]),
+            )
         return row[0], row[1], True
     if kind_of_revision == "original":
         # original року один: міг бути створений під іншим номером
@@ -875,13 +884,15 @@ def _zip_entries(data):
     return entries
 
 
-def process_package(data, filename):
+def process_package(data, filename, decision_date=None, decision_override=None):
     """Обробляє пакет рішення: ZIP (або одиночний xlsx). Повертає dict:
         decision   — код рішення (s-fi-XXX або ім'я файлу)
         loads      — список звітів load_parsed по додатках 1/3
         skipped    — [(ім'я, причина)] пропущені файли
         headline   — dict з PDF рішення (або None)
         zero       — True, якщо пакет без порівняльних таблиць (нульовий PDF)
+    decision_date/decision_override — з підпису до файлу: дата ухвалення й
+    ухвалений номер рішення (у пакеті-проєкті їх немає — задаються вручну).
     Синхронна — викликати через asyncio.to_thread."""
     if filename.lower().endswith(".zip"):
         entries = _zip_entries(data)
@@ -891,7 +902,9 @@ def process_package(data, filename):
     m = _SFI_RE.search(filename) or next(
         (mm for name, _ in entries if (mm := _SFI_RE.search(name))), None
     )
-    decision = f"s-fi-{int(m.group(1)):03d}" if m else re.sub(r"\.(zip|xlsx)$", "", filename, flags=re.I)
+    decision = decision_override or (
+        f"s-fi-{int(m.group(1)):03d}" if m else re.sub(r"\.(zip|xlsx)$", "", filename, flags=re.I)
+    )
 
     parsed_tables, skipped, seen_md5 = [], [], set()
     decision_pdf = None
@@ -947,7 +960,7 @@ def process_package(data, filename):
         try:
             with conn, conn.cursor() as cur:
                 revision_id, order, reused = _get_or_create_revision(
-                    cur, fiscal_year, decision, None, "original", filename,
+                    cur, fiscal_year, decision, decision_date, "original", filename,
                     notes="original from PDF package; lines reconstructed from comparison table",
                 )
         finally:
@@ -959,9 +972,10 @@ def process_package(data, filename):
         # видатки після доходів — щоб у звіті «було → стало» по видатках
         # рахувалось уже з доліченим original
         for p in sorted(by_dodatok.values(), key=lambda x: x["dodatok"]):
-            rep = load_parsed(p, fiscal_year, decision, None, p["filename"])
+            rep = load_parsed(p, fiscal_year, decision, decision_date, p["filename"])
             result["loads"].append(rep)
         result["revision_id"] = result["loads"][-1]["revision_id"]
+        result["decision_date"] = decision_date
 
     if meta and meta.get("headline"):
         upsert_headline(result["revision_id"], meta["headline"])
@@ -1006,7 +1020,13 @@ _KIND_UA = {"expenditure": "Видатки (Додаток 3)", "revenue": "До
 
 def _package_reply(result):
     """Людський звіт по обробленому пакету."""
-    lines = [f"📦 {result['decision']} → бюджет {result['fiscal_year']}"]
+    d = result.get("decision_date")
+    date_str = f" від {d.strftime('%d.%m.%Y')}" if d else ""
+    lines = [f"📦 {result['decision']}{date_str} → бюджет {result['fiscal_year']}"]
+    if not d and not result.get("zero"):
+        lines.append("ℹ️ Дату ухвалення не задано (у пакеті-проєкті її немає). "
+                     "Додай підписом до файлу «26.03.2026 51/47» або "
+                     f"командою: /budget_date {result['fiscal_year']} {result['decision']} 26.03.2026")
     if result["zero"]:
         lines.append(
             "Це вихідне рішення (все в PDF): створив original-ревізію. Рядки "
@@ -1102,9 +1122,18 @@ async def budget_package_handler(update, context):
             await budget_snapshots.load_snapshot_from_message(msg, context, data, doc.file_name)
             return
 
+    # Підпис до ZIP (опційно): дата ухвалення DD.MM.YYYY і/або ухвалений
+    # номер рішення (напр. «26.03.2026 51/47») — у пакеті-проєкті їх немає
+    caption = (msg.caption or "").strip()
+    cap_date = _parse_date(_DATE_TOKEN.search(caption).group(0)) if _DATE_TOKEN.search(caption) else None
+    cap_num = _DECISION_TOKEN.search(caption)
+    cap_num = cap_num.group(0) if cap_num else None
+
     progress = await msg.reply_text(f"🦊 Розбираю {doc.file_name}…")
     try:
-        result = await asyncio.to_thread(process_package, data, doc.file_name)
+        result = await asyncio.to_thread(
+            process_package, data, doc.file_name, cap_date, cap_num
+        )
         lines = _package_reply(result)
         lines = await _load_top_deltas(lines, result)
     except Exception as e:  # noqa: BLE001 — повідомляємо в чат, не мовчимо
@@ -1224,6 +1253,58 @@ async def budget_status_handler(update, context):
         "/budget_execution (різниця з планом знімка = міжсесійні зміни)."
     )
     await msg.reply_text("\n".join(lines))
+
+
+async def budget_date_handler(update, context):
+    """/budget_date <рік> <код> <DD.MM.YYYY> [новий_номер] — задати дату
+    ухвалення ревізії (у пакеті-проєкті її немає) і, опційно, канонічний
+    номер рішення замість коду проєкту (s-fi-003 → 51/47)."""
+    msg = update.effective_message
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await msg.reply_text("⛔ Тільки для редакції.")
+        return
+    if not is_ready():
+        await msg.reply_text("Нора не налаштована (BOT_DATABASE_URL).")
+        return
+    args = context.args or []
+    if len(args) < 3:
+        await msg.reply_text(
+            "Формат: /budget_date 2026 s-fi-003 26.03.2026 [51/47]\n"
+            "(дата ухвалення рішення; опційно — ухвалений номер замість коду проєкту)"
+        )
+        return
+    try:
+        fiscal_year = int(args[0])
+    except ValueError:
+        await msg.reply_text(f"Рік не число: {args[0]}")
+        return
+    code = args[1]
+    d = _parse_date(args[2])
+    if not d:
+        await msg.reply_text(f"Дата не розпізнана (треба DD.MM.YYYY): {args[2]}")
+        return
+    new_number = args[3] if len(args) > 3 else None
+    try:
+        await asyncio.to_thread(ensure_budget_schema)
+        rev = await bot_db.aquery(
+            "SELECT id FROM budget.plan_revision WHERE fiscal_year = %s AND decision_number = %s",
+            (fiscal_year, code),
+        )
+        if not rev:
+            await msg.reply_text(f"Ревізії {code}/{fiscal_year} немає — спочатку завантаж пакет.")
+            return
+        await asyncio.to_thread(
+            bot_db.execute,
+            "UPDATE budget.plan_revision SET decision_date = %s"
+            + (", decision_number = %s" if new_number else "")
+            + " WHERE id = %s",
+            ((d, new_number, rev[0]["id"]) if new_number else (d, rev[0]["id"])),
+        )
+    except Exception as e:  # noqa: BLE001
+        await msg.reply_text(f"❌ {e}")
+        return
+    tail = f", номер → {new_number}" if new_number else ""
+    await msg.reply_text(f"✅ {code}/{fiscal_year}: дата ухвалення {d.strftime('%d.%m.%Y')}{tail}")
 
 
 _HEADLINE_FIELDS = {
