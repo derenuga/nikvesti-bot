@@ -674,6 +674,66 @@ async def entity_export_handler(update, context):
     )
 
 
+# ---------- /entity_export_links ----------
+
+async def entity_export_links_handler(update, context):
+    """Граф співпоявності для візуалізації: два CSV — вузли (топ-N сутностей)
+    і ребра (скільки статей ділять пара сутностей, поріг ≥3). Формат
+    nodes/edges — стандартна їжа для Gephi/д3/будь-якого графо-малювальника."""
+    if not _allowed(update):
+        return
+    args = context.args or []
+    n = int(args[0]) if args else 150
+    n = min(max(n, 10), 1000)
+    msg = await update.message.reply_text(f"🦊 Будую граф співпоявності (топ-{n})…")
+
+    def build():
+        import csv
+        nodes = bot_db.query(
+            "SELECT id, kind, coalesce(name_ua, name_ru) AS name, role_last, mentions "
+            "FROM entities ORDER BY mentions DESC LIMIT %s", (n,))
+        edges = bot_db.query(
+            """
+            WITH top AS (SELECT id FROM entities ORDER BY mentions DESC LIMIT %s)
+            SELECT a1.entity_id AS src, a2.entity_id AS dst, count(*) AS weight
+            FROM article_entities a1
+            JOIN article_entities a2
+              ON a1.article_id = a2.article_id AND a1.entity_id < a2.entity_id
+            WHERE a1.entity_id IN (SELECT id FROM top)
+              AND a2.entity_id IN (SELECT id FROM top)
+            GROUP BY 1, 2
+            HAVING count(*) >= 3
+            ORDER BY weight DESC
+            """, (n,))
+        names = {r["id"]: r for r in nodes}
+        b1 = io.StringIO()
+        w = csv.writer(b1)
+        w.writerow(["id", "name", "kind", "role", "mentions"])
+        for r in nodes:
+            w.writerow([r["id"], r["name"], r["kind"], r["role_last"], r["mentions"]])
+        b2 = io.StringIO()
+        w = csv.writer(b2)
+        w.writerow(["source", "target", "source_name", "target_name", "weight"])
+        for r in edges:
+            w.writerow([r["src"], r["dst"], names[r["src"]]["name"],
+                        names[r["dst"]]["name"], r["weight"]])
+        return (("\ufeff" + b1.getvalue()).encode("utf-8"),
+                ("\ufeff" + b2.getvalue()).encode("utf-8"), len(nodes), len(edges))
+
+    try:
+        nodes_csv, edges_csv, n_nodes, n_edges = await asyncio.to_thread(build)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось побудувати граф: {e}")
+        return
+    await msg.delete()
+    await update.message.reply_document(
+        document=io.BytesIO(nodes_csv), filename=f"graph_nodes_{n_nodes}.csv",
+        caption=f"🦊 Вузли: топ-{n_nodes} сутностей.")
+    await update.message.reply_document(
+        document=io.BytesIO(edges_csv), filename=f"graph_edges_{n_edges}.csv",
+        caption=f"🦊 Ребра: {n_edges} пар (спільних статей ≥3).")
+
+
 # ---------- /entity_status ----------
 
 async def entity_status_handler(update, context):
