@@ -46,6 +46,7 @@ handlers/
   archive_mirror.py       — синк дзеркала архіву з БД сайту: /archive_backfill (разово), інкремент щогодини :50
   archive_search.py       — повнотекстовий пошук по дзеркалу (17 років, заголовки+текст), NLQ-tool search_archive_fulltext
   dossier.py              — /dossier <тема>: історія питання з архіву, таймлайн по роках з лінками
+  entity_layer.py         — сутнісний шар нори (entities/article_entities, крок C ENTITY_LAYER_PLAN): бэкфіл через Batch API з бота — /entity_estimate (безкоштовна оцінка), /entity_backfill (платно, Haiku 4.5 −50%, полінг у фоні, стан у sync_state переживає редеплой), /entity_status, /entity_resume; злиття — entity_pipeline.write_results (корінь репо), промпт витягу — entity_extract_prompt.md
   builder_monitor.py      — монітор оновлення білдера головної (options + nodes з БД), /builder, /builder_test
   ai_messages.py          — AI-шар (Anthropic Claude), FOX_SYSTEM_PROMPT, TEAM словник
   morning.py              — ранкове повідомлення: погода + події міськради + AI текст
@@ -133,6 +134,10 @@ handlers/
 | /archive_status | Стан дзеркала архіву: скільки статей, діапазон дат, курсори синку |
 | /archive_report | Здоровкове зведення нори для нагляду за бекфілом: розподіл по роках, мови, теги, рубрики, регіони, середня довжина тексту по роках (детектор проблем чистки) |
 | /nora_sql \<SELECT…\> | Read-only запит до нори (Postgres бота) для ad-hoc нагляду; той самий підхід, що /dbquery для БД сайту |
+| /entity_estimate \[з\] \[по\] | Оцінка бэкфіла сутнісного шару за діапазон дат: к-сть статей + вартість Batch API (read-only, безкоштовно; дефолт 2022-01-01..2027-01-01) |
+| /entity_backfill \<з\> \<по\> | ПЛАТНО: витяг сутностей із статей діапазону через Batch API (Haiku 4.5, −50%, ~1$/1000 статей), полінг у фоні, по готовності — злиття в entities/article_entities і звіт у чат |
+| /entity_status | Сутнісний шар: скільки сутностей по kind, зв'язків, топ за згадками + стан активного прогону батчів |
+| /entity_resume | Переприв'язати полінг батчів після редеплою (стан у sync_state) або повторити збій ingest (ідемпотентно) |
 
 ---
 

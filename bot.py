@@ -30,6 +30,10 @@ from handlers.archive_mirror import (
     archive_stop_handler, archive_report_handler, nora_sql_handler,
 )
 from handlers.dossier import dossier_handler
+from handlers.entity_layer import (
+    entity_estimate_handler, entity_backfill_handler,
+    entity_status_handler, entity_resume_handler,
+)
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.knowledge_graph import kg_handler
 from handlers.builder_monitor import builder_handler, builder_test_handler, is_builder_nudge
@@ -279,6 +283,10 @@ def main():
     app.add_handler(CommandHandler("archive_status", archive_status_handler))
     app.add_handler(CommandHandler("archive_report", archive_report_handler))
     app.add_handler(CommandHandler("nora_sql", nora_sql_handler))
+    app.add_handler(CommandHandler("entity_estimate", entity_estimate_handler))
+    app.add_handler(CommandHandler("entity_backfill", entity_backfill_handler))
+    app.add_handler(CommandHandler("entity_status", entity_status_handler))
+    app.add_handler(CommandHandler("entity_resume", entity_resume_handler))
     app.add_handler(CommandHandler("tags_export", tags_export_handler))
     app.add_handler(CommandHandler("tags_wiki", tags_wiki_handler))
     app.add_handler(CommandHandler("tags_wiki_reset", tags_wiki_reset_handler))
