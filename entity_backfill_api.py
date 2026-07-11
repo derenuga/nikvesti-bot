@@ -39,7 +39,10 @@ import time
 import entity_pipeline as ep  # спільні: connect(), TEXT_CAP, ALLOWED_*
 
 MODEL = "claude-haiku-4-5"
-MAX_TOKENS = 2000
+# 3000: статті про відключення світла (обленерго + десятки вулиць) на 2000
+# обрізались (139 непарсибельних із 27.9к у першому прогоні). Платимо за
+# фактичний вихід, тож дорожчає лише для щільних статей.
+MAX_TOKENS = 3000
 # Ліміти Batch API: 100k запитів АБО 256 МБ тіла на батч. Вузьке місце — байти
 # (кожен запит несе системний промпт + json_schema + текст статті), тому чанкуємо
 # за розміром із запасом.
@@ -49,9 +52,11 @@ REQ_OVERHEAD = 2500  # json_schema + обгортка запиту, байт
 PROMPT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "entity_extract_prompt.md")
 
-# Оцінка токенів (для прогнозу вартості): ~1.2к вх (текст) + ~0.2к вих на статтю.
-EST_IN_PER_ART = 1200
-EST_OUT_PER_ART = 200
+# Оцінка токенів — ИЗМЕРЕНО на прогоні 27.7к статей (2024-2026): 4.17к вх
+# (двомовний текст + системний промпт без кеш-хітів у батчі) і 0.52к вих.
+# Після переходу на одномовний текст вхід ≈ 3.0к.
+EST_IN_PER_ART = 3000
+EST_OUT_PER_ART = 550
 PRICE_IN = 0.50 / 1_000_000   # батч
 PRICE_OUT = 2.50 / 1_000_000
 
@@ -119,12 +124,19 @@ def fetch_range(from_date, to_date):
     )
     arts = []
     for aid, pub, tua, tru, xua, xru in cur.fetchall():
+        text_ua = (xua or "")[:ep.TEXT_CAP] or None
+        text_ru = (xru or "")[:ep.TEXT_CAP] or None
+        # Одна мова достатня: сутності в обох версіях ті самі, а name_ru модель
+        # заповнює сама (пілот: 100% сутностей отримали обидва імені навіть з
+        # ua-only текстів). Двомовні статті 2022+ інакше подвоюють вхід.
+        if text_ua and text_ru:
+            text_ru = None
         arts.append({
             "id": aid,
             "title_ua": tua,
             "title_ru": tru,
-            "text_ua": (xua or "")[:ep.TEXT_CAP] or None,
-            "text_ru": (xru or "")[:ep.TEXT_CAP] or None,
+            "text_ua": text_ua,
+            "text_ru": text_ru,
         })
     cur.close()
     conn.close()
