@@ -330,6 +330,119 @@ async def _ingest(bot, state, client):
         )
 
 
+# ---------- авто-інкремент нових статей (щогодини :55) ----------
+
+INCR_CURSOR_KEY = "entity_incr_last_id"
+INCR_MAX_PER_RUN = 120   # захист: за один прогін не більше (наздоганяння дірок частинами)
+
+
+def _extract_one(client, art):
+    """Витяг сутностей однієї статті звичайним API (не батч): нових статей
+    ~40/день, тому latency не критична, а батч-морока зайва. Системний промпт
+    кешується — у межах одного прогону всі запити після першого читають кеш."""
+    resp = client.messages.create(
+        model=api.MODEL,
+        max_tokens=api.MAX_TOKENS,
+        system=[{"type": "text", "text": api.get_system_prompt(),
+                 "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": json.dumps(art, ensure_ascii=False)}],
+        output_config={"format": {"type": "json_schema", "schema": api.ARTICLE_OUT}},
+    )
+    text = next((bl.text for bl in resp.content if bl.type == "text"), None)
+    obj = json.loads(text)
+    return obj.get("entities", []), resp.usage
+
+
+async def sync_entities_incremental(bot):
+    """Щогодини :55 (після синку дзеркала о :50): витяг сутностей із нових
+    статей нори. Тихий; опт-ін — працює лише коли курсор увімкнено
+    (/entity_increment_on). Вартість ~$0.006/статтю → ~$0.25/день."""
+    cursor_raw = await asyncio.to_thread(bot_db.get_state, INCR_CURSOR_KEY)
+    if cursor_raw is None:
+        return  # інкремент вимкнено
+    if not os.environ.get("ANTHROPIC_API_KEY") or not bot_db.is_configured():
+        return
+    if await asyncio.to_thread(_load_state):
+        return  # іде бэкфіл — не конкуруємо, наздоженемо наступної години
+    try:
+        rows = await bot_db.aquery(
+            "SELECT id, title_ua, title_ru, text_ua, text_ru FROM articles "
+            "WHERE id > %s ORDER BY id ASC LIMIT %s",
+            (int(cursor_raw), INCR_MAX_PER_RUN))
+        if not rows:
+            return
+
+        def extract_all():
+            import anthropic
+            client = anthropic.Anthropic()
+            results, n_err = [], 0
+            usage = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+            for r in rows:
+                text_ua = (r["text_ua"] or "")[:ep.TEXT_CAP] or None
+                text_ru = (r["text_ru"] or "")[:ep.TEXT_CAP] or None
+                if text_ua and text_ru:
+                    text_ru = None  # одна мова, як у бэкфілі
+                art = {"id": r["id"], "title_ua": r["title_ua"],
+                       "title_ru": r["title_ru"],
+                       "text_ua": text_ua, "text_ru": text_ru}
+                try:
+                    entities, u = _extract_one(client, art)
+                    results.append({"article_id": r["id"], "entities": entities})
+                    usage["input"] += u.input_tokens or 0
+                    usage["output"] += u.output_tokens or 0
+                    usage["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
+                    usage["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0) or 0
+                except Exception:
+                    n_err += 1
+            return results, n_err, usage
+
+        results, n_err, usage = await asyncio.to_thread(extract_all)
+        if n_err > len(rows) / 2:
+            # масовий збій (API лежить?) — курсор НЕ рухаємо, наступна година повторить
+            raise RuntimeError(f"інкремент сутностей: {n_err}/{len(rows)} збоїв витягу")
+        if results:
+            await asyncio.to_thread(ep.write_results, results)
+            record_ai_usage(api.MODEL, input_tokens=usage["input"],
+                            output_tokens=usage["output"],
+                            cache_read=usage["cache_read"],
+                            cache_creation=usage["cache_creation"])
+        # окремі збої (не масові) пропускаємо: курсор рухаємо, стаття залишиться
+        # без сутностей — краще, ніж вічний ретрай однієї битої статті
+        await asyncio.to_thread(bot_db.set_state, INCR_CURSOR_KEY, rows[-1]["id"])
+    except Exception as e:
+        await notify_error(bot, "інкремент сутнісного шару", e)
+
+
+async def entity_increment_on_handler(update, context):
+    """Увімкнути авто-інкремент: курсор стає на поточний max(id) нори —
+    обробляються лише статті, що з'являться ПІСЛЯ увімкнення (минуле — бэкфілом)."""
+    if not _allowed(update):
+        return
+    existing = await asyncio.to_thread(bot_db.get_state, INCR_CURSOR_KEY)
+    if existing is not None:
+        await update.message.reply_text(
+            f"Інкремент уже увімкнено (курсор id={existing}). Вимкнути: /entity_increment_off")
+        return
+    rows = await bot_db.aquery("SELECT max(id) AS m FROM articles")
+    max_id = rows[0]["m"] or 0
+    await asyncio.to_thread(bot_db.set_state, INCR_CURSOR_KEY, max_id)
+    await update.message.reply_text(
+        f"🦊 Авто-інкремент сутностей увімкнено (з id={max_id}).\n"
+        f"Щогодини о :55 нові статті проходитимуть витяг (~$0.25/день, "
+        f"видно в /aicost). Вимкнути: /entity_increment_off")
+
+
+async def entity_increment_off_handler(update, context):
+    if not _allowed(update):
+        return
+    if await asyncio.to_thread(bot_db.get_state, INCR_CURSOR_KEY) is None:
+        await update.message.reply_text("Інкремент і так вимкнено.")
+        return
+    await asyncio.to_thread(
+        bot_db.execute, "DELETE FROM sync_state WHERE key = %s", (INCR_CURSOR_KEY,))
+    await update.message.reply_text("Авто-інкремент сутностей вимкнено.")
+
+
 # ---------- /entity_recover ----------
 
 async def entity_recover_handler(update, context):
@@ -457,4 +570,9 @@ async def entity_status_handler(update, context):
                          f"полінг: {poll}")
     else:
         lines.append("\nАктивних прогонів немає.")
+    incr = await asyncio.to_thread(bot_db.get_state, INCR_CURSOR_KEY)
+    if incr is not None:
+        lines.append(f"Авто-інкремент: увімкнено (курсор id={incr})")
+    else:
+        lines.append("Авто-інкремент: вимкнено (/entity_increment_on)")
     await update.message.reply_text("\n".join(lines))

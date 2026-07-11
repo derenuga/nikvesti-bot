@@ -33,6 +33,7 @@ from handlers.dossier import dossier_handler
 from handlers.entity_layer import (
     entity_estimate_handler, entity_backfill_handler,
     entity_status_handler, entity_resume_handler, entity_recover_handler,
+    entity_increment_on_handler, entity_increment_off_handler,
 )
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.knowledge_graph import kg_handler
@@ -288,6 +289,8 @@ def main():
     app.add_handler(CommandHandler("entity_status", entity_status_handler))
     app.add_handler(CommandHandler("entity_resume", entity_resume_handler))
     app.add_handler(CommandHandler("entity_recover", entity_recover_handler))
+    app.add_handler(CommandHandler("entity_increment_on", entity_increment_on_handler))
+    app.add_handler(CommandHandler("entity_increment_off", entity_increment_off_handler))
     app.add_handler(CommandHandler("tags_export", tags_export_handler))
     app.add_handler(CommandHandler("tags_wiki", tags_wiki_handler))
     app.add_handler(CommandHandler("tags_wiki_reset", tags_wiki_reset_handler))
