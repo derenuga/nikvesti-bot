@@ -43,16 +43,21 @@ def _unit_names(fiscal_year):
     """КВК → назва розпорядника: спершу зі снапшотів (людські назви),
     фолбек — підсумкові рядки XX00000 останньої ревізії."""
     names = {}
-    rows = bot_db.query(
-        """SELECT DISTINCT ON (l.kvk) l.kvk, l.unit_name
-           FROM budget.snapshot_expenditure_line l
-           JOIN budget.snapshot s ON s.id = l.snapshot_id
-           WHERE s.fiscal_year = %s AND l.code_type = 'unit'
-           ORDER BY l.kvk, s.snapshot_date DESC""",
-        (fiscal_year,),
-    )
-    for r in rows:
-        names[r["kvk"]] = r["unit_name"]
+    # снапшоти дають людські назви розпорядників; таблиці може ще не бути,
+    # якщо жоден снапшот не завантажено — тоді лише фолбек з ревізій
+    try:
+        rows = bot_db.query(
+            """SELECT DISTINCT ON (l.kvk) l.kvk, l.unit_name
+               FROM budget.snapshot_expenditure_line l
+               JOIN budget.snapshot s ON s.id = l.snapshot_id
+               WHERE s.fiscal_year = %s AND l.code_type = 'unit'
+               ORDER BY l.kvk, s.snapshot_date DESC""",
+            (fiscal_year,),
+        )
+        for r in rows:
+            names[r["kvk"]] = r["unit_name"]
+    except Exception:  # noqa: BLE001 — таблиці снапшотів ще немає
+        pass
     rows = bot_db.query(
         """SELECT DISTINCT ON (substr(e.kpkvk,1,2)) substr(e.kpkvk,1,2) AS kvk, e.line_name
            FROM budget.plan_expenditure_line e
@@ -112,7 +117,7 @@ def _amendments(fiscal_year, kind, decision, code, name_contains, min_amount, li
         where.append("ABS(v.delta_total) >= %s")
         params.append(min_amount)
     rows = bot_db.query(
-        f"""SELECT v.decision_number, v.{code_col} AS code, v.line_name,
+        f"""SELECT v.decision_number, r.decision_date, v.{code_col} AS code, v.line_name,
                    v.delta_total, v.delta_general, v.delta_special, v.{new_col} AS is_new
             FROM {view} v
             JOIN budget.plan_revision r ON r.id = v.revision_id
@@ -125,6 +130,7 @@ def _amendments(fiscal_year, kind, decision, code, name_contains, min_amount, li
     for r in rows:
         item = {
             "decision": r["decision_number"],
+            "decision_date": str(r["decision_date"]) if r["decision_date"] else None,
             "code": r["code"],
             "name": r["line_name"],
             "delta_total": _f(r["delta_total"]),
