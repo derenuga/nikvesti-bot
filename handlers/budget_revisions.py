@@ -1049,7 +1049,9 @@ def _package_reply(result):
 
 
 async def _load_top_deltas(lines, result):
-    """Додає до звіту найбільші зміни по видатках (якщо це amendment)."""
+    """Додає до звіту найбільші зміни по видатках (якщо це amendment) —
+    з розпорядником, який освоюватиме гроші (КВК з перших цифр КПКВК)."""
+    from handlers import budget_nlq
     for rep in result["loads"]:
         if rep["kind"] != "expenditure":
             continue
@@ -1061,12 +1063,15 @@ async def _load_top_deltas(lines, result):
             continue
         top = await asyncio.to_thread(amendments_summary, rep["revision_id"], "expenditure")
         if top:
+            units = await asyncio.to_thread(budget_nlq._unit_names, result["fiscal_year"])
             lines.append("\nНайбільші зміни у видатках:")
             for t in top:
                 mark = "🆕 " if t["is_new"] else ""
                 sign = "+" if t["delta_total"] > 0 else ""
+                owner = units.get(t["code"][:2])
+                owner_str = f" — {owner}" if owner else ""
                 lines.append(f"• {mark}{t['code']} {t['line_name']}: "
-                             f"{sign}{_fmt_money(t['delta_total'])} грн")
+                             f"{sign}{_fmt_money(t['delta_total'])} грн{owner_str}")
     return lines
 
 

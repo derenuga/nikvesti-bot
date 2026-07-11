@@ -28,7 +28,7 @@ from google.analytics.data_v1beta.types import (
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as gapi_build
 
-from handlers import analytics_store, archive_search, news_archive, news_stats, social_store, storage
+from handlers import analytics_store, archive_search, budget_nlq, news_archive, news_stats, social_store, storage
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, clean_ai_text
 from handlers.helpers import get_author_from_url
 
@@ -1276,6 +1276,43 @@ TOOLS = [
             "required": [],
         },
     },
+    {
+        "name": "query_budget",
+        "description": (
+            "Бюджет Миколаєва з нори: рішення сесії про зміни плану і місячне "
+            "виконання. Використовуй для питань про міський бюджет. query_type: "
+            "'amendments' — що змінили рішення (дельти по програмах/доходах): "
+            "'кому дали +139 млн?', 'які нові програми?', 'що змінило останнє "
+            "рішення?' — кожен рядок містить owner_name (розпорядник, який "
+            "освоюватиме ці гроші); шукай по сумі (min_amount трохи менший за "
+            "згадану суму), коду або назві. "
+            "'line_history' — як план програми/доходу мінявся по ревізіях "
+            "('як мінявся план по укриттях?'); потрібен code або name_contains. "
+            "'revisions' — реєстр редакцій плану року з підсумками. "
+            "'execution' — виконання з останнього місячного снапшота по "
+            "розпорядниках: 'хто не виконує бюджет?', 'як УКБ освоює гроші?' "
+            "(низький pct_of_period_plan = не виконує план у термін). "
+            "Суми в грн. КПКВК можна передавати без ведучого нуля."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query_type": {
+                    "type": "string",
+                    "enum": ["amendments", "line_history", "revisions", "execution"],
+                },
+                "fiscal_year": {"type": "integer", "description": "Опційно: рік бюджету (дефолт — останній у норі)"},
+                "kind": {"type": "string", "enum": ["expenditure", "revenue"],
+                         "description": "Видатки (дефолт) чи доходи — для amendments/line_history"},
+                "decision": {"type": "string", "description": "Опційно: код/номер рішення (напр. 's-fi-003'), щоб звузити amendments до одного рішення"},
+                "code": {"type": "string", "description": "Опційно: КПКВК видатків (7 зн.) або код доходу (8 зн.)"},
+                "name_contains": {"type": "string", "description": "Опційно: підрядок назви програми/показника/розпорядника"},
+                "min_amount": {"type": "number", "description": "Опційно: мінімальна |дельта| у грн — для 'кому оці +139 659 000' бери трохи менше (напр. 139000000)"},
+                "limit": {"type": "integer", "description": "Скільки рядків (дефолт 10, макс 30)"},
+            },
+            "required": ["query_type"],
+        },
+    },
 ]
 
 TOOL_FUNCTIONS = {
@@ -1297,6 +1334,7 @@ TOOL_FUNCTIONS = {
     "count_archive_by_month": archive_search.count_by_month,
     "count_news": news_stats.count_news,
     "get_news_leads": news_archive.get_news_leads,
+    "query_budget": budget_nlq.query_budget,
     "render_chart": render_chart,
 }
 
@@ -1334,6 +1372,7 @@ TOOL_PROGRESS = {
     "count_archive_by_month": "🦊 Рахую новини по місяцях...",
     "count_news": "🦊 Рахую матеріали в базі сайту...",
     "get_news_leads": "🦊 Перечитую ліди цих новин...",
+    "query_budget": "🦊 Гортаю бюджет міста...",
     "render_chart": "🦊 Малюю графік...",
 }
 
@@ -1344,6 +1383,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 Для трендів і динаміки по днях ("покажи трафік за місяць", "як змінювалась відвідуваність") і для порівнянь період-до-періоду ("тиждень до тижня", "цей місяць проти минулого") бери get_traffic_history (compare_previous=true для порівняння) — це локальна пам'ять бота, дешевше і швидше за GA4, і масив daily зручно передати в render_chart. Якщо get_traffic_history поверне days=0 (немає даних за період) — тоді бери get_ga4_metric (пряме GA4). Для одного числа за один період простіше одразу get_ga4_metric.
 Якщо перед поточним питанням є попередні репліки — це продовження розмови: короткі уточнення ("а за минулий місяць?", "а по містах?", "порівняй з попереднім") стосуються теми і параметрів попереднього питання. Але цифри для нового періоду завжди отримуй tools заново — не переоцінюй по пам'яті.
 Якщо питання не покривається жодним із спеціалізованих tools (наприклад про пристрої, браузери, джерела трафіку, дні тижня) — використай get_ga4_custom_report з точними назвами GA4 dimensions/metrics. Якщо він поверне помилку через невірну назву — спробуй іншу назву ще раз, не здавайся одразу.
+Питання про МІСЬКИЙ БЮДЖЕТ Миколаєва (зміни рішеннями сесії, нові програми, «кому дали гроші», виконання плану розпорядниками) — tool query_budget. «Кому +N грн» → query_type='amendments' з min_amount трохи меншим за N: у відповіді owner_name — розпорядник (управління/департамент), який освоюватиме гроші, назви його явно. «Хто не виконує бюджет» → query_type='execution'. Суми озвучуй у млн/млрд грн по-людськи.
 Якщо питають звідки прийшов трафік на конкретну статтю (соцмережі, реферали тощо) — використай get_ga4_custom_report з dimensions ['sessionDefaultChannelGroup'] або ['sessionSource', 'sessionMedium'] і page_path_contains (ID статті з URL, наприклад "35814" з "/news/35814-..."). Не питай дату публікації — для джерел трафіку конкретної статті дата не потрібна, бери period='last_30_days' або ширше якщо невпевнений.
 Якщо питають конкретно про Google Discover, Google News чи пошукові запити Google — використай get_search_console_report (search_type='discover' для Discover). Для конкретної статті передай page_url повним URL (https://nikvesti.com/...). Це окреме джерело даних від GA4 — не плутай. Якщо просять порівняти 'до і після' події (апдейт Google, редизайн тощо) — зроби ДВА окремі виклики get_search_console_report для двох періодів однакової довжини і в тексті стисло порівняй ключові цифри (кліки, покази, CTR): підсумок > переліку.
 Якщо питають про тендери ("що там по тендерах за тиждень?", "найбільший тендер місяця", "хто взяв тендер", "які тендери нічиї?") — використай get_recent_tenders (список з фільтрами) або get_tender_stats (зведення: кількість, суми, хто скільки взяв, топ замовників). Це архів того, що бот сам виловив з Prozorro (Миколаївська область, від 1 млн грн) — чесно зазначай, що це не весь Prozorro, якщо питання ширше. Суми пиши в млн грн, коли вони великі ("32,5 млн грн", а не "32 500 000 грн").
@@ -1457,6 +1497,8 @@ async def handle_natural_language_query(update, context):
                     if (used_tools & NEWS_TOOL_NAMES or "count_archive_by_month" in used_tools
                             or "count_news" in used_tools):
                         sources.append("архів новин nikvesti.com")
+                    if "query_budget" in used_tools:
+                        sources.append("бюджет Миколаєва в норі (рішення сесій + місячні знімки)")
                     if sources:
                         final_text += f"\n\n📊 Джерело даних: {' + '.join(sources)}{site_suffix}"
 
