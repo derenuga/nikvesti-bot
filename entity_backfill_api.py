@@ -40,7 +40,12 @@ import entity_pipeline as ep  # спільні: connect(), TEXT_CAP, ALLOWED_*
 
 MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 2000
-BATCH_MAX_REQUESTS = 90000  # ліміт API 100k/батч, лишаємо запас
+# Ліміти Batch API: 100k запитів АБО 256 МБ тіла на батч. Вузьке місце — байти
+# (кожен запит несе системний промпт + json_schema + текст статті), тому чанкуємо
+# за розміром із запасом.
+BATCH_MAX_REQUESTS = 90000
+BATCH_MAX_BYTES = 150 * 1024 * 1024
+REQ_OVERHEAD = 2500  # json_schema + обгортка запиту, байт
 PROMPT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "entity_extract_prompt.md")
 
@@ -73,6 +78,15 @@ ARTICLE_OUT = {
     "required": ["article_id", "entities"],
     "additionalProperties": False,
 }
+
+
+def get_system_prompt():
+    """Лінива ініціалізація системного промпту (кешується в глобалі) —
+    щоб модуль можна було імпортувати з бота без виклику main()."""
+    global SYSTEM_PROMPT
+    if SYSTEM_PROMPT is None:
+        SYSTEM_PROMPT = load_system_prompt()
+    return SYSTEM_PROMPT
 
 
 def load_system_prompt():
@@ -117,16 +131,35 @@ def fetch_range(from_date, to_date):
     return arts
 
 
+def chunk_articles(arts, system_len):
+    """Розбити статті на чанки під ліміти Batch API (256 МБ / 100к запитів);
+    рахуємо байти: системний промпт іде В КОЖНОМУ запиті."""
+    chunks, cur_chunk, cur_bytes = [], [], 0
+    for a in arts:
+        sz = system_len + REQ_OVERHEAD + len(
+            json.dumps(a, ensure_ascii=False).encode("utf-8"))
+        if cur_chunk and (cur_bytes + sz > BATCH_MAX_BYTES
+                          or len(cur_chunk) >= BATCH_MAX_REQUESTS):
+            chunks.append(cur_chunk)
+            cur_chunk, cur_bytes = [], 0
+        cur_chunk.append(a)
+        cur_bytes += sz
+    if cur_chunk:
+        chunks.append(cur_chunk)
+    return chunks
+
+
 def cmd_count(from_date, to_date):
     arts = fetch_range(from_date, to_date)
     n = len(arts)
     est_in = n * EST_IN_PER_ART
     est_out = n * EST_OUT_PER_ART
     cost = est_in * PRICE_IN + est_out * PRICE_OUT
+    n_chunks = len(chunk_articles(arts, len(get_system_prompt().encode("utf-8")))) if arts else 0
     print(f"статей у {from_date}..{to_date}: {n}")
     print(f"оцінка (батч Haiku 4.5): ~{est_in/1e6:.0f}M вх + ~{est_out/1e6:.0f}M вих")
     print(f"≈ ${cost:.0f} (без урахування prompt-cache — по факту дешевше)")
-    print(f"батчів по {BATCH_MAX_REQUESTS}: {(n + BATCH_MAX_REQUESTS - 1)//BATCH_MAX_REQUESTS}")
+    print(f"батчів (ліміт 256МБ/100к): {n_chunks}")
 
 
 def _make_request(client, art):
@@ -137,7 +170,7 @@ def _make_request(client, art):
         params=MessageCreateParamsNonStreaming(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=[{"type": "text", "text": SYSTEM_PROMPT,
+            system=[{"type": "text", "text": get_system_prompt(),
                      "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user",
                        "content": json.dumps(art, ensure_ascii=False)}],
@@ -157,9 +190,10 @@ def cmd_run(from_date, to_date, outpath):
 
     results = []
     n_err = 0
-    # чанкуємо під ліміт батчу
-    for start in range(0, len(arts), BATCH_MAX_REQUESTS):
-        chunk = arts[start:start + BATCH_MAX_REQUESTS]
+    # чанкуємо під ліміти батчу (256 МБ тіла / 100к запитів)
+    chunks = chunk_articles(arts, len(get_system_prompt().encode("utf-8")))
+    print(f"батчів: {len(chunks)}")
+    for chunk in chunks:
         requests = [_make_request(client, a) for a in chunk]
         batch = client.messages.batches.create(requests=requests)
         print(f"батч {batch.id}: {len(chunk)} запитів, чекаю…")
@@ -202,11 +236,9 @@ SYSTEM_PROMPT = None
 
 
 def main():
-    global SYSTEM_PROMPT
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
-    SYSTEM_PROMPT = load_system_prompt()
     cmd = sys.argv[1]
     if cmd == "count":
         cmd_count(sys.argv[2], sys.argv[3])

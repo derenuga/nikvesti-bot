@@ -98,9 +98,15 @@ ON CONFLICT (key) DO NOTHING;
 
 
 def get_url():
-    url = os.environ.get("NORA_URL")
+    # NORA_URL — зовнішній запуск (Mac/dev, публічний URL Railway);
+    # BOT_DATABASE_URL/DATABASE_URL — запуск зсередини Railway (бот).
+    url = (os.environ.get("NORA_URL")
+           or os.environ.get("BOT_DATABASE_URL")
+           or os.environ.get("DATABASE_URL"))
     if not url:
-        sys.exit("NORA_URL не заданий. Спершу: export NORA_URL='postgresql://…'")
+        # RuntimeError, не sys.exit: модуль імпортує і бот — SystemExit
+        # проскочив би повз його except Exception.
+        raise RuntimeError("Не задано NORA_URL / BOT_DATABASE_URL / DATABASE_URL.")
     return url
 
 
@@ -283,16 +289,18 @@ def cmd_next(n, outpath):
 
 # ---------- write ----------
 
-def cmd_write(path, batch_path=None):
-    """Пакетний запис: існуючі сутності підвантажуються в пам'ять один раз,
-    зіставлення (те саме — точний збіг нормалізованого імені в межах kind,
-    для place через CANON_PLACE) робиться в Python, вставки йдуть execute_values
-    пачкою. Семантика злиття ідентична побудовному варіанту, але замість тисяч
-    round-trip'ів до нори — кілька запитів. Для place застосовується canon_place."""
+def write_results(data, batch_ids=None):
+    """Ядро злиття — використовують і CLI (cmd_write), і бот (handlers/entity_layer).
+    Існуючі сутності підвантажуються в пам'ять один раз, зіставлення (точний збіг
+    нормалізованого імені в межах kind, для place через CANON_PLACE) робиться в
+    Python, вставки йдуть execute_values пачкою.
+
+    data — список {"article_id": ..., "entities": [...]}.
+    batch_ids — id статей пачки next (курсорний прогін): при покритті ≥98%
+    курсор entity_last_id опускається до min(batch_ids). None = діапазонний
+    бэкфіл, курсор не чіпаємо. Повертає dict статистики."""
     from psycopg2.extras import execute_values
 
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
     conn = connect()
     cur = conn.cursor()
 
@@ -460,37 +468,50 @@ def cmd_write(path, batch_path=None):
         WHERE e.id = sub.entity_id
         """
     )
-    # Продакшн-цикл: якщо передано пачку fetch/next — опустити курсор до її
-    # мінімального id (весь діапазон оброблено, включно зі статтями без
-    # сутностей) і звірити покриття.
+    # Курсорний прогін (пачка next): опустити курсор до мінімального id пачки —
+    # але ЛИШЕ при покритті ≥98%. Предохранитель: інакше діапазон із
+    # неізвлеченими статтями позначився б обробленим і вони б ніколи не
+    # потрапили в нору. Сутності/зв'язки комітяться в будь-якому разі
+    # (write ідемпотентний — повторний прогін їх перезапише).
+    stats = {"articles": n_articles, "links": n_links,
+             "entities_touched": len(touched), "new_entities": len(new_recs),
+             "skipped": n_skipped, "cursor": None, "coverage": None}
+    if batch_ids:
+        covered = len(got_ids & set(batch_ids))
+        stats["coverage"] = (covered, len(batch_ids))
+        if covered / len(batch_ids) >= 0.98:
+            new_cur = min(batch_ids)
+            set_state(cur, "entity_last_id", new_cur)
+            stats["cursor"] = new_cur
+    conn.commit()
+    cur.close()
+    conn.close()
+    return stats
+
+
+def cmd_write(path, batch_path=None):
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    batch_ids = None
     if batch_path:
         with open(batch_path, encoding="utf-8") as f:
             batch = json.load(f)
         batch_arts = batch["articles"] if isinstance(batch, dict) else batch
         batch_ids = [a.get("id") for a in batch_arts if a.get("id") is not None]
-        if batch_ids:
-            covered = len(got_ids & set(batch_ids))
-            ratio = covered / len(batch_ids)
-            # Предохранитель: не рухати курсор при неповному покритті — інакше
-            # діапазон із неізвлеченими статтями позначиться обробленим і вони
-            # ніколи не потраплять у нору. Сутності/зв'язки, що вже є, комітяться
-            # (write ідемпотентний — повторний прогін фази їх перезапише).
-            if ratio < 0.98:
-                print(f"⚠️ покриття лише {covered}/{len(batch_ids)} ({ratio:.0%}) — "
-                      f"КУРСОР НЕ РУХАЮ. Доведи витяг пачки до кінця й повтори write, "
-                      f"або зменш розмір фази. Наявні сутності записані (ідемпотентно).")
-            else:
-                new_cur = min(batch_ids)
-                set_state(cur, "entity_last_id", new_cur)
-                print(f"курсор entity_last_id → {new_cur} "
-                      f"(оброблено діапазон до цього id включно, покриття {covered}/{len(batch_ids)})")
-                if covered < len(batch_ids):
-                    print(f"  {len(batch_ids) - covered} статей без сутностей — теж позначені обробленими")
-    conn.commit()
-    cur.close()
-    conn.close()
-    print(f"статей оброблено: {n_articles}, зв'язків: {n_links}, "
-          f"сутностей торкнулись: {len(touched)}, пропущено (невалідні): {n_skipped}")
+    s = write_results(data, batch_ids)
+    if s["coverage"]:
+        covered, total = s["coverage"]
+        if s["cursor"] is None:
+            print(f"⚠️ покриття лише {covered}/{total} ({covered/total:.0%}) — "
+                  f"КУРСОР НЕ РУХАЮ. Доведи витяг пачки до кінця й повтори write, "
+                  f"або зменш розмір фази. Наявні сутності записані (ідемпотентно).")
+        else:
+            print(f"курсор entity_last_id → {s['cursor']} "
+                  f"(оброблено діапазон, покриття {covered}/{total})")
+            if covered < total:
+                print(f"  {total - covered} статей без сутностей — теж позначені обробленими")
+    print(f"статей оброблено: {s['articles']}, зв'язків: {s['links']}, "
+          f"сутностей торкнулись: {s['entities_touched']}, пропущено (невалідні): {s['skipped']}")
 
 
 # ---------- stats ----------
