@@ -2,62 +2,57 @@
 Версії бюджетного плану Миколаєва + рішення про зміни (задание №2, схема budget).
 
 Горсовет вносить зміни в бюджет рішеннями сесії «викласти додаток у новій
-редакції» — повною заміною, без явних дельт. До кожного рішення публікується
-пакет «Порівняльні таблиці»: xlsx, де на одному листі бок о бок стоять
-«Чинна редакція» (лівий блок колонок) і «Запропонована редакція з урахуванням
-змін» (правий блок), порядково вирівняні. Дельти рахуємо як права мінус ліва.
-Саме ці xlsx — джерело завантаження; PDF-додатки рішень не парсимо.
+редакції» — повною заміною, без явних дельт. До кожного рішення департамент
+фінансів готує пакет із «Порівняльними таблицями»: xlsx, де на одному листі
+бок о бок стоять «Чинна редакція» (лівий блок колонок) і «Запропонована
+редакція з урахуванням змін» (правий блок), порядково вирівняні. Дельти
+рахуємо як права мінус ліва. Саме ці xlsx — джерело завантаження.
 
-Зміни плану бувають і БЕЗ рішень сесії (розпорядження мера при зміні
-трансфертів, рішення виконкому по постанові КМУ №18) — тому сума дельт рішень
-НЕ зобов'язана пояснювати всю динаміку плану: щомісячні снапшоти (задание №1,
-у репо ще НЕ реалізоване) залишаються первинним фактом, рішення дають атрибуцію.
-Звірка ревізій зі снапшотами додасться, коли з'явиться задание №1 — цей модуль
-існуючих таблиць не чіпає, тільки додає свої.
+UX: редакція просто кидає боту в приват ZIP пакета сесії (як він приходить
+від депфіну) — без команд і аргументів. Бот сам розпаковує, знаходить
+порівняльні таблиці, визначає рік/базове рішення з шапок і нашаровує ревізію.
+Порядок нашаровування = порядок надсилання пакетів.
 
-Структура порівняльної таблиці (перевірено на реальному файлі
-«s-fi-005 Додаток 3 Порівняльна таблиця .xlsx», департамент фінансів ММР):
-- рядок-заголовок з підписом «Чинна редакція» / «Запропонована редакція …»;
-- рядок нумерації колонок: 1..16 | 1..16 (видатки, Додаток 3) — межу блоків
-  шукаємо ПО ПОВТОРНОМУ СТАРТУ нумерації з «1», не по фіксованому номеру колонки;
-  доходи (Додаток 1) — 1..6 | 1..6;
-- коди лежать числами, ведучі нулі втрачені (210160.0 замість '0210160') —
-  zero-pad: КПКВК до 7, ТПКВК до 4, КФК до 4, код доходу до 8, код бюджету
-  1.4549E9 → '1454900000';
-- рядки-підсумки розпорядників (КПКВК виду XX00000/XX10000, без ТПКВК/КФК) —
-  is_unit_total = true, в аналітиці по програмах виключаються;
-- підсумковий рядок «УСЬОГО» (коди = 'Х') — не зберігається, йде на контроль сум;
-- нова програма = порожня ліва частина рядка (в валідацію не пишеться);
-- xlsx лише з ОДНИМ блоком (без порівняння) — додаток вихідного рішення,
-  вантажиться як kind='original'.
+Уроки з реальних пакетів (нульовий s-fi-022 + зміни s-fi-001/003/005/007,
+перевірено на файлах редакції 11.07.2026):
+- структура тек щоразу інша («Порявняльні таблиці…», «Матеріали», «порівняльна
+  таблиця», «Порівняльні таблиці додатків») → шукаємо xlsx по всьому архіву;
+- ІМЕНА ФАЙЛІВ БРЕШУТЬ: у пакеті s-fi-003 файл «Додаток 5» містить таблицю до
+  додатка 3, а «Додаток 1» і «Додаток 2» — байт-у-байт один файл → номер
+  додатка беремо ТІЛЬКИ з шапки всередині xlsx, дублі відсіюємо по md5;
+- у дохідній таблиці всередині є проміжні підсумки «Усього доходів (без
+  урахування…)» БЕЗ коду → кінець таблиці лише рядок з кодом «Х»
+  («Разом доходів» / «УСЬОГО»);
+- коди доходів ієрархічні (10000000→11000000→11010100), групи лежать упереміш
+  з листовими рядками → контроль сум по верхньому рівню (X0000000);
+- пакет може не мати дохідної таблиці (квітень/липень міняли лише видатки) —
+  ревізія успадковує доходи попередньої, це не помилка;
+- нульовий пакет (вихідне рішення) — ПОВНІСТЮ PDF, xlsx немає → original
+  створюється без рядків, заголовні цифри тягнемо з тексту рішення (він
+  цифровий), а рядки доллються з лівої частини першої порівняльної таблиці
+  (ТЗ: PDF-додатки не парсимо; на 2027 заплановано парсер PDF-додатків);
+- зміни бувають і поза сесіями (розпорядження мера, виконком) — сума дельт
+  рішень НЕ пояснює всю динаміку плану; місячні снапшоти (задание №1, ще не
+  реалізоване; джерело — api.openbudget.gov.ua) — первинний факт, рішення —
+  атрибуція. Снапшот на 01.07 = 7 077.9 млн vs наша редакція 30.04 =
+  6 904.4 млн — різниця ~173.5 млн і є ці міжсесійні зміни.
 
-Ліва частина порівняльної таблиці НЕ зберігається як дані — тільки валідація
-проти останньої збереженої ревізії року; розбіжності пишуться в
-budget.revision_validation_issue і НЕ зупиняють завантаження (розбіжності —
-реальність: у s-fi-001 «чинна редакція» містить друкарську помилку депфіну по
-рядках 0200000/0210000 — різне розбиття споживання/розвиток при рівних
-підсумках). Якщо ревізій року ще немає — ліва частина першої порівняльної
-таблиці стає ревізією kind='original' з notes='reconstructed from comparison
-table' (первинне рішення часто доступне лише в PDF).
-
-Команди:
-    /budget_load <рік> <номер> <дата> [base=50/26]
-        — надіслати БОТУ xlsx документом з цією командою в підписі (caption),
-          або відповісти командою на повідомлення з xlsx. Приклад:
-          /budget_load 2026 50/123 29.01.2026 base=50/26
-    /budget_status               — ревізії по роках, суми, розбіжності валідації
-    /budget_headline <рік> <номер> ключ=значення …
-        — показники з текстової частини рішення (вручну/напівавтоматом),
-          ключі: revenue_total, revenue_general, revenue_special,
-          expenditure_total, expenditure_general, expenditure_special,
-          reserve_fund, debt_limit, guaranteed_debt_limit, staff_count
+Команди (додатково до «кинув zip»):
+    /budget_load [рік] [номер] [дата] [base=50/26] — ручне завантаження одного
+        xlsx (підпис до документа або reply); без аргументів усе визначається
+        з шапки файлу, як у zip-флоу
+    /budget_status — ревізії по роках, суми, розбіжності валідації
+    /budget_headline <рік> <номер> ключ=значення … — поправити заголовні
+        показники вручну (автоматом вони тягнуться з PDF рішення в пакеті)
 
 Тихо не працює без BOT_DATABASE_URL — як archive_mirror/analytics_store.
 """
 
 import asyncio
+import hashlib
 import os
 import re
+import zipfile
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -113,7 +108,8 @@ _BUDGET_SCHEMA_STATEMENTS = [
         UNIQUE (revision_id, kpkvk)
     )
     """,
-    # Рядки дохідної частини (структура Додатка 1)
+    # Рядки дохідної частини (структура Додатка 1). Коди ієрархічні —
+    # групи (X0000000 і проміжні) зберігаються нарівні з листовими рядками.
     """
     CREATE TABLE IF NOT EXISTS budget.plan_revenue_line (
         id                 bigserial PRIMARY KEY,
@@ -127,7 +123,8 @@ _BUDGET_SCHEMA_STATEMENTS = [
         UNIQUE (revision_id, code)
     )
     """,
-    # Заголовні показники з текстової частини рішення (вручну/напівавтоматом)
+    # Заголовні показники з текстової частини рішення (авто з PDF рішення
+    # в пакеті + ручні поправки /budget_headline)
     """
     CREATE TABLE IF NOT EXISTS budget.plan_headline (
         revision_id           int PRIMARY KEY REFERENCES budget.plan_revision,
@@ -144,7 +141,7 @@ _BUDGET_SCHEMA_STATEMENTS = [
     )
     """,
     # Розбіжності «чинної редакції» документа зі збереженою ревізією.
-    # Розбіжності — реальність (друкарські помилки депфіну), НЕ зупиняють load.
+    # Розбіжності — реальність (одруківки депфіну), НЕ зупиняють load.
     """
     CREATE TABLE IF NOT EXISTS budget.revision_validation_issue (
         id             bigserial PRIMARY KEY,
@@ -157,7 +154,9 @@ _BUDGET_SCHEMA_STATEMENTS = [
         created_at     timestamptz NOT NULL DEFAULT now()
     )
     """,
-    # Дельти між сусідніми ревізіями (видатки). Підсумки розпорядників
+    # Дельти між ревізіями (видатки). Попередник — ОСТАННЯ ревізія року з
+    # видатковими рядками перед цією (не просто order-1: ревізія могла не мати
+    # цієї таблиці, якщо рішення її не міняло). Підсумки розпорядників
     # виключено, щоб не задвоювати програми.
     """
     CREATE OR REPLACE VIEW budget.v_plan_amendments AS
@@ -171,9 +170,12 @@ _BUDGET_SCHEMA_STATEMENTS = [
     JOIN budget.plan_revision r ON r.id = n.revision_id AND r.kind = 'amendment'
     LEFT JOIN budget.plan_expenditure_line p
       ON p.kpkvk = n.kpkvk
-     AND p.revision_id = (SELECT id FROM budget.plan_revision pr
+     AND p.revision_id = (SELECT pr.id FROM budget.plan_revision pr
                           WHERE pr.fiscal_year = r.fiscal_year
-                            AND pr.effective_order = r.effective_order - 1)
+                            AND pr.effective_order < r.effective_order
+                            AND EXISTS (SELECT 1 FROM budget.plan_expenditure_line x
+                                        WHERE x.revision_id = pr.id)
+                          ORDER BY pr.effective_order DESC LIMIT 1)
     WHERE NOT n.is_unit_total
       AND (n.total IS DISTINCT FROM p.total OR p.kpkvk IS NULL)
     """,
@@ -182,29 +184,35 @@ _BUDGET_SCHEMA_STATEMENTS = [
     CREATE OR REPLACE VIEW budget.v_plan_revenue_amendments AS
     SELECT n.revision_id, r.decision_number, r.decision_date,
            n.code, n.line_name,
-           n.total - COALESCE(p.total, 0)                       AS delta_total,
-           n.general_fund - COALESCE(p.general_fund, 0)         AS delta_general,
-           n.special_fund - COALESCE(p.special_fund, 0)         AS delta_special,
+           n.total - COALESCE(p.total, 0)               AS delta_total,
+           n.general_fund - COALESCE(p.general_fund, 0) AS delta_general,
+           n.special_fund - COALESCE(p.special_fund, 0) AS delta_special,
            (p.code IS NULL) AS is_new_line
     FROM budget.plan_revenue_line n
     JOIN budget.plan_revision r ON r.id = n.revision_id AND r.kind = 'amendment'
     LEFT JOIN budget.plan_revenue_line p
       ON p.code = n.code
-     AND p.revision_id = (SELECT id FROM budget.plan_revision pr
+     AND p.revision_id = (SELECT pr.id FROM budget.plan_revision pr
                           WHERE pr.fiscal_year = r.fiscal_year
-                            AND pr.effective_order = r.effective_order - 1)
+                            AND pr.effective_order < r.effective_order
+                            AND EXISTS (SELECT 1 FROM budget.plan_revenue_line x
+                                        WHERE x.revision_id = pr.id)
+                          ORDER BY pr.effective_order DESC LIMIT 1)
     WHERE n.total IS DISTINCT FROM p.total
        OR p.code IS NULL
     """,
-    # Зниклі програми: рядок був у попередній ревізії, у новій його немає
+    # Зниклі програми: рядок був у попередній видатковій редакції, у новій немає
     """
     CREATE OR REPLACE VIEW budget.v_plan_disappeared AS
     SELECT n.id AS revision_id, n.decision_number, n.decision_date,
            p.kpkvk, p.line_name, p.total AS last_total
     FROM budget.plan_revision n
-    JOIN budget.plan_revision prev
-      ON prev.fiscal_year = n.fiscal_year
-     AND prev.effective_order = n.effective_order - 1
+    JOIN LATERAL (SELECT pr.id FROM budget.plan_revision pr
+                  WHERE pr.fiscal_year = n.fiscal_year
+                    AND pr.effective_order < n.effective_order
+                    AND EXISTS (SELECT 1 FROM budget.plan_expenditure_line x
+                                WHERE x.revision_id = pr.id)
+                  ORDER BY pr.effective_order DESC LIMIT 1) prev ON true
     JOIN budget.plan_expenditure_line p ON p.revision_id = prev.id
     WHERE n.kind = 'amendment'
       AND NOT p.is_unit_total
@@ -255,6 +263,14 @@ _REV_FIELDS = ["code", "line_name", "total", "general_fund", "special_fund", "sp
 _MONEY_FIELDS_EXP = _EXP_FIELDS[4:]
 _MONEY_FIELDS_REV = _REV_FIELDS[2:]
 
+# Верхній рівень ієрархії кодів доходів (10000000, 40000000…) — для контролю сум
+_REV_TOP_RE = re.compile(r"^\d0{7}$")
+
+_TITLE_YEAR_RE = re.compile(r"на\s+(20\d{2})\s+рік")
+_TITLE_BASE_RE = re.compile(r"від\s+(\d{2}\.\d{2}\.\d{4})\s*№\s*([\d/]+)")
+_TITLE_DODATOK_RE = re.compile(r"додатк\w*\s+(\d+)", re.I)
+_SFI_RE = re.compile(r"s[\s_-]*fi[\s_-]*(\d+)", re.I)
+
 
 def _num_code(value, width):
     """210160.0 → '0210160'; 1.4549E9 → '1454900000'; 'Х'/порожнє → None."""
@@ -271,6 +287,10 @@ def _num_code(value, width):
         except ValueError:
             return None
     return None
+
+
+def _is_x(value):
+    return isinstance(value, str) and value.strip().upper() in ("Х", "X")
 
 
 def _money(value):
@@ -301,7 +321,7 @@ def _find_numbering_row(rows):
     нумерації з 1, НЕ фіксований номер колонки."""
     for i, row in enumerate(rows):
         starts = []  # (col, width)
-        expect = None  # (start, next_expected)
+        expect = None
         for col, v in enumerate(row):
             n = None
             if isinstance(v, (int, float)) and float(v).is_integer():
@@ -322,20 +342,9 @@ def _find_numbering_row(rows):
     return None, []
 
 
-def _detect_table_kind(rows, block_width):
-    """'expenditure' (Додаток 3) чи 'revenue' (Додаток 1) — за заголовками."""
-    head_text = " ".join(
-        str(v) for row in rows[:15] for v in row if isinstance(v, str)
-    ).lower()
-    if "програмної класифікації видатків" in head_text or block_width >= 12:
-        return "expenditure"
-    if "доход" in head_text or block_width <= 8:
-        return "revenue"
-    raise ValueError(f"Не впізнав тип таблиці (ширина блоку {block_width})")
-
-
 def _parse_block_row(row, start, width, kind):
-    """Зріз рядка листа → dict полів рядка бюджету або None (порожньо/розділ)."""
+    """Зріз рядка листа → dict полів рядка бюджету або None (порожньо/розділ/
+    проміжний підсумок без коду)."""
     cells = list(row[start:start + width])
     cells += [None] * (width - len(cells))
     if kind == "expenditure":
@@ -369,12 +378,12 @@ def _parse_block_row(row, start, width, kind):
 
 
 def _grand_total_row(row, start, width, kind):
-    """Рядок 'УСЬОГО' (коди 'Х') → dict сум для контролю, або None."""
+    """Фінальний підсумковий рядок — ТІЛЬКИ з кодом «Х» («УСЬОГО» видатків,
+    «Разом доходів»). Проміжні «Усього…» без коду сюди не потрапляють —
+    у дохідній таблиці вони стоять посеред даних."""
     cells = list(row[start:start + width])
     cells += [None] * (width - len(cells))
-    name_idx = 3 if kind == "expenditure" else 1
-    name = _text(cells[name_idx])
-    if not name or "усього" not in name.lower():
+    if not _is_x(cells[0]):
         return None
     money_cells = cells[4:16] if kind == "expenditure" else cells[2:6]
     fields = _MONEY_FIELDS_EXP if kind == "expenditure" else _MONEY_FIELDS_REV
@@ -385,9 +394,12 @@ def parse_comparison_xlsx(data, filename=""):
     """Парсить xlsx порівняльної таблиці (або одноблочний додаток вихідного
     рішення). Повертає dict:
         kind        — 'expenditure' | 'revenue'
+        dodatok     — номер додатка З ШАПКИ (імена файлів брешуть)
         blocks      — 1 (одноблочний оригінал) або 2 (порівняльна)
         left/right  — списки рядків (для одноблочного — тільки right)
-        left_total/right_total — контрольні суми з рядка 'УСЬОГО' (або None)
+        left_total/right_total — контрольні суми з рядка з кодом «Х»
+        title/fiscal_year/base_number/base_date — з шапки
+    Кидає ValueError з позначкою out_of_scope=True для додатків 2/4/5/6/7.
     """
     import openpyxl  # локальний імпорт: бот стартує і без openpyxl
 
@@ -396,11 +408,7 @@ def parse_comparison_xlsx(data, filename=""):
     for sheet in wb.sheetnames:
         ws = wb[sheet]
         rows = [list(r) for r in ws.iter_rows(values_only=True)]
-        try:
-            num_idx, blocks = _find_numbering_row(rows[:40])
-        except Exception as e:  # noqa: BLE001 — пробуємо наступний лист
-            last_err = e
-            continue
+        num_idx, blocks = _find_numbering_row(rows[:40])
         if num_idx is None:
             last_err = ValueError(f"лист '{sheet}': не знайшов рядок нумерації колонок")
             continue
@@ -408,16 +416,36 @@ def parse_comparison_xlsx(data, filename=""):
             last_err = ValueError(f"лист '{sheet}': {len(blocks)} блоків нумерації")
             continue
 
+        title = re.sub(r"\s+", " ", " ".join(
+            str(v) for row in rows[:num_idx] for v in row if isinstance(v, str)
+        )).strip()
+
+        # Номер додатка — тільки з шапки (у s-fi-003 файл «Додаток 5» містив
+        # таблицю до додатка 3). У шапці два згадування («до додатку N до
+        # рішення…») — беремо перше.
+        m = _TITLE_DODATOK_RE.search(title)
+        dodatok = int(m.group(1)) if m else None
         width = blocks[0][1]
+        if dodatok is None:
+            dodatok = 3 if width == 16 else (1 if width == 6 else None)
+        if dodatok not in (1, 3):
+            err = ValueError(f"додаток {dodatok} — поза схемою (вантажимо лише 1 і 3)")
+            err.out_of_scope = True
+            wb.close()
+            raise err
+
+        kind = "expenditure" if dodatok == 3 else "revenue"
+        expected = 16 if kind == "expenditure" else 6
         if len(blocks) == 2 and blocks[1][1] != width:
+            wb.close()
             raise ValueError(
                 f"Блоки різної ширини: {blocks[0][1]} і {blocks[1][1]} — нова структура файлу?"
             )
-        kind = _detect_table_kind(rows, width)
-        expected = 16 if kind == "expenditure" else 6
         if width != expected:
+            wb.close()
             raise ValueError(
-                f"Ширина блоку {width}, очікував {expected} для {kind} — структура змінилась, перевір файл"
+                f"Додаток {dodatok}: ширина блоку {width}, очікував {expected} — "
+                "структура змінилась, перевір файл"
             )
 
         left_rows, right_rows = [], []
@@ -441,18 +469,80 @@ def parse_comparison_xlsx(data, filename=""):
         if not right_rows:
             last_err = ValueError(f"лист '{sheet}': не знайшов жодного рядка даних")
             continue
+
+        ym = _TITLE_YEAR_RE.search(title)
+        bm = _TITLE_BASE_RE.search(title)
         wb.close()
         return {
             "kind": kind,
+            "dodatok": dodatok,
             "blocks": len(blocks),
             "left": left_rows,
             "right": right_rows,
             "left_total": left_total,
             "right_total": right_total,
             "filename": filename,
+            "title": title,
+            "fiscal_year": int(ym.group(1)) if ym else None,
+            "base_date": datetime.strptime(bm.group(1), "%d.%m.%Y").date() if bm else None,
+            "base_number": bm.group(2) if bm else None,
         }
     wb.close()
     raise ValueError(f"Не розібрав xlsx: {last_err}")
+
+
+def _control_sum(lines, kind):
+    """Сума для контролю проти рядка «Х»: видатки — програмні рядки без
+    підсумків розпорядників; доходи — верхній рівень ієрархії (X0000000)."""
+    if kind == "expenditure":
+        return sum((ln["total"] or 0) for ln in lines if not ln["is_unit_total"])
+    return sum((ln["total"] or 0) for ln in lines if _REV_TOP_RE.match(ln["code"]))
+
+
+# ---------- Текст рішення (PDF у пакеті) → заголовні показники ----------
+
+_HEADLINE_PATTERNS = [
+    ("revenue_total", r"доходи бюджету[^;:]*?у сумі\s*(\d{6,})"),
+    ("revenue_general", r"доходи загального фонду[^;:]*?[–—-]\s*(\d{6,})"),
+    ("revenue_special", r"доходи спеціального фонду[^;:]*?[–—-]\s*(\d{6,})"),
+    ("expenditure_total", r"видатки бюджету[^;:]*?у сумі\s*(\d{6,})"),
+    ("expenditure_general", r"видатки загального фонду[^;:]*?[–—-]\s*(\d{6,})"),
+    ("expenditure_special", r"видатки спеціального фонду[^;:]*?[–—-]\s*(\d{6,})"),
+    ("reserve_fund", r"резервний фонд[^;:]*?розмірі\s*(\d{6,})"),
+]
+
+
+def parse_decision_pdf(data):
+    """Витягає з цифрового PDF рішення заголовні показники і мету.
+    Повертає dict (може бути частковим) або None, якщо текст не читається."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(BytesIO(data))
+        text = " ".join((p.extract_text() or "") for p in reader.pages[:4])
+    except Exception as e:  # noqa: BLE001 — PDF-скан або битий файл
+        print(f"budget: PDF не читається — {e}")
+        return None
+    text = re.sub(r"\s+", " ", text)
+    if not text.strip():
+        return None
+    out = {"is_original": "Про внесення змін" not in text[:600]}
+    ym = _TITLE_YEAR_RE.search(text)
+    if ym:
+        out["fiscal_year"] = int(ym.group(1))
+    bm = _TITLE_BASE_RE.search(text)
+    if bm:
+        out["base_date"] = datetime.strptime(bm.group(1), "%d.%m.%Y").date()
+        out["base_number"] = bm.group(2)
+    headline = {}
+    for field, pat in _HEADLINE_PATTERNS:
+        m = re.search(pat, text, re.I)
+        if m:
+            headline[field] = Decimal(m.group(1))
+    m = re.search(r"чисельність[^;:.]*?(\d{2,6})\s*(?:штатн|одиниц)", text, re.I)
+    if m:
+        headline["staff_count"] = int(m.group(1))
+    out["headline"] = headline
+    return out
 
 
 # ---------- Завантажувач ----------
@@ -508,7 +598,6 @@ def _validate_left(cur, new_revision_id, kind, prev_revision_id, left_lines):
         doc_codes.add(ln[key])
         st = stored.get(ln[key])
         if st is None:
-            # рядок є в документі, у збереженій ревізії немає
             issues.append((ln[key], "presence", None, ln.get("total")))
             continue
         for f in money_fields:
@@ -529,161 +618,355 @@ def _validate_left(cur, new_revision_id, kind, prev_revision_id, left_lines):
     return len(issues)
 
 
-def load_comparison(data, fiscal_year, decision_number, decision_date=None,
-                    base_decision=None, filename=""):
-    """Завантажує один xlsx (порівняльний або одноблочний оригінал) у схему
-    budget. Синхронна (psycopg2) — в боті викликати через asyncio.to_thread.
+def _check_unit_pairs(cur, revision_id, lines, block_label):
+    """Внутрішня консистентність видаткового блока: пара «головний розпорядник
+    (XX00000) ↔ відповідальний виконавець (XX10000)» має бути ідентичною.
+    Розбіжність = одруківка депфіну (реальний кейс s-fi-001: 0200000/0210000
+    мали різне розбиття споживання/розвиток при рівних підсумках) →
+    revision_validation_issue з полем pair:<поле>. Повертає к-сть."""
+    units = {ln["kpkvk"]: ln for ln in lines if ln and ln.get("is_unit_total")}
+    found = 0
+    for k, ln in units.items():
+        if not (k.endswith("00000") and not k.endswith("10000")):
+            continue
+        mate = units.get(k[:2] + "10000")
+        if not mate:
+            continue
+        for f in _MONEY_FIELDS_EXP:
+            a, b = ln.get(f) or Decimal(0), mate.get(f) or Decimal(0)
+            if a != b:
+                cur.execute(
+                    "INSERT INTO budget.revision_validation_issue "
+                    "(revision_id, table_kind, code, field, stored_value, document_value) "
+                    "VALUES (%s, 'expenditure', %s, %s, %s, %s)",
+                    (revision_id, f"{k}|{k[:2]}10000", f"pair:{block_label}:{f}", a, b),
+                )
+                found += 1
+    return found
 
-    Повертає dict-звіт для повідомлення в чат."""
+
+def _pred_with_lines(cur, fiscal_year, order, kind):
+    """Остання ревізія року ПЕРЕД order, у якій є рядки цієї таблиці
+    (ревізія могла не мати додатка 1/3, якщо рішення його не міняло)."""
+    table, _ = _LINE_COLS[kind]
+    cur.execute(
+        f"""SELECT pr.id, pr.notes FROM budget.plan_revision pr
+            WHERE pr.fiscal_year = %s AND pr.effective_order < %s
+              AND EXISTS (SELECT 1 FROM {table} x WHERE x.revision_id = pr.id)
+            ORDER BY pr.effective_order DESC LIMIT 1""",
+        (fiscal_year, order),
+    )
+    return cur.fetchone()
+
+
+def _get_or_create_revision(cur, fiscal_year, decision_number, decision_date,
+                            kind_of_revision, filename, notes=None):
+    """Знаходить ревізію (fiscal_year, decision_number) або створює нову з
+    наступним effective_order. Повторне завантаження дубля не створює."""
+    cur.execute(
+        "SELECT id, effective_order FROM budget.plan_revision "
+        "WHERE fiscal_year = %s AND decision_number = %s",
+        (fiscal_year, decision_number),
+    )
+    row = cur.fetchone()
+    if row:
+        return row[0], row[1], True
+    if kind_of_revision == "original":
+        # original року один: міг бути створений під іншим номером
+        # (s-fi-код нульового пакета vs канонічний 50/26 з шапки таблиці)
+        cur.execute(
+            "SELECT id FROM budget.plan_revision "
+            "WHERE fiscal_year = %s AND effective_order = 0",
+            (fiscal_year,),
+        )
+        row = cur.fetchone()
+        if row:
+            return row[0], 0, True
+        order = 0
+    else:
+        cur.execute(
+            "SELECT COALESCE(MAX(effective_order), -1) + 1 "
+            "FROM budget.plan_revision WHERE fiscal_year = %s",
+            (fiscal_year,),
+        )
+        order = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO budget.plan_revision "
+        "(fiscal_year, decision_number, decision_date, kind, effective_order, source_file, notes) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (fiscal_year, decision_number, decision_date, kind_of_revision, order, filename, notes),
+    )
+    return cur.fetchone()[0], order, False
+
+
+def load_parsed(parsed, fiscal_year, decision_number, decision_date=None,
+                filename=""):
+    """Завантажує один розібраний додаток (порівняльний або одноблочний
+    оригінал) у схему budget. Синхронна — викликати через asyncio.to_thread."""
     ensure_budget_schema()
-    parsed = parse_comparison_xlsx(data, filename=filename)
     kind = parsed["kind"]
+    base_number = parsed.get("base_number")
+    base_date = parsed.get("base_date")
 
     conn = bot_db._connect()
     try:
         with conn, conn.cursor() as cur:
-            # Попередня (остання) ревізія року
-            cur.execute(
-                "SELECT id, effective_order, decision_number FROM budget.plan_revision "
-                "WHERE fiscal_year = %s ORDER BY effective_order DESC LIMIT 1",
-                (fiscal_year,),
-            )
-            prev = cur.fetchone()
-
             report = {
                 "kind": kind, "blocks": parsed["blocks"],
-                "rows": len(parsed["right"]),
                 "original_created": False, "validated": 0, "issues": 0,
                 "revision_reused": False, "dupes": 0,
             }
+            right_present = [ln for ln in parsed["right"] if ln]
 
             if parsed["blocks"] == 1:
                 # Одноблочний xlsx = додаток вихідного рішення → original
-                if prev is None:
-                    cur.execute(
-                        "INSERT INTO budget.plan_revision "
-                        "(fiscal_year, decision_number, decision_date, kind, effective_order, source_file) "
-                        "VALUES (%s, %s, %s, 'original', 0, %s) RETURNING id",
-                        (fiscal_year, decision_number, decision_date, filename),
-                    )
-                    revision_id = cur.fetchone()[0]
-                    report["original_created"] = True
-                else:
-                    cur.execute(
-                        "SELECT id FROM budget.plan_revision "
-                        "WHERE fiscal_year = %s AND decision_number = %s",
-                        (fiscal_year, decision_number),
-                    )
-                    row = cur.fetchone()
-                    if row is None:
-                        raise ValueError(
-                            f"Одноблочний файл, але в {fiscal_year} вже є ревізії "
-                            f"і рішення {decision_number} серед них немає — "
-                            "оригінал вантажиться першим"
-                        )
-                    revision_id = row[0]
-                    report["revision_reused"] = True
-                inserted, dupes = _insert_lines(cur, revision_id, kind, parsed["right"])
-                report.update(revision_id=revision_id, inserted=inserted, dupes=dupes,
-                              effective_order=0)
-                return report
-
-            # Порівняльна таблиця (2 блоки)
-            left_present = [ln for ln in parsed["left"] if ln]
-            if prev is None:
-                # Ревізій року ще немає: ліва частина стає original
-                orig_number = base_decision or "original"
-                cur.execute(
-                    "INSERT INTO budget.plan_revision "
-                    "(fiscal_year, decision_number, decision_date, kind, effective_order, "
-                    " source_file, notes) "
-                    "VALUES (%s, %s, NULL, 'original', 0, %s, "
-                    "        'reconstructed from comparison table') RETURNING id",
-                    (fiscal_year, orig_number, filename),
+                revision_id, order, reused = _get_or_create_revision(
+                    cur, fiscal_year, decision_number, decision_date,
+                    "original", filename,
                 )
-                _insert_lines(cur, cur.fetchone()[0], kind, left_present)
-                report["original_created"] = True
-            # Ревізія цього рішення: повторне завантаження не створює дубля
-            cur.execute(
-                "SELECT id, effective_order FROM budget.plan_revision "
-                "WHERE fiscal_year = %s AND decision_number = %s",
-                (fiscal_year, decision_number),
-            )
-            row = cur.fetchone()
-            if row:
-                revision_id, order = row
-                report["revision_reused"] = True
+                report["revision_reused"] = reused
+                report["original_created"] = not reused
             else:
                 cur.execute(
-                    "SELECT COALESCE(MAX(effective_order), -1) + 1 "
-                    "FROM budget.plan_revision WHERE fiscal_year = %s",
+                    "SELECT count(*) FROM budget.plan_revision WHERE fiscal_year = %s",
                     (fiscal_year,),
                 )
-                order = cur.fetchone()[0]
-                cur.execute(
-                    "INSERT INTO budget.plan_revision "
-                    "(fiscal_year, decision_number, decision_date, kind, effective_order, source_file) "
-                    "VALUES (%s, %s, %s, 'amendment', %s, %s) RETURNING id",
-                    (fiscal_year, decision_number, decision_date, order, filename),
-                )
-                revision_id = cur.fetchone()[0]
+                have_revisions = cur.fetchone()[0] > 0
+                left_present = [ln for ln in parsed["left"] if ln]
 
-            # Попередник САМЕ ЦІЄЇ ревізії (order-1), а не остання ревізія року:
-            # при повторному завантаженні остання — це вона сама
-            cur.execute(
-                "SELECT id, notes FROM budget.plan_revision "
-                "WHERE fiscal_year = %s AND effective_order = %s",
-                (fiscal_year, order - 1),
-            )
-            pred = cur.fetchone()
-            pred_id = pred[0] if pred else None
-
-            # original міг бути реконструйований БЕЗ цієї таблиці (перший файл
-            # рішення був іншого додатка) — тоді доллємо його з лівої частини
-            if pred and not report["original_created"]:
-                table, _ = _LINE_COLS[kind]
-                cur.execute(
-                    f"SELECT count(*) FROM {table} WHERE revision_id = %s", (pred_id,)
-                )
-                if cur.fetchone()[0] == 0 and "reconstructed" in (pred[1] or ""):
-                    _insert_lines(cur, pred_id, kind, left_present)
+                if not have_revisions:
+                    # Ревізій року ще немає: ліва частина стає original
+                    # (номер/дата базового рішення — з шапки таблиці)
+                    orig_id, _, _ = _get_or_create_revision(
+                        cur, fiscal_year, base_number or "original", base_date,
+                        "original", filename,
+                        notes="reconstructed from comparison table",
+                    )
+                    _insert_lines(cur, orig_id, kind, left_present)
                     report["original_created"] = True
+                elif base_number:
+                    # Канонізуємо original: нульовий PDF-пакет міг створити його
+                    # під кодом s-fi-XXX без дати — шапка порівняльної таблиці
+                    # знає справжні номер і дату базового рішення
+                    cur.execute(
+                        "UPDATE budget.plan_revision "
+                        "SET decision_number = %s, decision_date = COALESCE(decision_date, %s) "
+                        "WHERE fiscal_year = %s AND effective_order = 0 "
+                        "  AND kind = 'original' AND decision_number <> %s",
+                        (base_number, base_date, fiscal_year, base_number),
+                    )
 
-            right_present = [ln for ln in parsed["right"] if ln]
-            inserted, dupes = _insert_lines(cur, revision_id, kind, right_present)
+                revision_id, order, reused = _get_or_create_revision(
+                    cur, fiscal_year, decision_number, decision_date,
+                    "amendment", filename,
+                )
+                report["revision_reused"] = reused
 
-            # Валідація лівої частини проти попередника (якщо є з чим порівнювати
-            # і це не щойно реконструйований з цього ж файлу original)
-            issues = 0
-            if pred_id and not report["original_created"]:
-                # повторне завантаження: чистимо старі issues цієї таблиці
+                pred = _pred_with_lines(cur, fiscal_year, order, kind)
+                if pred is None:
+                    # Попередніх рядків цієї таблиці немає ніде: якщо original
+                    # реконструйований/порожній (PDF-пакет) — доливаємо в нього
+                    cur.execute(
+                        "SELECT id, notes FROM budget.plan_revision "
+                        "WHERE fiscal_year = %s AND effective_order = 0",
+                        (fiscal_year,),
+                    )
+                    orig = cur.fetchone()
+                    if orig and "reconstructed" in (orig[1] or ""):
+                        _insert_lines(cur, orig[0], kind, left_present)
+                        # original_created вимикає валідацію (це той самий файл),
+                        # але pred лишаємо — щоб порахувати «було → стало»
+                        report["original_created"] = True
+                        pred = orig
+
+                inserted, dupes = _insert_lines(cur, revision_id, kind, right_present)
+                report.update(inserted=inserted, dupes=dupes)
+
+                # повторне завантаження: старі issues цієї таблиці — геть
                 cur.execute(
                     "DELETE FROM budget.revision_validation_issue "
                     "WHERE revision_id = %s AND table_kind = %s",
                     (revision_id, kind),
                 )
-                issues = _validate_left(cur, revision_id, kind, pred_id, left_present)
-                report["validated"] = len(left_present)
-            report.update(revision_id=revision_id, inserted=inserted, dupes=dupes,
-                          issues=issues, effective_order=order)
+                if pred is not None and not report["original_created"]:
+                    report["issues"] = _validate_left(cur, revision_id, kind, pred[0], left_present)
+                    report["validated"] = len(left_present)
+                if kind == "expenditure":
+                    report["pair_issues"] = (
+                        _check_unit_pairs(cur, revision_id, left_present, "чинна")
+                        + _check_unit_pairs(cur, revision_id, right_present, "нова")
+                    )
 
-            # Контроль сум: рядок «УСЬОГО» документа vs сума завантажених рядків
+                # Сума попередньої редакції — для «було → стало» у звіті
+                if pred is not None:
+                    table, _ = _LINE_COLS[kind]
+                    flt = "AND NOT is_unit_total" if kind == "expenditure" else ""
+                    if kind == "revenue":
+                        flt = "AND code ~ '^\\d0{7}$'"
+                    cur.execute(
+                        f"SELECT COALESCE(SUM(total),0) FROM {table} "
+                        f"WHERE revision_id = %s {flt}",
+                        (pred[0],),
+                    )
+                    report["pred_total"] = cur.fetchone()[0]
+
+            if parsed["blocks"] == 1:
+                inserted, dupes = _insert_lines(cur, revision_id, kind, right_present)
+                report.update(inserted=inserted, dupes=dupes)
+
+            # Контроль сум: рядок «Х» документа vs сума завантаженого
             gt = parsed.get("right_total")
             if gt and gt.get("total") is not None:
-                table, _ = _LINE_COLS[kind]
-                flt = "AND NOT is_unit_total" if kind == "expenditure" else ""
-                cur.execute(
-                    f"SELECT COALESCE(SUM(total), 0) FROM {table} "
-                    f"WHERE revision_id = %s {flt}",
-                    (revision_id,),
-                )
-                own_sum = cur.fetchone()[0]
+                own = _control_sum(right_present, kind)
                 report["doc_total"] = gt["total"]
-                report["sum_total"] = own_sum
-                report["total_match"] = (own_sum == gt["total"])
+                report["sum_total"] = own
+                report["total_match"] = (own == gt["total"])
+            report.update(revision_id=revision_id, effective_order=order)
             return report
     finally:
         conn.close()
+
+
+def load_comparison(data, fiscal_year, decision_number, decision_date=None,
+                    base_decision=None, filename=""):
+    """Ручний шлях (/budget_load з одним xlsx): парсинг + завантаження.
+    base_decision лишився для сумісності — база береться з шапки файлу."""
+    parsed = parse_comparison_xlsx(data, filename=filename)
+    if base_decision and not parsed.get("base_number"):
+        parsed["base_number"] = base_decision
+    return load_parsed(parsed, fiscal_year or parsed.get("fiscal_year"),
+                       decision_number, decision_date, filename)
+
+
+def upsert_headline(revision_id, values):
+    """Записує заголовні показники ревізії (авто з PDF або вручну)."""
+    if not values:
+        return
+    cols = list(values.keys())
+    sets = ", ".join(f"{c} = COALESCE(EXCLUDED.{c}, budget.plan_headline.{c})" for c in cols)
+    bot_db.execute(
+        f"INSERT INTO budget.plan_headline (revision_id, {', '.join(cols)}) "
+        f"VALUES (%s, {', '.join(['%s'] * len(cols))}) "
+        f"ON CONFLICT (revision_id) DO UPDATE SET {sets}",
+        tuple([revision_id] + [values[c] for c in cols]),
+    )
+
+
+# ---------- Пакет (ZIP або одиночний файл) ----------
+
+def _zip_entries(data):
+    """(ім'я, bytes) для файлів усередині zip. Імена лагодимо: мак-архіви
+    пишуть UTF-8 без прапорця, і zipfile віддає cp437-кашу."""
+    entries = []
+    with zipfile.ZipFile(BytesIO(data)) as z:
+        for info in z.infolist():
+            if info.is_dir() or info.filename.startswith("__MACOSX"):
+                continue
+            name = info.filename
+            if not (info.flag_bits & 0x800):
+                try:
+                    name = name.encode("cp437").decode("utf-8")
+                except (UnicodeDecodeError, UnicodeEncodeError):
+                    try:
+                        name = name.encode("cp437").decode("cp866")
+                    except (UnicodeDecodeError, UnicodeEncodeError):
+                        pass
+            entries.append((name, z.read(info)))
+    return entries
+
+
+def process_package(data, filename):
+    """Обробляє пакет рішення: ZIP (або одиночний xlsx). Повертає dict:
+        decision   — код рішення (s-fi-XXX або ім'я файлу)
+        loads      — список звітів load_parsed по додатках 1/3
+        skipped    — [(ім'я, причина)] пропущені файли
+        headline   — dict з PDF рішення (або None)
+        zero       — True, якщо пакет без порівняльних таблиць (нульовий PDF)
+    Синхронна — викликати через asyncio.to_thread."""
+    if filename.lower().endswith(".zip"):
+        entries = _zip_entries(data)
+    else:
+        entries = [(filename, data)]
+
+    m = _SFI_RE.search(filename) or next(
+        (mm for name, _ in entries if (mm := _SFI_RE.search(name))), None
+    )
+    decision = f"s-fi-{int(m.group(1)):03d}" if m else re.sub(r"\.(zip|xlsx)$", "", filename, flags=re.I)
+
+    parsed_tables, skipped, seen_md5 = [], [], set()
+    decision_pdf = None
+    for name, blob in entries:
+        low = name.lower()
+        if low.endswith(".xlsx"):
+            digest = hashlib.md5(blob).hexdigest()
+            if digest in seen_md5:
+                skipped.append((name, "дубль (той самий файл під іншим іменем)"))
+                continue
+            seen_md5.add(digest)
+            try:
+                parsed_tables.append(parse_comparison_xlsx(blob, filename=name))
+            except ValueError as e:
+                reason = "поза схемою (не додаток 1/3)" if getattr(e, "out_of_scope", False) else str(e)
+                skipped.append((name, reason))
+        elif low.endswith(".pdf"):
+            # PDF самого рішення (не додаток і не пояснювальна) — заголовні цифри
+            if ("додаток" not in low and "пояснювальна" not in low
+                    and "записка" not in low and decision_pdf is None):
+                decision_pdf = blob
+
+    # Дубль таблиці до одного додатка (різні файли, однаковий вміст по суті)
+    # — лишаємо перший
+    by_dodatok = {}
+    for p in parsed_tables:
+        if p["dodatok"] in by_dodatok:
+            skipped.append((p["filename"], f"другий файл додатка {p['dodatok']} — пропущено"))
+        else:
+            by_dodatok[p["dodatok"]] = p
+
+    meta = parse_decision_pdf(decision_pdf) if decision_pdf else None
+    fiscal_year = next(
+        (p["fiscal_year"] for p in by_dodatok.values() if p["fiscal_year"]),
+        (meta or {}).get("fiscal_year"),
+    )
+    if not fiscal_year:
+        raise ValueError("Не визначив рік бюджету ні з шапок таблиць, ні з PDF рішення")
+
+    result = {"decision": decision, "fiscal_year": fiscal_year, "loads": [],
+              "skipped": skipped, "headline": None, "zero": False}
+
+    if not by_dodatok:
+        # Нульовий пакет: одні PDF. Створюємо original без рядків, заголовні
+        # цифри — з тексту рішення. Рядки доллються з першої порівняльної.
+        if not meta or not meta.get("is_original"):
+            raise ValueError(
+                "У пакеті немає порівняльних таблиць додатків 1/3, "
+                "а PDF рішення не схожий на вихідний бюджет"
+            )
+        ensure_budget_schema()
+        conn = bot_db._connect()
+        try:
+            with conn, conn.cursor() as cur:
+                revision_id, order, reused = _get_or_create_revision(
+                    cur, fiscal_year, decision, None, "original", filename,
+                    notes="original from PDF package; lines reconstructed from comparison table",
+                )
+        finally:
+            conn.close()
+        result["zero"] = True
+        result["revision_id"] = revision_id
+        result["revision_reused"] = reused
+    else:
+        # видатки після доходів — щоб у звіті «було → стало» по видатках
+        # рахувалось уже з доліченим original
+        for p in sorted(by_dodatok.values(), key=lambda x: x["dodatok"]):
+            rep = load_parsed(p, fiscal_year, decision, None, p["filename"])
+            result["loads"].append(rep)
+        result["revision_id"] = result["loads"][-1]["revision_id"]
+
+    if meta and meta.get("headline"):
+        upsert_headline(result["revision_id"], meta["headline"])
+        result["headline"] = meta["headline"]
+    return result
 
 
 # ---------- Аналітика для звіту в чат ----------
@@ -706,7 +989,7 @@ def amendments_summary(revision_id, kind, limit=8):
 def _fmt_money(v):
     if v is None:
         return "—"
-    return f"{v:,.0f}".replace(",", " ")
+    return f"{v:,.2f}".replace(",", " ").replace(".00", "")
 
 
 def _parse_date(s):
@@ -718,9 +1001,107 @@ def _parse_date(s):
     return None
 
 
+_KIND_UA = {"expenditure": "Видатки (Додаток 3)", "revenue": "Доходи (Додаток 1)"}
+
+
+def _package_reply(result):
+    """Людський звіт по обробленому пакету."""
+    lines = [f"📦 {result['decision']} → бюджет {result['fiscal_year']}"]
+    if result["zero"]:
+        lines.append(
+            "Це вихідне рішення (все в PDF): створив original-ревізію. Рядки "
+            "додатків доллються з першої порівняльної таблиці, заголовні "
+            "цифри взяв із тексту рішення."
+        )
+    for rep in result["loads"]:
+        head = f"✅ {_KIND_UA[rep['kind']]}: ревізія #{rep['effective_order']}, {rep['inserted']} рядків"
+        if "pred_total" in rep and rep.get("doc_total") is not None:
+            head += f"\n     {_fmt_money(rep['pred_total'])} → {_fmt_money(rep['doc_total'])} грн"
+        lines.append(head)
+        if rep["original_created"]:
+            lines.append("     📌 ліва частина збережена як original (перша таблиця року)")
+        if rep["revision_reused"]:
+            lines.append("     ♻️ повторне завантаження — без дубля ревізії")
+        if rep.get("total_match") is False:
+            lines.append(f"     ⚠️ контроль сум: документ {_fmt_money(rep['doc_total'])}, "
+                         f"у мене {_fmt_money(rep['sum_total'])}")
+        if rep["issues"]:
+            lines.append(f"     ⚠️ «чинна редакція» розійшлась зі збереженою у {rep['issues']} "
+                         f"місцях (міжсесійні зміни або одруківки) → revision_validation_issue")
+        if rep.get("pair_issues"):
+            lines.append(f"     ⚠️ одруківки депфіну: {rep['pair_issues']} розбіжностей у парах "
+                         f"розпорядник/виконавець → revision_validation_issue")
+        if rep.get("dupes"):
+            lines.append(f"     ⚠️ дублі кодів у документі: {rep['dupes']}")
+    if result.get("headline"):
+        h = result["headline"]
+        parts = []
+        if h.get("revenue_total"):
+            parts.append(f"доходи {_fmt_money(h['revenue_total'])}")
+        if h.get("expenditure_total"):
+            parts.append(f"видатки {_fmt_money(h['expenditure_total'])}")
+        if parts:
+            lines.append(f"📄 з тексту рішення: {', '.join(parts)} грн")
+    for name, reason in result["skipped"]:
+        short = name.split("/")[-1]
+        lines.append(f"⏭ {short} — {reason}")
+    return lines
+
+
+async def _load_top_deltas(lines, result):
+    """Додає до звіту найбільші зміни по видатках (якщо це amendment)."""
+    for rep in result["loads"]:
+        if rep["kind"] != "expenditure":
+            continue
+        is_amend = await bot_db.aquery(
+            "SELECT 1 FROM budget.plan_revision WHERE id = %s AND kind = 'amendment'",
+            (rep["revision_id"],),
+        )
+        if not is_amend:
+            continue
+        top = await asyncio.to_thread(amendments_summary, rep["revision_id"], "expenditure")
+        if top:
+            lines.append("\nНайбільші зміни у видатках:")
+            for t in top:
+                mark = "🆕 " if t["is_new"] else ""
+                sign = "+" if t["delta_total"] > 0 else ""
+                lines.append(f"• {mark}{t['code']} {t['line_name'][:60]}: "
+                             f"{sign}{_fmt_money(t['delta_total'])} грн")
+    return lines
+
+
+async def budget_package_handler(update, context):
+    """ZIP (або xlsx) пакета рішення в приваті бота — без команд і аргументів.
+    Реагує лише на .zip/.xlsx від дозволених користувачів, решту ігнорує."""
+    msg = update.effective_message
+    doc = msg.document
+    if not doc:
+        return
+    name = (doc.file_name or "").lower()
+    if not (name.endswith(".zip") or name.endswith(".xlsx")):
+        return
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        return
+    if not is_ready():
+        await msg.reply_text("Нора не налаштована (BOT_DATABASE_URL) — вантажити нікуди.")
+        return
+
+    progress = await msg.reply_text(f"🦊 Розбираю {doc.file_name}…")
+    try:
+        f = await context.bot.get_file(doc.file_id)
+        data = bytes(await f.download_as_bytearray())
+        result = await asyncio.to_thread(process_package, data, doc.file_name)
+        lines = _package_reply(result)
+        lines = await _load_top_deltas(lines, result)
+    except Exception as e:  # noqa: BLE001 — повідомляємо в чат, не мовчимо
+        await progress.edit_text(f"❌ Не завантажилось: {e}")
+        return
+    await progress.edit_text("\n".join(lines))
+
+
 async def budget_load_handler(update, context):
-    """/budget_load <рік> <номер> <дата> [base=50/26] — у підписі до xlsx
-    або як reply на повідомлення з xlsx."""
+    """/budget_load [рік] [номер] [дата] — ручний шлях для одного xlsx
+    (підпис до документа або reply). Без аргументів усе визначається з файлу."""
     msg = update.effective_message
     if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
         await msg.reply_text("⛔ Тільки для редакції.")
@@ -730,86 +1111,42 @@ async def budget_load_handler(update, context):
         return
 
     doc = msg.document or (msg.reply_to_message.document if msg.reply_to_message else None)
-    if not doc or not (doc.file_name or "").lower().endswith(".xlsx"):
+    fname = (doc.file_name or "") if doc else ""
+    if not doc or not fname.lower().endswith((".xlsx", ".zip")):
         await msg.reply_text(
-            "Потрібен xlsx: надішли файл з підписом\n"
-            "/budget_load <рік> <номер рішення> <дата> [base=50/26]\n"
-            "або дай цю команду відповіддю на повідомлення з файлом."
+            "Просто надішли мені ZIP пакета рішення (або xlsx порівняльної таблиці) "
+            "у приват — команда не потрібна. /budget_load лишився для ручних випадків: "
+            "reply на файл із аргументами [рік] [номер] [дата]."
         )
         return
 
-    text = (msg.caption or msg.text or "").strip()
-    args = text.split()[1:]
-    base_decision = None
-    plain = []
-    for a in args:
-        if a.startswith("base="):
-            base_decision = a[5:]
-        else:
-            plain.append(a)
-    if len(plain) < 2:
-        await msg.reply_text(
-            "Мало аргументів. Формат: /budget_load 2026 50/123 29.01.2026 [base=50/26]"
-        )
-        return
-    try:
-        fiscal_year = int(plain[0])
-    except ValueError:
-        await msg.reply_text(f"Рік не число: {plain[0]}")
-        return
-    decision_number = plain[1]
-    decision_date = _parse_date(plain[2]) if len(plain) > 2 else None
+    args = (msg.caption or msg.text or "").split()[1:]
+    plain = [a for a in args if not a.startswith("base=")]
 
-    progress = await msg.reply_text(f"🦊 Розбираю {doc.file_name}…")
+    progress = await msg.reply_text(f"🦊 Розбираю {fname}…")
     try:
         f = await context.bot.get_file(doc.file_id)
         data = bytes(await f.download_as_bytearray())
-        report = await asyncio.to_thread(
-            load_comparison, data, fiscal_year, decision_number, decision_date,
-            base_decision, doc.file_name,
-        )
-    except Exception as e:  # noqa: BLE001 — повідомляємо в чат, не мовчимо
+        if fname.lower().endswith(".zip") or not plain:
+            result = await asyncio.to_thread(process_package, data, fname)
+        else:
+            fiscal_year = int(plain[0]) if plain else None
+            decision_number = plain[1] if len(plain) > 1 else fname
+            decision_date = _parse_date(plain[2]) if len(plain) > 2 else None
+            parsed = await asyncio.to_thread(parse_comparison_xlsx, data, fname)
+            rep = await asyncio.to_thread(
+                load_parsed, parsed, fiscal_year or parsed.get("fiscal_year"),
+                decision_number, decision_date, fname,
+            )
+            result = {"decision": decision_number,
+                      "fiscal_year": fiscal_year or parsed.get("fiscal_year"),
+                      "loads": [rep], "skipped": [], "headline": None, "zero": False,
+                      "revision_id": rep["revision_id"]}
+        lines = _package_reply(result)
+        lines = await _load_top_deltas(lines, result)
+    except Exception as e:  # noqa: BLE001
         await progress.edit_text(f"❌ Не завантажилось: {e}")
         return
-
-    kind_ua = "видатки (Додаток 3)" if report["kind"] == "expenditure" else "доходи (Додаток 1)"
-    lines = [
-        f"✅ {kind_ua}: рішення {decision_number}/{fiscal_year}, "
-        f"ревізія #{report['effective_order']}, {report['inserted']} рядків",
-    ]
-    if report["original_created"]:
-        lines.append("📌 Ревізій року не було — ліву частину збережено як original "
-                     "(reconstructed from comparison table)")
-    if report["revision_reused"]:
-        lines.append("♻️ Ревізія вже існувала — рядки цієї таблиці перезаписано без дубля")
-    if report.get("validated"):
-        if report["issues"]:
-            lines.append(f"⚠️ Валідація «чинної редакції»: {report['issues']} розбіжностей "
-                         f"зі збереженою ревізією → budget.revision_validation_issue")
-        else:
-            lines.append(f"✔️ «Чинна редакція» збігається зі збереженою ({report['validated']} рядків)")
-    if report.get("dupes"):
-        lines.append(f"⚠️ Дублі кодів у документі: {report['dupes']} (перший виграв)")
-    if "total_match" in report:
-        if report["total_match"]:
-            lines.append(f"✔️ Контроль сум: {_fmt_money(report['doc_total'])} грн, збігається")
-        else:
-            lines.append(f"⚠️ Контроль сум: документ {_fmt_money(report['doc_total'])}, "
-                         f"сума рядків {_fmt_money(report['sum_total'])}")
-
-    deltas = await bot_db.aquery(
-        "SELECT 1 FROM budget.plan_revision WHERE id = %s AND kind = 'amendment'",
-        (report["revision_id"],),
-    )
-    if deltas:
-        top = await asyncio.to_thread(amendments_summary, report["revision_id"], report["kind"])
-        if top:
-            lines.append("\nНайбільші зміни:")
-            for t in top:
-                mark = "🆕 " if t["is_new"] else ""
-                sign = "+" if t["delta_total"] > 0 else ""
-                lines.append(f"• {mark}{t['code']} {t['line_name'][:60]}: "
-                             f"{sign}{_fmt_money(t['delta_total'])} грн")
     await progress.edit_text("\n".join(lines))
 
 
@@ -832,7 +1169,7 @@ async def budget_status_handler(update, context):
                    (SELECT COUNT(*) FROM budget.plan_revenue_line v
                      WHERE v.revision_id = r.id) AS rev_lines,
                    (SELECT COALESCE(SUM(v.total),0) FROM budget.plan_revenue_line v
-                     WHERE v.revision_id = r.id) AS rev_total,
+                     WHERE v.revision_id = r.id AND v.code ~ '^\\d0{7}$') AS rev_total,
                    (SELECT COUNT(*) FROM budget.revision_validation_issue i
                      WHERE i.revision_id = r.id) AS issues
             FROM budget.plan_revision r
@@ -844,8 +1181,8 @@ async def budget_status_handler(update, context):
         return
     if not revs:
         await msg.reply_text(
-            "Схема budget порожня. Надішли xlsx порівняльної таблиці з командою "
-            "/budget_load <рік> <номер> <дата>."
+            "Схема budget порожня. Кинь мені ZIP пакета рішення (нульовий бюджет "
+            "або зміни) у приват — розберу сам."
         )
         return
     lines, year = ["🦊 Бюджет у норі:"], None
@@ -853,22 +1190,24 @@ async def budget_status_handler(update, context):
         if r["fiscal_year"] != year:
             year = r["fiscal_year"]
             lines.append(f"\n📅 {year}:")
-        note = " (reconstructed)" if (r["notes"] or "").startswith("reconstructed") else ""
         d = f" від {r['decision_date'].strftime('%d.%m.%Y')}" if r["decision_date"] else ""
         parts = []
         if r["exp_lines"]:
             parts.append(f"видатки {r['exp_lines']} рядків, {_fmt_money(r['exp_total'])} грн")
+        else:
+            parts.append("видатки: успадковані" if r["kind"] == "amendment" else "видатки: рядків ще немає")
         if r["rev_lines"]:
-            parts.append(f"доходи {r['rev_lines']} рядків, {_fmt_money(r['rev_total'])} грн")
+            parts.append(f"доходи {_fmt_money(r['rev_total'])} грн")
+        elif r["kind"] == "amendment":
+            parts.append("доходи: успадковані")
         if r["issues"]:
             parts.append(f"⚠️ {r['issues']} розбіжностей")
         lines.append(
-            f"#{r['effective_order']} {r['kind']} {r['decision_number']}{d}{note} — "
-            + ("; ".join(parts) if parts else "порожня")
+            f"#{r['effective_order']} {r['kind']} {r['decision_number']}{d} — " + "; ".join(parts)
         )
     lines.append(
-        "\nℹ️ Звірка з місячними снапшотами плану з'явиться разом із заданням №1 "
-        "(таблиць снапшотів у норі ще немає)."
+        "\nℹ️ Звірка з місячними снапшотами (задание №1, джерело — OpenBudget API) "
+        "ще попереду; різниця з планом Казначейства = міжсесійні зміни."
     )
     await msg.reply_text("\n".join(lines))
 
@@ -881,8 +1220,8 @@ _HEADLINE_FIELDS = {
 
 
 async def budget_headline_handler(update, context):
-    """/budget_headline <рік> <номер> ключ=значення … — показники з текстової
-    частини рішення (порівняльна таблиця текст.docx), вводяться вручну."""
+    """/budget_headline <рік> <номер> ключ=значення … — поправити заголовні
+    показники вручну (автоматом тягнуться з PDF рішення при завантаженні)."""
     msg = update.effective_message
     if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
         await msg.reply_text("⛔ Тільки для редакції.")
@@ -893,8 +1232,8 @@ async def budget_headline_handler(update, context):
     args = context.args or []
     if len(args) < 3:
         await msg.reply_text(
-            "Формат: /budget_headline 2026 50/123 revenue_total=6370506270 "
-            "expenditure_total=6099438519 …\nКлючі: " + ", ".join(sorted(_HEADLINE_FIELDS))
+            "Формат: /budget_headline 2026 s-fi-001 revenue_total=6370506270 …\n"
+            "Ключі: " + ", ".join(sorted(_HEADLINE_FIELDS))
         )
         return
     try:
@@ -925,19 +1264,10 @@ async def budget_headline_handler(update, context):
         )
         if not rev:
             await msg.reply_text(
-                f"Ревізії {decision_number}/{fiscal_year} немає — спочатку /budget_load."
+                f"Ревізії {decision_number}/{fiscal_year} немає — спочатку завантаж пакет."
             )
             return
-        revision_id = rev[0]["id"]
-        cols = list(values.keys())
-        sets = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols)
-        await asyncio.to_thread(
-            bot_db.execute,
-            f"INSERT INTO budget.plan_headline (revision_id, {', '.join(cols)}) "
-            f"VALUES (%s, {', '.join(['%s'] * len(cols))}) "
-            f"ON CONFLICT (revision_id) DO UPDATE SET {sets}",
-            tuple([revision_id] + [values[c] for c in cols]),
-        )
+        await asyncio.to_thread(upsert_headline, rev[0]["id"], values)
     except Exception as e:  # noqa: BLE001
         await msg.reply_text(f"❌ {e}")
         return
