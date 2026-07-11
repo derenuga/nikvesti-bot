@@ -77,6 +77,7 @@ handlers/
   news_stats.py           — підрахунки по БД сайту (nodes): NLQ-tool count_news — скільки матеріалів за період / власних (own) / по рубриках / по авторах (owner_id→users) / мовою (ua/ru/en, EN-колонку визначає інтроспекцією); metric=views сумує перегляди (лічильник сайту, за весь час) — «хто з журналістів набрав більше переглядів». Джерело істини, свіже, рахує й англ. версію (якої немає в норі)
   tags_wikidata.py        — прив'язка тегів сайту до Q-сутностей Wikidata для schema.org about: /tags_export (топ-N тегів у CSV), /tags_wiki (топ-N → Wikidata wbsearchentities → Claude добирає QID+@type → CSV на ревʼю + готовий ALTER/UPDATE .sql, бо БД сайту read-only)
   knowledge_graph.py      — розвідка Google Knowledge Graph Search API: /kg <KG ID або запит> дістає канонічну картку сутності (name, @type, опис, Вікіпедія, сайт, resultScore), перевірка як Google бачить бренд/тег; простий API key GOOGLE_KG_API_KEY
+  budget_revisions.py     — бюджет Миколаєва в норі (схема budget, «задание №2»): версії плану з xlsx «Порівняльних таблиць» рішень сесії (лівий блок «чинна» = валідація, правий «запропонована» = нова ревізія), дельти між ревізіями v_plan_amendments, зниклі/нові програми, одруківки депфіну в revision_validation_issue; /budget_load (xlsx капшеном), /budget_status, /budget_headline; задание №1 (місячні снапшоти) ще не реалізоване
 ```
 
 ---
@@ -144,6 +145,9 @@ handlers/
 | /entity_export | CSV усіх сутностей (kind/імена/роль/згадки/аліаси, за спаданням згадок) — для ручного QA поза ботом |
 | /entity_dedup | Разове глобальне переслияння дублів (точний збіг norm у межах kind): перевішує зв'язки, зливає аліаси, видаляє зомбі-картки, перераховує агрегати; ідемпотентно |
 | /entity_export_links \[N\] | Граф співпоявності для візуалізації: CSV вузлів (топ-N сутностей, дефолт 150) + CSV ребер (пари зі спільними статтями ≥3, з вагами) — формат nodes/edges для Gephi/d3 |
+| /budget_load \<рік\> \<номер\> \<дата\> \[base=50/26\] | Підпис до xlsx «Порівняльної таблиці» (або reply на файл): права частина → нова ревізія бюджету в схемі budget, ліва → валідація проти збереженої; перша таблиця року реконструює original з лівої частини |
+| /budget_status | Ревізії бюджету по роках: рядки, суми видатків/доходів, розбіжності валідації |
+| /budget_headline \<рік\> \<номер\> ключ=значення … | Показники текстової частини рішення (revenue_total, expenditure_total, reserve_fund, debt_limit, staff_count…) вручну в plan_headline |
 
 ---
 
@@ -282,6 +286,7 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
 - [`docs/ARCHIVE_MIRROR_MODULE.md`](docs/ARCHIVE_MIRROR_MODULE.md) — дзеркало архіву в Postgres бота, FTS-пошук, /dossier (хвиля A)
 - [`docs/ENTITY_LAYER_PLAN.md`](docs/ENTITY_LAYER_PLAN.md) — план Досьє v2 (індекс-файл, /dossier_deep) і сутнісного шару (хвиля D); бриф для нової сесії, «кодь» не давався
 - [`docs/REVIEW_2026_07.md`](docs/REVIEW_2026_07.md) — ревізія липня 2026: апрувнутий план оптимізацій і розвитку (хвилі впровадження)
+- [`docs/BUDGET_REVISIONS_MODULE.md`](docs/BUDGET_REVISIONS_MODULE.md) — бюджет Миколаєва: версії плану з «Порівняльних таблиць» рішень сесії, схема budget, парсер xlsx, валідація, дельти
 
 ---
 
