@@ -17,6 +17,7 @@ from handlers.energy_outage import check_outage_changes
 from handlers.traffic_spikes import check_traffic_spikes
 from handlers.builder_monitor import check_builder_staleness
 from handlers.archive_mirror import run_archive_sync
+from handlers.entity_layer import sync_entities_incremental
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
 from handlers.weekly_digest import send_weekly_digest
@@ -234,5 +235,7 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # Інкрементальний sync дзеркала архіву — :50 (вільна хвилина в розкладі);
     # тихо пропускається, поки BOT_DATABASE_URL не задано або бекфіл не зроблено
     scheduler.add_job(run_archive_sync, "cron", minute=50, args=[bot])
+    # Інкремент сутнісного шару — :55, після синку дзеркала (опт-ін /entity_increment_on)
+    scheduler.add_job(sync_entities_incremental, "cron", minute=55, args=[bot])
     scheduler.start()
     return scheduler
