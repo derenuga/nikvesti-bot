@@ -1065,7 +1065,7 @@ async def _load_top_deltas(lines, result):
             for t in top:
                 mark = "🆕 " if t["is_new"] else ""
                 sign = "+" if t["delta_total"] > 0 else ""
-                lines.append(f"• {mark}{t['code']} {t['line_name'][:60]}: "
+                lines.append(f"• {mark}{t['code']} {t['line_name']}: "
                              f"{sign}{_fmt_money(t['delta_total'])} грн")
     return lines
 

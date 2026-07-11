@@ -462,7 +462,7 @@ def format_execution_message(rep):
     if laggards:
         lines.append(f"\n❗ Виконали план періоду менш як на {UNDERPERFORM_PCT}%:")
         for u in laggards:
-            lines.append(f"• {u['kvk']} {u['unit_name'][:52]}: {float(u['pct']):.1f}% "
+            lines.append(f"• {u['kvk']} {u['unit_name']}: {float(u['pct']):.1f}% "
                          f"({_fmt_money(u['actual'])} з {_fmt_money(u['period_plan'])} грн)")
     else:
         lines.append(f"\nУсі розпорядники виконали план періоду на ≥{UNDERPERFORM_PCT}%.")
@@ -490,7 +490,7 @@ def format_execution_message(rep):
             lines.append("\nНайбільші зсуви річного плану проти останнього рішення:")
             for _, kvk, name, d in diffs[:6]:
                 sign = "+" if d > 0 else "−"
-                lines.append(f"• {kvk} {name[:48]}: {sign}{_fmt_money(abs(d))} грн")
+                lines.append(f"• {kvk} {name}: {sign}{_fmt_money(abs(d))} грн")
     return "\n".join(lines)
 
 
