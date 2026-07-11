@@ -159,6 +159,59 @@ async def entity_backfill_handler(update, context):
 
 # ---------- полінг + ingest ----------
 
+def _batch_counts(client, batch_ids):
+    """Агрегувати живий прогрес по всіх батчах прогону (request_counts).
+    Повертає (totals, ended_ids)."""
+    tot = {"processing": 0, "succeeded": 0, "errored": 0,
+           "canceled": 0, "expired": 0}
+    ended = []
+    for bid in batch_ids:
+        b = client.messages.batches.retrieve(bid)
+        rc = b.request_counts
+        tot["processing"] += rc.processing
+        tot["succeeded"] += rc.succeeded
+        tot["errored"] += rc.errored
+        tot["canceled"] += rc.canceled
+        tot["expired"] += rc.expired
+        if b.processing_status == "ended":
+            ended.append(bid)
+    return tot, ended
+
+
+def _progress_text(state, tot):
+    total = state.get("articles") or (sum(tot.values()) or 1)
+    done_reqs = tot["succeeded"] + tot["errored"] + tot["canceled"] + tot["expired"]
+    pct = 100 * done_reqs // max(total, 1)
+    line = (f"🦊 Витяг сутностей {state['from']}…{state['to']}\n"
+            f"Оброблено: {done_reqs} / {total} ({pct}%)\n"
+            f"Батчів готово: {len(state['done'])}/{len(state['batch_ids'])}")
+    if tot["errored"]:
+        line += f"\nПомилок: {tot['errored']}"
+    return line
+
+
+_last_progress = {"text": None}
+
+
+async def _update_progress(bot, state, tot):
+    """Тримаємо в чаті одне повідомлення-прогрес і редагуємо його щополінгу."""
+    text = _progress_text(state, tot)
+    if text == _last_progress["text"]:
+        return
+    _last_progress["text"] = text
+    try:
+        if state.get("progress_msg_id"):
+            await bot.edit_message_text(
+                text, chat_id=state["chat_id"],
+                message_id=state["progress_msg_id"])
+        else:
+            msg = await bot.send_message(state["chat_id"], text)
+            state["progress_msg_id"] = msg.message_id
+            await asyncio.to_thread(_save_state, state)
+    except Exception:
+        pass  # "message is not modified" тощо — прогрес не критичний
+
+
 async def _poll_task(bot):
     if _poll_running["flag"]:
         return
@@ -170,15 +223,13 @@ async def _poll_task(bot):
             state = await asyncio.to_thread(_load_state)
             if not state:
                 return  # прогін завершено/скасовано
-            pending = [b for b in state["batch_ids"] if b not in state["done"]]
-            if not pending:
-                break
-            for bid in pending:
-                b = await asyncio.to_thread(client.messages.batches.retrieve, bid)
-                if b.processing_status == "ended":
-                    state["done"].append(bid)
-                    await asyncio.to_thread(_save_state, state)
-            if len(state["done"]) == len(state["batch_ids"]):
+            tot, ended = await asyncio.to_thread(
+                _batch_counts, client, state["batch_ids"])
+            if set(ended) != set(state["done"]):
+                state["done"] = ended
+                await asyncio.to_thread(_save_state, state)
+            await _update_progress(bot, state, tot)
+            if len(ended) == len(state["batch_ids"]):
                 break
             await asyncio.sleep(POLL_INTERVAL)
         await _ingest(bot, state, client)
@@ -297,10 +348,23 @@ async def entity_status_handler(update, context):
             lines.append(f"  [{r['kind']}] {r['name']}{role} ({r['mentions']})")
     state = await asyncio.to_thread(_load_state)
     if state:
-        done, totalb = len(state["done"]), len(state["batch_ids"])
         poll = "активний" if _poll_running["flag"] else "ВТРАЧЕНИЙ — /entity_resume"
-        lines.append(f"\nПрогін {state['from']}…{state['to']}: "
-                     f"батчів готово {done}/{totalb}, полінг: {poll}")
+        try:
+            import anthropic
+            client = anthropic.Anthropic()
+            tot, ended = await asyncio.to_thread(
+                _batch_counts, client, state["batch_ids"])
+            done_reqs = (tot["succeeded"] + tot["errored"]
+                         + tot["canceled"] + tot["expired"])
+            total = state.get("articles") or done_reqs + tot["processing"]
+            lines.append(f"\nПрогін {state['from']}…{state['to']}: "
+                         f"{done_reqs}/{total} статей, "
+                         f"батчів {len(ended)}/{len(state['batch_ids'])}, "
+                         f"помилок {tot['errored']}, полінг: {poll}")
+        except Exception:
+            lines.append(f"\nПрогін {state['from']}…{state['to']}: "
+                         f"батчів готово {len(state['done'])}/{len(state['batch_ids'])}, "
+                         f"полінг: {poll}")
     else:
         lines.append("\nАктивних прогонів немає.")
     await update.message.reply_text("\n".join(lines))
