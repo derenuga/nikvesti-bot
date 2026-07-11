@@ -525,6 +525,113 @@ async def entity_resume_handler(update, context):
     asyncio.create_task(_poll_task(context.bot))
 
 
+# ---------- /entity_dedup ----------
+
+def _dedup_entities():
+    """Глобальне переслияння за поточними правилами norm() (точний збіг у межах
+    kind). Потрібне разово: фаза-1 писалась ДО нормалізації лапок, тож у норі
+    лишились близнюки типу «Слуга народу»/Слуга народу. Ідемпотентно."""
+    conn = ep.connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, kind, name_ua, name_ru, mentions FROM entities")
+    mentions = {}
+    groups = {}
+    for eid, kind, nua, nru, m in cur.fetchall():
+        mentions[eid] = m or 0
+        for nm in (nua, nru):
+            n = ep.norm(nm)
+            if n:
+                groups.setdefault((kind, n), set()).add(eid)
+    # транзитивне об'єднання (сутність може ділити різні ключі) — union-find
+    parent = {}
+    def find(x):
+        root = x
+        while parent.get(root, root) != root:
+            root = parent[root]
+        while parent.get(x, x) != x:
+            parent[x], x = root, parent[x]
+        return root
+    for ids in groups.values():
+        ids = sorted(ids)
+        for other in ids[1:]:
+            ra, rb = find(ids[0]), find(other)
+            if ra != rb:
+                parent[rb] = ra
+    clusters = {}
+    for eid in mentions:
+        clusters.setdefault(find(eid), []).append(eid)
+
+    n_groups = n_removed = 0
+    for ids in clusters.values():
+        if len(ids) < 2:
+            continue
+        n_groups += 1
+        keep = max(ids, key=lambda i: mentions[i])
+        others = [i for i in ids if i != keep]
+        cur.execute("SELECT id, name_ua, name_ru, aliases FROM entities WHERE id = ANY(%s)",
+                    (ids,))
+        cards = {r[0]: r for r in cur.fetchall()}
+        _, kua, kru, kal = cards[keep]
+        aliases = set(kal or [])
+        for oid in others:
+            _, oua, oru, oal = cards[oid]
+            kua = kua or oua
+            kru = kru or oru
+            aliases |= set(oal or [])
+            for nm in (oua, oru):
+                if nm and ep.norm(nm) not in {ep.norm(kua), ep.norm(kru)}:
+                    aliases.add(nm)
+        for oid in others:
+            # перевісити зв'язки (дубль-пару статті лишаємо keep-версією)
+            cur.execute(
+                "UPDATE article_entities ae SET entity_id = %s "
+                "WHERE entity_id = %s AND NOT EXISTS ("
+                "  SELECT 1 FROM article_entities x "
+                "  WHERE x.article_id = ae.article_id AND x.entity_id = %s)",
+                (keep, oid, keep))
+            cur.execute("DELETE FROM article_entities WHERE entity_id = %s", (oid,))
+            cur.execute("DELETE FROM entities WHERE id = %s", (oid,))
+            n_removed += 1
+        cur.execute(
+            "UPDATE entities SET name_ua = %s, name_ru = %s, aliases = %s WHERE id = %s",
+            (kua, kru, sorted(aliases), keep))
+    # перерахунок агрегатів — ті самі запити, що у write_results
+    cur.execute("""
+        UPDATE entities e SET mentions = s.cnt, first_seen = s.fmin, last_seen = s.fmax
+        FROM (SELECT ae.entity_id, count(*) AS cnt,
+                     min(a.published) AS fmin, max(a.published) AS fmax
+              FROM article_entities ae JOIN articles a ON a.id = ae.article_id
+              GROUP BY ae.entity_id) s
+        WHERE e.id = s.entity_id""")
+    cur.execute("""
+        UPDATE entities e SET role_last = sub.role
+        FROM (SELECT DISTINCT ON (ae.entity_id) ae.entity_id, ae.role_at_time AS role
+              FROM article_entities ae JOIN articles a ON a.id = ae.article_id
+              WHERE ae.role_at_time IS NOT NULL AND ae.role_at_time <> ''
+              ORDER BY ae.entity_id, a.published DESC) sub
+        WHERE e.id = sub.entity_id""")
+    conn.commit()
+    cur.close()
+    conn.close()
+    return n_groups, n_removed
+
+
+async def entity_dedup_handler(update, context):
+    if not _allowed(update):
+        return
+    if await asyncio.to_thread(_load_state):
+        await update.message.reply_text("Іде бэкфіл — дедуп після нього.")
+        return
+    msg = await update.message.reply_text("🦊 Переслияю дублі (точний збіг norm у межах kind)…")
+    try:
+        n_groups, n_removed = await asyncio.to_thread(_dedup_entities)
+        await msg.edit_text(
+            f"🦊 Дедуп завершено: груп-дублів {n_groups}, злито карток {n_removed}.\n"
+            f"Зведення: /entity_status")
+    except Exception as e:
+        await msg.edit_text(f"❌ Збій дедупу: {e}")
+
+
 # ---------- /entity_export ----------
 
 async def entity_export_handler(update, context):
