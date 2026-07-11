@@ -38,6 +38,7 @@ from handlers.entity_layer import (
 )
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler
+from handlers.budget_snapshots import budget_execution_handler, budget_snapshot_check_handler
 from handlers.knowledge_graph import kg_handler
 from handlers.builder_monitor import builder_handler, builder_test_handler, is_builder_nudge
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
@@ -334,6 +335,8 @@ def main():
     app.add_handler(CommandHandler("budget_load", budget_load_handler))
     app.add_handler(CommandHandler("budget_status", budget_status_handler))
     app.add_handler(CommandHandler("budget_headline", budget_headline_handler))
+    app.add_handler(CommandHandler("budget_execution", budget_execution_handler))
+    app.add_handler(CommandHandler("budget_snapshot_check", budget_snapshot_check_handler))
     # xlsx з підписом /budget_load: CommandHandler бачить лише text, caption — ні
     app.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex(r"^/budget_load"), budget_load_handler))
     # ZIP пакета рішення в приват — без команд: бот сам розбирає і нашаровує

@@ -1086,10 +1086,19 @@ async def budget_package_handler(update, context):
         await msg.reply_text("Нора не налаштована (BOT_DATABASE_URL) — вантажити нікуди.")
         return
 
+    f = await context.bot.get_file(doc.file_id)
+    data = bytes(await f.download_as_bytearray())
+
+    # xlsx «Щомісячна інформація…» — це снапшот виконання (задание №1),
+    # а не пакет рішення: роутимо в budget_snapshots
+    if name.endswith(".xlsx"):
+        from handlers import budget_snapshots
+        if await asyncio.to_thread(budget_snapshots.looks_like_snapshot, data):
+            await budget_snapshots.load_snapshot_from_message(msg, context, data, doc.file_name)
+            return
+
     progress = await msg.reply_text(f"🦊 Розбираю {doc.file_name}…")
     try:
-        f = await context.bot.get_file(doc.file_id)
-        data = bytes(await f.download_as_bytearray())
         result = await asyncio.to_thread(process_package, data, doc.file_name)
         lines = _package_reply(result)
         lines = await _load_top_deltas(lines, result)
@@ -1206,8 +1215,8 @@ async def budget_status_handler(update, context):
             f"#{r['effective_order']} {r['kind']} {r['decision_number']}{d} — " + "; ".join(parts)
         )
     lines.append(
-        "\nℹ️ Звірка з місячними снапшотами (задание №1, джерело — OpenBudget API) "
-        "ще попереду; різниця з планом Казначейства = міжсесійні зміни."
+        "\nℹ️ Виконання по розпорядниках і звірка з місячними снапшотами — "
+        "/budget_execution (різниця з планом знімка = міжсесійні зміни)."
     )
     await msg.reply_text("\n".join(lines))
 

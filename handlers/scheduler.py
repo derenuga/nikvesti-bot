@@ -17,6 +17,7 @@ from handlers.energy_outage import check_outage_changes
 from handlers.traffic_spikes import check_traffic_spikes
 from handlers.builder_monitor import check_builder_staleness
 from handlers.archive_mirror import run_archive_sync
+from handlers.budget_snapshots import run_snapshot_check
 from handlers.entity_layer import sync_entities_incremental
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
@@ -237,5 +238,9 @@ def setup_scheduler(bot, last_channel_post_time=None):
     scheduler.add_job(run_archive_sync, "cron", minute=50, args=[bot])
     # Інкремент сутнісного шару — :55, після синку дзеркала (опт-ін /entity_increment_on)
     scheduler.add_job(sync_entities_incremental, "cron", minute=55, args=[bot])
+    # Місячні снапшоти бюджету зі сторінки міськради — щодня об 11:20
+    # (публікують на початку місяця нерегулярно; перевірка дешева, тиха,
+    # коли нового немає; тихо пропускається без BOT_DATABASE_URL)
+    scheduler.add_job(run_snapshot_check, "cron", hour=11, minute=20, args=[bot])
     scheduler.start()
     return scheduler
