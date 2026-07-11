@@ -469,16 +469,23 @@ def cmd_write(path, batch_path=None):
         batch_arts = batch["articles"] if isinstance(batch, dict) else batch
         batch_ids = [a.get("id") for a in batch_arts if a.get("id") is not None]
         if batch_ids:
-            new_cur = min(batch_ids)
-            set_state(cur, "entity_last_id", new_cur)
             covered = len(got_ids & set(batch_ids))
-            print(f"курсор entity_last_id → {new_cur} "
-                  f"(оброблено діапазон до цього id включно)")
-            print(f"покриття пачки: у пачці {len(batch_ids)}, "
-                  f"є результат по {covered}")
-            if covered < len(batch_ids):
-                print(f"  увага: {len(batch_ids) - covered} статей без результату "
-                      f"(нуль сутностей або суб-агент їх не повернув) — теж позначені обробленими")
+            ratio = covered / len(batch_ids)
+            # Предохранитель: не рухати курсор при неповному покритті — інакше
+            # діапазон із неізвлеченими статтями позначиться обробленим і вони
+            # ніколи не потраплять у нору. Сутності/зв'язки, що вже є, комітяться
+            # (write ідемпотентний — повторний прогін фази їх перезапише).
+            if ratio < 0.98:
+                print(f"⚠️ покриття лише {covered}/{len(batch_ids)} ({ratio:.0%}) — "
+                      f"КУРСОР НЕ РУХАЮ. Доведи витяг пачки до кінця й повтори write, "
+                      f"або зменш розмір фази. Наявні сутності записані (ідемпотентно).")
+            else:
+                new_cur = min(batch_ids)
+                set_state(cur, "entity_last_id", new_cur)
+                print(f"курсор entity_last_id → {new_cur} "
+                      f"(оброблено діапазон до цього id включно, покриття {covered}/{len(batch_ids)})")
+                if covered < len(batch_ids):
+                    print(f"  {len(batch_ids) - covered} статей без сутностей — теж позначені обробленими")
     conn.commit()
     cur.close()
     conn.close()
