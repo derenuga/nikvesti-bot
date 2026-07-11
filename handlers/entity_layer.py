@@ -121,36 +121,53 @@ async def entity_backfill_handler(update, context):
     from_date, to_date = args[0], args[1]
     msg = await update.message.reply_text("🦊 Вивантажую статті й відправляю батчі…")
 
+    # Стан зберігається ДО відправки і після КОЖНОГО батчу — обрив/редеплой
+    # посеред відправки не губить уже створені батчі (/entity_resume або
+    # /entity_recover їх підхоплять).
+    state = {"batch_ids": [], "done": [], "from": from_date, "to": to_date,
+             "chat_id": update.effective_chat.id, "started": int(time.time()),
+             "articles": 0, "submitting": True}
+
     def submit():
         import anthropic
         client = anthropic.Anthropic()
         arts = api.fetch_range(from_date, to_date)
         if not arts:
-            return None, 0
+            return 0
+        state["articles"] = len(arts)
+        _save_state(state)
         sys_len = len(api.get_system_prompt().encode("utf-8"))
         chunks = api.chunk_articles(arts, sys_len)
-        batch_ids = []
         for chunk in chunks:
             requests = [api._make_request(client, a) for a in chunk]
             batch = client.messages.batches.create(requests=requests)
-            batch_ids.append(batch.id)
-        return batch_ids, len(arts)
+            state["batch_ids"].append(batch.id)
+            _save_state(state)
+        state["submitting"] = False
+        _save_state(state)
+        return len(arts)
 
     try:
-        batch_ids, n_arts = await asyncio.to_thread(submit)
+        n_arts = await asyncio.to_thread(submit)
     except Exception as e:
-        await msg.edit_text(f"❌ Не вдалося відправити батчі: {e}")
+        if state["batch_ids"]:
+            await msg.edit_text(
+                f"❌ Збій посеред відправки: {e}\n"
+                f"Уже створено {len(state['batch_ids'])} батч(ів) — вони не "
+                f"загубляться, /entity_resume доведе їх до кінця; решту статей "
+                f"потім доганяємо окремим діапазоном.")
+            asyncio.create_task(_poll_task(context.bot))
+        else:
+            await asyncio.to_thread(_clear_state)
+            await msg.edit_text(f"❌ Не вдалося відправити батчі: {e}")
         return
-    if not batch_ids:
+    if not n_arts:
+        await asyncio.to_thread(_clear_state)
         await msg.edit_text("У діапазоні немає статей.")
         return
 
-    state = {"batch_ids": batch_ids, "done": [], "from": from_date, "to": to_date,
-             "chat_id": update.effective_chat.id, "started": int(time.time()),
-             "articles": n_arts}
-    await asyncio.to_thread(_save_state, state)
     await msg.edit_text(
-        f"🦊 Відправлено {n_arts} статей у {len(batch_ids)} батч(ів).\n"
+        f"🦊 Відправлено {n_arts} статей у {len(state['batch_ids'])} батч(ів).\n"
         f"Полю щохвилини; зазвичай хвилини–година. Стан: /entity_status\n"
         f"Якщо бот редеплоїться — /entity_resume переприв'яже полінг."
     )
@@ -244,12 +261,20 @@ async def _ingest(bot, state, client):
     await bot.send_message(chat_id, "🦊 Батчі готові — збираю результати і зливаю в нору…")
 
     def collect_and_write():
-        results, n_err = [], 0
+        results, n_err, err_samples = [], 0, []
         usage = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+
+        def note_err(custom_id, what):
+            nonlocal n_err
+            n_err += 1
+            if len(err_samples) < 3:
+                err_samples.append(f"{custom_id}: {what}"[:250])
+
         for bid in state["batch_ids"]:
             for res in client.messages.batches.results(bid):
                 if res.result.type != "succeeded":
-                    n_err += 1
+                    detail = getattr(res.result, "error", None)
+                    note_err(res.custom_id, f"{res.result.type} {detail or ''}")
                     continue
                 msg = res.result.message
                 u = msg.usage
@@ -259,20 +284,20 @@ async def _ingest(bot, state, client):
                 usage["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0) or 0
                 text = next((bl.text for bl in msg.content if bl.type == "text"), None)
                 if not text:
-                    n_err += 1
+                    note_err(res.custom_id, f"порожній content (stop={msg.stop_reason})")
                     continue
                 try:
                     obj = json.loads(text)
                 except Exception:
-                    n_err += 1
+                    note_err(res.custom_id, f"непарсибельний JSON: {text[:120]}")
                     continue
                 results.append({"article_id": int(res.custom_id),
                                 "entities": obj.get("entities", [])})
         stats = ep.write_results(results)  # діапазонний бэкфіл — курсор не рухаємо
-        return stats, n_err, usage, len(results)
+        return stats, n_err, usage, len(results), err_samples
 
     try:
-        stats, n_err, usage, n_ok = await asyncio.to_thread(collect_and_write)
+        stats, n_err, usage, n_ok, err_samples = await asyncio.to_thread(collect_and_write)
         # облік вартості (/aicost): один агрегований запис на прогін
         record_ai_usage(api.MODEL, input_tokens=usage["input"],
                         output_tokens=usage["output"],
@@ -282,8 +307,7 @@ async def _ingest(bot, state, client):
         cost = (usage["input"] * api.PRICE_IN + usage["output"] * api.PRICE_OUT
                 + usage["cache_read"] * api.PRICE_IN * 0.1
                 + usage["cache_creation"] * api.PRICE_IN * 1.25)
-        await bot.send_message(
-            chat_id,
+        text = (
             f"🦊 Бэкфіл {state['from']}…{state['to']} завершено!\n\n"
             f"Статей оброблено: {stats['articles']} (помилок: {n_err})\n"
             f"Зв'язків: {stats['links']}\n"
@@ -291,8 +315,11 @@ async def _ingest(bot, state, client):
             f"Токени: {usage['input']/1e6:.1f}M вх / {usage['output']/1e6:.1f}M вих "
             f"(+{usage['cache_read']/1e6:.1f}M кеш)\n"
             f"Вартість ≈ ${cost:.2f}\n\n"
-            f"Зведення: /entity_status",
+            f"Зведення: /entity_status"
         )
+        if err_samples:
+            text += "\n\nПриклади помилок:\n" + "\n".join(err_samples)
+        await bot.send_message(chat_id, text)
     except Exception as e:
         # стан НЕ чистимо — /entity_resume дасть повторити ingest (ідемпотентно)
         await notify_error(bot, "entity_backfill (ingest у нору)", e)
@@ -303,6 +330,60 @@ async def _ingest(bot, state, client):
         )
 
 
+# ---------- /entity_recover ----------
+
+async def entity_recover_handler(update, context):
+    """Відновлення прогону, коли стан у sync_state втрачено (напр. збій між
+    відправкою батчів і збереженням стану): перелічує батчі на боці Anthropic
+    (вони живуть 29 днів), пересобирає стан і запускає полінг/ingest заново.
+    Ingest ідемпотентний — повторна заливка тих самих результатів безпечна."""
+    if not _allowed(update):
+        return
+    if await asyncio.to_thread(_load_state):
+        await update.message.reply_text(
+            "Стан прогону є — треба /entity_resume, не recover.")
+        return
+    msg = await update.message.reply_text("🦊 Шукаю батчі на боці Anthropic…")
+
+    def list_recent():
+        import anthropic
+        client = anthropic.Anthropic()
+        found = []
+        cutoff = time.time() - 7 * 86400  # не старші тижня
+        for b in client.messages.batches.list(limit=20):
+            created = b.created_at.timestamp() if b.created_at else 0
+            if created < cutoff or b.processing_status == "canceling":
+                continue
+            rc = b.request_counts
+            n_req = rc.processing + rc.succeeded + rc.errored + rc.canceled + rc.expired
+            found.append({"id": b.id, "status": b.processing_status, "n": n_req})
+        return found
+
+    try:
+        found = await asyncio.to_thread(list_recent)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалося перелічити батчі: {e}")
+        return
+    if not found:
+        await msg.edit_text(
+            "На боці Anthropic батчів за останній тиждень немає — отже, "
+            "відправка не відбулась і гроші не витрачались. "
+            "Можна запускати /entity_backfill заново.")
+        return
+
+    state = {"batch_ids": [b["id"] for b in found], "done": [],
+             "from": "recover", "to": "recover",
+             "chat_id": update.effective_chat.id, "started": int(time.time()),
+             "articles": sum(b["n"] for b in found)}
+    await asyncio.to_thread(_save_state, state)
+    lines = [f"🦊 Знайдено {len(found)} батч(ів), стан відновлено:"]
+    for b in found:
+        lines.append(f"  {b['id']}: {b['status']}, {b['n']} запитів")
+    lines.append("Полю далі; по готовності заллю в нору і відзвітую.")
+    await msg.edit_text("\n".join(lines))
+    asyncio.create_task(_poll_task(context.bot))
+
+
 # ---------- /entity_resume ----------
 
 async def entity_resume_handler(update, context):
@@ -310,7 +391,16 @@ async def entity_resume_handler(update, context):
         return
     state = await asyncio.to_thread(_load_state)
     if not state:
-        await update.message.reply_text("Незавершених прогонів немає.")
+        await update.message.reply_text(
+            "Незавершених прогонів немає. Якщо підозра, що батчі створились, "
+            "а стан загубився — /entity_recover пошукає їх на боці Anthropic.")
+        return
+    if not state["batch_ids"]:
+        # обрив до створення першого батчу — грошей не витрачено
+        await asyncio.to_thread(_clear_state)
+        await update.message.reply_text(
+            "Відправка обірвалась до створення першого батчу — гроші не "
+            "витрачались. Запускай /entity_backfill заново.")
         return
     if _poll_running["flag"]:
         await update.message.reply_text("Полінг уже працює — /entity_status.")
