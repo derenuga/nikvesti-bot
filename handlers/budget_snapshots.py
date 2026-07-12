@@ -144,7 +144,10 @@ def is_ready():
 
 # ---------- Парсери ----------
 
-_DATE_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})")
+# Дата в імені: на сайті через крапки (02.01.2026), але при збереженні/
+# пересиланні крапки й пробіли стають підкресленнями (02_01_2026) — приймаємо
+# крапку, підкреслення, дефіс і пробіл як розділювач.
+_DATE_RE = re.compile(r"(\d{2})[._\-\s](\d{2})[._\-\s](\d{4})")
 _UNIT_RE = re.compile(r"^(\d{2})\s+(\S.*)")
 _DETAIL_RE = re.compile(r"^(\d{4})\s+(\S.*)")
 
@@ -292,7 +295,7 @@ def _snapshot_date_from_name(filename):
             f"В імені файлу немає дати DD.MM.YYYY: {filename} — у шапках xlsx "
             "її не пишуть, тому дата зрізу береться з імені"
         )
-    return datetime.strptime(m.group(0), "%d.%m.%Y").date()
+    return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1))).date()
 
 
 def load_snapshot(data, filename):
