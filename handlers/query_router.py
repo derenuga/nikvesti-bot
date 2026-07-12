@@ -1517,10 +1517,12 @@ async def handle_natural_language_query(update, context):
                 reply_markup = None
                 if used_tools & SEARCH_TOOL_NAMES and "get_news_leads" not in used_tools:
                     reply_markup = news_archive.build_keyboard(dialog_key)
-                # HTML-режим і без tools: відповідь "з пам'яті діалогу" може
-                # повторювати <a href>-розмітку попередньої — інакше теги
-                # покажуться голим текстом.
-                if used_tools & NEWS_TOOL_NAMES or "<a href=" in final_text:
+                # HTML-режим, коли у відповіді є розмітка: <a href> (архів/бек)
+                # або <b> (блоки змін бюджету) — інакше теги показуються голим
+                # текстом. Без розмітки — простий edit_text (менше шансів на 400).
+                has_html = ("<a href=" in final_text or "<b>" in final_text
+                            or "</b>" in final_text)
+                if used_tools & NEWS_TOOL_NAMES or has_html:
                     try:
                         await placeholder.edit_text(
                             final_text, parse_mode="HTML",
