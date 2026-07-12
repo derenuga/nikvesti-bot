@@ -94,7 +94,67 @@ def query_budget(query_type, fiscal_year=None, kind="expenditure", decision=None
         return _revisions(fiscal_year)
     if query_type == "execution":
         return _execution(fiscal_year, name_contains, limit)
+    if query_type == "execution_trend":
+        return _execution_trend(fiscal_year)
+    if query_type == "budget_growth":
+        return _budget_growth(fiscal_year)
     return {"error": f"Невідомий query_type: {query_type}"}
+
+
+_MONTH_UA = ["", "січ", "лют", "бер", "кві", "тра", "чер",
+             "лип", "сер", "вер", "жов", "лис", "гру"]
+
+
+def _execution_trend(fiscal_year):
+    """Динаміка виконання видатків по місяцях (для графіка): % касових до
+    плану звітного періоду з місячних знімків. Готове під render_chart."""
+    try:
+        rows = bot_db.query(
+            """SELECT s.snapshot_date, l.pct
+               FROM budget.snapshot s
+               JOIN budget.snapshot_expenditure_line l
+                 ON l.snapshot_id = s.id AND l.code_type = 'total'
+               WHERE s.kind = 'expenditure' AND s.fiscal_year = %s AND l.pct IS NOT NULL
+               ORDER BY s.snapshot_date""",
+            (fiscal_year,),
+        )
+    except Exception:  # noqa: BLE001 — місячних знімків ще немає
+        rows = []
+    points = [{"label": _MONTH_UA[r["snapshot_date"].month] if r["snapshot_date"].day <= 2
+               else r["snapshot_date"].strftime("%d.%m"),
+               "pct": float(r["pct"])} for r in rows]
+    return {"fiscal_year": fiscal_year, "metric": "execution_pct",
+            "labels": [p["label"] for p in points],
+            "values": [p["pct"] for p in points],
+            "note": "Відсоток касового виконання видатків до плану звітного періоду "
+                    "по місяцях. Для графіка — chart_type='line'. Порожньо, якщо "
+                    "місячних знімків ще немає (/budget_snapshot_check)."}
+
+
+def _budget_growth(fiscal_year):
+    """Розмір бюджету (план видатків/доходів) по ревізіях рішень — динаміка,
+    як рішення сесії нарощували бюджет. Готове під render_chart."""
+    rows = bot_db.query(
+        """SELECT r.effective_order, r.decision_number, r.decision_date,
+                  (SELECT COALESCE(SUM(e.total),0) FROM budget.plan_expenditure_line e
+                    WHERE e.revision_id = r.id AND NOT e.is_unit_total) AS exp_total,
+                  (SELECT COALESCE(SUM(v.total),0) FROM budget.plan_revenue_line v
+                    WHERE v.revision_id = r.id AND v.code ~ '^\\d0{7}$') AS rev_total
+           FROM budget.plan_revision r
+           WHERE r.fiscal_year = %s
+           ORDER BY r.effective_order""",
+        (fiscal_year,),
+    )
+    labels, exp_vals, rev_vals = [], [], []
+    for r in rows:
+        labels.append(r["decision_number"])
+        exp_vals.append(round(float(r["exp_total"]) / 1e9, 3) if r["exp_total"] else None)
+        rev_vals.append(round(float(r["rev_total"]) / 1e9, 3) if r["rev_total"] else None)
+    return {"fiscal_year": fiscal_year, "unit": "млрд грн", "labels": labels,
+            "expenditure_bln": exp_vals, "revenue_bln": rev_vals,
+            "note": "Розмір бюджету по ревізіях рішень, млрд грн. Для графіка — "
+                    "chart_type='line', дві серії (видатки/доходи) або одна. "
+                    "labels — номери рішень у порядку ухвалення."}
 
 
 def _amendments(fiscal_year, kind, decision, code, name_contains, min_amount, month, limit):
