@@ -59,6 +59,9 @@ MKRADA_BASE = "https://mkrada.gov.ua"
 PAGE_URL_TMPL = MKRADA_BASE + "/content/shchomisyachna-informaciya-{year}r.html"
 
 CHAT_ID = os.environ.get("CHAT_ID")
+# Канал «🦊 Микита винюхав» (той самий, куди йдуть тендери й документи влади).
+# Бюджетні звіти про виконання — публічний факт-привід, тому в канал, не в редакцію.
+VYNIUHAV_CHAT_ID = os.environ.get("DOCUMENTS_CHAT_ID") or os.environ.get("PROZORRO_CHAT_ID")
 
 _ALLOWED_USER_IDS = {
     int(uid)
@@ -144,7 +147,10 @@ def is_ready():
 
 # ---------- Парсери ----------
 
-_DATE_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})")
+# Дата в імені: на сайті через крапки (02.01.2026), але при збереженні/
+# пересиланні крапки й пробіли стають підкресленнями (02_01_2026) — приймаємо
+# крапку, підкреслення, дефіс і пробіл як розділювач.
+_DATE_RE = re.compile(r"(\d{2})[._\-\s](\d{2})[._\-\s](\d{4})")
 _UNIT_RE = re.compile(r"^(\d{2})\s+(\S.*)")
 _DETAIL_RE = re.compile(r"^(\d{4})\s+(\S.*)")
 
@@ -292,7 +298,7 @@ def _snapshot_date_from_name(filename):
             f"В імені файлу немає дати DD.MM.YYYY: {filename} — у шапках xlsx "
             "її не пишуть, тому дата зрізу береться з імені"
         )
-    return datetime.strptime(m.group(0), "%d.%m.%Y").date()
+    return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1))).date()
 
 
 def load_snapshot(data, filename):
@@ -409,31 +415,34 @@ def execution_report(fiscal_year=None):
         "WHERE snapshot_id = %s AND code_type = 'total'",
         (snap["id"],),
     )
-    # звірка з останньою ревізією рішень (методологія знімка інша — інформативно)
-    revision = bot_db.query(
-        """SELECT r.decision_number, r.effective_order,
-                  (SELECT COALESCE(SUM(e.total),0) FROM budget.plan_expenditure_line e
-                    WHERE e.revision_id = r.id AND NOT e.is_unit_total) AS total
-           FROM budget.plan_revision r
-           WHERE r.fiscal_year = %s
-             AND EXISTS (SELECT 1 FROM budget.plan_expenditure_line x WHERE x.revision_id = r.id)
-           ORDER BY r.effective_order DESC LIMIT 1""",
-        (snap["fiscal_year"],),
-    )
-    # план по розпорядниках з ревізії: XX00000 (головний розпорядник)
-    rev_units = {}
-    if revision:
-        rev_id = bot_db.query(
-            "SELECT id FROM budget.plan_revision WHERE fiscal_year = %s AND effective_order = %s",
-            (snap["fiscal_year"], revision[0]["effective_order"]),
-        )[0]["id"]
-        for row in bot_db.query(
-            "SELECT kpkvk, total FROM budget.plan_expenditure_line "
-            "WHERE revision_id = %s AND is_unit_total AND kpkvk LIKE '%%00000' "
-            "AND kpkvk NOT LIKE '%%10000'",
-            (rev_id,),
-        ):
-            rev_units[row["kpkvk"][:2]] = row["total"]
+    # звірка з останньою ревізією рішень (методологія знімка інша — інформативно).
+    # Ревізій може ще не бути (пакети рішень не завантажені) — тоді просто без звірки.
+    revision, rev_units = None, {}
+    try:
+        revision = bot_db.query(
+            """SELECT r.decision_number, r.effective_order,
+                      (SELECT COALESCE(SUM(e.total),0) FROM budget.plan_expenditure_line e
+                        WHERE e.revision_id = r.id AND NOT e.is_unit_total) AS total
+               FROM budget.plan_revision r
+               WHERE r.fiscal_year = %s
+                 AND EXISTS (SELECT 1 FROM budget.plan_expenditure_line x WHERE x.revision_id = r.id)
+               ORDER BY r.effective_order DESC LIMIT 1""",
+            (snap["fiscal_year"],),
+        )
+        if revision:
+            rev_id = bot_db.query(
+                "SELECT id FROM budget.plan_revision WHERE fiscal_year = %s AND effective_order = %s",
+                (snap["fiscal_year"], revision[0]["effective_order"]),
+            )[0]["id"]
+            for row in bot_db.query(
+                "SELECT kpkvk, total FROM budget.plan_expenditure_line "
+                "WHERE revision_id = %s AND is_unit_total AND kpkvk LIKE '%%00000' "
+                "AND kpkvk NOT LIKE '%%10000'",
+                (rev_id,),
+            ):
+                rev_units[row["kpkvk"][:2]] = row["total"]
+    except Exception:  # noqa: BLE001 — таблиць ревізій ще немає
+        revision, rev_units = None, {}
     return {"snapshot": snap, "units": units, "total": total[0] if total else None,
             "revision": revision[0] if revision else None, "rev_units": rev_units}
 
@@ -524,12 +533,12 @@ def _set_seen(seen):
 
 
 async def check_monthly_snapshots(bot, chat_id=None, force_report=False):
-    """Щоденна перевірка сторінки міськради. Нові файли → у нору + звіт у чат
-    редакції. Перший запуск: бекфіл усієї історії року тихо, звіт лише за
+    """Щоденна перевірка сторінки міськради. Нові файли → у нору + анонс у канал
+    «винюхав». Перший запуск: бекфіл усієї історії року тихо, звіт лише за
     останній місяць (N=1 місяць — перевірити формат відправки без спаму)."""
     if not is_ready():
         return
-    chat_id = chat_id or CHAT_ID
+    chat_id = chat_id or VYNIUHAV_CHAT_ID
     year = datetime.now().year
     try:
         links = await asyncio.to_thread(_page_links, year)
@@ -567,11 +576,14 @@ async def check_monthly_snapshots(bot, chat_id=None, force_report=False):
         return
 
     exp_loaded = [r for r in loaded if r["kind"] == "expenditure"]
+    latest = max(loaded, key=lambda r: r["date"])["date"]
     if first_run and not force_report:
-        # baseline: історію залили тихо, показуємо лише останній місяць
-        latest = max(loaded, key=lambda r: r["date"])["date"]
-        note = (f"🦊 Бюджетні снапшоти: залив історію {min(r['date'] for r in loaded).strftime('%d.%m')}"
-                f"–{latest.strftime('%d.%m.%Y')} ({len(loaded)} файлів) у нору.")
+        # baseline: історію залили тихо, анонс і розбір — лише за останній місяць
+        note = (
+            "🦊 Микита винюхав свіжу інформацію про те, як наші улюблені "
+            "чиновники витрачають народні гроші — місто оновило звіт про "
+            f"виконання бюджету станом на {latest.strftime('%d.%m.%Y')}."
+        )
         await bot.send_message(chat_id=chat_id, text=note)
         if exp_loaded:
             rep = await asyncio.to_thread(execution_report)
@@ -579,12 +591,16 @@ async def check_monthly_snapshots(bot, chat_id=None, force_report=False):
                 await bot.send_message(chat_id=chat_id, text=format_execution_message(rep))
         return
 
-    for r in loaded:
-        kind_ua = "витрати" if r["kind"] == "expenditure" else "надходження"
+    # Один анонс на кожну нову дату (файлів двоє на місяць — витрати й
+    # надходження, але привід один)
+    for d in sorted({r["date"] for r in loaded}):
         await bot.send_message(
             chat_id=chat_id,
-            text=f"🦊 Новий бюджетний снапшот: {kind_ua} станом на "
-                 f"{r['date'].strftime('%d.%m.%Y')} ({r['lines']} рядків у норі).",
+            text=(
+                "🦊 Микита винюхав свіжу інформацію про те, як наші улюблені "
+                "чиновники витрачають народні гроші — місто оновило звіт про "
+                f"виконання бюджету станом на {d.strftime('%d.%m.%Y')}."
+            ),
         )
     if exp_loaded:
         rep = await asyncio.to_thread(execution_report)
