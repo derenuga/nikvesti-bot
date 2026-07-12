@@ -191,6 +191,37 @@ def looks_like_snapshot(data):
         return False
 
 
+def _detect_exp_columns(rows):
+    """Індекси стовпців за заголовком (перші рядки). Річний звіт не має
+    «плану за період», тож позиції плаваючі. Повертає dict з індексами
+    (period_plan може бути None)."""
+    coltext = {}
+    for row in rows[:8]:
+        # рядок-заголовок: у кол.0 «КВК»/«КЕКВ»/None, далі текстові назви
+        for c, v in enumerate(row):
+            if isinstance(v, str) and c > 0:
+                coltext.setdefault(c, []).append(re.sub(r"\s+", " ", v).lower())
+    cols = {"annual_plan": None, "period_plan": None, "actual": None, "pct": None}
+    for c, texts in sorted(coltext.items()):
+        t = " ".join(texts)
+        if "відсоток" in t or "%" in t:
+            key = "pct"
+        elif "касові" in t or "виконано" in t:
+            key = "actual"
+        elif "план" in t and "період" in t:
+            key = "period_plan"
+        elif "план" in t and ("рік" in t or "року" in t):
+            key = "annual_plan"
+        else:
+            continue
+        if cols[key] is None:  # перший збіг виграє
+            cols[key] = c
+    # фолбек на класичні позиції місячного файлу, якщо заголовок не розпізнано
+    if cols["annual_plan"] is None:
+        cols = {"annual_plan": 1, "period_plan": 2, "actual": 3, "pct": 4}
+    return cols
+
+
 def parse_expenditure_snapshot(data):
     """«Витрати щомісячна інформація»: Лист1 = КВК×КЕКВ, Лист2 = КВК×КБП.
     Повертає {'lines': [...], 'total': {...} або None}."""
@@ -206,17 +237,26 @@ def parse_expenditure_snapshot(data):
             str(c) for row in rows[:6] for c in row if isinstance(c, str)
         ).upper()
         detail_type = "kbp" if "КБП" in marker else "kekv"
+        # Колонки визначаємо ЗА ЗАГОЛОВКОМ, не за фіксованими позиціями:
+        # місячний файл має 4 стовпці (план року / план періоду / касові / %),
+        # РІЧНИЙ звіт — лише 3 (план року / касові / %), без «плану за період»,
+        # і фіксовані позиції збивали б значення на стовпець.
+        cols = _detect_exp_columns(rows)
         kvk, unit_name = None, None
         for row in rows:
             name = row[0] if row else None
             if not isinstance(name, str) or not name.strip():
                 continue
             name = re.sub(r"\s+", " ", name).strip()
+
+            def _cell(key):
+                c = cols.get(key)
+                return row[c] if c is not None and len(row) > c else None
             nums = {
-                "annual_plan": _money(row[1] if len(row) > 1 else None),
-                "period_plan": _money(row[2] if len(row) > 2 else None),
-                "actual": _money(row[3] if len(row) > 3 else None),
-                "pct": _pct(row[4] if len(row) > 4 else None),
+                "annual_plan": _money(_cell("annual_plan")),
+                "period_plan": _money(_cell("period_plan")),
+                "actual": _money(_cell("actual")),
+                "pct": _pct(_cell("pct")),
             }
             if name.lower().startswith("разом"):
                 # після «Разом» іде деталізація ПО ВСЬОМУ бюджету (КЕКВ/КБП
@@ -306,7 +346,6 @@ def load_snapshot(data, filename):
     перезапис рядків). Синхронна — викликати через asyncio.to_thread."""
     ensure_snapshot_schema()
     snap_date = _snapshot_date_from_name(filename)
-    fiscal_year = (snap_date - timedelta(days=1)).year
 
     import openpyxl
     wb = openpyxl.load_workbook(BytesIO(data), data_only=True, read_only=True)
@@ -314,6 +353,16 @@ def load_snapshot(data, filename):
     first = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
     wb.close()
     title = " ".join(str(v) for v in first if isinstance(v, str)).lower()
+    # РІК — з шапки файлу («…у 2025 році…») як авторитетне джерело. Файл
+    # витрат його містить; файл надходжень — НІ, тому фолбек за датою: місячні
+    # звіти датуються 01.MM, а РІЧНИЙ — 02.01 (січень наступного року). Тож
+    # січнева дата = річний звіт ПОПЕРЕДНЬОГО року. Раніше «02.01.2026» хибно
+    # осідав у 2026 (за (дата−1день).рік давало 2026 для 02.01).
+    ym = re.search(r"у\s+(20\d{2})\s+роц", title)
+    if ym:
+        fiscal_year = int(ym.group(1))
+    else:
+        fiscal_year = snap_date.year - 1 if snap_date.month == 1 else snap_date.year
     if "надходження" in title:
         kind, parsed = "revenue", parse_revenue_snapshot(data)
     elif "використання коштів" in title or "витрат" in title:
@@ -696,6 +745,38 @@ async def budget_snapshot_check_handler(update, context):
     after = len(await asyncio.to_thread(_get_seen))
     if after == before:
         await msg.reply_text("Нових файлів немає.")
+
+
+def _reset_snapshots():
+    """Стирає всі знімки й стан «seen» — щоб перечитати сторінку з нуля
+    (напр. після фіксу парсера, який раніше клав річний звіт не в той рік)."""
+    ensure_snapshot_schema()
+    bot_db.execute("DELETE FROM budget.snapshot_expenditure_line")
+    bot_db.execute("DELETE FROM budget.snapshot_revenue_line")
+    bot_db.execute("DELETE FROM budget.snapshot")
+    bot_db.execute("DELETE FROM sync_state WHERE key = %s", (_SEEN_KEY,))
+
+
+async def budget_snapshot_reset_handler(update, context):
+    """/budget_snapshot_reset — стерти знімки й стан і перечитати сторінку
+    заново (звіт у чат виклику). Потрібно одноразово після фіксу року/колонок:
+    старий 02.01-звіт за 2025 осідав у 2026 і зі зсунутими стовпцями."""
+    msg = update.effective_message
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await msg.reply_text("⛔ Тільки для редакції.")
+        return
+    if not is_ready():
+        await msg.reply_text("Нора не налаштована (BOT_DATABASE_URL).")
+        return
+    await msg.reply_text("🦊 Стираю знімки й перечитую сторінку з нуля…")
+    await asyncio.to_thread(_reset_snapshots)
+    await check_monthly_snapshots(context.bot, chat_id=update.effective_chat.id)
+    rows = await bot_db.aquery(
+        "SELECT fiscal_year, count(DISTINCT snapshot_date) d, count(*) c "
+        "FROM budget.snapshot GROUP BY fiscal_year ORDER BY fiscal_year"
+    )
+    summary = "; ".join(f"{r['fiscal_year']}: {r['d']} дат" for r in rows) or "порожньо"
+    await msg.reply_text(f"✅ Перечитано. По роках: {summary}")
 
 
 async def load_snapshot_from_message(msg, context, data, filename):
