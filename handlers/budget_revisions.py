@@ -1062,9 +1062,10 @@ def _package_reply(result):
             parts.append(f"видатки {_fmt_money(h['expenditure_total'])}")
         if parts:
             lines.append(f"📄 з тексту рішення: {', '.join(parts)} грн")
+    import html
     for name, reason in result["skipped"]:
-        short = name.split("/")[-1]
-        lines.append(f"⏭ {short} — {reason}")
+        short = html.escape(name.split("/")[-1])
+        lines.append(f"⏭ {short} — {html.escape(reason)}")
     return lines
 
 
@@ -1084,15 +1085,34 @@ async def _load_top_deltas(lines, result):
         top = await asyncio.to_thread(amendments_summary, rep["revision_id"], "expenditure")
         if top:
             units = await asyncio.to_thread(budget_nlq._unit_names, result["fiscal_year"])
-            lines.append("\nНайбільші зміни у видатках:")
+            lines.append("\n<b>Найбільші зміни у видатках:</b>")
             for t in top:
-                mark = "🆕 " if t["is_new"] else ""
-                sign = "+" if t["delta_total"] > 0 else ""
-                owner = units.get(t["code"][:2])
-                owner_str = f" — {owner}" if owner else ""
-                lines.append(f"• {mark}{t['code']} {t['line_name']}: "
-                             f"{sign}{_fmt_money(t['delta_total'])} грн{owner_str}")
+                lines.append(format_delta_block(
+                    t["code"], t["line_name"], t["delta_total"],
+                    units.get(t["code"][:2]), t["is_new"],
+                ))
     return lines
+
+
+def format_delta_block(code, name, delta, owner=None, is_new=False):
+    """Читабельний блок однієї зміни для повідомлень (HTML-parse):
+        🆕 <code> Назва
+        +135 369 631 грн 🟢
+        Розпорядник
+    Порожній рядок між блоками робить довгі назви бюджетних програм
+    придатними для читання (одним рядком вони зливаються)."""
+    import html
+    mark = "🆕 " if is_new else ""
+    if delta is None:
+        money = "— грн"
+    else:
+        sign = "+" if delta > 0 else ("−" if delta < 0 else "")
+        dot = "🟢" if delta > 0 else ("🔴" if delta < 0 else "⚪")
+        money = f"{sign}{_fmt_money(abs(delta))} грн {dot}"
+    parts = [f"{mark}<b>{html.escape(str(code))}</b> {html.escape(str(name))}", money]
+    if owner:
+        parts.append(html.escape(str(owner)))
+    return "\n" + "\n".join(parts)
 
 
 async def budget_package_handler(update, context):
@@ -1139,7 +1159,7 @@ async def budget_package_handler(update, context):
     except Exception as e:  # noqa: BLE001 — повідомляємо в чат, не мовчимо
         await progress.edit_text(f"❌ Не завантажилось: {e}")
         return
-    await progress.edit_text("\n".join(lines))
+    await progress.edit_text("\n".join(lines), parse_mode="HTML")
 
 
 async def budget_load_handler(update, context):
@@ -1190,7 +1210,7 @@ async def budget_load_handler(update, context):
     except Exception as e:  # noqa: BLE001
         await progress.edit_text(f"❌ Не завантажилось: {e}")
         return
-    await progress.edit_text("\n".join(lines))
+    await progress.edit_text("\n".join(lines), parse_mode="HTML")
 
 
 async def budget_status_handler(update, context):
