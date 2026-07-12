@@ -477,16 +477,7 @@ def format_execution_message(rep):
         lines.append(f"\nУсі розпорядники виконали план періоду на ≥{UNDERPERFORM_PCT}%.")
     if rep["revision"]:
         rev = rep["revision"]
-        lines.append(
-            f"\n📋 Звірка з рішеннями: остання ревізія {rev['decision_number']} — "
-            f"{_fmt_money(rev['total'])} грн; річний план у знімку Казначейства — "
-            f"{_fmt_money(rep['total']['annual_plan']) if rep['total'] else '—'} грн."
-        )
-        lines.append(
-            "Різниця = міжсесійні зміни (розпорядження мера/виконком) ± методологія "
-            "знімка (без кредитів і власних надходжень установ)."
-        )
-        # найбільші зсуви плану по розпорядниках
+        # найбільші зміни річного плану поза сесією (розпорядження мера/виконком)
         diffs = []
         for u in rep["units"]:
             rv = rep["rev_units"].get(u["kvk"])
@@ -496,10 +487,20 @@ def format_execution_message(rep):
                     diffs.append((abs(d), u["kvk"], u["unit_name"], d))
         diffs.sort(reverse=True)
         if diffs:
-            lines.append("\nНайбільші зсуви річного плану проти останнього рішення:")
+            lines.append(
+                "\n💰 Кому змінили річний бюджет поза сесією (розпорядженнями "
+                "мера / виконкому, після останнього рішення ради):"
+            )
             for _, kvk, name, d in diffs[:6]:
-                sign = "+" if d > 0 else "−"
-                lines.append(f"• {kvk} {name}: {sign}{_fmt_money(abs(d))} грн")
+                verb = "додали" if d > 0 else "зняли"
+                lines.append(f"• {name}: {verb} {_fmt_money(abs(d))} грн")
+            lines.append(
+                f"\n(порівняння: останнє рішення ради {rev['decision_number']} заклало "
+                f"{_fmt_money(rev['total'])} грн видатків, а в казначейському плані з "
+                f"усіма правками — {_fmt_money(rep['total']['annual_plan']) if rep['total'] else '—'} грн; "
+                "різниця й розкладена вище по розпорядниках. Знімок рахує без кредитів "
+                "і власних надходжень установ, тож можливе невелике методологічне відхилення.)"
+            )
     return "\n".join(lines)
 
 
