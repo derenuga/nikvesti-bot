@@ -603,11 +603,25 @@ async def run_snapshot_check(bot):
 # ---------- Telegram-хендлери ----------
 
 async def budget_execution_handler(update, context):
-    """/budget_execution — виконання останнього снапшота по розпорядниках."""
+    """/budget_execution — виконання бюджету по розпорядниках. Пріоритет —
+    квартальний офіційний звіт (детальніше, по КПКВК); якщо його немає —
+    останній місячний снапшот міськради."""
     msg = update.effective_message
     if not is_ready():
         await msg.reply_text("Нора не налаштована (BOT_DATABASE_URL).")
         return
+    # 1) квартальний звіт про виконання, якщо є
+    try:
+        from handlers import budget_execution_report as ber
+        q = await asyncio.to_thread(ber.latest_report)
+        if q:
+            text = await asyncio.to_thread(ber.format_report, q)
+            await msg.reply_text(text, parse_mode="HTML")
+            return
+    except Exception as e:  # noqa: BLE001
+        await msg.reply_text(f"❌ {e}")
+        return
+    # 2) інакше — місячний снапшот
     try:
         rep = await asyncio.to_thread(execution_report)
     except Exception as e:  # noqa: BLE001
@@ -615,8 +629,8 @@ async def budget_execution_handler(update, context):
         return
     if not rep:
         await msg.reply_text(
-            "Снапшотів ще немає. Запусти /budget_snapshot_check або кинь файл "
-            "«Щомісячна інформація…xlsx» у приват."
+            "Даних про виконання ще немає. Кинь у приват квартальний «Звіт про "
+            "виконання…» або запусти /budget_snapshot_check для місячних знімків."
         )
         return
     await msg.reply_text(format_execution_message(rep))
