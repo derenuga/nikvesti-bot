@@ -172,10 +172,12 @@ _BUDGET_SCHEMA_STATEMENTS = [
       ON p.kpkvk = n.kpkvk
      AND p.revision_id = (SELECT pr.id FROM budget.plan_revision pr
                           WHERE pr.fiscal_year = r.fiscal_year
-                            AND pr.effective_order < r.effective_order
+                            AND (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
+                              < (COALESCE(r.decision_date, DATE '1900-01-01'), r.effective_order)
                             AND EXISTS (SELECT 1 FROM budget.plan_expenditure_line x
                                         WHERE x.revision_id = pr.id)
-                          ORDER BY pr.effective_order DESC LIMIT 1)
+                          ORDER BY COALESCE(pr.decision_date, DATE '1900-01-01') DESC,
+                                   pr.effective_order DESC LIMIT 1)
     WHERE NOT n.is_unit_total
       AND (n.total IS DISTINCT FROM p.total OR p.kpkvk IS NULL)
     """,
@@ -194,10 +196,12 @@ _BUDGET_SCHEMA_STATEMENTS = [
       ON p.code = n.code
      AND p.revision_id = (SELECT pr.id FROM budget.plan_revision pr
                           WHERE pr.fiscal_year = r.fiscal_year
-                            AND pr.effective_order < r.effective_order
+                            AND (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
+                              < (COALESCE(r.decision_date, DATE '1900-01-01'), r.effective_order)
                             AND EXISTS (SELECT 1 FROM budget.plan_revenue_line x
                                         WHERE x.revision_id = pr.id)
-                          ORDER BY pr.effective_order DESC LIMIT 1)
+                          ORDER BY COALESCE(pr.decision_date, DATE '1900-01-01') DESC,
+                                   pr.effective_order DESC LIMIT 1)
     WHERE n.total IS DISTINCT FROM p.total
        OR p.code IS NULL
     """,
@@ -209,10 +213,12 @@ _BUDGET_SCHEMA_STATEMENTS = [
     FROM budget.plan_revision n
     JOIN LATERAL (SELECT pr.id FROM budget.plan_revision pr
                   WHERE pr.fiscal_year = n.fiscal_year
-                    AND pr.effective_order < n.effective_order
+                    AND (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
+                      < (COALESCE(n.decision_date, DATE '1900-01-01'), n.effective_order)
                     AND EXISTS (SELECT 1 FROM budget.plan_expenditure_line x
                                 WHERE x.revision_id = pr.id)
-                  ORDER BY pr.effective_order DESC LIMIT 1) prev ON true
+                  ORDER BY COALESCE(pr.decision_date, DATE '1900-01-01') DESC,
+                           pr.effective_order DESC LIMIT 1) prev ON true
     JOIN budget.plan_expenditure_line p ON p.revision_id = prev.id
     WHERE n.kind = 'amendment'
       AND NOT p.is_unit_total
@@ -648,16 +654,21 @@ def _check_unit_pairs(cur, revision_id, lines, block_label):
     return found
 
 
-def _pred_with_lines(cur, fiscal_year, order, kind):
-    """Остання ревізія року ПЕРЕД order, у якій є рядки цієї таблиці
-    (ревізія могла не мати додатка 1/3, якщо рішення його не міняло)."""
+def _pred_with_lines(cur, fiscal_year, order, kind, decision_date=None):
+    """Ревізія року, що ХРОНОЛОГІЧНО передує цій, у якій є рядки цієї таблиці
+    (ревізія могла не мати додатка 1/3, якщо рішення його не міняло).
+    Хронологія — за датою ухвалення (щоб пакети можна було вантажити в будь-якому
+    порядку); effective_order — лише тайбрейкер для ревізій без дати."""
     table, _ = _LINE_COLS[kind]
     cur.execute(
         f"""SELECT pr.id, pr.notes FROM budget.plan_revision pr
-            WHERE pr.fiscal_year = %s AND pr.effective_order < %s
+            WHERE pr.fiscal_year = %s
+              AND (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
+                < (COALESCE(%s::date, DATE '1900-01-01'), %s)
               AND EXISTS (SELECT 1 FROM {table} x WHERE x.revision_id = pr.id)
-            ORDER BY pr.effective_order DESC LIMIT 1""",
-        (fiscal_year, order),
+            ORDER BY COALESCE(pr.decision_date, DATE '1900-01-01') DESC,
+                     pr.effective_order DESC LIMIT 1""",
+        (fiscal_year, decision_date, order),
     )
     return cur.fetchone()
 
@@ -771,7 +782,11 @@ def load_parsed(parsed, fiscal_year, decision_number, decision_date=None,
                 )
                 report["revision_reused"] = reused
 
-                pred = _pred_with_lines(cur, fiscal_year, order, kind)
+                # фактична дата ревізії (могла бути задана раніше /budget_date)
+                cur.execute("SELECT decision_date FROM budget.plan_revision WHERE id = %s",
+                            (revision_id,))
+                eff_date = cur.fetchone()[0]
+                pred = _pred_with_lines(cur, fiscal_year, order, kind, eff_date)
                 if pred is None:
                     # Попередніх рядків цієї таблиці немає ніде: якщо original
                     # реконструйований/порожній (PDF-пакет) — доливаємо в нього
@@ -1246,7 +1261,7 @@ async def budget_status_handler(update, context):
                    (SELECT COUNT(*) FROM budget.revision_validation_issue i
                      WHERE i.revision_id = r.id) AS issues
             FROM budget.plan_revision r
-            ORDER BY r.fiscal_year, r.effective_order
+            ORDER BY r.fiscal_year, COALESCE(r.decision_date, DATE '1900-01-01'), r.effective_order
             """
         )
     except Exception as e:  # noqa: BLE001
