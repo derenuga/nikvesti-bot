@@ -652,6 +652,34 @@ async def budget_execution_handler(update, context):
     await msg.reply_text(format_execution_message(rep))
 
 
+async def budget_execution_test_handler(update, context):
+    """/budget_execution_test — надіслати зразок анонсу «Микита винюхав…» +
+    розбір виконання у канал «винюхав» (в обхід «seen», щоб перевірити формат
+    без нового файлу на сайті). За зразком /documents_test, /builder_test."""
+    msg = update.effective_message
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await msg.reply_text("⛔ Тільки для редакції.")
+        return
+    if not is_ready():
+        await msg.reply_text("Нора не налаштована (BOT_DATABASE_URL).")
+        return
+    rep = await asyncio.to_thread(execution_report)
+    if not rep:
+        await msg.reply_text(
+            "У норі ще немає місячних знімків — спочатку /budget_snapshot_check."
+        )
+        return
+    d = rep["snapshot"]["snapshot_date"]
+    note = (
+        "🦊 Микита винюхав свіжу інформацію про те, як наші улюблені чиновники "
+        "витрачають народні гроші — місто оновило звіт про виконання бюджету "
+        f"станом на {d.strftime('%d.%m.%Y')}."
+    )
+    await context.bot.send_message(chat_id=VYNIUHAV_CHAT_ID, text=note)
+    await context.bot.send_message(chat_id=VYNIUHAV_CHAT_ID, text=format_execution_message(rep))
+    await msg.reply_text("✅ Зразок анонсу + розбір надіслано в канал «винюхав».")
+
+
 async def budget_snapshot_check_handler(update, context):
     """/budget_snapshot_check — перевірити сторінку міськради зараз."""
     msg = update.effective_message
