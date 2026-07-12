@@ -502,55 +502,75 @@ def _fmt_money(v):
     return f"{v:,.0f}".replace(",", " ")
 
 
+def _human(v):
+    """Сума по-людськи: млрд / млн / тис, щоб читалось з першого погляду."""
+    if v is None:
+        return "—"
+    v = float(v)
+    if abs(v) >= 1e9:
+        return f"{v / 1e9:.2f}".rstrip("0").rstrip(".") + " млрд грн"
+    if abs(v) >= 1e6:
+        return f"{v / 1e6:.1f}".rstrip("0").rstrip(".") + " млн грн"
+    if abs(v) >= 1e3:
+        return f"{v / 1e3:.0f} тис грн"
+    return f"{v:.0f} грн"
+
+
 def format_execution_message(rep):
+    """Звіт про виконання (HTML). Блоки розділені порожнім рядком, заголовки
+    жирні, суми — по-людськи (млн/млрд). Слати з parse_mode='HTML'."""
+    import html
     snap = rep["snapshot"]
-    lines = [
-        f"🦊 Виконання бюджету станом на {snap['snapshot_date'].strftime('%d.%m.%Y')} "
-        f"(рік {snap['fiscal_year']}):"
-    ]
+    esc = lambda s: html.escape(str(s))
+    out = [f"🦊 <b>Виконання бюджету Миколаєва</b>",
+           f"Станом на {snap['snapshot_date'].strftime('%d.%m.%Y')}"]
+
     if rep["total"]:
         t = rep["total"]
-        lines.append(
-            f"Разом: план періоду {_fmt_money(t['period_plan'])} грн, "
-            f"касові {_fmt_money(t['actual'])} грн — {t['pct']:.1f}%"
-            if t["pct"] is not None else
-            f"Разом: план періоду {_fmt_money(t['period_plan'])} грн, касові {_fmt_money(t['actual'])} грн"
-        )
+        pct = f" — <b>{t['pct']:.1f}%</b>" if t["pct"] is not None else ""
+        out.append("")
+        out.append(f"💵 Разом: {_human(t['actual'])} з {_human(t['period_plan'])} "
+                   f"плану періоду{pct}")
+
     laggards = [u for u in rep["units"] if u["pct"] is not None and float(u["pct"]) < UNDERPERFORM_PCT]
     if laggards:
-        lines.append(f"\n❗ Виконали план періоду менш як на {UNDERPERFORM_PCT}%:")
+        out.append("")
+        out.append(f"❗ <b>Найгірше освоюють план періоду</b> (менш як {UNDERPERFORM_PCT}%):")
         for u in laggards:
-            lines.append(f"• {u['kvk']} {u['unit_name']}: {float(u['pct']):.1f}% "
-                         f"({_fmt_money(u['actual'])} з {_fmt_money(u['period_plan'])} грн)")
+            out.append("")
+            out.append(f"<b>{esc(u['unit_name'])}</b>")
+            out.append(f"   {float(u['pct']):.1f}% — {_human(u['actual'])} з {_human(u['period_plan'])}")
     else:
-        lines.append(f"\nУсі розпорядники виконали план періоду на ≥{UNDERPERFORM_PCT}%.")
+        out.append("")
+        out.append(f"✅ Усі розпорядники виконали план періоду на {UNDERPERFORM_PCT}%+.")
+
     if rep["revision"]:
         rev = rep["revision"]
-        # найбільші зміни річного плану поза сесією (розпорядження мера/виконком)
         diffs = []
         for u in rep["units"]:
             rv = rep["rev_units"].get(u["kvk"])
             if rv is not None and u["annual_plan"] is not None:
                 d = u["annual_plan"] - rv
                 if d != 0:
-                    diffs.append((abs(d), u["kvk"], u["unit_name"], d))
+                    diffs.append((abs(d), u["unit_name"], d))
         diffs.sort(reverse=True)
         if diffs:
-            lines.append(
-                "\n💰 Кому змінили річний бюджет поза сесією (розпорядженнями "
-                "мера / виконкому, після останнього рішення ради):"
+            out.append("")
+            out.append("💰 <b>Річний бюджет змінили поза сесією</b>")
+            out.append("<i>(розпорядженнями мера / виконкому, після рішення ради)</i>")
+            out.append("")
+            for _, name, d in diffs[:6]:
+                mark = "➕" if d > 0 else "➖"
+                out.append(f"{mark} {esc(name)}: {_human(abs(d))}")
+            annual = rep["total"]["annual_plan"] if rep["total"] else None
+            out.append("")
+            out.append(
+                f"<i>ℹ️ Останнє рішення ради {esc(rev['decision_number'])} заклало "
+                f"{_human(rev['total'])} видатків, а в казначейському плані з усіма "
+                f"правками — {_human(annual)}. Різниця = міжсесійні зміни; знімок "
+                f"рахує без кредитів і власних надходжень установ.</i>"
             )
-            for _, kvk, name, d in diffs[:6]:
-                verb = "додали" if d > 0 else "зняли"
-                lines.append(f"• {name}: {verb} {_fmt_money(abs(d))} грн")
-            lines.append(
-                f"\n(порівняння: останнє рішення ради {rev['decision_number']} заклало "
-                f"{_fmt_money(rev['total'])} грн видатків, а в казначейському плані з "
-                f"усіма правками — {_fmt_money(rep['total']['annual_plan']) if rep['total'] else '—'} грн; "
-                "різниця й розкладена вище по розпорядниках. Знімок рахує без кредитів "
-                "і власних надходжень установ, тож можливе невелике методологічне відхилення.)"
-            )
-    return "\n".join(lines)
+    return "\n".join(out)
 
 
 # ---------- Монітор сторінки міськради ----------
@@ -638,7 +658,7 @@ async def check_monthly_snapshots(bot, chat_id=None, force_report=False):
         if exp_loaded:
             rep = await asyncio.to_thread(execution_report)
             if rep:
-                await bot.send_message(chat_id=chat_id, text=format_execution_message(rep))
+                await bot.send_message(chat_id=chat_id, text=format_execution_message(rep), parse_mode="HTML")
         return
 
     # Один анонс на кожну нову дату (файлів двоє на місяць — витрати й
@@ -655,7 +675,7 @@ async def check_monthly_snapshots(bot, chat_id=None, force_report=False):
     if exp_loaded:
         rep = await asyncio.to_thread(execution_report)
         if rep:
-            await bot.send_message(chat_id=chat_id, text=format_execution_message(rep))
+            await bot.send_message(chat_id=chat_id, text=format_execution_message(rep), parse_mode="HTML")
 
 
 async def run_snapshot_check(bot):
@@ -699,7 +719,7 @@ async def budget_execution_handler(update, context):
             "виконання…» або запусти /budget_snapshot_check для місячних знімків."
         )
         return
-    await msg.reply_text(format_execution_message(rep))
+    await msg.reply_text(format_execution_message(rep), parse_mode="HTML")
 
 
 async def budget_execution_test_handler(update, context):
@@ -726,7 +746,7 @@ async def budget_execution_test_handler(update, context):
         f"станом на {d.strftime('%d.%m.%Y')}."
     )
     await context.bot.send_message(chat_id=VYNIUHAV_CHAT_ID, text=note)
-    await context.bot.send_message(chat_id=VYNIUHAV_CHAT_ID, text=format_execution_message(rep))
+    await context.bot.send_message(chat_id=VYNIUHAV_CHAT_ID, text=format_execution_message(rep), parse_mode="HTML")
     await msg.reply_text("✅ Зразок анонсу + розбір надіслано в канал «винюхав».")
 
 
@@ -794,4 +814,4 @@ async def load_snapshot_from_message(msg, context, data, filename):
     if rep["kind"] == "expenditure":
         full = await asyncio.to_thread(execution_report)
         if full and full["snapshot"]["id"] == rep["snapshot_id"]:
-            await msg.reply_text(format_execution_message(full))
+            await msg.reply_text(format_execution_message(full), parse_mode="HTML")
