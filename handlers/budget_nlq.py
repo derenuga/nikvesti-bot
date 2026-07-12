@@ -77,7 +77,7 @@ def _norm_code(code, width):
 
 
 def query_budget(query_type, fiscal_year=None, kind="expenditure", decision=None,
-                 code=None, name_contains=None, min_amount=None, limit=10):
+                 code=None, name_contains=None, min_amount=None, month=None, limit=10):
     """Єдиний вхід NLQ-tool. Повертає dict під json.dumps."""
     if not bot_db.is_configured():
         return {"error": "Нора (BOT_DATABASE_URL) не налаштована"}
@@ -87,7 +87,7 @@ def query_budget(query_type, fiscal_year=None, kind="expenditure", decision=None
         return {"error": "У норі ще немає бюджетних даних — завантаж пакети рішень"}
 
     if query_type == "amendments":
-        return _amendments(fiscal_year, kind, decision, code, name_contains, min_amount, limit)
+        return _amendments(fiscal_year, kind, decision, code, name_contains, min_amount, month, limit)
     if query_type == "line_history":
         return _line_history(fiscal_year, kind, code, name_contains, limit)
     if query_type == "revisions":
@@ -97,7 +97,7 @@ def query_budget(query_type, fiscal_year=None, kind="expenditure", decision=None
     return {"error": f"Невідомий query_type: {query_type}"}
 
 
-def _amendments(fiscal_year, kind, decision, code, name_contains, min_amount, limit):
+def _amendments(fiscal_year, kind, decision, code, name_contains, min_amount, month, limit):
     """Дельти рішень: хто отримав/втратив гроші, нові програми."""
     is_exp = kind != "revenue"
     view = "budget.v_plan_amendments" if is_exp else "budget.v_plan_revenue_amendments"
@@ -107,6 +107,12 @@ def _amendments(fiscal_year, kind, decision, code, name_contains, min_amount, li
     if decision:
         where.append("v.decision_number ILIKE %s")
         params.append(f"%{decision}%")
+    if month:
+        # «зміни в березні» → ревізії з датою ухвалення в цьому місяці.
+        # Якщо дат немає (пакет-проєкт без /budget_date) — впаде в порожньо,
+        # тому нижче попереджаємо про це в note.
+        where.append("EXTRACT(MONTH FROM r.decision_date) = %s")
+        params.append(int(month))
     if code:
         where.append(f"v.{code_col} = %s")
         params.append(_norm_code(code, 7 if is_exp else 8))
@@ -141,9 +147,20 @@ def _amendments(fiscal_year, kind, decision, code, name_contains, min_amount, li
             item["owner_kvk"] = kvk
             item["owner_name"] = units.get(kvk)
         out.append(item)
-    return {"fiscal_year": fiscal_year, "kind": kind, "amendments": out,
-            "note": "delta_total у грн; is_new_program=true — програми не було в попередній редакції; "
-                    "owner_name — розпорядник, який освоюватиме ці гроші (за КВК з КПКВК)"}
+    note = ("delta_total у грн; is_new_program=true — програми не було в попередній редакції; "
+            "owner_name — розпорядник, який освоюватиме ці гроші (за КВК з КПКВК)")
+    if month and not out:
+        # порожньо саме через фільтр місяця — з'ясуємо, чи це «немає дат»
+        dated = bot_db.query(
+            "SELECT count(*) c FROM budget.plan_revision "
+            "WHERE fiscal_year = %s AND kind='amendment' AND decision_date IS NOT NULL",
+            (fiscal_year,),
+        )
+        if dated and dated[0]["c"] == 0:
+            note = ("У ревізій цього року не проставлені дати ухвалення, тому фільтр по "
+                    "місяцю нічого не знайшов. Спитай без місяця (по номеру рішення) або "
+                    "задай дати через /budget_date. Список ревізій — query_type='revisions'.")
+    return {"fiscal_year": fiscal_year, "kind": kind, "amendments": out, "note": note}
 
 
 def _line_history(fiscal_year, kind, code, name_contains, limit):
