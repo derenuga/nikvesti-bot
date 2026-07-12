@@ -1134,6 +1134,16 @@ async def budget_package_handler(update, context):
     f = await context.bot.get_file(doc.file_id)
     data = bytes(await f.download_as_bytearray())
 
+    # Квартальний «Звіт про виконання … за N квартал» (ZIP казначейських форм
+    # або окремий xlsx) — це виконання по КПКВК, окремий модуль
+    from handlers import budget_execution_report as ber
+    if ber.looks_like_execution_report(
+        data=(None if name.endswith(".zip") else data),
+        filename=doc.file_name,
+    ):
+        await ber.load_from_message(msg, context, data, doc.file_name)
+        return
+
     # xlsx «Щомісячна інформація…» — це снапшот виконання (задание №1),
     # а не пакет рішення: роутимо в budget_snapshots
     if name.endswith(".xlsx"):
