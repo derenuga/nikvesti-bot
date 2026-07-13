@@ -178,6 +178,27 @@ _SCHEMA_STATEMENTS = [
         """,
         True,
     ),
+    # Денний розріз трафіку Search Console по типах пошуку (web/discover/
+    # googleNews/news). daily_stats тримає лише сукупний трафік без «звідки» —
+    # ця таблиця дає канальний розріз, щоб NLQ дешево відповідав на «трафік без
+    # Google Discover» чи «скільки з пошуку проти Discover» з локальної пам'яті,
+    # без важкого GA4-звіту по днях. AI Overviews / AI Mode Google НЕ віддає
+    # окремим типом через API (лише в UI-звіті) — вони входять у 'web'; щойно
+    # з'явиться тип в API, додати його в SC_SEARCH_TYPES (analytics_store).
+    # Грейн — (date, search_type); кліки/покази з SC (не сесії GA4, інша метрика).
+    (
+        """
+        CREATE TABLE IF NOT EXISTS sc_daily_stats (
+            date        DATE NOT NULL,
+            search_type TEXT NOT NULL,
+            clicks      INTEGER,
+            impressions INTEGER,
+            synced_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (date, search_type)
+        )
+        """,
+        True,
+    ),
     # pg_trgm — для нечіткого збігу імен (Сєнкевич/Сенкевич) у майбутньому.
     # Опційно: якщо у Postgres-інстансу немає прав на CREATE EXTENSION,
     # модуль працює без trgm (тільки FTS).
@@ -455,6 +476,40 @@ def upsert_daily_stats(rows):
         conn.close()
 
 
+# ---------- Search Console: денний розріз по типах ----------
+
+_SC_DAILY_STATS_UPSERT_SQL = """
+INSERT INTO sc_daily_stats (date, search_type, clicks, impressions, synced_at)
+VALUES %s
+ON CONFLICT (date, search_type) DO UPDATE SET
+    -- Пряме EXCLUDED (не COALESCE): SC фіналізує дані із затримкою, тому
+    -- повторний захват трейлінг-вікна авторитетний — перезаписуємо неповні.
+    clicks = EXCLUDED.clicks,
+    impressions = EXCLUDED.impressions,
+    synced_at = now()
+"""
+
+_SC_DAILY_STATS_TEMPLATE = "(%s, %s, %s, %s, now())"
+
+
+def upsert_sc_daily_stats(rows):
+    """Батчевий upsert денного розрізу SC. rows — list[(date, search_type,
+    clicks, impressions)]. Повертає кількість рядків."""
+    if not rows:
+        return 0
+    ensure_schema()
+    conn = _connect()
+    try:
+        with conn, conn.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur, _SC_DAILY_STATS_UPSERT_SQL, rows,
+                template=_SC_DAILY_STATS_TEMPLATE, page_size=500,
+            )
+        return len(rows)
+    finally:
+        conn.close()
+
+
 # ---------- Тижневі зрізи соцмереж ----------
 
 _SOCIAL_STATS_UPSERT_SQL = """
@@ -553,6 +608,10 @@ def ping():
     daily = query(
         "SELECT count(*) AS c, min(date) AS oldest, max(date) AS newest FROM daily_stats"
     )[0]
+    sc = query(
+        "SELECT count(DISTINCT date) AS c, min(date) AS oldest, max(date) AS newest "
+        "FROM sc_daily_stats"
+    )[0]
     cursors = {r["key"]: r["value"] for r in query("SELECT key, value FROM sync_state")}
     return {
         "version": version,
@@ -564,6 +623,9 @@ def ping():
         "daily_stats": daily["c"],
         "daily_stats_oldest": daily["oldest"],
         "daily_stats_newest": daily["newest"],
+        "sc_daily_stats": sc["c"],
+        "sc_daily_stats_oldest": sc["oldest"],
+        "sc_daily_stats_newest": sc["newest"],
         "sync_state": cursors,
         "elapsed_ms": int((time.monotonic() - start) * 1000),
     }
