@@ -361,6 +361,77 @@ def get_news_leads(dialog_key, numbers=None, node_ids=None):
     return {"items": _fetch_leads(items)}
 
 
+# ---------- Бек із надісланих посилань ----------
+#
+# Користувач кидає кілька URL nikvesti.com і просить бек саме з них. Дістаємо
+# id по slug (slug_ua у двіжку містить id-префікс, але буває й без нього — тоді
+# матчимо чистий slug; якщо slug починається з цифр-id, є фолбек на nodes.id).
+
+def _slug_from_url(url):
+    """Останній сегмент шляху URL новини (= slug_ua у БД). Без query/anchor."""
+    path = re.sub(r"[?#].*$", "", (url or "").strip()).rstrip("/")
+    if not path:
+        return ""
+    return path.rsplit("/", 1)[-1].strip()
+
+
+def fetch_items_by_urls(urls):
+    """Знайти новини за їхніми URL і повернути items з лідами.
+
+    Матчимо по slug_ua/slug (як у посиланні), фолбек — id із цифрового префікса
+    слага. Порядок результату — свіжіше→давніше (за датою публікації, НЕ за
+    порядком посилань), нумерація n наскрізна. missing — URL, яких немає в базі.
+    Тул для беку з конкретних посилань (get_leads_from_urls у NLQ)."""
+    if not urls:
+        return {"error": "Не передано жодного посилання."}
+    found, seen_ids, missing = [], set(), []
+    for url in urls:
+        slug = _slug_from_url(url)
+        if not slug:
+            missing.append(url)
+            continue
+        cols = ("id, published, title_ua, title, slug_ua, slug, category, "
+                "content_ua, content")
+        rows = db.query(
+            f"SELECT {cols} FROM nodes "
+            "WHERE type='news' AND (slug_ua = %s OR slug = %s) LIMIT 1",
+            (slug, slug),
+        )
+        if not rows:
+            m = re.match(r"^(\d+)-", slug)
+            if m:
+                rows = db.query(
+                    f"SELECT {cols} FROM nodes WHERE id = %s LIMIT 1",
+                    (int(m.group(1)),),
+                )
+        if not rows:
+            missing.append(url)
+            continue
+        row = rows[0]
+        if row["id"] in seen_ids:
+            continue
+        seen_ids.add(row["id"])
+        title = (row.get("title_ua") or row.get("title") or "").strip()
+        lead = extract_lead(row.get("content_ua")) or extract_lead(row.get("content"))
+        found.append({
+            "id": row["id"],
+            "published": int(row["published"]),
+            "date": _fmt_date(row["published"]),
+            "title": title,
+            "url": _news_url(row),
+            "lead": lead or "(лід не вдалося витягти)",
+        })
+    found.sort(key=lambda it: it["published"], reverse=True)
+    for i, it in enumerate(found, start=1):
+        it["n"] = i
+    result = {"items": found}
+    if missing:
+        result["missing"] = missing
+    if not found:
+        result["error"] = "Жодне посилання не знайшлось у базі новин."
+    return result
+
+
 # ---------- Генерація беку (для кнопки) ----------
 
 def _back_prompt(items):
