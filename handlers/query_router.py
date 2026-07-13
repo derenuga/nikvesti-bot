@@ -1627,6 +1627,10 @@ async def handle_natural_language_query(update, context):
                 # відповідь і є беком, клавіатура відбору під нею зайва.
                 reply_markup = None
                 if used_tools & SEARCH_TOOL_NAMES and "get_news_leads" not in used_tools:
+                    # Лис міг показати не весь знайдений список (релевантний зріз) і
+                    # перенумерувати його — зводимо памʼять під показане, щоб кнопки
+                    # й номери збігалися з текстом, а тап вибирав саме ту новину.
+                    news_archive.reconcile_shown(dialog_key, final_text)
                     reply_markup = news_archive.build_keyboard(dialog_key)
                 # HTML-режим, коли у відповіді є розмітка: <a href> (архів/бек)
                 # або <b> (блоки змін бюджету) — інакше теги показуються голим
