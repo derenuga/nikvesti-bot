@@ -137,6 +137,48 @@ def build_keyboard(dialog_key):
     return InlineKeyboardMarkup(rows)
 
 
+# ---------- Звірка показаного списку з памʼяттю ----------
+#
+# Лис іноді (попри інструкцію «показуй УСІ items») показує не весь знайдений
+# список, а лише релевантний зріз, ще й перенумеровує його з 1. Тоді памʼять
+# тримала б, скажімо, 20 новин під номерами 1-20, а користувач бачив би 6 під
+# номерами 1-6: кнопок 20 замість 6, а тап по «3» вибирав би не ту новину, що
+# в тексті (нумерація розійшлась). Тому ПІСЛЯ відповіді Лиса зводимо памʼять
+# рівно під показаний список — парсимо рядки «N. … <a href="URL">», зіставляємо
+# URL з памʼяттю і лишаємо тільки показані новини під показаними номерами.
+
+_SHOWN_LINE_RE = re.compile(r'^\s*(\d+)\.\s.*?<a\s+href="([^"]+)"', re.MULTILINE)
+
+
+def reconcile_shown(dialog_key, shown_text):
+    """Звести памʼять останнього пошуку до новин, які Лис реально показав.
+
+    Повертає True, якщо памʼять переписано (кнопки треба будувати заново).
+    False — якщо у тексті не розпізнано список новин або показано рівно те,
+    що вже в памʼяті (тоді нічого не чіпаємо)."""
+    entry = _get_entry(dialog_key)
+    if not entry or not entry["items"]:
+        return False
+    pairs = _SHOWN_LINE_RE.findall(shown_text or "")
+    if not pairs:
+        return False
+    by_url = {it["url"]: it for it in entry["items"]}
+    shown = []
+    for i, (_n, url) in enumerate(pairs, start=1):
+        it = by_url.get(url)
+        if it:
+            shown.append({**it, "n": i})
+    if not shown:
+        return False
+    # Показано рівно те, що в памʼяті (той самий набір і порядок) — no-op.
+    if len(shown) == len(entry["items"]) and all(
+        s["url"] == o["url"] for s, o in zip(shown, entry["items"])
+    ):
+        return False
+    remember_results(dialog_key, shown, turn_id=entry.get("turn_id"))
+    return True
+
+
 # ---------- Пошук ----------
 
 def _news_url(row):
