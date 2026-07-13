@@ -188,11 +188,14 @@ def _news_url(row):
     (nodes.category) вставляємо одразу."""
     slug = (row.get("slug_ua") or row.get("slug") or "").strip()
     category = (row.get("category") or "").strip()
-    if slug and category:
-        return f"{BASE_URL}/news/{category}/{slug}"
-    if slug:
-        return f"{BASE_URL}/news/{slug}"
-    return f"{BASE_URL}/news/{row['id']}"
+    # Без слага (старі матеріали) хвіст URL — id, але рубрику лишаємо:
+    # /news/politics/269222, а не /news/269222 (інакше двіжок редиректить).
+    tail = slug or str(row.get("id") or "")
+    if not tail:
+        return f"{BASE_URL}/news/{row['id']}"
+    if category:
+        return f"{BASE_URL}/news/{category}/{tail}"
+    return f"{BASE_URL}/news/{tail}"
 
 
 def _fmt_date(published):
@@ -320,23 +323,33 @@ def extract_lead(html):
 
 
 def _fetch_leads(items):
-    """Ліди для списку items (елементи з id/date/title/url). Один SELECT."""
+    """Ліди для списку items (елементи з id/date/title/url). Один SELECT.
+
+    Заодно ПЕРЕСКЛАДАЄ url із БД сайту (slug_ua/slug + category): у беку
+    посилання мають бути канонічними (/news/{рубрика}/{slug}). Дзеркало-нора
+    для старих статей могло не мати рубрики, і url виходив без неї
+    (/news/269222 замість /news/politics/269222) — БД сайту рубрику має завжди."""
     ids = [it["id"] for it in items]
     if not ids:
         return []
     placeholders = ", ".join(["%s"] * len(ids))
     rows = db.query(
-        f"SELECT id, content_ua, content FROM nodes WHERE id IN ({placeholders})",
+        f"SELECT id, slug_ua, slug, category, content_ua, content "
+        f"FROM nodes WHERE id IN ({placeholders})",
         tuple(ids),
     )
     by_id = {r["id"]: r for r in rows}
     result = []
     for it in items:
-        row = by_id.get(it["id"], {})
-        # content_ua — українська версія; content (без суфікса) — російська,
-        # беремо її тільки як фолбек для дуже старих матеріалів.
-        lead = extract_lead(row.get("content_ua")) or extract_lead(row.get("content"))
-        result.append({**it, "lead": lead or "(лід не вдалося витягти)"})
+        row = by_id.get(it["id"])
+        if row:
+            # content_ua — українська версія; content (без суфікса) — російська,
+            # беремо її тільки як фолбек для дуже старих матеріалів.
+            lead = extract_lead(row.get("content_ua")) or extract_lead(row.get("content"))
+            url = _news_url(row)
+        else:
+            lead, url = None, it.get("url")
+        result.append({**it, "url": url, "lead": lead or "(лід не вдалося витягти)"})
     return result
 
 
