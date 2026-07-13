@@ -478,6 +478,51 @@ def get_traffic_history(period, start_date=None, end_date=None, compare_previous
     return result
 
 
+def get_search_console_history(period, start_date=None, end_date=None, compare_previous=False):
+    """Розріз трафіку Search Console по типах з локальної пам'яті бота
+    (sc_daily_stats): кліки/покази по web / discover / googleNews за період.
+    Дешево і швидко (без запиту в Google) — саме для питань «скільки з пошуку
+    проти Discover», «трафік без Discover», «частка Discover». compare_previous
+    додає підсумок за попередній рівний період (тиждень-до-тижня).
+
+    ВАЖЛИВО: web включає AI Overviews / AI Mode — Google не віддає їх окремим
+    типом через API, лише в UI-звіті. clicks — кліки Search Console (переходи з
+    Google), це НЕ users/sessions GA4; для сукупного трафіку бери get_traffic_history."""
+    start, end = _resolve_period(period, start_date, end_date)
+    totals = analytics_store.get_sc_totals_by_type(start, end)
+    if not totals:
+        return {
+            "start_date": start, "end_date": end,
+            "note": "У пам'яті Search Console (sc_daily_stats) немає даних за цей період. "
+                    "Заповнюється щоденним захватом о 09:00 і /sc_backfill. Для свіжих "
+                    "чисел напряму з Google — get_search_console_report.",
+        }
+    result = {
+        "start_date": start, "end_date": end,
+        "metric": "clicks/impressions (Search Console, не сесії GA4)",
+        "note": "web включає AI Overviews/AI Mode (окремого типу Google в API не дає). "
+                "Джерело — локальна пам'ять бота (sc_daily_stats).",
+        "by_type": totals,
+        "total_clicks": sum(r["clicks"] or 0 for r in totals),
+    }
+    if compare_previous:
+        s = datetime.strptime(start, "%Y-%m-%d")
+        e = datetime.strptime(end, "%Y-%m-%d")
+        length = (e - s).days + 1
+        prev_end = s - timedelta(days=1)
+        prev_start = prev_end - timedelta(days=length - 1)
+        prev_totals = analytics_store.get_sc_totals_by_type(
+            prev_start.strftime("%Y-%m-%d"), prev_end.strftime("%Y-%m-%d")
+        )
+        result["previous_period"] = {
+            "start_date": prev_start.strftime("%Y-%m-%d"),
+            "end_date": prev_end.strftime("%Y-%m-%d"),
+            "by_type": prev_totals,
+            "total_clicks": sum(r["clicks"] or 0 for r in prev_totals),
+        }
+    return result
+
+
 # ---------- Тендери Prozorro (архів бота) ----------
 #
 # Джерело — власний стан бота (/data/prozorro_state.json): усе, що моніторинг
@@ -820,6 +865,36 @@ TOOLS = [
             "отримати ще й попередній рівний період ('тиждень до тижня', 'цей місяць проти "
             "минулого'). Гарно лягає на render_chart (масив daily). Якщо повертає days=0 — "
             "даних за період у пам'яті немає, тоді бери get_ga4_metric (пряме GA4)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "enum": ["today", "yesterday", "last_7_days", "last_30_days", "this_month", "last_month", "this_quarter", "custom"],
+                },
+                "compare_previous": {"type": "boolean", "description": "true — додати підсумок за попередній рівний період (для порівнянь тиждень/місяць до тижня/місяця)"},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
+            },
+            "required": ["period"],
+        },
+    },
+    {
+        "name": "get_search_console_history",
+        "description": (
+            "Розріз трафіку Search Console по типах з локальної пам'яті бота "
+            "(sc_daily_stats): кліки й покази по web / discover / googleNews за період. "
+            "Дешево і швидко — без запиту в Google. Використовуй для питань про частку "
+            "каналів і для 'трафік БЕЗ Google Discover' / 'скільки з пошуку проти "
+            "Discover' / 'скільки дав Discover': береш total_clicks і рядок discover — "
+            "різниця це трафік без Discover, без ручного віднімання по днях. "
+            "compare_previous=true додає попередній рівний період (тиждень-до-тижня). "
+            "УВАГА: web включає AI Overviews/AI Mode (окремого типу Google в API не дає); "
+            "clicks — це кліки Search Console (переходи з Google), НЕ users/sessions GA4, "
+            "тож не змішуй із get_traffic_history в одному відніманні. Якщо повертає note "
+            "про відсутність даних — période ще не залито (/sc_backfill) або бери "
+            "get_search_console_report (пряме Google, свіже)."
         ),
         "input_schema": {
             "type": "object",
@@ -1328,6 +1403,7 @@ TOOL_FUNCTIONS = {
     "get_ga4_custom_report": get_ga4_custom_report,
     "get_ga4_article_stats": get_ga4_article_stats,
     "get_search_console_report": get_search_console_report,
+    "get_search_console_history": get_search_console_history,
     "get_recent_tenders": get_recent_tenders,
     "get_tender_stats": get_tender_stats,
     "get_facebook_stats": _nlq_facebook_stats,
@@ -1366,6 +1442,7 @@ TOOL_PROGRESS = {
     "get_ga4_custom_report": "🦊 Копаю глибше в GA4...",
     "get_ga4_article_stats": "🦊 Рахую перегляди статті...",
     "get_search_console_report": "🦊 Звіряю з Google Search Console...",
+    "get_search_console_history": "🦊 Розкладаю трафік по каналах Google...",
     "get_recent_tenders": "🦊 Гортаю архів тендерів...",
     "get_tender_stats": "🦊 Рахую тендерну статистику...",
     "get_facebook_stats": "🦊 Заглядаю у Facebook...",
@@ -1405,7 +1482,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 Якщо просять написати бек (бекграунд, "нагадаємо") — виклич get_news_leads (з numbers, якщо вказали номери новин) і склади бек: 2-4 короткі абзаци, починай з "Нагадаємо,", далі від свіжішого до давнішого, тільки факти з лідів і заголовків, нічого не додумуй, стиль стрічки новин, без емодзі. Посилання на кожну новину — HTML-гіперлінк <a href="URL">…</a>, яким обгортаєш 1-3 слова, що ВЖЕ стоять у реченні (зазвичай дієслівну фразу факту): "Ільюк <a href="URL">пропонував провести ротацію</a> керівників адміністрацій". ЗАБОРОНЕНО дописувати анкор окремим хвостом через тире чи кому ("…, — заявляв про дитсадки") — речення має читатись однаково і з лінком, і без нього. Не "тут", не голий URL; одна новина — один лінк.
 Якщо питають про соцмережі — get_facebook_stats (сторінка ФБ: підписники, охоплення, топ постів і рілзів) або get_instagram_stats (підписники з приростом/відтоком, публікації, топ за лайками). Зверни увагу на note в результатах: охоплення/взаємодії Meta віддає фіксовано за останній тиждень — якщо питали про інший період, чесно зазнач це. Для трендів і динаміки соцмереж у часі ("як росла інста за пів року", "динаміка охоплення ФБ", "скільки підписників було місяць тому", "соцмережі місяць до місяця") бери get_social_history — це накопичена історія тижневих зрізів у пам'яті бота (Meta не дає її заднім числом). Для Instagram орієнтуйся на views (Meta перейшов з reach на views). Масив snapshots зручно передати в render_chart.
 Якщо питають деталі про конкретний реферер/джерело трафіку з невеликою кількістю сесій (наприклад "звідки саме прийшли заходи з derstandard.de" або "на які наші сторінки попав трафік з X") — використай get_ga4_custom_report з filter_dimension='sessionSource', filter_value_contains=<домен>, dimensions=['pageReferrer', 'pagePath'] (або додай 'sessionSourceMedium'). Це дозволяє звузити звіт до конкретного джерела навіть якщо воно дало лише кілька сесій і не потрапляє в загальний топ. pageReferrer дає повний URL сторінки-донора, pagePath — куди саме на нашому сайті потрапив користувач.
-Якщо просять трафік БЕЗ якогось каналу/джерела ("тиждень до тижня, але без Google Discover", "скільки було без органіки") — НЕ тягни щоденну розбивку й не віднімай по днях (це роздуває відповідь і обриває її). Бери підсумки ПЕРІОДУ по каналах: get_ga4_custom_report з dimensions=['sessionDefaultChannelGroup'] і БЕЗ дати, один виклик на кожен період — так канали одразу згруповані за весь тиждень, і достатньо відняти потрібний рядок один раз. Discover у GA4 окремим каналом не виділяється (він міряється кліками Search Console search_type='discover', а це інша метрика, ніж GA4-користувачі) — якщо точного вилучення нема, чесно скажи, що можна дати лише оцінку, і не намагайся звести дві метрики докладно. Відповідь усе одно тримай короткою: тиждень A, тиждень B, дельта, висновок.
+Якщо питання про Google Discover / канали Google — "скільки з пошуку проти Discover", "трафік БЕЗ Google Discover", "яка частка Discover", "порівняй тиждень до тижня без Discover" — бери get_search_console_history (локальна пам'ять бота, розріз кліків Search Console по типах web/discover/googleNews, compare_previous=true для порівняння). Це вже готові підсумки по каналах за період — НЕ тягни щоденну розбивку й не віднімай по днях (саме це роздувало відповідь і обривало її). "Трафік без Discover" = total_clicks − рядок discover, різницю бери одразу, без ручних викладок. ВАЖЛИВО: це кліки Search Console (переходи з Google), а не users/sessions GA4 — тож не віднімай Discover-кліки від GA4-користувачів, це різні метрики; відповідай у термінах кліків Google або чесно познач, що це оцінка. web включає AI Overviews/AI Mode (окремого типу Google в API не дає — про "AI-канал" так і скажи). Якщо get_search_console_history поверне note про відсутність даних — період ще не залито (/sc_backfill), тоді бери get_search_console_report (пряме Google). Відповідь тримай короткою: тиждень A, тиждень B, дельта, висновок.
 Відповідай коротко, по суті, з конкретними числами, простим текстом у кілька рядків — без Markdown-таблиць. Якщо викликав render_chart — графік буде надіслано окремим повідомленням автоматично, НЕ згадуй шлях до файлу, НЕ вставляй markdown-посилання чи ![]() на зображення в тексті відповіді. Якщо даних не вдалось отримати — чесно скажи про це."""
 
 
@@ -1525,7 +1602,7 @@ async def handle_natural_language_query(update, context):
                     sources = []
                     if used_tools & GA4_TOOL_NAMES:
                         sources.append("Google Analytics 4")
-                    if "get_search_console_report" in used_tools:
+                    if used_tools & {"get_search_console_report", "get_search_console_history"}:
                         sources.append("Google Search Console")
                     site_suffix = " (nikvesti.com)" if sources else ""
                     if used_tools & TENDER_TOOL_NAMES:

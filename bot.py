@@ -5,7 +5,7 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, MessageHandler, MessageReactionHandler, TypeHandler, filters
 from handlers.google_analytics import analytics_handler
-from handlers.analytics_store import analytics_backfill_handler
+from handlers.analytics_store import analytics_backfill_handler, sc_backfill_handler
 from handlers.weekly_digest import weekly_handler
 from handlers.social_store import social_capture_handler, social_backfill_fb_handler
 from handlers.scheduler import setup_scheduler, send_daily_report, check_email
@@ -306,6 +306,7 @@ def main():
     app.add_handler(CommandHandler("builder_test", builder_test_handler))
     app.add_handler(CommandHandler("analytics", analytics_handler))
     app.add_handler(CommandHandler("analytics_backfill", analytics_backfill_handler))
+    app.add_handler(CommandHandler("sc_backfill", sc_backfill_handler))
     app.add_handler(CommandHandler("weekly", weekly_handler))
     app.add_handler(CommandHandler("social_capture", social_capture_handler))
     app.add_handler(CommandHandler("social_backfill_fb", social_backfill_fb_handler))
