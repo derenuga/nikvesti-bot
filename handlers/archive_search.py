@@ -71,8 +71,9 @@ def _fmt_item(n, row):
     title = (row.get("title_ua") or row.get("title_ru") or "").strip()
     slug = (row.get("slug") or "").strip()
     url = f"{BASE_URL}/news/{slug}" if slug else f"{BASE_URL}/news/{row['id']}"
-    date = datetime.fromtimestamp(int(row["published"])).strftime("%d.%m.%Y") if row.get("published") else "—"
-    item = {"n": n, "id": row["id"], "date": date, "title": title, "url": url}
+    published = int(row["published"]) if row.get("published") else 0
+    date = datetime.fromtimestamp(published).strftime("%d.%m.%Y") if published else "—"
+    item = {"n": n, "id": row["id"], "published": published, "date": date, "title": title, "url": url}
     if "own_material" in row:
         item["own"] = bool(row.get("own_material"))
     return item
@@ -169,7 +170,8 @@ def search_items(query, limit=10, year_from=None, year_to=None,
 
 def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
                    spread_years=False, per_year=3,
-                   own_material=None, category=None, region=None, tag=None):
+                   own_material=None, category=None, region=None, tag=None,
+                   turn_id=None):
     """Повнотекстовий пошук по «лисячій норі» (заголовки + теги + текст, 17 років) —
     tool для NLQ-роутера.
 
@@ -178,6 +180,12 @@ def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
     до per_year результатів з кожного року, від давніх до свіжих.
     Фільтри: own_material — тільки власні матеріали; category — слаг рубрики;
     region — код регіону; tag — точна назва тегу.
+
+    turn_id — маркер одного NLQ-запиту: кілька пошуків у межах запиту
+    (напр. «що писали про A та B» — окремо по A і по B) зливаються в ОДИН
+    список з наскрізною нумерацією, відсортований свіжіше→давніше (дублі по
+    id відкидаються). Інакше другий пошук затирав перший, і кнопки (одна
+    нумерація) не збігалися з двома списками в тексті.
     Результати запам'ятовуються для кнопок відбору і беку
     (та сама пам'ять, що в search_news_archive)."""
     if not bot_db.is_configured():
@@ -195,15 +203,33 @@ def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
         return {"error": f"Пошук по норі не вдався: {e}"}
     if not items and not _build_tsquery(query):
         return {"error": "Порожній пошуковий запит."}
-    news_archive.remember_results(dialog_key, items)
+
+    # Той самий NLQ-запит уже шукав (turn_id) — доклеюємо до наявного списку
+    # з наскрізною нумерацією, а не затираємо. spread_years має власний
+    # таймлайн по роках (yr ASC) — його не мержимо, щоб не ламати порядок.
+    prev_items = []
+    if turn_id and not spread_years:
+        entry = news_archive._get_entry(dialog_key)
+        if entry and entry.get("turn_id") == turn_id:
+            prev_items = entry["items"]
+    seen_ids = {it["id"] for it in prev_items}
+    all_items = prev_items + [it for it in items if it["id"] not in seen_ids]
+    if prev_items:
+        all_items.sort(key=lambda it: it.get("published", 0), reverse=True)
+        for i, it in enumerate(all_items, start=1):
+            it["n"] = i
+    news_archive.remember_results(dialog_key, all_items, turn_id=turn_id)
     note = (
         "Повнотекстовий пошук по «лисячій норі» — архіву nikvesti.com "
         "(заголовки + теги + текст, зважене ранжування, вся історія). "
         + ("Режим історії питання: до кількох результатів з кожного року, від давніх до свіжих. "
            if spread_years else "")
+        + "У items — ПОВНИЙ накопичений список цього запиту (кілька пошуків одного "
+          "запиту зливаються в один список з наскрізною нумерацією). Показуй усі "
+          "items рівно під цими номерами n, ОДНИМ наскрізним списком. "
         + "Якщо результатів мало — спробуй синоніми або російське написання (старі матеріали російською)."
     )
-    return {"query": query, "found": len(items), "note": note, "items": items}
+    return {"query": query, "found": len(items), "note": note, "items": all_items}
 
 
 _MONTHS_UK = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер",
