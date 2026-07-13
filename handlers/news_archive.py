@@ -188,11 +188,14 @@ def _news_url(row):
     (nodes.category) вставляємо одразу."""
     slug = (row.get("slug_ua") or row.get("slug") or "").strip()
     category = (row.get("category") or "").strip()
-    if slug and category:
-        return f"{BASE_URL}/news/{category}/{slug}"
-    if slug:
-        return f"{BASE_URL}/news/{slug}"
-    return f"{BASE_URL}/news/{row['id']}"
+    # Без слага (старі матеріали) хвіст URL — id, але рубрику лишаємо:
+    # /news/politics/269222, а не /news/269222 (інакше двіжок редиректить).
+    tail = slug or str(row.get("id") or "")
+    if not tail:
+        return f"{BASE_URL}/news/{row['id']}"
+    if category:
+        return f"{BASE_URL}/news/{category}/{tail}"
+    return f"{BASE_URL}/news/{tail}"
 
 
 def _fmt_date(published):
