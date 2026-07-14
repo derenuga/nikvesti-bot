@@ -369,6 +369,23 @@ def save_traffic_spikes_state(spikes_state):
         _write_state(state)
 
 
+def get_tiktok_oauth():
+    """OAuth-стан TikTok: {"refresh_token", "access_token", "access_expires_at"}.
+    TikTok РОТУЄ refresh token на кожному оновленні (старий протухає), тому
+    новий треба зберігати тут, а не покладатись на env-сід. Порожній dict —
+    ще не оновлювали (візьметься env TIKTOK_REFRESH_TOKEN як сід)."""
+    with _lock:
+        state = _read_state()
+        return state.get("tiktok_oauth", {})
+
+
+def save_tiktok_oauth(oauth):
+    with _lock:
+        state = _read_state()
+        state["tiktok_oauth"] = oauth
+        _write_state(state)
+
+
 def get_builder_monitor_state():
     """Стан монітора білдера головної: {'last_alert_at': unix} для кулдауну.
     Порожній dict = ще не алертили."""

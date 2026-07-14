@@ -191,7 +191,7 @@ YTB = {"key": "yt", "band": 67, "hdr": 68, "m1": 69, "total": 81,
                    "Час перегляду, год", "Контент", "CTR", "", "", "Тренд"]}
 TTB = {"key": "tt", "band": 83, "hdr": 84, "m1": 85, "total": 97,
        "color": TT, "emoji": "🎵",
-       "title": "TIKTOK — @nikvesti   (дані вручну — API ще не підключено)",
+       "title": "TIKTOK — @nikvesti",
        "headers": ["Місяць", "Підписники", "±", "Перегляди відео", "Δ",
                    "Охоплення", "Вподобайки", "Поширення", "Коментарі", "", "Тренд"]}
 VBB = {"key": "vb", "band": 99, "hdr": 100, "m1": 101, "total": 113,
@@ -1095,6 +1095,31 @@ def _collect_instagram(year, month, with_followers):
     return out
 
 
+def _collect_tiktok(year, month, with_followers):
+    """Знімок TikTok за місяць через Display API (OAuth,
+    handlers/tiktok_analytics.py). Підписники — поточний лічильник; перегляди/
+    лайки/поширення/коментарі — сума по відео, опублікованих у місяці (їх
+    lifetime-лічильники). Охоплення API не віддає — лишається ручним.
+    Історії немає (тільки поточний/минулий місяць)."""
+    from handlers import tiktok_analytics as tt
+    _, _, since_ts, until_ts = _month_bounds(year, month)
+    out = {"followers": None, "views": None, "likes": None,
+           "shares": None, "comments": None}
+    if with_followers:
+        out["followers"] = tt.get_user_stats()["followers"]
+
+    boundary = datetime.fromtimestamp(until_ts, tz=KYIV_TZ)
+    if datetime.now(KYIV_TZ) < boundary:
+        return out  # місяць ще не скінчився
+    vids = tt.get_month_video_stats(since_ts, until_ts)
+    if vids:
+        out["views"] = vids["views"]
+        out["likes"] = vids["likes"]
+        out["shares"] = vids["shares"]
+        out["comments"] = vids["comments"]
+    return out
+
+
 def _collect_youtube(year, month, with_followers):
     """Знімок YouTube за місяць через YouTube Analytics API (OAuth,
     handlers/youtube_analytics.py). Підписники — поточний лічильник Data API;
@@ -1202,7 +1227,7 @@ def _hyperlink(url, label):
     return f'=HYPERLINK("{url}";"{label}")'
 
 
-def _month_value_ranges(year, month, site, fb, ig, tg, yt=None):
+def _month_value_ranges(year, month, site, fb, ig, tg, yt=None, tt=None):
     """values.batchUpdate-діапазони рядка місяця. Пишемо ЛИШЕ сирі числа у
     «свої» клітинки (дельти/частки/спарклайни — формули, їх не чіпаємо);
     блок без даних пропускається повністю (не затираємо існуюче)."""
@@ -1268,14 +1293,26 @@ def _month_value_ranges(year, month, site, fb, ig, tg, yt=None):
             data.append({"range": f"'{y}'!D{r}", "values": [[yt["views"]]]})
         if yt.get("watch_hours") is not None:
             data.append({"range": f"'{y}'!F{r}", "values": [[yt["watch_hours"]]]})
+    if tt:
+        r = row(TTB)   # F (Охоплення) лишається ручним — API не віддає
+        if tt.get("followers") is not None:
+            data.append({"range": f"'{y}'!B{r}", "values": [[tt["followers"]]]})
+        if tt.get("views") is not None:
+            data.append({"range": f"'{y}'!D{r}", "values": [[tt["views"]]]})
+        if tt.get("likes") is not None:
+            data.append({"range": f"'{y}'!G{r}", "values": [[tt["likes"]]]})
+        if tt.get("shares") is not None:
+            data.append({"range": f"'{y}'!H{r}", "values": [[tt["shares"]]]})
+        if tt.get("comments") is not None:
+            data.append({"range": f"'{y}'!I{r}", "values": [[tt["comments"]]]})
     return data
 
 
 BLOCK_LABELS = {"site": "🌐 Сайт", "fb": "📘 Facebook", "ig": "📷 Instagram",
-                "tg": "✈️ Telegram", "yt": "▶️ YouTube"}
+                "tg": "✈️ Telegram", "yt": "▶️ YouTube", "tt": "🎵 TikTok"}
 
 
-async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt"),
+async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt", "tt"),
                         with_followers=True):
     """Знімок одного місяця: збирає джерела, гарантує лист року, пише рядок.
     Повертає {block: "✅ …"/"⛔ помилка"} — часткові збої не валять решту."""
@@ -1283,7 +1320,7 @@ async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt"),
     await asyncio.to_thread(_ensure_year_sheet, service, year)
 
     results = {}
-    site = fb = ig = tg = yt = None
+    site = fb = ig = tg = yt = tt = None
     if "site" in blocks:
         try:
             site = await asyncio.to_thread(_collect_site, year, month)
@@ -1332,8 +1369,21 @@ async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt"),
                                  f"години {yt.get('watch_hours')}")
         except Exception as e:
             results["yt"] = f"⛔ {e}"
+    if "tt" in blocks:
+        try:
+            tt = await asyncio.to_thread(_collect_tiktok, year, month, with_followers)
+            if not any(v is not None for v in tt.values()):
+                tt, results["tt"] = None, "⛔ API нічого не віддав"
+            elif tt.get("views") is None:
+                results["tt"] = (f"✅ підписники {tt.get('followers')} "
+                                 f"(відео — коли місяць скінчиться)")
+            else:
+                results["tt"] = (f"✅ перегляди {tt.get('views')}, "
+                                 f"лайки {tt.get('likes')}")
+        except Exception as e:
+            results["tt"] = f"⛔ {e}"
 
-    data = _month_value_ranges(year, month, site, fb, ig, tg, yt)
+    data = _month_value_ranges(year, month, site, fb, ig, tg, yt, tt)
     if data:
         await asyncio.to_thread(
             lambda: service.spreadsheets().values().batchUpdate(
