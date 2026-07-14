@@ -22,6 +22,7 @@ from handlers.entity_layer import sync_entities_incremental
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
 from handlers.weekly_digest import send_weekly_digest
+from handlers.social_sheet import run_monthly_snapshot
 from handlers import analytics_store
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -178,6 +179,11 @@ async def monthly_ai_cost(bot):
     """1-го числа Лис звітує Олегу про вартість AI за попередній місяць."""
     await send_monthly_ai_cost(bot, OUTAGE_DEBUG_CHAT_ID)
 
+async def monthly_social_sheet(bot):
+    """1-го числа: знімок попереднього місяця (сайт + FB + IG + TG) у Google-
+    таблицю аналітики, короткий звіт Олегу в приват."""
+    await run_monthly_snapshot(bot)
+
 def _on_job_error(bot, event):
     """Слухач APScheduler: ловить будь-який виняток, що вилетів із задачі
     назовні (не був заглушений всередині), і шле алерт адміну. Викликається
@@ -230,6 +236,9 @@ def setup_scheduler(bot, last_channel_post_time=None):
     scheduler.add_job(check_traffic_spikes, "cron", minute="5,35", args=[bot])
     # Вартість AI за попередній місяць — 1-го числа о 10:00, в особистий чат Олегу
     scheduler.add_job(monthly_ai_cost, "cron", day=1, hour=10, minute=0, args=[bot])
+    # Місячний знімок аналітики в Google-таблицю — 1-го числа о 10:30
+    # (після ранкових задач; Meta/SC на цей час уже мають повний минулий місяць)
+    scheduler.add_job(monthly_social_sheet, "cron", day=1, hour=10, minute=30, args=[bot])
     # Монітор білдера головної — у робочі години (9–21 Києвом), :10 і :40,
     # щоб не збігатися з рештою задач на :00/:05/:15/:30/:35
     scheduler.add_job(check_builder_staleness, "cron", hour="9-21", minute="10,40", args=[bot])
