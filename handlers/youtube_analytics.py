@@ -106,7 +106,8 @@ def get_channel_stats():
             "videos": int(st.get("videoCount", 0))}
 
 
-def _query_reports(start_date, end_date, dimensions=None):
+def _query_reports(start_date, end_date, dimensions=None,
+                   metrics="views,estimatedMinutesWatched"):
     # dimension=month вимагає, щоб обидві дати були 1-м числом місяця (інакше
     # «does not align to chosen date dimension»); місяць endDate включається.
     if dimensions == "month":
@@ -116,7 +117,7 @@ def _query_reports(start_date, end_date, dimensions=None):
         "ids": "channel==MINE",
         "startDate": start_date,
         "endDate": end_date,
-        "metrics": "views,estimatedMinutesWatched",
+        "metrics": metrics,
     }
     if dimensions:
         params["dimensions"] = dimensions
@@ -150,3 +151,25 @@ def get_monthly_report(start_date, end_date):
         out.append({"month": month, "views": int(row[1]),
                     "watch_hours": round(int(row[2]) / 60, 1)})
     return out
+
+
+def get_monthly_subscriber_curve(start_date, end_date, current_total):
+    """Реконструкція підписників на кінець кожного місяця. API віддає лише
+    приріст/відтік (subscribersGained/Lost), а не абсолют — тому беремо
+    поточний лічильник як якір і йдемо назад, віднімаючи місячну зміну:
+    end(M) = end(M+1) − net(M+1). Повертає {'YYYY-MM': subscribers}.
+    УВАГА: для давніх місяців дрейфує (сума змін ≠ округленому лічильнику,
+    ранні дані неповні) — тому нею заповнюємо ЛИШЕ порожні місяці, реальні
+    записані значення (міграція) не чіпаємо."""
+    resp = _query_reports(start_date, end_date, dimensions="month",
+                          metrics="subscribersGained,subscribersLost")
+    nets = []
+    for row in resp.get("rows", []):
+        nets.append((str(row[0])[:7], int(row[1]) - int(row[2])))
+    nets.sort()  # за зростанням місяця
+    curve = {}
+    running = current_total
+    for month, net in reversed(nets):
+        curve[month] = running     # кінець цього місяця
+        running -= net             # → кінець попереднього
+    return curve

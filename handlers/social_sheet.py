@@ -1490,23 +1490,46 @@ async def youtube_backfill_handler(update, context):
     )
 
     def run():
-        rows = yta.get_monthly_report(f"{start_year}-01-01", end.strftime("%Y-%m-%d"))
+        start = f"{start_year}-01-01"
+        end_str = end.strftime("%Y-%m-%d")
+        rows = yta.get_monthly_report(start, end_str)
         if not rows:
-            return 0, {}
+            return 0, 0, None
+        # Реконструкція підписників по місяцях (заповнимо лише порожні клітинки)
+        curve = {}
+        try:
+            current = yta.get_channel_stats()["subscribers"]
+            curve = yta.get_monthly_subscriber_curve(start, end_str, current)
+        except Exception as e:
+            print(f"youtube_backfill: реконструкцію підписників пропущено — {e}")
+
         service = _get_sheets_service()
         _ensure_locale(service)
         by_year = {}
         for r in rows:
             y, m = int(r["month"][:4]), int(r["month"][5:7])
             by_year.setdefault(y, []).append((m, r))
-        written = 0
+
+        written, subs_filled = 0, 0
         for y in sorted(by_year):
             _ensure_year_sheet(service, y)
+            # поточні підписники YT цього листа — щоб не затерти реальні (міграція)
+            existing = service.spreadsheets().values().get(
+                spreadsheetId=SOCIAL_SPREADSHEET_ID,
+                range=f"'{y}'!B{YTB['m1']}:B{YTB['m1'] + 11}",
+            ).execute().get("values", [])
             data = []
             for m, r in by_year[y]:
                 row_idx = YTB["m1"] + m - 1
                 data.append({"range": f"'{y}'!D{row_idx}", "values": [[r["views"]]]})
                 data.append({"range": f"'{y}'!F{row_idx}", "values": [[r["watch_hours"]]]})
+                key = f"{y}-{m:02d}"
+                if key in curve:
+                    idx = m - 1
+                    cell = existing[idx][0] if idx < len(existing) and existing[idx] else ""
+                    if not str(cell).strip():  # порожньо → заповнюємо реконструкцією
+                        data.append({"range": f"'{y}'!B{row_idx}", "values": [[curve[key]]]})
+                        subs_filled += 1
             if data:
                 service.spreadsheets().values().batchUpdate(
                     spreadsheetId=SOCIAL_SPREADSHEET_ID,
@@ -1514,17 +1537,19 @@ async def youtube_backfill_handler(update, context):
                 ).execute()
                 written += len(by_year[y])
         span = f"{rows[0]['month']} … {rows[-1]['month']}"
-        return written, span
+        return written, subs_filled, span
 
     try:
-        written, span = await asyncio.to_thread(run)
+        written, subs_filled, span = await asyncio.to_thread(run)
         if not written:
             await msg.edit_text("🦊 Analytics не повернув місяців за цей діапазон.")
             return
         await msg.edit_text(
             f"✅ YouTube: залито {written} місяців ({span}) — перегляди відео й "
-            f"години перегляду. Підписники — з міграції, контент/CTR — вручну.\n"
-            f"{SPREADSHEET_URL}",
+            f"години перегляду.\nПідписники: {subs_filled} порожніх місяців "
+            f"добито реконструкцією (приріст/відтік від поточного лічильника; "
+            f"реальні записані значення не чіпались, для давніх місяців — оцінка). "
+            f"Контент/CTR — вручну.\n{SPREADSHEET_URL}",
             disable_web_page_preview=True)
     except Exception as e:
         await msg.edit_text(f"❌ Не вдалось: {e}")
