@@ -163,9 +163,9 @@ MANUAL_BLOCKS = [YTB, TTB, VBB]  # каркаси без авто-заповне
 
 # Формати чисел. Патерни канонічні (крапка/кома), відображення локалізує Sheets.
 # [Color10] — темно-зелений, [Color9] — темно-червоний з індексованої палітри;
-# ВАЖЛИВО: без пробілу ([Color 10] — невалідний патерн, він валив ВЕСЬ
-# batchUpdate оформлення: batchUpdate атомарний, один битий запит = жодного
-# формату на листі; ловилось /sheet_format'ом на проді 14.07.2026).
+# писати БЕЗ пробілу — канонічний синтаксис (Excel/Sheets), з пробілом ризик
+# невалідного патерна. Пам'ятати: batchUpdate атомарний — один битий запит
+# (як-от злиття через закріплену колонку в першій версії) = жодного формату.
 FMT_NUM = {"type": "NUMBER", "pattern": "#,##0"}
 FMT_NUM1 = {"type": "NUMBER", "pattern": "#,##0.0"}   # години перегляду YT
 FMT_PCT = {"type": "NUMBER", "pattern": "0.0%"}
@@ -411,9 +411,15 @@ def _year_static_values(year, blocks=BLOCKS):
     """Всі статичні значення листа: тексти, назви місяців, формули дельт,
     підсумків і спарклайнів. Пише бот один раз при створенні листа."""
     y = str(year)
+    # Заголовок/примітка зливаються від B (не від A): колонка A закріплена,
+    # а Sheets забороняє злиття через межу закріплення — "You can't merge
+    # frozen and non-frozen columns" (саме об це впало перше оформлення на
+    # проді: batchUpdate атомарний, і лист лишився зовсім голим).
     data = [
-        {"range": f"'{y}'!A1", "values": [[f"🦊 Аналітика МикВісті — {year}"]]},
-        {"range": f"'{y}'!A2",
+        {"range": f"'{y}'!A1", "values": [["🦊"]]},
+        {"range": f"'{y}'!B1", "values": [[f"Аналітика МикВісті — {year}"]]},
+        {"range": f"'{y}'!A2", "values": [[""]]},
+        {"range": f"'{y}'!B2",
          "values": [["Веде бот: рядок місяця заповнюється 1-го числа наступного. "
                      "Підсумок року і стрілки Δ рахуються самі (формули). "
                      "YouTube/TikTok/Viber — поки вручну, до підключення API."]]},
@@ -536,13 +542,20 @@ def _year_format_requests(sheet_id):
                       "startIndex": c1, "endIndex": c2},
             "properties": {"pixelSize": px}, "fields": "pixelSize"}})
 
-    # Заголовок листа
-    req.append({"mergeCells": {"range": _grid(sheet_id, 1, 1), "mergeType": "MERGE_ALL"}})
-    req.append({"repeatCell": {"range": _grid(sheet_id, 1, 1), "cell": {"userEnteredFormat": {
+    # Заголовок листа: 🦊 у A1, назва злита B1:K1 — від B, бо колонка A
+    # закріплена, а злиття через межу закріплення заборонене (див. коментар
+    # у _year_static_values)
+    req.append({"mergeCells": {"range": _grid(sheet_id, 1, 1, 1, NUM_COLS),
+                               "mergeType": "MERGE_ALL"}})
+    req.append({"repeatCell": {"range": _grid(sheet_id, 1, 1, 0, 1), "cell": {"userEnteredFormat": {
+        "textFormat": {"fontSize": 16}, "horizontalAlignment": "CENTER",
+    }}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
+    req.append({"repeatCell": {"range": _grid(sheet_id, 1, 1, 1, NUM_COLS), "cell": {"userEnteredFormat": {
         "textFormat": {"bold": True, "fontSize": 14, "foregroundColorStyle": {"rgbColor": _rgb(FOX)}},
     }}, "fields": "userEnteredFormat.textFormat"}})
-    req.append({"mergeCells": {"range": _grid(sheet_id, 2, 2), "mergeType": "MERGE_ALL"}})
-    req.append({"repeatCell": {"range": _grid(sheet_id, 2, 2), "cell": {"userEnteredFormat": {
+    req.append({"mergeCells": {"range": _grid(sheet_id, 2, 2, 1, NUM_COLS),
+                               "mergeType": "MERGE_ALL"}})
+    req.append({"repeatCell": {"range": _grid(sheet_id, 2, 2, 1, NUM_COLS), "cell": {"userEnteredFormat": {
         "textFormat": {"italic": True, "fontSize": 9,
                        "foregroundColorStyle": {"rgbColor": _rgb("#8A8880")}},
     }}, "fields": "userEnteredFormat.textFormat"}})
@@ -682,7 +695,7 @@ def _upgrade_year_sheet(service, p, year):
     data = []
     for b in MANUAL_BLOCKS:
         data.extend(_block_static_values(year, b))
-    data.append({"range": f"'{year}'!A2",
+    data.append({"range": f"'{year}'!B2",
                  "values": [["Веде бот: рядок місяця заповнюється 1-го числа наступного. "
                              "Підсумок року і стрілки Δ рахуються самі (формули). "
                              "YouTube/TikTok/Viber — поки вручну, до підключення API."]]})
