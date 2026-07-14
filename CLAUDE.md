@@ -65,6 +65,7 @@ handlers/
   instagram.py            — тижнева статистика Instagram
   facebook.py             — тижнева статистика Facebook
   social_store.py         — пам'ять тижневих зрізів соцмереж у Postgres (social_stats): знімок піггібеком на недільні звіти FB/IG, /social_capture, історія для NLQ-tool get_social_history
+  social_sheet.py         — місячний знімок аналітики в Google-таблицю «Аналітика МикВісті» (SOCIAL_SPREADSHEET_ID): лист на рік, місяці рядками, блоки Сайт (GA4 + SC Search/News/Discover) / Facebook / Instagram / Telegram (парсинг t.me, дзеркала TG_WEB_BASES з фолбеком telegram.me) + заглушки YouTube/TikTok/Viber; дельти MoM/підсумки року/YoY/спарклайни — живі формули, стрілки ▲▼ — custom number format, вбудовані графіки; авто 1-го числа 10:30, /sheet_snapshot, /sheet_backfill
   gmail.py                — перевірка Gmail
   sheets.py               — запис у Google Sheets (Prozorro)
   reactions.py            — обробка реакцій на повідомлення про тендери
@@ -96,6 +97,8 @@ handlers/
 | /weekly | Тижневик Лиса вручну в чат редакції |
 | /social_capture | Зняти зріз FB+IG зараз у social_stats (засів першої точки; далі знімок сам щонеділі) |
 | /social_backfill_fb \[міс\] | Спроба залити історію FB (перегляди/взаємодії по тижнях) за N місяців (дефолт 24) через since/until; вставляє лише відсутні тижні. IG історію Meta не віддає |
+| /sheet_snapshot \[YYYY-MM\] | Знімок місяця в Google-таблицю «Аналітика МикВісті» вручну (дефолт — попередній місяць); ідемпотентно, рядок місяця перезаписується. Авто — 1-го числа о 10:30 |
+| /sheet_backfill \[міс\] | Залити історію в таблицю аналітики (дефолт 36 міс, від давніх до свіжих): сайт — уся глибина GA4, SC ~16 міс, FB/IG — скільки віддасть Meta (~2 роки), TG — стрічка t.me; підписники заднім числом недоступні ніде |
 | /report | GA4 звіт за вчора в чат редакції (щоденний авто-пост прибрано, лишилась ручна команда) |
 | /checkmail | Перевірити Gmail |
 | /instagram | Тижнева статистика Instagram |
@@ -190,6 +193,7 @@ handlers/
 | 11:20 щодня | Монітор місячних знімків виконання бюджету (mkrada «Щомісячна інформація»): нові xlsx → нора + анонс «Микита винюхав…» і розбір виконання по розпорядниках у канал «винюхав» (DOCUMENTS_CHAT_ID, не в редакцію); тихий, коли нового немає |
 | Останній день місяця 19:00 | Місячний EN-звіт |
 | 1-го числа 10:00 | Звіт про вартість AI за попередній місяць (в приват Олегу) |
+| 1-го числа 10:30 | Місячний знімок аналітики (сайт GA4+SC, FB, IG, TG) у Google-таблицю «Аналітика МикВісті», короткий звіт Олегу в приват |
 
 ---
 
@@ -212,6 +216,7 @@ ANTHROPIC_API_KEY
 OPENWEATHER_API_KEY
 GOOGLE_KG_API_KEY            # опційно, простий API key (не сервісний акаунт) для /kg — Google Knowledge Graph Search API
 SPREADSHEET_ID = 1bsKzGRsQ7O1aa4TpxmzqEfIjRM1A0dso7zueYvCXB1I
+SOCIAL_SPREADSHEET_ID        # опційно, таблиця «Аналітика МикВісті» (дефолт зашито: 1KNkxqN8ru4c2ez-x3nw9sEW-lXm562VdfJ3EEdbjGZk)
 ALLOWED_USER_IDS = 56631818,56424866,386403807   # Олег, Катя, Ліза — whitelist приватних повідомлень і NLQ
 STATE_PATH                   # опційно, дефолт /data/prozorro_state.json
 MISE_PYTHON_GITHUB_ATTESTATIONS = false
@@ -297,6 +302,7 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
 - [`docs/ENTITY_LAYER_PLAN.md`](docs/ENTITY_LAYER_PLAN.md) — план Досьє v2 (індекс-файл, /dossier_deep) і сутнісного шару (хвиля D); бриф для нової сесії, «кодь» не давався
 - [`docs/REVIEW_2026_07.md`](docs/REVIEW_2026_07.md) — ревізія липня 2026: апрувнутий план оптимізацій і розвитку (хвилі впровадження)
 - [`docs/BUDGET_REVISIONS_MODULE.md`](docs/BUDGET_REVISIONS_MODULE.md) — бюджет Миколаєва: версії плану з «Порівняльних таблиць» рішень сесії, схема budget, парсер xlsx, валідація, дельти
+- [`docs/SOCIAL_SHEET_MODULE.md`](docs/SOCIAL_SHEET_MODULE.md) — Google-таблиця аналітики: структура річного листа, джерела місячних метрик, формули/оформлення, план перенесення старої ручної таблиці
 
 ---
 

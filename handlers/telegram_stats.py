@@ -116,11 +116,33 @@ def _article_link_re(article_id):
     return re.compile(rf"nikvesti\.com/[^\s\"'<>]*/{article_id}-")
 
 
-def _fetch_html(url, params=None):
-    resp = requests.get(url, params=params, headers=HEADERS, timeout=15)
-    if resp.status_code != 200:
-        raise Exception(f"t.me HTTP {resp.status_code}")
-    return resp.text
+# Дзеркала веб-версії Telegram. t.me періодично блокують оператори/держави
+# (липень 2026 — Чорногорія заблокувала домен t.me; telegram.me працює) —
+# тому ходимо по списку: робочий домен запам'ятовуємо на процес, при збої
+# пробуємо наступний. Доповнювати список за потреби.
+TG_WEB_BASES = ["https://t.me", "https://telegram.me"]
+_tg_base_idx = 0  # індекс останнього робочого домену
+
+
+def _fetch_html(path, params=None):
+    """GET веб-дзеркала Telegram по шляху ("/s/nikvesti", "/nikvesti/82005").
+    Перебирає домени TG_WEB_BASES починаючи з останнього робочого."""
+    global _tg_base_idx
+    last_exc = None
+    for i in range(len(TG_WEB_BASES)):
+        idx = (_tg_base_idx + i) % len(TG_WEB_BASES)
+        try:
+            resp = requests.get(TG_WEB_BASES[idx] + path, params=params,
+                                headers=HEADERS, timeout=15)
+            if resp.status_code != 200:
+                raise Exception(f"{TG_WEB_BASES[idx]} HTTP {resp.status_code}")
+            if idx != _tg_base_idx:
+                print(f"tg_stats: перемкнувся на дзеркало {TG_WEB_BASES[idx]}")
+                _tg_base_idx = idx
+            return resp.text
+        except Exception as e:
+            last_exc = e
+    raise last_exc
 
 
 _HREF_ARTICLE_RE = re.compile(r"nikvesti\.com/[^\s\"'<>]*?/(\d{4,})-")
@@ -166,7 +188,7 @@ def _article_ids_in_hrefs(hrefs):
 
 def fetch_post_views(message_id):
     """Перегляди конкретного поста через embed-сторінку. None якщо не знайшли."""
-    html = _fetch_html(f"https://t.me/{CHANNEL}/{message_id}", params={"embed": "1"})
+    html = _fetch_html(f"/{CHANNEL}/{message_id}", params={"embed": "1"})
     soup = BeautifulSoup(html, "html.parser")
     views_span = soup.find("span", class_="tgme_widget_message_views")
     if not views_span:
@@ -182,7 +204,7 @@ def _scan_pages(article_id, start_before, max_pages):
 
     for _ in range(max_pages):
         params = {"before": before} if before else None
-        html = _fetch_html(f"https://t.me/s/{CHANNEL}", params=params)
+        html = _fetch_html(f"/s/{CHANNEL}", params=params)
         soup = BeautifulSoup(html, "html.parser")
 
         blocks = soup.find_all("div", class_="tgme_widget_message")
@@ -241,7 +263,7 @@ def backfill_channel_index(months_back=None, max_pages=1500, pace_seconds=0.35):
     for _ in range(max_pages):
         params = {"before": before} if before else None
         try:
-            html = _fetch_html(f"https://t.me/s/{CHANNEL}", params=params)
+            html = _fetch_html(f"/s/{CHANNEL}", params=params)
         except Exception as e:
             print(f"tg_stats backfill: зупинка на сторінці {pages} — {e}")
             break
