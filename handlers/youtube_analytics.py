@@ -107,6 +107,11 @@ def get_channel_stats():
 
 
 def _query_reports(start_date, end_date, dimensions=None):
+    # dimension=month вимагає, щоб обидві дати були 1-м числом місяця (інакше
+    # «does not align to chosen date dimension»); місяць endDate включається.
+    if dimensions == "month":
+        start_date = start_date[:8] + "01"
+        end_date = end_date[:8] + "01"
     params = {
         "ids": "channel==MINE",
         "startDate": start_date,
