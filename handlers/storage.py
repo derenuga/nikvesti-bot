@@ -369,23 +369,6 @@ def save_traffic_spikes_state(spikes_state):
         _write_state(state)
 
 
-def get_youtube_counters():
-    """Знімки lifetime-лічильників YouTube-каналу (views/videos) на кінець
-    місяця: {"YYYY-MM": {"views": N, "videos": K, "at": iso}}. Місячні
-    перегляди/контент = дельта сусідніх знімків (YouTube Data API віддає
-    лише накопичені лічильники). Порожній dict = ще не знімали."""
-    with _lock:
-        state = _read_state()
-        return state.get("youtube_counters", {})
-
-
-def save_youtube_counters(counters):
-    with _lock:
-        state = _read_state()
-        state["youtube_counters"] = counters
-        _write_state(state)
-
-
 def get_builder_monitor_state():
     """Стан монітора білдера головної: {'last_alert_at': unix} для кулдауну.
     Порожній dict = ще не алертили."""
