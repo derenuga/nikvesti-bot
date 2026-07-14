@@ -88,18 +88,56 @@ _ALLOWED_USER_IDS = {
 NUM_COLS = 11  # A..K; K — «Тренд» (спарклайн)
 SHEET_ROWS, SHEET_COLS = 120, 20
 
-# Кольори мереж (бренд) і їх світлі тінти для шапок колонок
-FOX, FOX_TINT = "#D9530B", "#FBEBE0"
-FB, FB_TINT = "#1877F2", "#E9F1FE"
-IG, IG_TINT = "#C13584", "#FBEDF5"
-TG, TG_TINT = "#229ED9", "#E8F5FC"
-YT, YT_TINT = "#CC0000", "#FDEAEA"
-TT, TT_TINT = "#161823", "#E9EBEE"
-VB, VB_TINT = "#7360F2", "#EFECFC"
-ROW_TINT = "#F7F6F2"       # чергування рядків місяців
-TOTAL_BG = "#EFEDE6"       # рядок підсумку року
-BORDER_SOFT = "#E0DED8"
-BORDER_STRONG = "#B9B6AD"
+# Кольори мереж (бренд) — плашки шапок блоків, однакові в обох темах
+FOX = "#D9530B"
+FB = "#1877F2"
+IG = "#C13584"
+TG = "#229ED9"
+YT = "#CC0000"
+TT = "#161823"
+VB = "#7360F2"
+
+# Теми оформлення листа. dark — як нічна палітра веб-макета: темний холст,
+# світлий текст, підсвічені бренд-кольори для спарклайнів/графіків. Стрілки
+# ▲▼ у патернах: на світлому — темні [Color10]/[Color9], на темному — яскраві
+# [Color4]/[Color3] (індексована палітра форматів інших відтінків не вміє).
+# canvas/ink фарбуються явно НА ВЕСЬ ґрід + виставляється SpreadsheetTheme
+# (TEXT/BACKGROUND/LINK) — без теми документа графіки і їхні осі лишились би
+# білими, а лінки — темно-синіми.
+THEMES = {
+    "light": {
+        "canvas": "#FFFFFF", "ink": "#202124",
+        "month_ink": "#6B6963", "note_ink": "#8A8880", "title_ink": FOX,
+        "row_tint": "#F7F6F2", "total_bg": "#EFEDE6",
+        "border_soft": "#E0DED8", "border_strong": "#B9B6AD",
+        "chip_bg": "#FFFFFF", "link": "#1155CC",
+        "pct_delta": "[Color10]▲ 0.0%;[Color9]▼ 0.0%;0.0%",
+        "abs_delta": "[Color10]▲ #,##0;[Color9]▼ #,##0;0",
+        "tint": {"site": "#FBEBE0", "fb": "#E9F1FE", "ig": "#FBEDF5",
+                 "tg": "#E8F5FC", "yt": "#FDEAEA", "tt": "#E9EBEE", "vb": "#EFECFC"},
+        "tint_ink": "#202124",
+        "spark": {"site": FOX, "fb": FB, "ig": IG, "tg": TG,
+                  "yt": YT, "tt": TT, "vb": VB},
+        "chart": {"site": FOX, "fb": FB, "ig": IG, "tg": TG},
+    },
+    "dark": {
+        "canvas": "#17181B", "ink": "#E8E6E1",
+        "month_ink": "#A7ABB3", "note_ink": "#6E737B", "title_ink": "#F07830",
+        "row_tint": "#24262B", "total_bg": "#26282D",
+        "border_soft": "#33363C", "border_strong": "#4A4E55",
+        "chip_bg": "#FFFFFF", "link": "#8AB4F8",
+        "pct_delta": "[Color4]▲ 0.0%;[Color3]▼ 0.0%;0.0%",
+        "abs_delta": "[Color4]▲ #,##0;[Color3]▼ #,##0;0",
+        "tint": {"site": "#3A2417", "fb": "#1C2B44", "ig": "#3B2231",
+                 "tg": "#1B3340", "yt": "#3A1A1A", "tt": "#23252C", "vb": "#262040"},
+        "tint_ink": "#E8E6E1",
+        "spark": {"site": "#F07830", "fb": "#5B9BF7", "ig": "#E06AAE",
+                  "tg": "#55B9E8", "yt": "#FF6B6B", "tt": "#69C9D0", "vb": "#9C8CFF"},
+        "chart": {"site": "#F07830", "fb": "#5B9BF7", "ig": "#E06AAE", "tg": "#55B9E8"},
+    },
+}
+# Тема за замовчуванням (нові листи, авто-ремонт, знімок 1-го числа)
+DEFAULT_THEME = os.environ.get("SOCIAL_SHEET_THEME", "dark")
 
 # PNG-логотипи мереж для шапок блоків: стабільні thumb-URL Wikimedia Commons
 # (офіційні файли, хотлінк дозволений, Google IMAGE() їх фетчить). Лого живе
@@ -121,22 +159,22 @@ LOGOS = {
 # січневі порівняння з груднем минулого року зав'язані на ці адреси, і вони
 # однакові на всіх річних листах (INDIRECT("'{рік-1}'!B32") тощо).
 SITE = {"key": "site", "band": 3, "hdr": 4, "m1": 5, "total": 17,
-        "color": FOX, "tint": FOX_TINT, "emoji": "🦊",
+        "color": FOX, "emoji": "🦊",
         "title": "САЙТ NIKVESTI.COM — GA4 + Search Console",
         "headers": ["Місяць", "Користувачі", "Δ", "Сеанси", "Перегляди", "Δ",
                     "🔍 Search", "📰 News", "💡 Discover", "Discover %", "Тренд"]}
 FBB = {"key": "fb", "band": 19, "hdr": 20, "m1": 21, "total": 33,
-       "color": FB, "tint": FB_TINT, "emoji": "📘",
+       "color": FB, "emoji": "📘",
        "title": "FACEBOOK — МикВісті",
        "headers": ["Місяць", "Підписники", "±", "Перегляди", "Δ",
                    "Взаємодії", "Δ", "Пости", "Топ допис", "", "Тренд"]}
 IGB = {"key": "ig", "band": 35, "hdr": 36, "m1": 37, "total": 49,
-       "color": IG, "tint": IG_TINT, "emoji": "📷",
+       "color": IG, "emoji": "📷",
        "title": "INSTAGRAM — @nikvesti",
        "headers": ["Місяць", "Підписники", "±", "Перегляди", "Δ",
                    "Охоплення", "Взаємодії", "Δ", "Пости", "", "Тренд"]}
 TGB = {"key": "tg", "band": 51, "hdr": 52, "m1": 53, "total": 65,
-       "color": TG, "tint": TG_TINT, "emoji": "✈️",
+       "color": TG, "emoji": "✈️",
        "title": "TELEGRAM — @nikvesti",
        "headers": ["Місяць", "Підписники", "±", "Сер. охоплення поста", "Δ",
                    "Пости", "Перегляди за місяць", "ERR", "", "", "Тренд"]}
@@ -144,50 +182,50 @@ TGB = {"key": "tg", "band": 51, "hdr": 52, "m1": 53, "total": 65,
 # міграцією зі старої ручної таблиці і згодом з API — формули оживають самі.
 # Набір колонок — за метриками старої таблиці редакції.
 YTB = {"key": "yt", "band": 67, "hdr": 68, "m1": 69, "total": 81,
-       "color": YT, "tint": YT_TINT, "emoji": "▶️",
+       "color": YT, "emoji": "▶️",
        "title": "YOUTUBE — МикВісті   (дані вручну — API ще не підключено)",
        "headers": ["Місяць", "Підписники", "±", "Перегляди відео", "Δ",
                    "Час перегляду, год", "Контент", "CTR", "", "", "Тренд"]}
 TTB = {"key": "tt", "band": 83, "hdr": 84, "m1": 85, "total": 97,
-       "color": TT, "tint": TT_TINT, "emoji": "🎵",
+       "color": TT, "emoji": "🎵",
        "title": "TIKTOK — @nikvesti   (дані вручну — API ще не підключено)",
        "headers": ["Місяць", "Підписники", "±", "Перегляди відео", "Δ",
                    "Охоплення", "Вподобайки", "Поширення", "Коментарі", "", "Тренд"]}
 VBB = {"key": "vb", "band": 99, "hdr": 100, "m1": 101, "total": 113,
-       "color": VB, "tint": VB_TINT, "emoji": "💜",
+       "color": VB, "emoji": "💜",
        "title": "VIBER — МикВісті   (дані вручну — API ще не підключено)",
        "headers": ["Місяць", "Підписники", "±", "Активні користувачі", "Δ",
                    "Надіслано повідомлень", "", "", "", "", "Тренд"]}
 BLOCKS = [SITE, FBB, IGB, TGB, YTB, TTB, VBB]
 MANUAL_BLOCKS = [YTB, TTB, VBB]  # каркаси без авто-заповнення
 
-# Формати чисел. Патерни канонічні (крапка/кома), відображення локалізує Sheets.
-# [Color10] — темно-зелений, [Color9] — темно-червоний з індексованої палітри;
-# писати БЕЗ пробілу — канонічний синтаксис (Excel/Sheets), з пробілом ризик
-# невалідного патерна. Пам'ятати: batchUpdate атомарний — один битий запит
-# (як-от злиття через закріплену колонку в першій версії) = жодного формату.
-FMT_NUM = {"type": "NUMBER", "pattern": "#,##0"}
-FMT_NUM1 = {"type": "NUMBER", "pattern": "#,##0.0"}   # години перегляду YT
-FMT_PCT = {"type": "NUMBER", "pattern": "0.0%"}
-FMT_PCT_DELTA = {"type": "NUMBER", "pattern": "[Color10]▲ 0.0%;[Color9]▼ 0.0%;0.0%"}
-FMT_ABS_DELTA = {"type": "NUMBER", "pattern": "[Color10]▲ #,##0;[Color9]▼ #,##0;0"}
+# Формати чисел: типи-рядки, патерн збирається по темі в _fmt() (кольори
+# стрілок ▲▼ різні для light/dark). Патерни канонічні (крапка/кома),
+# відображення локалізує Sheets; [ColorN] — БЕЗ пробілу. Пам'ятати:
+# batchUpdate атомарний — один битий запит (як-от злиття через закріплену
+# колонку в першій версії) = жодного формату на листі.
+def _fmt(kind, theme):
+    patterns = {
+        "num": "#,##0",
+        "num1": "#,##0.0",   # години перегляду YT
+        "pct": "0.0%",
+        "pctd": theme["pct_delta"],
+        "absd": theme["abs_delta"],
+    }
+    return {"type": "NUMBER", "pattern": patterns[kind]}
 
 # 0-базовані колонки → формат, для рядків місяців і підсумку кожного блоку
 COL_FORMATS = {
-    "site": {1: FMT_NUM, 2: FMT_PCT_DELTA, 3: FMT_NUM, 4: FMT_NUM, 5: FMT_PCT_DELTA,
-             6: FMT_NUM, 7: FMT_NUM, 8: FMT_NUM, 9: FMT_PCT},
-    "fb":   {1: FMT_NUM, 2: FMT_ABS_DELTA, 3: FMT_NUM, 4: FMT_PCT_DELTA,
-             5: FMT_NUM, 6: FMT_PCT_DELTA, 7: FMT_NUM},
-    "ig":   {1: FMT_NUM, 2: FMT_ABS_DELTA, 3: FMT_NUM, 4: FMT_PCT_DELTA,
-             5: FMT_NUM, 6: FMT_NUM, 7: FMT_PCT_DELTA, 8: FMT_NUM},
-    "tg":   {1: FMT_NUM, 2: FMT_ABS_DELTA, 3: FMT_NUM, 4: FMT_PCT_DELTA,
-             5: FMT_NUM, 6: FMT_NUM, 7: FMT_PCT},
-    "yt":   {1: FMT_NUM, 2: FMT_ABS_DELTA, 3: FMT_NUM, 4: FMT_PCT_DELTA,
-             5: FMT_NUM1, 6: FMT_NUM, 7: FMT_PCT},
-    "tt":   {1: FMT_NUM, 2: FMT_ABS_DELTA, 3: FMT_NUM, 4: FMT_PCT_DELTA,
-             5: FMT_NUM, 6: FMT_NUM, 7: FMT_NUM, 8: FMT_NUM},
-    "vb":   {1: FMT_NUM, 2: FMT_ABS_DELTA, 3: FMT_NUM, 4: FMT_PCT_DELTA,
-             5: FMT_NUM},
+    "site": {1: "num", 2: "pctd", 3: "num", 4: "num", 5: "pctd",
+             6: "num", 7: "num", 8: "num", 9: "pct"},
+    "fb":   {1: "num", 2: "absd", 3: "num", 4: "pctd", 5: "num", 6: "pctd", 7: "num"},
+    "ig":   {1: "num", 2: "absd", 3: "num", 4: "pctd",
+             5: "num", 6: "num", 7: "pctd", 8: "num"},
+    "tg":   {1: "num", 2: "absd", 3: "num", 4: "pctd", 5: "num", 6: "num", 7: "pct"},
+    "yt":   {1: "num", 2: "absd", 3: "num", 4: "pctd", 5: "num1", 6: "num", 7: "pct"},
+    "tt":   {1: "num", 2: "absd", 3: "num", 4: "pctd",
+             5: "num", 6: "num", 7: "num", 8: "num"},
+    "vb":   {1: "num", 2: "absd", 3: "num", 4: "pctd", 5: "num"},
 }
 
 
@@ -303,10 +341,10 @@ def _band_values(year, b):
     ]
 
 
-def _block_static_values(year, b):
+def _block_static_values(year, b, theme):
     """Статика одного блоку: шапка, назви місяців, формули дельт/підсумків/
-    спарклайна. Використовується і при створенні листа, і при апгрейді
-    старих листів новими блоками."""
+    спарклайна (колір — з теми). Використовується і при створенні листа,
+    і при апгрейді старих листів новими блоками."""
     y = str(year)
     data = _band_values(year, b) + [
         {"range": f"'{y}'!A{b['hdr']}:K{b['hdr']}", "values": [b["headers"]]},
@@ -335,7 +373,7 @@ def _block_static_values(year, b):
             _sum_formula(b, "G"), _sum_formula(b, "H"), _sum_formula(b, "I"),
             f'=IF(OR(I{t}="";G{t}+H{t}+I{t}=0);"";I{t}/(G{t}+H{t}+I{t}))',
         ]]})
-        spark_col, spark_color = "E", FOX
+        spark_col = "E"
     elif key == "fb":
         data.append(col_formulas("C", "B", "abs"))   # ± підписники
         data.append(col_formulas("E", "D", "pct"))   # Δ переглядів
@@ -346,7 +384,7 @@ def _block_static_values(year, b):
             _sum_formula(b, "F"), _yoy_formula(year, b, "F"),
             _sum_formula(b, "H"),
         ]]})
-        spark_col, spark_color = "D", FB
+        spark_col = "D"
     elif key == "ig":
         data.append(col_formulas("C", "B", "abs"))
         data.append(col_formulas("E", "D", "pct"))
@@ -358,7 +396,7 @@ def _block_static_values(year, b):
             _sum_formula(b, "G"), _yoy_formula(year, b, "G"),
             _sum_formula(b, "I"),
         ]]})
-        spark_col, spark_color = "D", IG
+        spark_col = "D"
     elif key == "tg":
         data.append(col_formulas("C", "B", "abs"))
         data.append(col_formulas("E", "D", "pct"))   # Δ сер. охоплення
@@ -371,7 +409,7 @@ def _block_static_values(year, b):
             _sum_formula(b, "F"), _sum_formula(b, "G"),
             f'=IF(OR(B{t}="";D{t}="");"";D{t}/B{t})',
         ]]})
-        spark_col, spark_color = "B", TG
+        spark_col = "B"
     elif key == "yt":
         data.append(col_formulas("C", "B", "abs"))
         data.append(col_formulas("E", "D", "pct"))   # Δ переглядів відео
@@ -381,7 +419,7 @@ def _block_static_values(year, b):
             _sum_formula(b, "F"), _sum_formula(b, "G"),
             _avg_pct_formula(b, "H"),
         ]]})
-        spark_col, spark_color = "D", YT
+        spark_col = "D"
     elif key == "tt":
         data.append(col_formulas("C", "B", "abs"))
         data.append(col_formulas("E", "D", "pct"))
@@ -391,7 +429,7 @@ def _block_static_values(year, b):
             _sum_formula(b, "F"), _sum_formula(b, "G"),
             _sum_formula(b, "H"), _sum_formula(b, "I"),
         ]]})
-        spark_col, spark_color = "D", TT
+        spark_col = "D"
     else:  # vb
         data.append(col_formulas("C", "B", "abs"))
         data.append(col_formulas("E", "D", "pct"))   # Δ активних користувачів
@@ -400,14 +438,14 @@ def _block_static_values(year, b):
             _avg_formula(b, "D"), _yoy_formula(year, b, "D"),
             _sum_formula(b, "F"),
         ]]})
-        spark_col, spark_color = "B", VB
+        spark_col = "B"
 
     data.append({"range": f"'{y}'!K{b['m1']}",
-                 "values": [[_spark_formula(b, spark_col, spark_color)]]})
+                 "values": [[_spark_formula(b, spark_col, theme["spark"][key])]]})
     return data
 
 
-def _year_static_values(year, blocks=BLOCKS):
+def _year_static_values(year, theme, blocks=BLOCKS):
     """Всі статичні значення листа: тексти, назви місяців, формули дельт,
     підсумків і спарклайнів. Пише бот один раз при створенні листа."""
     y = str(year)
@@ -425,11 +463,11 @@ def _year_static_values(year, blocks=BLOCKS):
                      "YouTube/TikTok/Viber — поки вручну, до підключення API."]]},
     ]
     for b in blocks:
-        data.extend(_block_static_values(year, b))
+        data.extend(_block_static_values(year, b, theme))
     return data
 
 
-def _band_format_requests(sheet_id, b):
+def _band_format_requests(sheet_id, b, theme):
     """Оформлення шапки блоку: A — білий чип під PNG-лого, B:K — злита
     кольорова плашка з назвою. Окремо від решти, бо перевикористовується
     апгрейдом лого на вже створених листах."""
@@ -438,7 +476,7 @@ def _band_format_requests(sheet_id, b):
                         "mergeType": "MERGE_ALL"}},
         {"repeatCell": {"range": _grid(sheet_id, b["band"], b["band"], 0, 1),
                         "cell": {"userEnteredFormat": {
-                            "backgroundColorStyle": {"rgbColor": _rgb("#FFFFFF")},
+                            "backgroundColorStyle": {"rgbColor": _rgb(theme["chip_bg"])},
                             "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
                             "textFormat": {"fontSize": 12},
                         }},
@@ -459,19 +497,20 @@ def _band_format_requests(sheet_id, b):
     ]
 
 
-def _block_format_requests(sheet_id, blocks):
+def _block_format_requests(sheet_id, blocks, theme):
     """batchUpdate-запити оформлення блоків (шапки з кольорами мереж, формати
     чисел зі стрілками, чергування рядків, межі, злиті клітинки)."""
     req = []
     for b in blocks:
         # Кольорова шапка блоку з лого
-        req.extend(_band_format_requests(sheet_id, b))
+        req.extend(_band_format_requests(sheet_id, b, theme))
 
         # Рядок назв колонок
         req.append({"repeatCell": {"range": _grid(sheet_id, b["hdr"], b["hdr"]),
                     "cell": {"userEnteredFormat": {
-                        "backgroundColorStyle": {"rgbColor": _rgb(b["tint"])},
-                        "textFormat": {"bold": True, "fontSize": 9},
+                        "backgroundColorStyle": {"rgbColor": _rgb(theme["tint"][b["key"]])},
+                        "textFormat": {"bold": True, "fontSize": 9,
+                                       "foregroundColorStyle": {"rgbColor": _rgb(theme["tint_ink"])}},
                         "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
                         "wrapStrategy": "WRAP",
                     }},
@@ -489,14 +528,14 @@ def _block_format_requests(sheet_id, blocks):
         req.append({"repeatCell": {"range": _grid(sheet_id, b["m1"], b["m1"] + 11, 0, 1),
                     "cell": {"userEnteredFormat": {
                         "textFormat": {"bold": True,
-                                       "foregroundColorStyle": {"rgbColor": _rgb("#6B6963")}}}},
+                                       "foregroundColorStyle": {"rgbColor": _rgb(theme["month_ink"])}}}},
                     "fields": "userEnteredFormat.textFormat"}})
 
         # Формати чисел колонок (місяці + підсумок)
-        for col, fmt in COL_FORMATS[b["key"]].items():
+        for col, kind in COL_FORMATS[b["key"]].items():
             req.append({"repeatCell": {
                 "range": _grid(sheet_id, b["m1"], b["total"], col, col + 1),
-                "cell": {"userEnteredFormat": {"numberFormat": fmt}},
+                "cell": {"userEnteredFormat": {"numberFormat": _fmt(kind, theme)}},
                 "fields": "userEnteredFormat.numberFormat"}})
 
         # Чергування рядків місяців (кожен другий — легкий тінт)
@@ -504,7 +543,7 @@ def _block_format_requests(sheet_id, blocks):
             r = b["m1"] + i
             req.append({"repeatCell": {"range": _grid(sheet_id, r, r),
                         "cell": {"userEnteredFormat": {
-                            "backgroundColorStyle": {"rgbColor": _rgb(ROW_TINT)}}},
+                            "backgroundColorStyle": {"rgbColor": _rgb(theme["row_tint"])}}},
                         "fields": "userEnteredFormat.backgroundColorStyle"}})
 
         # Спарклайн: злита клітинка K на всі 12 місяців
@@ -514,26 +553,38 @@ def _block_format_requests(sheet_id, blocks):
         # Підсумок року
         req.append({"repeatCell": {"range": _grid(sheet_id, b["total"], b["total"]),
                     "cell": {"userEnteredFormat": {
-                        "backgroundColorStyle": {"rgbColor": _rgb(TOTAL_BG)},
+                        "backgroundColorStyle": {"rgbColor": _rgb(theme["total_bg"])},
                         "textFormat": {"bold": True}}},
                     "fields": "userEnteredFormat(backgroundColorStyle,textFormat)"}})
 
         # Межі блоку: зовнішня помітніша, внутрішні — тонкі
         req.append({"updateBorders": {
             "range": _grid(sheet_id, b["band"], b["total"]),
-            "top": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": _rgb(BORDER_STRONG)}},
-            "bottom": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": _rgb(BORDER_STRONG)}},
-            "left": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": _rgb(BORDER_STRONG)}},
-            "right": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": _rgb(BORDER_STRONG)}},
-            "innerHorizontal": {"style": "SOLID", "colorStyle": {"rgbColor": _rgb(BORDER_SOFT)}},
-            "innerVertical": {"style": "SOLID", "colorStyle": {"rgbColor": _rgb(BORDER_SOFT)}},
+            "top": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": _rgb(theme["border_strong"])}},
+            "bottom": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": _rgb(theme["border_strong"])}},
+            "left": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": _rgb(theme["border_strong"])}},
+            "right": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": _rgb(theme["border_strong"])}},
+            "innerHorizontal": {"style": "SOLID", "colorStyle": {"rgbColor": _rgb(theme["border_soft"])}},
+            "innerVertical": {"style": "SOLID", "colorStyle": {"rgbColor": _rgb(theme["border_soft"])}},
         }})
     return req
 
 
-def _year_format_requests(sheet_id):
-    """Повне оформлення нового листа: ширини колонок, заголовок, усі блоки."""
+def _year_format_requests(sheet_id, theme):
+    """Повне оформлення нового листа: холст теми, ширини колонок, заголовок,
+    усі блоки."""
     req = []
+
+    # Холст: увесь ґрід у колір теми (включно з полями праворуч від блоків,
+    # де живуть графіки) + дефолтний колір тексту
+    req.append({"repeatCell": {
+        "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": SHEET_ROWS,
+                  "startColumnIndex": 0, "endColumnIndex": SHEET_COLS},
+        "cell": {"userEnteredFormat": {
+            "backgroundColorStyle": {"rgbColor": _rgb(theme["canvas"])},
+            "textFormat": {"foregroundColorStyle": {"rgbColor": _rgb(theme["ink"])}},
+        }},
+        "fields": "userEnteredFormat(backgroundColorStyle,textFormat.foregroundColorStyle)"}})
 
     # Ширини колонок: A — місяць, B..J — числа, K — тренд
     for c1, c2, px in [(0, 1, 118), (1, 10, 116), (10, 11, 150)]:
@@ -551,21 +602,23 @@ def _year_format_requests(sheet_id):
         "textFormat": {"fontSize": 16}, "horizontalAlignment": "CENTER",
     }}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
     req.append({"repeatCell": {"range": _grid(sheet_id, 1, 1, 1, NUM_COLS), "cell": {"userEnteredFormat": {
-        "textFormat": {"bold": True, "fontSize": 14, "foregroundColorStyle": {"rgbColor": _rgb(FOX)}},
+        "textFormat": {"bold": True, "fontSize": 14,
+                       "foregroundColorStyle": {"rgbColor": _rgb(theme["title_ink"])}},
     }}, "fields": "userEnteredFormat.textFormat"}})
     req.append({"mergeCells": {"range": _grid(sheet_id, 2, 2, 1, NUM_COLS),
                                "mergeType": "MERGE_ALL"}})
     req.append({"repeatCell": {"range": _grid(sheet_id, 2, 2, 1, NUM_COLS), "cell": {"userEnteredFormat": {
         "textFormat": {"italic": True, "fontSize": 9,
-                       "foregroundColorStyle": {"rgbColor": _rgb("#8A8880")}},
+                       "foregroundColorStyle": {"rgbColor": _rgb(theme["note_ink"])}},
     }}, "fields": "userEnteredFormat.textFormat"}})
 
-    return req + _block_format_requests(sheet_id, BLOCKS)
+    return req + _block_format_requests(sheet_id, BLOCKS, theme)
 
 
-def _year_chart_requests(sheet_id):
+def _year_chart_requests(sheet_id, theme):
     """Два вбудовані графіки праворуч від блоків. Діапазони покривають усі
-    12 місяців — графіки оновлюються самі в міру заповнення рядків."""
+    12 місяців — графіки оновлюються самі в міру заповнення рядків. Фон і
+    текст графіків беруться зі SpreadsheetTheme (див. _theme_request)."""
     def src(r1, r2, c):
         return {"sources": [{"sheetId": sheet_id, "startRowIndex": r1 - 1,
                              "endRowIndex": r2, "startColumnIndex": c,
@@ -581,11 +634,11 @@ def _year_chart_requests(sheet_id):
                 "domains": [{"domain": {"sourceRange": months}}],
                 "series": [
                     {"series": {"sourceRange": src(FBB["m1"], FBB["m1"] + 11, 1)},
-                     "targetAxis": "LEFT_AXIS", "colorStyle": {"rgbColor": _rgb(FB)}},
+                     "targetAxis": "LEFT_AXIS", "colorStyle": {"rgbColor": _rgb(theme["chart"]["fb"])}},
                     {"series": {"sourceRange": src(IGB["m1"], IGB["m1"] + 11, 1)},
-                     "targetAxis": "LEFT_AXIS", "colorStyle": {"rgbColor": _rgb(IG)}},
+                     "targetAxis": "LEFT_AXIS", "colorStyle": {"rgbColor": _rgb(theme["chart"]["ig"])}},
                     {"series": {"sourceRange": src(TGB["m1"], TGB["m1"] + 11, 1)},
-                     "targetAxis": "LEFT_AXIS", "colorStyle": {"rgbColor": _rgb(TG)}},
+                     "targetAxis": "LEFT_AXIS", "colorStyle": {"rgbColor": _rgb(theme["chart"]["tg"])}},
                 ],
             },
         },
@@ -601,7 +654,7 @@ def _year_chart_requests(sheet_id):
                 "domains": [{"domain": {"sourceRange": months}}],
                 "series": [
                     {"series": {"sourceRange": src(SITE["m1"], SITE["m1"] + 11, 4)},
-                     "targetAxis": "LEFT_AXIS", "colorStyle": {"rgbColor": _rgb(FOX)}},
+                     "targetAxis": "LEFT_AXIS", "colorStyle": {"rgbColor": _rgb(theme["chart"]["site"])}},
                 ],
             },
         },
@@ -612,14 +665,41 @@ def _year_chart_requests(sheet_id):
     return [followers_chart, pageviews_chart]
 
 
-def _apply_formatting(service, sheet_id, year):
+def _theme_request(theme):
+    """SpreadsheetTheme під тему: TEXT/BACKGROUND керують фоном і текстом
+    ГРАФІКІВ (осі/підписи інакше з API не перефарбувати), LINK — кольором
+    гіперлінків (топ-допис FB на темному був би темно-синім). Акценти —
+    бренд-кольори мереж. Тема документа глобальна — всі річні листи в одному
+    стилі, що й треба."""
+    def tc(color_type, hexcode):
+        return {"colorType": color_type, "color": {"rgbColor": _rgb(hexcode)}}
+    return {"updateSpreadsheetProperties": {
+        "properties": {"spreadsheetTheme": {
+            "primaryFontFamily": "Arial",
+            "themeColors": [
+                tc("TEXT", theme["ink"]),
+                tc("BACKGROUND", theme["canvas"]),
+                tc("ACCENT1", theme["chart"]["site"]),
+                tc("ACCENT2", theme["chart"]["fb"]),
+                tc("ACCENT3", theme["chart"]["ig"]),
+                tc("ACCENT4", theme["chart"]["tg"]),
+                tc("ACCENT5", theme["spark"]["yt"]),
+                tc("ACCENT6", theme["spark"]["vb"]),
+                tc("LINK", theme["link"]),
+            ],
+        }},
+        "fields": "spreadsheetTheme",
+    }}
+
+
+def _apply_formatting(service, sheet_id, year, theme):
     """Оформлення + графіки, окремими batchUpdate: якщо впаде оформлення —
-    у помилці буде видно, який саме крок; графіки додаються лише якщо на
-    листі їх ще немає (повторний прогін не плодить дублі)."""
+    у помилці буде видно, який саме крок. Графіки перестворюються (старі
+    видаляються), щоб зміна теми перефарбовувала і їх."""
     try:
         service.spreadsheets().batchUpdate(
             spreadsheetId=SOCIAL_SPREADSHEET_ID,
-            body={"requests": _year_format_requests(sheet_id)},
+            body={"requests": [_theme_request(theme)] + _year_format_requests(sheet_id, theme)},
         ).execute()
     except Exception as e:
         raise RuntimeError(f"оформлення листа {year}: {e}") from e
@@ -628,20 +708,22 @@ def _apply_formatting(service, sheet_id, year):
             spreadsheetId=SOCIAL_SPREADSHEET_ID,
             fields="sheets(properties.sheetId,charts.chartId)",
         ).execute()
-        has_charts = any(
-            s["properties"]["sheetId"] == sheet_id and s.get("charts")
+        old_ids = [
+            c["chartId"]
             for s in meta.get("sheets", [])
-        )
-        if not has_charts:
-            service.spreadsheets().batchUpdate(
-                spreadsheetId=SOCIAL_SPREADSHEET_ID,
-                body={"requests": _year_chart_requests(sheet_id)},
-            ).execute()
+            if s["properties"]["sheetId"] == sheet_id
+            for c in s.get("charts", [])
+        ]
+        requests = [{"deleteEmbeddedObject": {"objectId": cid}} for cid in old_ids]
+        requests += _year_chart_requests(sheet_id, theme)
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=SOCIAL_SPREADSHEET_ID, body={"requests": requests},
+        ).execute()
     except Exception as e:
         raise RuntimeError(f"графіки листа {year}: {e}") from e
 
 
-def _repair_year_sheet(service, p, year):
+def _repair_year_sheet(service, p, year, theme=None):
     """Перекатити статику й оформлення на існуючий лист: лікує лист, що
     лишився «голим» після збою batchUpdate оформлення (він атомарний — один
     битий запит колись валив усе). Дані місяців НЕ чіпає: статика — це лише
@@ -657,11 +739,12 @@ def _repair_year_sheet(service, p, year):
     service.spreadsheets().batchUpdate(
         spreadsheetId=SOCIAL_SPREADSHEET_ID, body={"requests": req},
     ).execute()
+    theme = theme or THEMES[DEFAULT_THEME]
     service.spreadsheets().values().batchUpdate(
         spreadsheetId=SOCIAL_SPREADSHEET_ID,
-        body={"valueInputOption": "USER_ENTERED", "data": _year_static_values(year)},
+        body={"valueInputOption": "USER_ENTERED", "data": _year_static_values(year, theme)},
     ).execute()
-    _apply_formatting(service, sheet_id, year)
+    _apply_formatting(service, sheet_id, year, theme)
     print(f"social_sheet: лист {year} перекачено (статика + оформлення)")
 
 
@@ -692,9 +775,10 @@ def _upgrade_year_sheet(service, p, year):
         spreadsheetId=SOCIAL_SPREADSHEET_ID, body={"requests": req},
     ).execute()
 
+    theme = THEMES[DEFAULT_THEME]
     data = []
     for b in MANUAL_BLOCKS:
-        data.extend(_block_static_values(year, b))
+        data.extend(_block_static_values(year, b, theme))
     data.append({"range": f"'{year}'!B2",
                  "values": [["Веде бот: рядок місяця заповнюється 1-го числа наступного. "
                              "Підсумок року і стрілки Δ рахуються самі (формули). "
@@ -705,7 +789,7 @@ def _upgrade_year_sheet(service, p, year):
     ).execute()
     service.spreadsheets().batchUpdate(
         spreadsheetId=SOCIAL_SPREADSHEET_ID,
-        body={"requests": _block_format_requests(sheet_id, MANUAL_BLOCKS)},
+        body={"requests": _block_format_requests(sheet_id, MANUAL_BLOCKS, theme)},
     ).execute()
     print(f"social_sheet: лист {year} добудовано блоками YouTube/TikTok/Viber")
 
@@ -729,10 +813,11 @@ def _upgrade_band_logos(service, sheet_id, year):
         todo.append(b)
     if not todo:
         return
+    theme = THEMES[DEFAULT_THEME]
     req = []
     for b in todo:
         req.append({"unmergeCells": {"range": _grid(sheet_id, b["band"], b["band"])}})
-        req.extend(_band_format_requests(sheet_id, b))
+        req.extend(_band_format_requests(sheet_id, b, theme))
     service.spreadsheets().batchUpdate(
         spreadsheetId=SOCIAL_SPREADSHEET_ID, body={"requests": req},
     ).execute()
@@ -782,11 +867,12 @@ def _ensure_year_sheet(service, year):
     ).execute()
     sheet_id = reply["replies"][0]["addSheet"]["properties"]["sheetId"]
 
+    theme = THEMES[DEFAULT_THEME]
     service.spreadsheets().values().batchUpdate(
         spreadsheetId=SOCIAL_SPREADSHEET_ID,
-        body={"valueInputOption": "USER_ENTERED", "data": _year_static_values(year)},
+        body={"valueInputOption": "USER_ENTERED", "data": _year_static_values(year, theme)},
     ).execute()
-    _apply_formatting(service, sheet_id, year)
+    _apply_formatting(service, sheet_id, year, theme)
 
     # Порожній дефолтний лист нової таблиці (Sheet1/Аркуш1) більше не потрібен.
     # Видаляємо тихо: якщо там раптом є дані або він один — API/логіка не дасть.
@@ -1244,21 +1330,28 @@ async def sheet_snapshot_handler(update, context):
 
 
 async def sheet_format_handler(update, context):
-    """/sheet_format [рік] — примусово перекатити оформлення річного листа
-    (статика: шапки/формули/лого + формати/злиття/графіки). Дані місяців не
-    чіпає. Для листів, що лишились «голими» після збою оформлення (бот і сам
-    таке лікує при наступному записі, це — не чекаючи)."""
+    """/sheet_format [рік] [dark|light] — примусово перекатити оформлення
+    річного листа (статика: шапки/формули/лого + формати/злиття/графіки +
+    тема документа). Дані місяців не чіпає. Дефолтна тема — DEFAULT_THEME
+    (env SOCIAL_SHEET_THEME, зараз dark). Тема документа глобальна: міняє
+    вигляд графіків і лінків на всіх листах, тож перемикати варто разом із
+    перекатом кожного року."""
     if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
         await update.message.reply_text("⛔ Тільки для редакції.")
         return
     year = datetime.now(KYIV_TZ).year
-    if context.args:
-        try:
-            year = int(context.args[0])
-        except ValueError:
-            await update.message.reply_text("Формат: /sheet_format 2026")
-            return
-    msg = await update.message.reply_text(f"🦊 Перекатую оформлення листа {year}…")
+    theme_name = DEFAULT_THEME
+    for arg in context.args or []:
+        if arg.lower() in THEMES:
+            theme_name = arg.lower()
+        else:
+            try:
+                year = int(arg)
+            except ValueError:
+                await update.message.reply_text("Формат: /sheet_format [2026] [dark|light]")
+                return
+    msg = await update.message.reply_text(
+        f"🦊 Перекатую оформлення листа {year} (тема {theme_name})…")
 
     def run():
         service = _get_sheets_service()
@@ -1270,13 +1363,14 @@ async def sheet_format_handler(update, context):
         if p is None:
             raise RuntimeError(f"листа «{year}» у таблиці немає")
         _ensure_locale(service)
-        _repair_year_sheet(service, p, year)
+        _repair_year_sheet(service, p, year, THEMES[theme_name])
 
     try:
         await asyncio.to_thread(run)
         await msg.edit_text(
-            f"✅ Лист {year} перекачено: шапки з лого, формати ▲▼, спарклайни, "
-            f"графіки. Дані місяців не чіпались.\n{SPREADSHEET_URL}",
+            f"✅ Лист {year} перекачено в темі {theme_name}: шапки з лого, "
+            f"формати ▲▼, спарклайни, графіки. Дані місяців не чіпались.\n"
+            f"{SPREADSHEET_URL}",
             disable_web_page_preview=True)
     except Exception as e:
         await msg.edit_text(f"❌ Не вдалось: {e}")
