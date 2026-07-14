@@ -153,23 +153,23 @@ def get_monthly_report(start_date, end_date):
     return out
 
 
-def get_monthly_subscriber_curve(start_date, end_date, current_total):
+def get_monthly_subscriber_curve(start_date, end_date, anchor_month, anchor_value):
     """Реконструкція підписників на кінець кожного місяця. API віддає лише
-    приріст/відтік (subscribersGained/Lost), а не абсолют — тому беремо
-    поточний лічильник як якір і йдемо назад, віднімаючи місячну зміну:
-    end(M) = end(M+1) − net(M+1). Повертає {'YYYY-MM': subscribers}.
+    приріст/відтік (subscribersGained/Lost), а не абсолют — тому прив'язуємо
+    криву до ОДНОГО відомого значення (anchor_month → anchor_value, зазвичай
+    останнє реальне значення з таблиці) і розкручуємо в обидва боки через
+    накопичену зміну. Потребує лише yt-analytics scope (без Data API).
+    Повертає {'YYYY-MM': subscribers}; {} якщо якоря немає в діапазоні.
     УВАГА: для давніх місяців дрейфує (сума змін ≠ округленому лічильнику,
-    ранні дані неповні) — тому нею заповнюємо ЛИШЕ порожні місяці, реальні
-    записані значення (міграція) не чіпаємо."""
+    ранні дані неповні) — тому нею заповнюємо ЛИШЕ порожні місяці."""
     resp = _query_reports(start_date, end_date, dimensions="month",
                           metrics="subscribersGained,subscribersLost")
-    nets = []
-    for row in resp.get("rows", []):
-        nets.append((str(row[0])[:7], int(row[1]) - int(row[2])))
-    nets.sort()  # за зростанням місяця
-    curve = {}
-    running = current_total
-    for month, net in reversed(nets):
-        curve[month] = running     # кінець цього місяця
-        running -= net             # → кінець попереднього
-    return curve
+    nets = {str(row[0])[:7]: int(row[1]) - int(row[2]) for row in resp.get("rows", [])}
+    if anchor_month not in nets:
+        return {}
+    acc, rel = 0, {}
+    for m in sorted(nets):
+        acc += nets[m]            # накопичена зміна від початку діапазону до кінця m
+        rel[m] = acc
+    base = anchor_value - rel[anchor_month]  # підписники перед початком діапазону
+    return {m: base + rel[m] for m in nets}

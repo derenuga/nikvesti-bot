@@ -1494,62 +1494,82 @@ async def youtube_backfill_handler(update, context):
         end_str = end.strftime("%Y-%m-%d")
         rows = yta.get_monthly_report(start, end_str)
         if not rows:
-            return 0, 0, None
-        # Реконструкція підписників по місяцях (заповнимо лише порожні клітинки)
-        curve = {}
-        try:
-            current = yta.get_channel_stats()["subscribers"]
-            curve = yta.get_monthly_subscriber_curve(start, end_str, current)
-        except Exception as e:
-            print(f"youtube_backfill: реконструкцію підписників пропущено — {e}")
-
+            return {"written": 0}
         service = _get_sheets_service()
         _ensure_locale(service)
         by_year = {}
         for r in rows:
             y, m = int(r["month"][:4]), int(r["month"][5:7])
             by_year.setdefault(y, []).append((m, r))
+        years = sorted(by_year)
+        for y in years:
+            _ensure_year_sheet(service, y)
+
+        # Наявні підписники YT по всіх листах (одним batchGet): для вибору
+        # якоря (останнє реальне значення) і щоб не затерти реальні клітинки.
+        got = service.spreadsheets().values().batchGet(
+            spreadsheetId=SOCIAL_SPREADSHEET_ID,
+            ranges=[f"'{y}'!B{YTB['m1']}:B{YTB['m1'] + 11}" for y in years],
+        ).execute().get("valueRanges", [])
+        existing = {}  # "YYYY-MM" -> сире значення клітинки
+        for y, vr in zip(years, got):
+            col = vr.get("values", [])
+            for i in range(12):
+                cell = col[i][0] if i < len(col) and col[i] else ""
+                existing[f"{y}-{i + 1:02d}"] = str(cell).strip()
+
+        # Якір реконструкції — останній місяць з реальним числом підписників
+        anchor = None
+        for key in sorted(existing):
+            v = existing[key].replace(" ", "").replace("\xa0", "")
+            if v.isdigit():
+                anchor = (key, int(v))
+        curve, subs_note = {}, ""
+        if anchor:
+            try:
+                curve = yta.get_monthly_subscriber_curve(start, end_str, anchor[0], anchor[1])
+            except Exception as e:
+                subs_note = f"підписники: реконструкція впала — {e}"
+        else:
+            subs_note = "підписники: немає жодного реального значення для якоря"
 
         written, subs_filled = 0, 0
-        for y in sorted(by_year):
-            _ensure_year_sheet(service, y)
-            # поточні підписники YT цього листа — щоб не затерти реальні (міграція)
-            existing = service.spreadsheets().values().get(
-                spreadsheetId=SOCIAL_SPREADSHEET_ID,
-                range=f"'{y}'!B{YTB['m1']}:B{YTB['m1'] + 11}",
-            ).execute().get("values", [])
+        for y in years:
             data = []
             for m, r in by_year[y]:
                 row_idx = YTB["m1"] + m - 1
                 data.append({"range": f"'{y}'!D{row_idx}", "values": [[r["views"]]]})
                 data.append({"range": f"'{y}'!F{row_idx}", "values": [[r["watch_hours"]]]})
                 key = f"{y}-{m:02d}"
-                if key in curve:
-                    idx = m - 1
-                    cell = existing[idx][0] if idx < len(existing) and existing[idx] else ""
-                    if not str(cell).strip():  # порожньо → заповнюємо реконструкцією
-                        data.append({"range": f"'{y}'!B{row_idx}", "values": [[curve[key]]]})
-                        subs_filled += 1
+                if key in curve and not existing.get(key):  # заповнюємо лише порожні
+                    data.append({"range": f"'{y}'!B{row_idx}", "values": [[curve[key]]]})
+                    subs_filled += 1
             if data:
                 service.spreadsheets().values().batchUpdate(
                     spreadsheetId=SOCIAL_SPREADSHEET_ID,
                     body={"valueInputOption": "USER_ENTERED", "data": data},
                 ).execute()
                 written += len(by_year[y])
-        span = f"{rows[0]['month']} … {rows[-1]['month']}"
-        return written, subs_filled, span
+        return {"written": written, "subs_filled": subs_filled,
+                "span": f"{rows[0]['month']} … {rows[-1]['month']}",
+                "anchor": anchor, "subs_note": subs_note}
 
     try:
-        written, subs_filled, span = await asyncio.to_thread(run)
-        if not written:
+        res = await asyncio.to_thread(run)
+        if not res["written"]:
             await msg.edit_text("🦊 Analytics не повернув місяців за цей діапазон.")
             return
+        if res["subs_note"]:
+            subs_line = f"⚠️ {res['subs_note']}"
+        else:
+            a = res["anchor"]
+            subs_line = (f"Підписники: {res['subs_filled']} порожніх місяців добито "
+                         f"реконструкцією (якір {a[0]}={a[1]:,}".replace(",", " ") +
+                         "; реальні значення не чіпались, давні місяці — оцінка)")
         await msg.edit_text(
-            f"✅ YouTube: залито {written} місяців ({span}) — перегляди відео й "
-            f"години перегляду.\nПідписники: {subs_filled} порожніх місяців "
-            f"добито реконструкцією (приріст/відтік від поточного лічильника; "
-            f"реальні записані значення не чіпались, для давніх місяців — оцінка). "
-            f"Контент/CTR — вручну.\n{SPREADSHEET_URL}",
+            f"✅ YouTube: залито {res['written']} місяців ({res['span']}) — "
+            f"перегляди відео й години перегляду.\n{subs_line}. Контент/CTR — "
+            f"вручну.\n{SPREADSHEET_URL}",
             disable_web_page_preview=True)
     except Exception as e:
         await msg.edit_text(f"❌ Не вдалось: {e}")
