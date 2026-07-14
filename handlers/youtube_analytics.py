@@ -11,13 +11,16 @@ Account to a YouTube account», developers.google.com/youtube/reporting).
 Одноразове налаштування (робить власник каналу):
 1. Google Cloud → APIs & Services: увімкнути «YouTube Analytics API» і
    «YouTube Data API v3».
-2. Credentials → створити OAuth client ID типу «Desktop app» → отримати
+2. Credentials → створити OAuth client ID типу «Web application» (НЕ Desktop:
+   для oauthplayground потрібен явний redirect URI, якого в Desktop-клієнта
+   немає — інакше redirect_uri_mismatch). У «Authorized redirect URIs»
+   додати рівно `https://developers.google.com/oauthplayground`. Отримати
    client_id і client_secret.
-3. Дістати refresh token (найпростіше — developers.google.com/oauthplayground:
+3. Дістати refresh token через developers.google.com/oauthplayground:
    ⚙ → «Use your own OAuth credentials» → вставити client_id/secret →
    авторизувати scope `https://www.googleapis.com/auth/yt-analytics.readonly`
-   акаунтом власника каналу → Exchange authorization code → скопіювати
-   Refresh token).
+   акаунтом ВЛАСНИКА каналу (інакше channel==MINE поверне не той канал) →
+   Exchange authorization code → скопіювати Refresh token.
 4. У Railway: YOUTUBE_OAUTH_CLIENT_ID / YOUTUBE_OAUTH_CLIENT_SECRET /
    YOUTUBE_OAUTH_REFRESH_TOKEN.
 
