@@ -128,17 +128,17 @@ SITE = {"key": "site", "band": 3, "hdr": 4, "m1": 5, "total": 17,
 FBB = {"key": "fb", "band": 19, "hdr": 20, "m1": 21, "total": 33,
        "color": FB, "tint": FB_TINT, "emoji": "📘",
        "title": "FACEBOOK — МикВісті",
-       "headers": ["Місяць", "Підписники", "+ / −", "Перегляди", "Δ",
+       "headers": ["Місяць", "Підписники", "±", "Перегляди", "Δ",
                    "Взаємодії", "Δ", "Пости", "Топ допис", "", "Тренд"]}
 IGB = {"key": "ig", "band": 35, "hdr": 36, "m1": 37, "total": 49,
        "color": IG, "tint": IG_TINT, "emoji": "📷",
        "title": "INSTAGRAM — @nikvesti",
-       "headers": ["Місяць", "Підписники", "+ / −", "Перегляди", "Δ",
+       "headers": ["Місяць", "Підписники", "±", "Перегляди", "Δ",
                    "Охоплення", "Взаємодії", "Δ", "Пости", "", "Тренд"]}
 TGB = {"key": "tg", "band": 51, "hdr": 52, "m1": 53, "total": 65,
        "color": TG, "tint": TG_TINT, "emoji": "✈️",
        "title": "TELEGRAM — @nikvesti",
-       "headers": ["Місяць", "Підписники", "+ / −", "Сер. охоплення поста", "Δ",
+       "headers": ["Місяць", "Підписники", "±", "Сер. охоплення поста", "Δ",
                    "Пости", "Перегляди за місяць", "ERR", "", "", "Тренд"]}
 # Блоки-каркаси: бот їх не заповнює (API ще не підключені), числа приїдуть
 # міграцією зі старої ручної таблиці і згодом з API — формули оживають самі.
@@ -146,28 +146,31 @@ TGB = {"key": "tg", "band": 51, "hdr": 52, "m1": 53, "total": 65,
 YTB = {"key": "yt", "band": 67, "hdr": 68, "m1": 69, "total": 81,
        "color": YT, "tint": YT_TINT, "emoji": "▶️",
        "title": "YOUTUBE — МикВісті   (дані вручну — API ще не підключено)",
-       "headers": ["Місяць", "Підписники", "+ / −", "Перегляди відео", "Δ",
+       "headers": ["Місяць", "Підписники", "±", "Перегляди відео", "Δ",
                    "Час перегляду, год", "Контент", "CTR", "", "", "Тренд"]}
 TTB = {"key": "tt", "band": 83, "hdr": 84, "m1": 85, "total": 97,
        "color": TT, "tint": TT_TINT, "emoji": "🎵",
        "title": "TIKTOK — @nikvesti   (дані вручну — API ще не підключено)",
-       "headers": ["Місяць", "Підписники", "+ / −", "Перегляди відео", "Δ",
+       "headers": ["Місяць", "Підписники", "±", "Перегляди відео", "Δ",
                    "Охоплення", "Вподобайки", "Поширення", "Коментарі", "", "Тренд"]}
 VBB = {"key": "vb", "band": 99, "hdr": 100, "m1": 101, "total": 113,
        "color": VB, "tint": VB_TINT, "emoji": "💜",
        "title": "VIBER — МикВісті   (дані вручну — API ще не підключено)",
-       "headers": ["Місяць", "Підписники", "+ / −", "Активні користувачі", "Δ",
+       "headers": ["Місяць", "Підписники", "±", "Активні користувачі", "Δ",
                    "Надіслано повідомлень", "", "", "", "", "Тренд"]}
 BLOCKS = [SITE, FBB, IGB, TGB, YTB, TTB, VBB]
 MANUAL_BLOCKS = [YTB, TTB, VBB]  # каркаси без авто-заповнення
 
 # Формати чисел. Патерни канонічні (крапка/кома), відображення локалізує Sheets.
-# [Color 10] — темно-зелений, [Color 9] — темно-червоний з індексованої палітри.
+# [Color10] — темно-зелений, [Color9] — темно-червоний з індексованої палітри;
+# ВАЖЛИВО: без пробілу ([Color 10] — невалідний патерн, він валив ВЕСЬ
+# batchUpdate оформлення: batchUpdate атомарний, один битий запит = жодного
+# формату на листі; ловилось /sheet_format'ом на проді 14.07.2026).
 FMT_NUM = {"type": "NUMBER", "pattern": "#,##0"}
 FMT_NUM1 = {"type": "NUMBER", "pattern": "#,##0.0"}   # години перегляду YT
 FMT_PCT = {"type": "NUMBER", "pattern": "0.0%"}
-FMT_PCT_DELTA = {"type": "NUMBER", "pattern": "[Color 10]▲ 0.0%;[Color 9]▼ 0.0%;0.0%"}
-FMT_ABS_DELTA = {"type": "NUMBER", "pattern": "[Color 10]▲ #,##0;[Color 9]▼ #,##0;0"}
+FMT_PCT_DELTA = {"type": "NUMBER", "pattern": "[Color10]▲ 0.0%;[Color9]▼ 0.0%;0.0%"}
+FMT_ABS_DELTA = {"type": "NUMBER", "pattern": "[Color10]▲ #,##0;[Color9]▼ #,##0;0"}
 
 # 0-базовані колонки → формат, для рядків місяців і підсумку кожного блоку
 COL_FORMATS = {
@@ -596,6 +599,59 @@ def _year_chart_requests(sheet_id):
     return [followers_chart, pageviews_chart]
 
 
+def _apply_formatting(service, sheet_id, year):
+    """Оформлення + графіки, окремими batchUpdate: якщо впаде оформлення —
+    у помилці буде видно, який саме крок; графіки додаються лише якщо на
+    листі їх ще немає (повторний прогін не плодить дублі)."""
+    try:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=SOCIAL_SPREADSHEET_ID,
+            body={"requests": _year_format_requests(sheet_id)},
+        ).execute()
+    except Exception as e:
+        raise RuntimeError(f"оформлення листа {year}: {e}") from e
+    try:
+        meta = service.spreadsheets().get(
+            spreadsheetId=SOCIAL_SPREADSHEET_ID,
+            fields="sheets(properties.sheetId,charts.chartId)",
+        ).execute()
+        has_charts = any(
+            s["properties"]["sheetId"] == sheet_id and s.get("charts")
+            for s in meta.get("sheets", [])
+        )
+        if not has_charts:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=SOCIAL_SPREADSHEET_ID,
+                body={"requests": _year_chart_requests(sheet_id)},
+            ).execute()
+    except Exception as e:
+        raise RuntimeError(f"графіки листа {year}: {e}") from e
+
+
+def _repair_year_sheet(service, p, year):
+    """Перекатити статику й оформлення на існуючий лист: лікує лист, що
+    лишився «голим» після збою batchUpdate оформлення (він атомарний — один
+    битий запит колись валив усе). Дані місяців НЕ чіпає: статика — це лише
+    шапки, підписи місяців і формули. Злиття знімаються повністю і
+    накочуються заново, щоб не спіткнутись об часткові."""
+    sheet_id = p["sheetId"]
+    req = []
+    rows = p.get("gridProperties", {}).get("rowCount", 0)
+    if rows < SHEET_ROWS:
+        req.append({"appendDimension": {"sheetId": sheet_id, "dimension": "ROWS",
+                                        "length": SHEET_ROWS - rows}})
+    req.append({"unmergeCells": {"range": _grid(sheet_id, 1, min(rows, SHEET_ROWS))}})
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SOCIAL_SPREADSHEET_ID, body={"requests": req},
+    ).execute()
+    service.spreadsheets().values().batchUpdate(
+        spreadsheetId=SOCIAL_SPREADSHEET_ID,
+        body={"valueInputOption": "USER_ENTERED", "data": _year_static_values(year)},
+    ).execute()
+    _apply_formatting(service, sheet_id, year)
+    print(f"social_sheet: лист {year} перекачено (статика + оформлення)")
+
+
 def _upgrade_year_sheet(service, p, year):
     """Добудова старого листа (створеного до появи блоків YouTube/TikTok/Viber,
     коли на рядках 67–69 були злиті рядки-заглушки): додати рядків до
@@ -682,17 +738,25 @@ def _ensure_year_sheet(service, year):
     лист старої розмітки), якщо немає — створює й оформлює (статичні тексти,
     формули, формати, графіки). Викликається перед кожним записом."""
     meta = service.spreadsheets().get(
-        spreadsheetId=SOCIAL_SPREADSHEET_ID, fields="sheets.properties",
+        spreadsheetId=SOCIAL_SPREADSHEET_ID, fields="sheets(properties,merges)",
     ).execute()
-    props = [s["properties"] for s in meta.get("sheets", [])]
+    sheets = meta.get("sheets", [])
+    props = [s["properties"] for s in sheets]
     titles = {p["title"]: p["sheetId"] for p in props}
     # Локаль тримаємо примусово завжди (не лише при створенні): щомісячний
     # HYPERLINK топ-допису теж писаний під «;-локаль»
     _ensure_locale(service)
     if str(year) in titles:
-        p = next(p for p in props if p["title"] == str(year))
-        _upgrade_year_sheet(service, p, year)
-        _upgrade_band_logos(service, p["sheetId"], year)
+        sheet = next(s for s in sheets if s["properties"]["title"] == str(year))
+        p = sheet["properties"]
+        # Самолікування: правильний лист має десятки злиттів (шапки блоків,
+        # спарклайни). Майже жодного — оформлення колись упало (batchUpdate
+        # атомарний), перекатуємо статику й формат заново, дані не чіпаючи.
+        if len(sheet.get("merges", [])) < 5:
+            _repair_year_sheet(service, p, year)
+        else:
+            _upgrade_year_sheet(service, p, year)
+            _upgrade_band_logos(service, p["sheetId"], year)
         return titles[str(year)]
     reply = service.spreadsheets().batchUpdate(
         spreadsheetId=SOCIAL_SPREADSHEET_ID,
@@ -709,10 +773,7 @@ def _ensure_year_sheet(service, year):
         spreadsheetId=SOCIAL_SPREADSHEET_ID,
         body={"valueInputOption": "USER_ENTERED", "data": _year_static_values(year)},
     ).execute()
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=SOCIAL_SPREADSHEET_ID,
-        body={"requests": _year_format_requests(sheet_id) + _year_chart_requests(sheet_id)},
-    ).execute()
+    _apply_formatting(service, sheet_id, year)
 
     # Порожній дефолтний лист нової таблиці (Sheet1/Аркуш1) більше не потрібен.
     # Видаляємо тихо: якщо там раптом є дані або він один — API/логіка не дасть.
@@ -1165,6 +1226,45 @@ async def sheet_snapshot_handler(update, context):
         results = await capture_month(year, month, with_followers=(current or (year, month) == _prev_month(now)))
         await msg.edit_text(_results_text(year, month, results),
                             disable_web_page_preview=True)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось: {e}")
+
+
+async def sheet_format_handler(update, context):
+    """/sheet_format [рік] — примусово перекатити оформлення річного листа
+    (статика: шапки/формули/лого + формати/злиття/графіки). Дані місяців не
+    чіпає. Для листів, що лишились «голими» після збою оформлення (бот і сам
+    таке лікує при наступному записі, це — не чекаючи)."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    year = datetime.now(KYIV_TZ).year
+    if context.args:
+        try:
+            year = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Формат: /sheet_format 2026")
+            return
+    msg = await update.message.reply_text(f"🦊 Перекатую оформлення листа {year}…")
+
+    def run():
+        service = _get_sheets_service()
+        meta = service.spreadsheets().get(
+            spreadsheetId=SOCIAL_SPREADSHEET_ID, fields="sheets.properties",
+        ).execute()
+        props = [s["properties"] for s in meta.get("sheets", [])]
+        p = next((p for p in props if p["title"] == str(year)), None)
+        if p is None:
+            raise RuntimeError(f"листа «{year}» у таблиці немає")
+        _ensure_locale(service)
+        _repair_year_sheet(service, p, year)
+
+    try:
+        await asyncio.to_thread(run)
+        await msg.edit_text(
+            f"✅ Лист {year} перекачено: шапки з лого, формати ▲▼, спарклайни, "
+            f"графіки. Дані місяців не чіпались.\n{SPREADSHEET_URL}",
+            disable_web_page_preview=True)
     except Exception as e:
         await msg.edit_text(f"❌ Не вдалось: {e}")
 

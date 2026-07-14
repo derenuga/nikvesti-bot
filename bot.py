@@ -8,7 +8,7 @@ from handlers.google_analytics import analytics_handler
 from handlers.analytics_store import analytics_backfill_handler, sc_backfill_handler
 from handlers.weekly_digest import weekly_handler
 from handlers.social_store import social_capture_handler, social_backfill_fb_handler
-from handlers.social_sheet import sheet_snapshot_handler, sheet_backfill_handler
+from handlers.social_sheet import sheet_snapshot_handler, sheet_backfill_handler, sheet_format_handler
 from handlers.scheduler import setup_scheduler, send_daily_report, check_email
 from handlers.instagram import instagram_handler, send_weekly_instagram_report
 from handlers.facebook import facebook_handler, send_weekly_facebook_report
@@ -313,6 +313,7 @@ def main():
     app.add_handler(CommandHandler("social_backfill_fb", social_backfill_fb_handler))
     app.add_handler(CommandHandler("sheet_snapshot", sheet_snapshot_handler))
     app.add_handler(CommandHandler("sheet_backfill", sheet_backfill_handler))
+    app.add_handler(CommandHandler("sheet_format", sheet_format_handler))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("checkmail", checkmail))
     app.add_handler(CommandHandler("instagram", instagram_handler))
