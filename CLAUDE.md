@@ -65,7 +65,8 @@ handlers/
   instagram.py            — тижнева статистика Instagram
   facebook.py             — тижнева статистика Facebook
   social_store.py         — пам'ять тижневих зрізів соцмереж у Postgres (social_stats): знімок піггібеком на недільні звіти FB/IG, /social_capture, історія для NLQ-tool get_social_history
-  social_sheet.py         — місячний знімок аналітики в Google-таблицю «Аналітика МикВісті» (SOCIAL_SPREADSHEET_ID): лист на рік, місяці рядками, блоки Сайт (GA4 + SC Search/News/Discover) / Facebook / Instagram / Telegram (парсинг t.me, дзеркала TG_WEB_BASES з фолбеком telegram.me) + блоки-каркаси YouTube/TikTok/Viber (оформлені, з формулами; заповнюються вручну/міграцією до підключення API, старі листи добудовуються самі); дельти MoM/підсумки року/YoY/спарклайни — живі формули, стрілки ▲▼ — custom number format, вбудовані графіки; авто 1-го числа 10:30, /sheet_snapshot, /sheet_backfill
+  social_sheet.py         — місячний знімок аналітики в Google-таблицю «Аналітика МикВісті» (SOCIAL_SPREADSHEET_ID): лист на рік, місяці рядками, блоки Сайт (GA4 + SC Search/News/Discover) / Facebook / Instagram / Telegram (парсинг t.me, дзеркала TG_WEB_BASES з фолбеком telegram.me) / YouTube (Analytics API через OAuth — перегляди й години перегляду, /youtube_backfill за всю історію) + блоки-каркаси TikTok/Viber (оформлені, з формулами; вручну/міграцією до підключення API, старі листи добудовуються самі); дельти MoM/підсумки року (останнє відоме для підписників, LOOKUP(9^99))/YoY/спарклайни — живі формули, стрілки ▲▼ — custom number format, вбудовані графіки; авто 1-го числа 10:30, /sheet_snapshot, /sheet_backfill, /sheet_format, /sheet_migrate_legacy
+  youtube_analytics.py    — YouTube Analytics API (+ Data API) через OAuth: refresh-токен власника каналу → перегляди/години перегляду по місяцях (історичний бекфіл), поточні підписники; налаштування OAuth у docstring
   gmail.py                — перевірка Gmail
   sheets.py               — запис у Google Sheets (Prozorro)
   reactions.py            — обробка реакцій на повідомлення про тендери
@@ -101,6 +102,7 @@ handlers/
 | /sheet_backfill \[міс\] | Залити історію в таблицю аналітики (дефолт 36 міс, від давніх до свіжих): сайт — уся глибина GA4, SC ~16 міс, FB/IG — скільки віддасть Meta (~2 роки), TG — стрічка t.me; підписники заднім числом недоступні ніде |
 | /sheet_format \[рік\|all\] \[dark\|light\] | Примусово перекатити оформлення річного листа таблиці аналітики (шапки з лого, формати ▲▼, формули, спарклайни, графіки, тема); all — усі річні листи разом; дані місяців не чіпає. Дефолтна тема — dark (env SOCIAL_SHEET_THEME); тема документа глобальна для всіх листів. «Голий» лист бот лікує й сам при наступному записі |
 | /sheet_migrate_legacy | Разово перенести історію зі старої ручної таблиці «МикВісті SMM» (2024-02…2026-06, data/legacy_smm.json) у таблицю аналітики: підписники всіх мереж + IG/FB/TG метрики + YouTube/TikTok/Viber цілком; ідемпотентно |
+| /youtube_backfill \[рік\] | Залити помісячну історію YouTube (перегляди відео → D, години перегляду → F) з YouTube Analytics API одним запитом за всю історію каналу (дефолт старту 2022); потрібен OAuth (YOUTUBE_OAUTH_*). Ідемпотентно |
 | /report | GA4 звіт за вчора в чат редакції (щоденний авто-пост прибрано, лишилась ручна команда) |
 | /checkmail | Перевірити Gmail |
 | /instagram | Тижнева статистика Instagram |
@@ -217,8 +219,9 @@ FACEBOOK_PAGE_ID = 301719373180657
 ANTHROPIC_API_KEY
 OPENWEATHER_API_KEY
 GOOGLE_KG_API_KEY            # опційно, простий API key (не сервісний акаунт) для /kg — Google Knowledge Graph Search API
-YOUTUBE_API_KEY              # опційно, API key з увімкненим YouTube Data API v3 (фолбек — GOOGLE_KG_API_KEY, якщо той самий проект); для YouTube-блоку таблиці аналітики
-YOUTUBE_CHANNEL_ID           # опційно, дефолт зашито: UC25UWq7xeoDDA208h_59fHA (канал NikVesti)
+YOUTUBE_OAUTH_CLIENT_ID      # опційно, OAuth client (Desktop app) для YouTube Analytics API — YouTube-блок таблиці аналітики (перегляди, години перегляду, підписники)
+YOUTUBE_OAUTH_CLIENT_SECRET  # опційно, секрет того ж OAuth client
+YOUTUBE_OAUTH_REFRESH_TOKEN  # опційно, refresh token від власника каналу (scope yt-analytics.readonly); як дістати — docstring handlers/youtube_analytics.py
 SPREADSHEET_ID = 1bsKzGRsQ7O1aa4TpxmzqEfIjRM1A0dso7zueYvCXB1I
 SOCIAL_SPREADSHEET_ID        # опційно, таблиця «Аналітика МикВісті» (дефолт зашито: 1KNkxqN8ru4c2ez-x3nw9sEW-lXm562VdfJ3EEdbjGZk)
 SOCIAL_SHEET_THEME           # опційно, тема таблиці аналітики: dark (дефолт) | light

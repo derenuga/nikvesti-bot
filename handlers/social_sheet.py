@@ -63,7 +63,6 @@ import requests
 from bs4 import BeautifulSoup
 
 from handlers import analytics_store
-from handlers import storage
 from handlers import telegram_stats as tg_stats
 from handlers.google_analytics import get_ga4_client, get_stats
 from handlers.helpers import MONTHS_UA
@@ -1096,83 +1095,27 @@ def _collect_instagram(year, month, with_followers):
     return out
 
 
-# YouTube Data API v3: простий API key (як Knowledge Graph), канал NikVesti.
-# API віддає ЛИШЕ накопичені lifetime-лічильники (subscriberCount округлений,
-# viewCount, videoCount) — тому місячні перегляди/контент рахуємо як дельту
-# знімків лічильників на межах місяця (знімки в storage.youtube_counters).
-# Точні watch hours / CTR / сер. тривалість дає лише YouTube Analytics API,
-# а він вимагає OAuth від власника каналу (сервісні акаунти не підтримує) —
-# це окрема фаза; колонки F (час) і H (CTR) до того лишаються ручними.
-YOUTUBE_CHANNEL_ID = os.environ.get("YOUTUBE_CHANNEL_ID", "UC25UWq7xeoDDA208h_59fHA")
-
-
-def _yt_api_key():
-    return os.environ.get("YOUTUBE_API_KEY") or os.environ.get("GOOGLE_KG_API_KEY")
-
-
-def _yt_channel_counters():
-    """Поточні lifetime-лічильники каналу: (subscribers, views, videos)."""
-    key = _yt_api_key()
-    if not key:
-        raise RuntimeError("YOUTUBE_API_KEY/GOOGLE_KG_API_KEY не задано "
-                           "(потрібен ключ Google Cloud з увімкненим YouTube Data API v3)")
-    data = requests.get(
-        "https://www.googleapis.com/youtube/v3/channels",
-        params={"part": "statistics", "id": YOUTUBE_CHANNEL_ID, "key": key},
-        timeout=15,
-    ).json()
-    if "error" in data:
-        raise RuntimeError(data["error"].get("message"))
-    items = data.get("items")
-    if not items:
-        raise RuntimeError(f"канал {YOUTUBE_CHANNEL_ID} не знайдено")
-    st = items[0]["statistics"]
-    return (int(st.get("subscriberCount", 0)), int(st.get("viewCount", 0)),
-            int(st.get("videoCount", 0)))
-
-
 def _collect_youtube(year, month, with_followers):
-    """Знімок YouTube за місяць. Підписники — поточні (історії API не має).
-    Перегляди/контент за місяць = дельта lifetime-лічильників між знімком
-    на кінець цього місяця і кінець попереднього. Знімок «кінець місяця M»
-    в ідеалі береться 1-го числа M+1 (авто-запуск); при повторних запусках
-    лишається той, що зроблений ближче до опівночі межі місяця."""
-    subs, views_total, videos_total = _yt_channel_counters()
-    out = {"followers": subs if with_followers else None,
-           "views": None, "content": None}
+    """Знімок YouTube за місяць через YouTube Analytics API (OAuth,
+    handlers/youtube_analytics.py). Підписники — поточний лічильник Data API;
+    перегляди й години перегляду за місяць — точний агрегат Analytics (не
+    дельта — API віддає їх напряму, у т.ч. заднім числом). Контент і CTR —
+    вручну (videosPublished/CTR API стабільно не віддає)."""
+    from handlers import youtube_analytics as yta
+    out = {"followers": None, "views": None, "watch_hours": None}
+    if with_followers:
+        out["followers"] = yta.get_channel_stats()["subscribers"]
 
     last = calendar.monthrange(year, month)[1]
     boundary = datetime(year, month, last, tzinfo=KYIV_TZ) + timedelta(days=1)
-    now = datetime.now(KYIV_TZ)
-    if now < boundary:
-        return out  # місяць ще не скінчився — дельту рахувати нема з чого
+    if datetime.now(KYIV_TZ) < boundary:
+        return out  # місяць ще не скінчився — перегляди неповні
 
-    this_key = f"{year}-{month:02d}"
-    prev_y, prev_m = (year, month - 1) if month > 1 else (year - 1, 12)
-    prev_key = f"{prev_y}-{prev_m:02d}"
-
-    snaps = storage.get_youtube_counters()
-    cur = snaps.get(this_key)
-    candidate = {"views": views_total, "videos": videos_total, "at": now.isoformat()}
-    if cur is None:
-        snaps[this_key] = candidate
-        storage.save_youtube_counters(snaps)
-        cur = candidate
-    else:
-        # переграємо знімок, лише якщо теперішній момент ближче до межі місяця
-        try:
-            old_at = datetime.fromisoformat(cur["at"])
-        except (KeyError, ValueError):
-            old_at = now
-        if abs(now - boundary) < abs(old_at - boundary):
-            snaps[this_key] = candidate
-            storage.save_youtube_counters(snaps)
-            cur = candidate
-
-    prev = snaps.get(prev_key)
-    if prev:
-        out["views"] = max(0, cur["views"] - prev["views"])
-        out["content"] = max(0, cur["videos"] - prev["videos"])
+    totals = yta.get_month_totals(f"{year:04d}-{month:02d}-01",
+                                  f"{year:04d}-{month:02d}-{last:02d}")
+    if totals:
+        out["views"] = totals["views"]
+        out["watch_hours"] = totals["watch_hours"]
     return out
 
 
@@ -1323,8 +1266,8 @@ def _month_value_ranges(year, month, site, fb, ig, tg, yt=None):
             data.append({"range": f"'{y}'!B{r}", "values": [[yt["followers"]]]})
         if yt.get("views") is not None:
             data.append({"range": f"'{y}'!D{r}", "values": [[yt["views"]]]})
-        if yt.get("content") is not None:
-            data.append({"range": f"'{y}'!G{r}", "values": [[yt["content"]]]})
+        if yt.get("watch_hours") is not None:
+            data.append({"range": f"'{y}'!F{r}", "values": [[yt["watch_hours"]]]})
     return data
 
 
@@ -1383,10 +1326,10 @@ async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt"),
                 yt, results["yt"] = None, "⛔ API нічого не віддав"
             elif yt.get("views") is None:
                 results["yt"] = (f"✅ підписники {yt.get('followers')} "
-                                 f"(дельта переглядів — з наступного місяця, база знята)")
+                                 f"(перегляди — коли місяць скінчиться)")
             else:
                 results["yt"] = (f"✅ перегляди {yt.get('views')}, "
-                                 f"контент {yt.get('content')}")
+                                 f"години {yt.get('watch_hours')}")
         except Exception as e:
             results["yt"] = f"⛔ {e}"
 
@@ -1511,6 +1454,76 @@ async def sheet_format_handler(update, context):
         await msg.edit_text(
             f"✅ Перекачено ({theme_name}): {', '.join(sorted(done))} — шапки з лого, "
             f"формати ▲▼, формули, спарклайни, графіки. Дані місяців не чіпались.\n"
+            f"{SPREADSHEET_URL}",
+            disable_web_page_preview=True)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось: {e}")
+
+
+async def youtube_backfill_handler(update, context):
+    """/youtube_backfill [рік-початок] — залити помісячну історію YouTube
+    (перегляди відео → D, години перегляду → F) з YouTube Analytics API за
+    один запит (dimension=month, вся історія каналу). Дефолт старту — 2022
+    (найраніший рік таблиці). Підписники історично лишаються з міграції;
+    контент і CTR — вручну. Ідемпотентно."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    from handlers import youtube_analytics as yta
+    if not yta.is_configured():
+        await update.message.reply_text(
+            "🦊 YouTube OAuth не налаштовано (YOUTUBE_OAUTH_CLIENT_ID/"
+            "CLIENT_SECRET/REFRESH_TOKEN). Як дістати — у docstring "
+            "handlers/youtube_analytics.py."
+        )
+        return
+    start_year = 2022
+    if context.args:
+        try:
+            start_year = max(2015, int(context.args[0]))
+        except ValueError:
+            pass
+    now = datetime.now(KYIV_TZ)
+    end = (now.replace(day=1) - timedelta(days=1))  # останній день минулого місяця
+    msg = await update.message.reply_text(
+        f"🦊 Тягну помісячну історію YouTube з {start_year}-01…"
+    )
+
+    def run():
+        rows = yta.get_monthly_report(f"{start_year}-01-01", end.strftime("%Y-%m-%d"))
+        if not rows:
+            return 0, {}
+        service = _get_sheets_service()
+        _ensure_locale(service)
+        by_year = {}
+        for r in rows:
+            y, m = int(r["month"][:4]), int(r["month"][5:7])
+            by_year.setdefault(y, []).append((m, r))
+        written = 0
+        for y in sorted(by_year):
+            _ensure_year_sheet(service, y)
+            data = []
+            for m, r in by_year[y]:
+                row_idx = YTB["m1"] + m - 1
+                data.append({"range": f"'{y}'!D{row_idx}", "values": [[r["views"]]]})
+                data.append({"range": f"'{y}'!F{row_idx}", "values": [[r["watch_hours"]]]})
+            if data:
+                service.spreadsheets().values().batchUpdate(
+                    spreadsheetId=SOCIAL_SPREADSHEET_ID,
+                    body={"valueInputOption": "USER_ENTERED", "data": data},
+                ).execute()
+                written += len(by_year[y])
+        span = f"{rows[0]['month']} … {rows[-1]['month']}"
+        return written, span
+
+    try:
+        written, span = await asyncio.to_thread(run)
+        if not written:
+            await msg.edit_text("🦊 Analytics не повернув місяців за цей діапазон.")
+            return
+        await msg.edit_text(
+            f"✅ YouTube: залито {written} місяців ({span}) — перегляди відео й "
+            f"години перегляду. Підписники — з міграції, контент/CTR — вручну.\n"
             f"{SPREADSHEET_URL}",
             disable_web_page_preview=True)
     except Exception as e:
