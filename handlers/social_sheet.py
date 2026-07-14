@@ -16,8 +16,10 @@
     51–65        ✈️ TELEGRAM (підписники, сер. охоплення поста, пости, перегляди,
                  ERR) — офіційного API статистики немає, парсимо веб-дзеркало
                  t.me/s (та сама механіка, що telegram_stats.py)
-    67–69        заглушки YouTube / TikTok / Viber — місце зарезервовано,
-                 блоки з'являться коли підключимо їх API
+    67–81        ▶️ YOUTUBE, 83–97 🎵 TIKTOK, 99–113 💜 VIBER — повноцінні
+                 блоки-каркаси (формат, дельти-формули, підсумки, спарклайни),
+                 бот їх ПОКИ не заповнює: числа приїдуть міграцією зі старої
+                 ручної таблиці і згодом з їх API; формули оживають самі
 
 Кожен блок: 12 рядків місяців + рядок «Підсумок {рік}» ЖИВИМИ ФОРМУЛАМИ
 (SUM/AVERAGE/LOOKUP по місяцях + порівняння з листом попереднього року через
@@ -84,14 +86,16 @@ _ALLOWED_USER_IDS = {
 # ---------- Сітка річного листа (рядки 1-індексовані, як в UI) ----------
 
 NUM_COLS = 11  # A..K; K — «Тренд» (спарклайн)
-SHEET_ROWS, SHEET_COLS = 80, 20
+SHEET_ROWS, SHEET_COLS = 120, 20
 
 # Кольори мереж (бренд) і їх світлі тінти для шапок колонок
 FOX, FOX_TINT = "#D9530B", "#FBEBE0"
 FB, FB_TINT = "#1877F2", "#E9F1FE"
 IG, IG_TINT = "#C13584", "#FBEDF5"
 TG, TG_TINT = "#229ED9", "#E8F5FC"
-GRAY_BAND = "#F3F2ED"      # заглушки майбутніх мереж
+YT, YT_TINT = "#CC0000", "#FDEAEA"
+TT, TT_TINT = "#161823", "#E9EBEE"
+VB, VB_TINT = "#7360F2", "#EFECFC"
 ROW_TINT = "#F7F6F2"       # чергування рядків місяців
 TOTAL_BG = "#EFEDE6"       # рядок підсумку року
 BORDER_SOFT = "#E0DED8"
@@ -121,17 +125,31 @@ TGB = {"key": "tg", "band": 51, "hdr": 52, "m1": 53, "total": 65,
        "title": "✈️  TELEGRAM — @nikvesti",
        "headers": ["Місяць", "Підписники", "+ / −", "Сер. охоплення поста", "Δ",
                    "Пости", "Перегляди за місяць", "ERR", "", "", "Тренд"]}
-BLOCKS = [SITE, FBB, IGB, TGB]
-
-STUBS = [
-    (67, "▶️  YouTube — місце зарезервовано (перегляди, час перегляду, підписники, Shorts) — блок з'явиться після підключення YouTube API"),
-    (68, "🎵  TikTok — місце зарезервовано (перегляди відео, охоплення, вподобайки) — блок з'явиться після підключення TikTok API"),
-    (69, "💜  Viber — місце зарезервовано (підписники, активні користувачі) — блок з'явиться, коли буде звідки брати дані"),
-]
+# Блоки-каркаси: бот їх не заповнює (API ще не підключені), числа приїдуть
+# міграцією зі старої ручної таблиці і згодом з API — формули оживають самі.
+# Набір колонок — за метриками старої таблиці редакції.
+YTB = {"key": "yt", "band": 67, "hdr": 68, "m1": 69, "total": 81,
+       "color": YT, "tint": YT_TINT,
+       "title": "▶️  YOUTUBE — МикВісті   (дані вручну — API ще не підключено)",
+       "headers": ["Місяць", "Підписники", "+ / −", "Перегляди відео", "Δ",
+                   "Час перегляду, год", "Контент", "CTR", "", "", "Тренд"]}
+TTB = {"key": "tt", "band": 83, "hdr": 84, "m1": 85, "total": 97,
+       "color": TT, "tint": TT_TINT,
+       "title": "🎵  TIKTOK — @nikvesti   (дані вручну — API ще не підключено)",
+       "headers": ["Місяць", "Підписники", "+ / −", "Перегляди відео", "Δ",
+                   "Охоплення", "Вподобайки", "Поширення", "Коментарі", "", "Тренд"]}
+VBB = {"key": "vb", "band": 99, "hdr": 100, "m1": 101, "total": 113,
+       "color": VB, "tint": VB_TINT,
+       "title": "💜  VIBER — МикВісті   (дані вручну — API ще не підключено)",
+       "headers": ["Місяць", "Підписники", "+ / −", "Активні користувачі", "Δ",
+                   "Надіслано повідомлень", "", "", "", "", "Тренд"]}
+BLOCKS = [SITE, FBB, IGB, TGB, YTB, TTB, VBB]
+MANUAL_BLOCKS = [YTB, TTB, VBB]  # каркаси без авто-заповнення
 
 # Формати чисел. Патерни канонічні (крапка/кома), відображення локалізує Sheets.
 # [Color 10] — темно-зелений, [Color 9] — темно-червоний з індексованої палітри.
 FMT_NUM = {"type": "NUMBER", "pattern": "#,##0"}
+FMT_NUM1 = {"type": "NUMBER", "pattern": "#,##0.0"}   # години перегляду YT
 FMT_PCT = {"type": "NUMBER", "pattern": "0.0%"}
 FMT_PCT_DELTA = {"type": "NUMBER", "pattern": "[Color 10]▲ 0.0%;[Color 9]▼ 0.0%;0.0%"}
 FMT_ABS_DELTA = {"type": "NUMBER", "pattern": "[Color 10]▲ #,##0;[Color 9]▼ #,##0;0"}
@@ -146,6 +164,12 @@ COL_FORMATS = {
              5: FMT_NUM, 6: FMT_NUM, 7: FMT_PCT_DELTA, 8: FMT_NUM},
     "tg":   {1: FMT_NUM, 2: FMT_ABS_DELTA, 3: FMT_NUM, 4: FMT_PCT_DELTA,
              5: FMT_NUM, 6: FMT_NUM, 7: FMT_PCT},
+    "yt":   {1: FMT_NUM, 2: FMT_ABS_DELTA, 3: FMT_NUM, 4: FMT_PCT_DELTA,
+             5: FMT_NUM1, 6: FMT_NUM, 7: FMT_PCT},
+    "tt":   {1: FMT_NUM, 2: FMT_ABS_DELTA, 3: FMT_NUM, 4: FMT_PCT_DELTA,
+             5: FMT_NUM, 6: FMT_NUM, 7: FMT_NUM, 8: FMT_NUM},
+    "vb":   {1: FMT_NUM, 2: FMT_ABS_DELTA, 3: FMT_NUM, 4: FMT_PCT_DELTA,
+             5: FMT_NUM},
 }
 
 
@@ -243,7 +267,118 @@ def _ensure_locale(service):
     ).execute()
 
 
-def _year_static_values(year):
+def _avg_pct_formula(block, col):
+    """Середнє відсоткової колонки без округлення (CTR тощо)."""
+    rng = f"{col}{block['m1']}:{col}{block['m1'] + 11}"
+    return f'=IF(COUNT({rng})=0;"";AVERAGE({rng}))'
+
+
+def _block_static_values(year, b):
+    """Статика одного блоку: шапка, назви місяців, формули дельт/підсумків/
+    спарклайна. Використовується і при створенні листа, і при апгрейді
+    старих листів новими блоками."""
+    y = str(year)
+    data = [
+        {"range": f"'{y}'!A{b['band']}", "values": [[b["title"]]]},
+        {"range": f"'{y}'!A{b['hdr']}:K{b['hdr']}", "values": [b["headers"]]},
+        {"range": f"'{y}'!A{b['m1']}:A{b['m1'] + 11}",
+         "values": [[MONTHS_UA[m]] for m in range(1, 13)]},
+        {"range": f"'{y}'!A{b['total']}", "values": [[f"Підсумок {year}"]]},
+    ]
+
+    # Дельти по місяцях: формула живе у formula_col, порівнює колонку data_col
+    def col_formulas(formula_col, data_col, kind):
+        fn = _delta_pct_formula if kind == "pct" else _delta_abs_formula
+        return {"range": f"'{y}'!{formula_col}{b['m1']}:{formula_col}{b['m1'] + 11}",
+                "values": [[fn(year, b, data_col, i)] for i in range(12)]}
+
+    t = b["total"]
+    key = b["key"]
+    if key == "site":
+        data.append(col_formulas("C", "B", "pct"))   # Δ користувачів
+        data.append(col_formulas("F", "E", "pct"))   # Δ переглядів
+        data.append({"range": f"'{y}'!J{b['m1']}:J{b['m1'] + 11}",  # частка Discover
+                     "values": [[f'=IF(OR(I{r}="";G{r}+H{r}+I{r}=0);"";I{r}/(G{r}+H{r}+I{r}))']
+                                for r in range(b["m1"], b["m1"] + 12)]})
+        data.append({"range": f"'{y}'!B{t}:J{t}", "values": [[
+            _sum_formula(b, "B"), _yoy_formula(year, b, "B"),
+            _sum_formula(b, "D"), _sum_formula(b, "E"), _yoy_formula(year, b, "E"),
+            _sum_formula(b, "G"), _sum_formula(b, "H"), _sum_formula(b, "I"),
+            f'=IF(OR(I{t}="";G{t}+H{t}+I{t}=0);"";I{t}/(G{t}+H{t}+I{t}))',
+        ]]})
+        spark_col, spark_color = "E", FOX
+    elif key == "fb":
+        data.append(col_formulas("C", "B", "abs"))   # ± підписники
+        data.append(col_formulas("E", "D", "pct"))   # Δ переглядів
+        data.append(col_formulas("G", "F", "pct"))   # Δ взаємодій
+        data.append({"range": f"'{y}'!B{t}:H{t}", "values": [[
+            _last_value_formula(b, "B"), _yoy_abs_formula(year, b, "B"),
+            _sum_formula(b, "D"), _yoy_formula(year, b, "D"),
+            _sum_formula(b, "F"), _yoy_formula(year, b, "F"),
+            _sum_formula(b, "H"),
+        ]]})
+        spark_col, spark_color = "D", FB
+    elif key == "ig":
+        data.append(col_formulas("C", "B", "abs"))
+        data.append(col_formulas("E", "D", "pct"))
+        data.append(col_formulas("H", "G", "pct"))   # Δ взаємодій
+        data.append({"range": f"'{y}'!B{t}:I{t}", "values": [[
+            _last_value_formula(b, "B"), _yoy_abs_formula(year, b, "B"),
+            _sum_formula(b, "D"), _yoy_formula(year, b, "D"),
+            _sum_formula(b, "F"),
+            _sum_formula(b, "G"), _yoy_formula(year, b, "G"),
+            _sum_formula(b, "I"),
+        ]]})
+        spark_col, spark_color = "D", IG
+    elif key == "tg":
+        data.append(col_formulas("C", "B", "abs"))
+        data.append(col_formulas("E", "D", "pct"))   # Δ сер. охоплення
+        data.append({"range": f"'{y}'!H{b['m1']}:H{b['m1'] + 11}",  # ERR
+                     "values": [[f'=IF(OR(B{r}="";D{r}="");"";D{r}/B{r})']
+                                for r in range(b["m1"], b["m1"] + 12)]})
+        data.append({"range": f"'{y}'!B{t}:H{t}", "values": [[
+            _last_value_formula(b, "B"), _yoy_abs_formula(year, b, "B"),
+            _avg_formula(b, "D"), _yoy_formula(year, b, "D"),
+            _sum_formula(b, "F"), _sum_formula(b, "G"),
+            f'=IF(OR(B{t}="";D{t}="");"";D{t}/B{t})',
+        ]]})
+        spark_col, spark_color = "B", TG
+    elif key == "yt":
+        data.append(col_formulas("C", "B", "abs"))
+        data.append(col_formulas("E", "D", "pct"))   # Δ переглядів відео
+        data.append({"range": f"'{y}'!B{t}:H{t}", "values": [[
+            _last_value_formula(b, "B"), _yoy_abs_formula(year, b, "B"),
+            _sum_formula(b, "D"), _yoy_formula(year, b, "D"),
+            _sum_formula(b, "F"), _sum_formula(b, "G"),
+            _avg_pct_formula(b, "H"),
+        ]]})
+        spark_col, spark_color = "D", YT
+    elif key == "tt":
+        data.append(col_formulas("C", "B", "abs"))
+        data.append(col_formulas("E", "D", "pct"))
+        data.append({"range": f"'{y}'!B{t}:I{t}", "values": [[
+            _last_value_formula(b, "B"), _yoy_abs_formula(year, b, "B"),
+            _sum_formula(b, "D"), _yoy_formula(year, b, "D"),
+            _sum_formula(b, "F"), _sum_formula(b, "G"),
+            _sum_formula(b, "H"), _sum_formula(b, "I"),
+        ]]})
+        spark_col, spark_color = "D", TT
+    else:  # vb
+        data.append(col_formulas("C", "B", "abs"))
+        data.append(col_formulas("E", "D", "pct"))   # Δ активних користувачів
+        data.append({"range": f"'{y}'!B{t}:F{t}", "values": [[
+            _last_value_formula(b, "B"), _yoy_abs_formula(year, b, "B"),
+            _avg_formula(b, "D"), _yoy_formula(year, b, "D"),
+            _sum_formula(b, "F"),
+        ]]})
+        spark_col, spark_color = "B", VB
+
+    data.append({"range": f"'{y}'!K{b['m1']}",
+                 "values": [[_spark_formula(b, spark_col, spark_color)]]})
+    return data
+
+
+def _year_static_values(year, blocks=BLOCKS):
     """Всі статичні значення листа: тексти, назви місяців, формули дельт,
     підсумків і спарклайнів. Пише бот один раз при створенні листа."""
     y = str(year)
@@ -251,104 +386,19 @@ def _year_static_values(year):
         {"range": f"'{y}'!A1", "values": [[f"🦊 Аналітика МикВісті — {year}"]]},
         {"range": f"'{y}'!A2",
          "values": [["Веде бот: рядок місяця заповнюється 1-го числа наступного. "
-                     "Підсумок року і стрілки Δ рахуються самі (формули)."]]},
+                     "Підсумок року і стрілки Δ рахуються самі (формули). "
+                     "YouTube/TikTok/Viber — поки вручну, до підключення API."]]},
     ]
-    for b in BLOCKS:
-        data.append({"range": f"'{y}'!A{b['band']}", "values": [[b["title"]]]})
-        data.append({"range": f"'{y}'!A{b['hdr']}:K{b['hdr']}", "values": [b["headers"]]})
-        data.append({"range": f"'{y}'!A{b['m1']}:A{b['m1'] + 11}",
-                     "values": [[MONTHS_UA[m]] for m in range(1, 13)]})
-        data.append({"range": f"'{y}'!A{b['total']}", "values": [[f"Підсумок {year}"]]})
-    for row, text in STUBS:
-        data.append({"range": f"'{y}'!A{row}", "values": [[text]]})
-
-    # Дельти по місяцях (формули на всі 12 рядків наперед): формула живе у
-    # formula_col, порівнює сусідні місяці колонки data_col
-    def col_formulas(block, formula_col, data_col, kind):
-        fn = _delta_pct_formula if kind == "pct" else _delta_abs_formula
-        return {"range": f"'{y}'!{formula_col}{block['m1']}:{formula_col}{block['m1'] + 11}",
-                "values": [[fn(year, block, data_col, i)] for i in range(12)]}
-
-    data.append(col_formulas(SITE, "C", "B", "pct"))   # Δ користувачів
-    data.append(col_formulas(SITE, "F", "E", "pct"))   # Δ переглядів
-    data.append({"range": f"'{y}'!J{SITE['m1']}:J{SITE['m1'] + 11}",  # частка Discover
-                 "values": [[f'=IF(OR(I{r}="";G{r}+H{r}+I{r}=0);"";I{r}/(G{r}+H{r}+I{r}))']
-                            for r in range(SITE["m1"], SITE["m1"] + 12)]})
-    data.append(col_formulas(FBB, "C", "B", "abs"))    # ± підписники FB
-    data.append(col_formulas(FBB, "E", "D", "pct"))    # Δ переглядів FB
-    data.append(col_formulas(FBB, "G", "F", "pct"))    # Δ взаємодій FB
-    data.append(col_formulas(IGB, "C", "B", "abs"))    # ± підписники IG
-    data.append(col_formulas(IGB, "E", "D", "pct"))    # Δ переглядів IG
-    data.append(col_formulas(IGB, "H", "G", "pct"))    # Δ взаємодій IG
-    data.append(col_formulas(TGB, "C", "B", "abs"))    # ± підписники TG
-    data.append(col_formulas(TGB, "E", "D", "pct"))    # Δ сер. охоплення TG
-    data.append({"range": f"'{y}'!H{TGB['m1']}:H{TGB['m1'] + 11}",  # ERR
-                 "values": [[f'=IF(OR(B{r}="";D{r}="");"";D{r}/B{r})']
-                            for r in range(TGB["m1"], TGB["m1"] + 12)]})
-
-    # Підсумки року
-    t = SITE["total"]
-    data.append({"range": f"'{y}'!B{t}:J{t}", "values": [[
-        _sum_formula(SITE, "B"), _yoy_formula(year, SITE, "B"),
-        _sum_formula(SITE, "D"), _sum_formula(SITE, "E"), _yoy_formula(year, SITE, "E"),
-        _sum_formula(SITE, "G"), _sum_formula(SITE, "H"), _sum_formula(SITE, "I"),
-        f'=IF(OR(I{t}="";G{t}+H{t}+I{t}=0);"";I{t}/(G{t}+H{t}+I{t}))',
-    ]]})
-    t = FBB["total"]
-    data.append({"range": f"'{y}'!B{t}:H{t}", "values": [[
-        _last_value_formula(FBB, "B"), _yoy_abs_formula(year, FBB, "B"),
-        _sum_formula(FBB, "D"), _yoy_formula(year, FBB, "D"),
-        _sum_formula(FBB, "F"), _yoy_formula(year, FBB, "F"),
-        _sum_formula(FBB, "H"),
-    ]]})
-    t = IGB["total"]
-    data.append({"range": f"'{y}'!B{t}:I{t}", "values": [[
-        _last_value_formula(IGB, "B"), _yoy_abs_formula(year, IGB, "B"),
-        _sum_formula(IGB, "D"), _yoy_formula(year, IGB, "D"),
-        _sum_formula(IGB, "F"),
-        _sum_formula(IGB, "G"), _yoy_formula(year, IGB, "G"),
-        _sum_formula(IGB, "I"),
-    ]]})
-    t = TGB["total"]
-    data.append({"range": f"'{y}'!B{t}:H{t}", "values": [[
-        _last_value_formula(TGB, "B"), _yoy_abs_formula(year, TGB, "B"),
-        _avg_formula(TGB, "D"), _yoy_formula(year, TGB, "D"),
-        _sum_formula(TGB, "F"), _sum_formula(TGB, "G"),
-        f'=IF(OR(B{t}="";D{t}="");"";D{t}/B{t})',
-    ]]})
-
-    # Спарклайни року (кожен блок — своя ключова метрика)
-    data.append({"range": f"'{y}'!K{SITE['m1']}", "values": [[_spark_formula(SITE, "E", FOX)]]})
-    data.append({"range": f"'{y}'!K{FBB['m1']}", "values": [[_spark_formula(FBB, "D", FB)]]})
-    data.append({"range": f"'{y}'!K{IGB['m1']}", "values": [[_spark_formula(IGB, "D", IG)]]})
-    data.append({"range": f"'{y}'!K{TGB['m1']}", "values": [[_spark_formula(TGB, "B", TG)]]})
+    for b in blocks:
+        data.extend(_block_static_values(year, b))
     return data
 
 
-def _year_format_requests(sheet_id):
-    """batchUpdate-запити оформлення листа: шапки з кольорами мереж, формати
-    чисел зі стрілками, чергування рядків, межі, злиті клітинки, ширини."""
+def _block_format_requests(sheet_id, blocks):
+    """batchUpdate-запити оформлення блоків (шапки з кольорами мереж, формати
+    чисел зі стрілками, чергування рядків, межі, злиті клітинки)."""
     req = []
-
-    # Ширини колонок: A — місяць, B..J — числа, K — тренд
-    for c1, c2, px in [(0, 1, 118), (1, 10, 116), (10, 11, 150)]:
-        req.append({"updateDimensionProperties": {
-            "range": {"sheetId": sheet_id, "dimension": "COLUMNS",
-                      "startIndex": c1, "endIndex": c2},
-            "properties": {"pixelSize": px}, "fields": "pixelSize"}})
-
-    # Заголовок листа
-    req.append({"mergeCells": {"range": _grid(sheet_id, 1, 1), "mergeType": "MERGE_ALL"}})
-    req.append({"repeatCell": {"range": _grid(sheet_id, 1, 1), "cell": {"userEnteredFormat": {
-        "textFormat": {"bold": True, "fontSize": 14, "foregroundColorStyle": {"rgbColor": _rgb(FOX)}},
-    }}, "fields": "userEnteredFormat.textFormat"}})
-    req.append({"mergeCells": {"range": _grid(sheet_id, 2, 2), "mergeType": "MERGE_ALL"}})
-    req.append({"repeatCell": {"range": _grid(sheet_id, 2, 2), "cell": {"userEnteredFormat": {
-        "textFormat": {"italic": True, "fontSize": 9,
-                       "foregroundColorStyle": {"rgbColor": _rgb("#8A8880")}},
-    }}, "fields": "userEnteredFormat.textFormat"}})
-
-    for b in BLOCKS:
+    for b in blocks:
         # Кольорова шапка блоку
         req.append({"mergeCells": {"range": _grid(sheet_id, b["band"], b["band"]),
                                    "mergeType": "MERGE_ALL"}})
@@ -426,19 +476,32 @@ def _year_format_requests(sheet_id):
             "innerHorizontal": {"style": "SOLID", "colorStyle": {"rgbColor": _rgb(BORDER_SOFT)}},
             "innerVertical": {"style": "SOLID", "colorStyle": {"rgbColor": _rgb(BORDER_SOFT)}},
         }})
-
-    # Заглушки майбутніх мереж
-    for row, _text in STUBS:
-        req.append({"mergeCells": {"range": _grid(sheet_id, row, row), "mergeType": "MERGE_ALL"}})
-        req.append({"repeatCell": {"range": _grid(sheet_id, row, row),
-                    "cell": {"userEnteredFormat": {
-                        "backgroundColorStyle": {"rgbColor": _rgb(GRAY_BAND)},
-                        "textFormat": {"italic": True, "fontSize": 9,
-                                       "foregroundColorStyle": {"rgbColor": _rgb("#6B6963")}},
-                        "verticalAlignment": "MIDDLE"}},
-                    "fields": "userEnteredFormat(backgroundColorStyle,textFormat,verticalAlignment)"}})
-
     return req
+
+
+def _year_format_requests(sheet_id):
+    """Повне оформлення нового листа: ширини колонок, заголовок, усі блоки."""
+    req = []
+
+    # Ширини колонок: A — місяць, B..J — числа, K — тренд
+    for c1, c2, px in [(0, 1, 118), (1, 10, 116), (10, 11, 150)]:
+        req.append({"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "COLUMNS",
+                      "startIndex": c1, "endIndex": c2},
+            "properties": {"pixelSize": px}, "fields": "pixelSize"}})
+
+    # Заголовок листа
+    req.append({"mergeCells": {"range": _grid(sheet_id, 1, 1), "mergeType": "MERGE_ALL"}})
+    req.append({"repeatCell": {"range": _grid(sheet_id, 1, 1), "cell": {"userEnteredFormat": {
+        "textFormat": {"bold": True, "fontSize": 14, "foregroundColorStyle": {"rgbColor": _rgb(FOX)}},
+    }}, "fields": "userEnteredFormat.textFormat"}})
+    req.append({"mergeCells": {"range": _grid(sheet_id, 2, 2), "mergeType": "MERGE_ALL"}})
+    req.append({"repeatCell": {"range": _grid(sheet_id, 2, 2), "cell": {"userEnteredFormat": {
+        "textFormat": {"italic": True, "fontSize": 9,
+                       "foregroundColorStyle": {"rgbColor": _rgb("#8A8880")}},
+    }}, "fields": "userEnteredFormat.textFormat"}})
+
+    return req + _block_format_requests(sheet_id, BLOCKS)
 
 
 def _year_chart_requests(sheet_id):
@@ -490,10 +553,55 @@ def _year_chart_requests(sheet_id):
     return [followers_chart, pageviews_chart]
 
 
+def _upgrade_year_sheet(service, p, year):
+    """Добудова старого листа (створеного до появи блоків YouTube/TikTok/Viber,
+    коли на рядках 67–69 були злиті рядки-заглушки): додати рядків до
+    SHEET_ROWS, зняти злиття/формат заглушок, вписати нові блоки-каркаси.
+    Дані місяців (рядки до 65) не чіпає. Ідемпотентно — маркер A68 == «Місяць»."""
+    sheet_id = p["sheetId"]
+    got = service.spreadsheets().values().get(
+        spreadsheetId=SOCIAL_SPREADSHEET_ID,
+        range=f"'{year}'!A{YTB['hdr']}",
+    ).execute()
+    vals = got.get("values")
+    if vals and vals[0] and vals[0][0] == "Місяць":
+        return  # нові блоки вже на місці
+
+    req = []
+    rows = p.get("gridProperties", {}).get("rowCount", 0)
+    if rows < SHEET_ROWS:
+        req.append({"appendDimension": {"sheetId": sheet_id, "dimension": "ROWS",
+                                        "length": SHEET_ROWS - rows}})
+    # Старі заглушки: зняти злиття A:K і повністю зачистити значення/формат
+    req.append({"unmergeCells": {"range": _grid(sheet_id, 67, 69)}})
+    req.append({"updateCells": {"range": _grid(sheet_id, 67, 69),
+                                "fields": "userEnteredValue,userEnteredFormat"}})
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SOCIAL_SPREADSHEET_ID, body={"requests": req},
+    ).execute()
+
+    data = []
+    for b in MANUAL_BLOCKS:
+        data.extend(_block_static_values(year, b))
+    data.append({"range": f"'{year}'!A2",
+                 "values": [["Веде бот: рядок місяця заповнюється 1-го числа наступного. "
+                             "Підсумок року і стрілки Δ рахуються самі (формули). "
+                             "YouTube/TikTok/Viber — поки вручну, до підключення API."]]})
+    service.spreadsheets().values().batchUpdate(
+        spreadsheetId=SOCIAL_SPREADSHEET_ID,
+        body={"valueInputOption": "USER_ENTERED", "data": data},
+    ).execute()
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SOCIAL_SPREADSHEET_ID,
+        body={"requests": _block_format_requests(sheet_id, MANUAL_BLOCKS)},
+    ).execute()
+    print(f"social_sheet: лист {year} добудовано блоками YouTube/TikTok/Viber")
+
+
 def _ensure_year_sheet(service, year):
-    """Лист року: якщо є — повертає sheetId, якщо немає — створює й оформлює
-    (статичні тексти, формули, формати, графіки). Викликається перед кожним
-    записом — існуючий лист не чіпає."""
+    """Лист року: якщо є — повертає sheetId (добудувавши новими блоками, якщо
+    лист старої розмітки), якщо немає — створює й оформлює (статичні тексти,
+    формули, формати, графіки). Викликається перед кожним записом."""
     meta = service.spreadsheets().get(
         spreadsheetId=SOCIAL_SPREADSHEET_ID, fields="sheets.properties",
     ).execute()
@@ -503,6 +611,8 @@ def _ensure_year_sheet(service, year):
     # HYPERLINK топ-допису теж писаний під «;-локаль»
     _ensure_locale(service)
     if str(year) in titles:
+        p = next(p for p in props if p["title"] == str(year))
+        _upgrade_year_sheet(service, p, year)
         return titles[str(year)]
     reply = service.spreadsheets().batchUpdate(
         spreadsheetId=SOCIAL_SPREADSHEET_ID,
