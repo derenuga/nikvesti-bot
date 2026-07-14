@@ -125,7 +125,9 @@ THEMES = {
         "month_ink": "#A7ABB3", "note_ink": "#6E737B", "title_ink": "#F07830",
         "row_tint": "#24262B", "total_bg": "#26282D",
         "border_soft": "#33363C", "border_strong": "#4A4E55",
-        "chip_bg": "#FFFFFF", "link": "#8AB4F8",
+        # чип лого — у колір холста: білий квадрат на темному листі випирає;
+        # лого на прозорому фоні читаються й на темному (у TikTok нота біла)
+        "chip_bg": "#17181B", "link": "#8AB4F8",
         "pct_delta": "[Color4]▲ 0.0%;[Color3]▼ 0.0%;0.0%",
         "abs_delta": "[Color4]▲ #,##0;[Color3]▼ #,##0;0",
         "tint": {"site": "#3A2417", "fb": "#1C2B44", "ig": "#3B2231",
