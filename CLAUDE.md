@@ -65,7 +65,7 @@ handlers/
   instagram.py            — тижнева статистика Instagram
   facebook.py             — тижнева статистика Facebook
   social_store.py         — пам'ять тижневих зрізів соцмереж у Postgres (social_stats): знімок піггібеком на недільні звіти FB/IG, /social_capture, історія для NLQ-tool get_social_history
-  social_sheet.py         — місячний знімок аналітики в Google-таблицю «Аналітика МикВісті» (SOCIAL_SPREADSHEET_ID): лист на рік, місяці рядками, блоки Сайт (GA4 + SC Search/News/Discover) / Facebook / Instagram / Telegram (парсинг t.me, дзеркала TG_WEB_BASES з фолбеком telegram.me) + заглушки YouTube/TikTok/Viber; дельти MoM/підсумки року/YoY/спарклайни — живі формули, стрілки ▲▼ — custom number format, вбудовані графіки; авто 1-го числа 10:30, /sheet_snapshot, /sheet_backfill
+  social_sheet.py         — місячний знімок аналітики в Google-таблицю «Аналітика МикВісті» (SOCIAL_SPREADSHEET_ID): лист на рік, місяці рядками, блоки Сайт (GA4 + SC Search/News/Discover) / Facebook / Instagram / Telegram (парсинг t.me, дзеркала TG_WEB_BASES з фолбеком telegram.me) + блоки-каркаси YouTube/TikTok/Viber (оформлені, з формулами; заповнюються вручну/міграцією до підключення API, старі листи добудовуються самі); дельти MoM/підсумки року/YoY/спарклайни — живі формули, стрілки ▲▼ — custom number format, вбудовані графіки; авто 1-го числа 10:30, /sheet_snapshot, /sheet_backfill
   gmail.py                — перевірка Gmail
   sheets.py               — запис у Google Sheets (Prozorro)
   reactions.py            — обробка реакцій на повідомлення про тендери
