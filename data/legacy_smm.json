@@ -1,0 +1,1072 @@
+{
+ "2024-02": {
+  "ig": {
+   "followers": 16105,
+   "reach": 287197,
+   "interactions": 54472
+  },
+  "fb": {
+   "followers": 33754,
+   "reach": 583802,
+   "interactions": 47497
+  },
+  "tg": {
+   "followers": 36716,
+   "avg_reach": 18674
+  },
+  "tt": {
+   "followers": 1229,
+   "views": 148000,
+   "likes": 5533,
+   "comments": 620,
+   "shares": 314
+  },
+  "yt": {
+   "followers": 72967,
+   "views": 80212,
+   "watch_hours": 1658,
+   "content": 24
+  }
+ },
+ "2024-03": {
+  "ig": {
+   "followers": 16509,
+   "reach": 238695,
+   "interactions": 52427
+  },
+  "fb": {
+   "followers": 33990,
+   "reach": 336714,
+   "interactions": 35164
+  },
+  "tg": {
+   "followers": 36363,
+   "avg_reach": 12387
+  },
+  "tt": {
+   "followers": 1931,
+   "views": 281666,
+   "reach": 174147,
+   "likes": 7214,
+   "comments": 1162,
+   "shares": 916
+  },
+  "yt": {
+   "followers": 73035,
+   "views": 130795,
+   "watch_hours": 3200,
+   "content": 16
+  }
+ },
+ "2024-04": {
+  "ig": {
+   "followers": 16850,
+   "reach": 290310
+  },
+  "fb": {
+   "followers": 34180,
+   "reach": 290904,
+   "interactions": 25855
+  },
+  "tg": {
+   "followers": 36036,
+   "avg_reach": 9570
+  },
+  "vb": {
+   "followers": 813,
+   "active": 4097,
+   "messages": 419
+  },
+  "tt": {
+   "followers": 1931,
+   "views": 332000,
+   "reach": 173263,
+   "likes": 2834,
+   "comments": 242,
+   "shares": 153
+  },
+  "yt": {
+   "followers": 73144,
+   "views": 173404000,
+   "watch_hours": 2746.9,
+   "content": 17,
+   "ctr": 0.068
+  }
+ },
+ "2024-05": {
+  "ig": {
+   "followers": 17186,
+   "reach": 239143
+  },
+  "fb": {
+   "followers": 34445,
+   "reach": 925583,
+   "interactions": 34290
+  },
+  "tg": {
+   "followers": 35760,
+   "avg_reach": 9298
+  },
+  "vb": {
+   "followers": 1282,
+   "active": 4401,
+   "messages": 465
+  },
+  "tt": {
+   "followers": 2735,
+   "views": 574000,
+   "reach": 356105,
+   "likes": 8374,
+   "comments": 1042,
+   "shares": 737
+  },
+  "yt": {
+   "followers": 73135,
+   "views": 84834,
+   "watch_hours": 1738,
+   "content": 36,
+   "ctr": 0.064
+  }
+ },
+ "2024-06": {
+  "ig": {
+   "followers": 17351,
+   "reach": 331382,
+   "interactions": 38273
+  },
+  "fb": {
+   "followers": 34764,
+   "reach": 776864,
+   "interactions": 30361
+  },
+  "tg": {
+   "followers": 35708,
+   "avg_reach": 10212
+  },
+  "vb": {
+   "followers": 1415,
+   "active": 1910,
+   "messages": 466
+  },
+  "tt": {
+   "followers": 3408,
+   "views": 507667,
+   "reach": 397200,
+   "likes": 12050,
+   "comments": 2261,
+   "shares": 1944
+  },
+  "yt": {
+   "followers": 73062,
+   "views": 53207,
+   "watch_hours": 1200,
+   "content": 38,
+   "ctr": 0.063
+  }
+ },
+ "2024-07": {
+  "ig": {
+   "followers": 17717,
+   "reach": 1065661,
+   "interactions": 62400
+  },
+  "fb": {
+   "followers": 35145,
+   "reach": 1273722,
+   "interactions": 46569
+  },
+  "tg": {
+   "followers": 35513,
+   "avg_reach": 11240
+  },
+  "vb": {
+   "followers": 4519,
+   "active": 10997,
+   "messages": 511
+  },
+  "tt": {
+   "followers": 4568,
+   "views": 475316,
+   "reach": 377530,
+   "likes": 10692,
+   "comments": 2497,
+   "shares": 1460
+  },
+  "yt": {
+   "followers": 73100,
+   "views": 104389,
+   "watch_hours": 1345,
+   "content": 27,
+   "ctr": 0.066
+  }
+ },
+ "2024-08": {
+  "ig": {
+   "followers": 18305,
+   "reach": 934938,
+   "interactions": 182172
+  },
+  "fb": {
+   "followers": 35211,
+   "reach": 252047,
+   "interactions": 18508
+  },
+  "tg": {
+   "followers": 34952,
+   "avg_reach": 10832
+  },
+  "vb": {
+   "followers": 4553,
+   "active": 5756,
+   "messages": 310
+  },
+  "tt": {
+   "followers": 4906,
+   "views": 232000,
+   "reach": 157514,
+   "likes": 3943,
+   "comments": 1448,
+   "shares": 3609
+  },
+  "yt": {
+   "followers": 73090,
+   "views": 51730,
+   "watch_hours": 1293.2,
+   "content": 11,
+   "ctr": 0.061
+  }
+ },
+ "2024-09": {
+  "ig": {
+   "followers": 18442,
+   "reach": 300775,
+   "interactions": 30839
+  },
+  "fb": {
+   "followers": 35269,
+   "reach": 296956,
+   "interactions": 13935
+  },
+  "tg": {
+   "followers": 34518,
+   "avg_reach": 10832
+  },
+  "vb": {
+   "followers": 4437,
+   "active": 4674,
+   "messages": 366
+  },
+  "tt": {
+   "followers": 5243,
+   "views": 160039,
+   "reach": 157514,
+   "likes": 4519,
+   "comments": 1094,
+   "shares": 1510
+  },
+  "yt": {
+   "followers": 73050,
+   "views": 32231,
+   "watch_hours": 767.5,
+   "content": 12,
+   "ctr": 0.064
+  }
+ },
+ "2024-10": {
+  "ig": {
+   "followers": 18632,
+   "views": 908938,
+   "reach": 194309,
+   "interactions": 39871
+  },
+  "fb": {
+   "followers": 35611,
+   "reach": 410058,
+   "interactions": 28866
+  },
+  "tg": {
+   "followers": 34235,
+   "avg_reach": 13905
+  },
+  "vb": {
+   "followers": 4628,
+   "active": 4164,
+   "messages": 262
+  },
+  "tt": {
+   "followers": 5518,
+   "views": 518599,
+   "reach": 471147,
+   "likes": 9555,
+   "comments": 2278,
+   "shares": 3812
+  },
+  "yt": {
+   "followers": 73032,
+   "views": 35311,
+   "watch_hours": 982.1,
+   "content": 17,
+   "ctr": 0.068
+  }
+ },
+ "2024-11": {
+  "ig": {
+   "followers": 22089,
+   "views": 3683603,
+   "reach": 1792322,
+   "interactions": 108536
+  },
+  "fb": {
+   "followers": 35796,
+   "views": 1975994,
+   "reach": 442741,
+   "interactions": 26153
+  },
+  "tg": {
+   "followers": 33927,
+   "avg_reach": 10757
+  },
+  "vb": {
+   "followers": 4641,
+   "active": 3877,
+   "messages": 234
+  },
+  "tt": {
+   "followers": 6581,
+   "views": 478800,
+   "reach": 450640,
+   "likes": 11613,
+   "comments": 2474,
+   "shares": 2658
+  },
+  "yt": {
+   "followers": 73065,
+   "views": 71223,
+   "watch_hours": 1448.3,
+   "content": 23,
+   "ctr": 0.081
+  }
+ },
+ "2024-12": {
+  "ig": {
+   "followers": 22170,
+   "views": 1250456,
+   "reach": 371968,
+   "interactions": 38967
+  },
+  "fb": {
+   "followers": 36204,
+   "views": 3849883,
+   "reach": 1203759,
+   "interactions": 37284
+  },
+  "tg": {
+   "followers": 33760,
+   "avg_reach": 8862
+  },
+  "vb": {
+   "followers": 4671,
+   "active": 4375,
+   "messages": 359
+  },
+  "tt": {
+   "followers": 7074,
+   "views": 452172,
+   "reach": 417905,
+   "likes": 7930,
+   "comments": 1400,
+   "shares": 2899
+  },
+  "yt": {
+   "followers": 73036,
+   "views": 40481,
+   "watch_hours": 1230,
+   "content": 19,
+   "ctr": 0.064
+  }
+ },
+ "2025-01": {
+  "ig": {
+   "followers": 22394,
+   "views": 1511231,
+   "reach": 446579,
+   "interactions": 18804
+  },
+  "fb": {
+   "followers": 36465,
+   "views": 2472349,
+   "reach": 511843,
+   "interactions": 38338
+  },
+  "tg": {
+   "followers": 33829,
+   "avg_reach": 13003
+  },
+  "vb": {
+   "followers": 4628,
+   "active": 4164,
+   "messages": 262
+  },
+  "tt": {
+   "followers": 7873,
+   "views": 518599,
+   "reach": 471147,
+   "likes": 9555,
+   "comments": 2278,
+   "shares": 3812
+  },
+  "yt": {
+   "followers": 73009,
+   "views": 62886,
+   "watch_hours": 2561.1,
+   "content": 20,
+   "ctr": 0.064
+  }
+ },
+ "2025-02": {
+  "ig": {
+   "followers": 22751,
+   "views": 1816656,
+   "reach": 541713,
+   "interactions": 45665
+  },
+  "fb": {
+   "followers": 36781,
+   "views": 2094109,
+   "reach": 366564,
+   "interactions": 45350
+  },
+  "tg": {
+   "followers": 33759,
+   "avg_reach": 35845
+  },
+  "vb": {
+   "followers": 4565,
+   "active": 4197,
+   "messages": 415
+  },
+  "tt": {
+   "followers": 8877,
+   "views": 331907,
+   "reach": 287207,
+   "likes": 11975,
+   "comments": 2283,
+   "shares": 2463
+  },
+  "yt": {
+   "followers": 73052,
+   "views": 77640,
+   "watch_hours": 3626.3,
+   "content": 16,
+   "ctr": 0.072
+  }
+ },
+ "2025-03": {
+  "ig": {
+   "followers": 22810,
+   "views": 1278577,
+   "reach": 424606,
+   "interactions": 40254
+  },
+  "fb": {
+   "followers": 36928,
+   "views": 1960762,
+   "reach": 282892,
+   "interactions": 41571
+  },
+  "tg": {
+   "followers": 33536,
+   "avg_reach": 8349
+  },
+  "vb": {
+   "followers": 4630,
+   "active": 3950,
+   "messages": 330
+  },
+  "tt": {
+   "followers": 9582,
+   "views": 432054,
+   "reach": 401818,
+   "likes": 44960,
+   "comments": 7436,
+   "shares": 5322
+  },
+  "yt": {
+   "followers": 73052,
+   "views": 57637,
+   "watch_hours": 1367.7,
+   "content": 18,
+   "ctr": 0.059
+  }
+ },
+ "2025-04": {
+  "ig": {
+   "followers": 23165,
+   "views": 1591015,
+   "reach": 584751,
+   "interactions": 48368
+  },
+  "fb": {
+   "followers": 37727,
+   "views": 3219773,
+   "reach": 826983,
+   "interactions": 72415
+  },
+  "tg": {
+   "followers": 33663,
+   "avg_reach": 8862
+  },
+  "vb": {
+   "followers": 4578,
+   "active": 3878,
+   "messages": 340
+  },
+  "tt": {
+   "followers": 11529,
+   "views": 472119,
+   "reach": 430696,
+   "likes": 18250,
+   "comments": 2734,
+   "shares": 3555
+  },
+  "yt": {
+   "followers": 73028,
+   "views": 70385,
+   "watch_hours": 888.5,
+   "content": 24,
+   "ctr": 0.058
+  }
+ },
+ "2025-05": {
+  "ig": {
+   "followers": 23589,
+   "views": 1375561,
+   "reach": 447984,
+   "interactions": 34588
+  },
+  "fb": {
+   "followers": 37762,
+   "views": 2217116,
+   "reach": 788184,
+   "interactions": 53026
+  },
+  "tg": {
+   "followers": 33510,
+   "avg_reach": 9262
+  },
+  "vb": {
+   "followers": 4543,
+   "active": 3793,
+   "messages": 338
+  },
+  "tt": {
+   "followers": 13321,
+   "views": 796332,
+   "reach": 688342,
+   "likes": 14052,
+   "comments": 3300,
+   "shares": 5763
+  },
+  "yt": {
+   "followers": 73000,
+   "views": 34857,
+   "watch_hours": 729.9,
+   "content": 15,
+   "ctr": 0.06
+  }
+ },
+ "2025-06": {
+  "ig": {
+   "followers": 24177,
+   "views": 2808931,
+   "reach": 722151,
+   "interactions": 57594
+  },
+  "fb": {
+   "followers": 38945,
+   "views": 2212561,
+   "reach": 532544,
+   "interactions": 43521
+  },
+  "tg": {
+   "followers": 33542,
+   "avg_reach": 9395
+  },
+  "vb": {
+   "followers": 4487,
+   "active": 3705,
+   "messages": 294
+  },
+  "tt": {
+   "followers": 14489,
+   "views": 904000,
+   "reach": 753566,
+   "likes": 16000,
+   "comments": 2123,
+   "shares": 8619
+  },
+  "yt": {
+   "followers": 72979,
+   "views": 53019,
+   "watch_hours": 698.9,
+   "content": 16,
+   "ctr": 0.065
+  }
+ },
+ "2025-07": {
+  "ig": {
+   "followers": 25055,
+   "views": 2388997,
+   "reach": 966688,
+   "interactions": 46309
+  },
+  "fb": {
+   "followers": 39820,
+   "views": 3249871,
+   "reach": 685420,
+   "interactions": 40258
+  },
+  "tg": {
+   "followers": 34064,
+   "avg_reach": 10472
+  },
+  "vb": {
+   "followers": 4400,
+   "active": 3574,
+   "messages": 386
+  },
+  "tt": {
+   "followers": 16490,
+   "views": 1599788,
+   "reach": 1450849,
+   "likes": 36817,
+   "comments": 7550,
+   "shares": 10766
+  },
+  "yt": {
+   "followers": 73019,
+   "views": 104738,
+   "watch_hours": 1274,
+   "content": 21,
+   "ctr": 0.079
+  }
+ },
+ "2025-08": {
+  "ig": {
+   "followers": 25665,
+   "views": 3595641,
+   "reach": 1496117,
+   "interactions": 90719
+  },
+  "fb": {
+   "followers": 41262,
+   "views": 4140543,
+   "reach": 1416768,
+   "interactions": 52218
+  },
+  "tg": {
+   "followers": 34439,
+   "avg_reach": 8117
+  },
+  "vb": {
+   "followers": 4341,
+   "active": 3483,
+   "messages": 375
+  },
+  "tt": {
+   "followers": 17296,
+   "views": 1858573,
+   "reach": 1717685,
+   "likes": 22650,
+   "comments": 2863,
+   "shares": 14007
+  },
+  "yt": {
+   "followers": 73377,
+   "views": 605678,
+   "watch_hours": 2277,
+   "content": 18,
+   "ctr": 0.066
+  }
+ },
+ "2025-09": {
+  "ig": {
+   "followers": 26402,
+   "views": 302747,
+   "reach": 1224221,
+   "interactions": 69097
+  },
+  "fb": {
+   "followers": 43171,
+   "views": 4032751,
+   "reach": 1239577,
+   "interactions": 63683
+  },
+  "tg": {
+   "followers": 34669,
+   "avg_reach": 7851
+  },
+  "vb": {
+   "followers": 4267,
+   "active": 2949,
+   "messages": 165
+  },
+  "tt": {
+   "followers": 18199,
+   "views": 573654,
+   "reach": 466130,
+   "likes": 16532,
+   "comments": 3218,
+   "shares": 4702
+  },
+  "yt": {
+   "followers": 73507,
+   "views": 473821,
+   "watch_hours": 1636,
+   "content": 17,
+   "ctr": 0.053
+  }
+ },
+ "2025-10": {
+  "ig": {
+   "followers": 26926,
+   "views": 2505708,
+   "reach": 930899,
+   "interactions": 62400
+  },
+  "fb": {
+   "followers": 44376,
+   "views": 3444444,
+   "reach": 744188,
+   "interactions": 54503
+  },
+  "tg": {
+   "followers": 35245,
+   "avg_reach": 7727
+  },
+  "vb": {
+   "followers": 4210,
+   "active": 3343,
+   "messages": 370
+  },
+  "tt": {
+   "followers": 18811,
+   "views": 487607,
+   "reach": 413418,
+   "likes": 9629,
+   "comments": 2162,
+   "shares": 2744
+  },
+  "yt": {
+   "followers": 73490,
+   "views": 72453,
+   "watch_hours": 725.6,
+   "content": 16,
+   "ctr": 0.052
+  }
+ },
+ "2025-11": {
+  "ig": {
+   "followers": 27695,
+   "views": 1673731,
+   "reach": 597873,
+   "interactions": 44775
+  },
+  "fb": {
+   "followers": 45903,
+   "views": 6431097,
+   "reach": 1275499,
+   "interactions": 87326
+  },
+  "tg": {
+   "followers": 36042,
+   "avg_reach": 8441
+  },
+  "vb": {
+   "followers": 4274,
+   "active": 3083,
+   "messages": 211
+  },
+  "tt": {
+   "followers": 18775,
+   "views": 90074,
+   "reach": 68601,
+   "likes": 2322,
+   "comments": 428,
+   "shares": 593
+  },
+  "yt": {
+   "followers": 73468,
+   "views": 27871,
+   "watch_hours": 419.1,
+   "content": 11,
+   "ctr": 0.056
+  }
+ },
+ "2025-12": {
+  "ig": {
+   "followers": 28836,
+   "views": 2394089,
+   "reach": 711355,
+   "interactions": 76793
+  },
+  "fb": {
+   "followers": 46625,
+   "views": 5480248,
+   "reach": 844457,
+   "interactions": 55873
+  },
+  "tg": {
+   "followers": 37847,
+   "avg_reach": 9060
+  },
+  "vb": {
+   "followers": 4265,
+   "active": 3104,
+   "messages": 205
+  },
+  "tt": {
+   "followers": 19292,
+   "views": 331178,
+   "reach": 316709,
+   "likes": 6500,
+   "comments": 1285,
+   "shares": 2489
+  },
+  "yt": {
+   "followers": 73447,
+   "views": 57881,
+   "watch_hours": 814.3,
+   "content": 26,
+   "ctr": 0.053
+  }
+ },
+ "2026-01": {
+  "ig": {
+   "followers": 29031,
+   "views": 2199475,
+   "reach": 803630,
+   "interactions": 82567
+  },
+  "fb": {
+   "followers": 47267,
+   "views": 4900391,
+   "reach": 729191,
+   "interactions": 56291
+  },
+  "tg": {
+   "followers": 42016,
+   "avg_reach": 8772
+  },
+  "vb": {
+   "followers": 4273,
+   "active": 3569,
+   "messages": 512
+  },
+  "tt": {
+   "followers": 19350,
+   "views": 376366,
+   "reach": 361122,
+   "likes": 8456,
+   "comments": 425,
+   "shares": 771
+  },
+  "yt": {
+   "followers": 73391,
+   "views": 30730,
+   "watch_hours": 573.6,
+   "content": 16,
+   "ctr": 0.049
+  }
+ },
+ "2026-02": {
+  "ig": {
+   "followers": 29311,
+   "views": 1855540,
+   "reach": 652224,
+   "interactions": 58847
+  },
+  "fb": {
+   "followers": 47995,
+   "views": 5405011,
+   "reach": 716626,
+   "interactions": 53314
+  },
+  "tg": {
+   "followers": 44159,
+   "avg_reach": 8977
+  },
+  "vb": {
+   "followers": 4214,
+   "active": 3050,
+   "messages": 189
+  },
+  "tt": {
+   "followers": 19769,
+   "views": 76976,
+   "reach": 65307,
+   "likes": 1756,
+   "comments": 122,
+   "shares": 418
+  },
+  "yt": {
+   "followers": 73383,
+   "views": 59367,
+   "watch_hours": 1335,
+   "content": 16,
+   "ctr": 0.064
+  }
+ },
+ "2026-03": {
+  "ig": {
+   "followers": 30072,
+   "views": 2861174,
+   "reach": 1113389,
+   "interactions": 105221
+  },
+  "fb": {
+   "followers": 48614,
+   "views": 4876476,
+   "reach": 1062012,
+   "interactions": 49186
+  },
+  "tg": {
+   "followers": 41012,
+   "avg_reach": 7526
+  },
+  "vb": {
+   "followers": 4088,
+   "active": 2801,
+   "messages": 228
+  },
+  "tt": {
+   "followers": 20696,
+   "views": 790403,
+   "reach": 773911,
+   "likes": 19770,
+   "comments": 1642,
+   "shares": 12436
+  },
+  "yt": {
+   "followers": 73348,
+   "views": 54785,
+   "watch_hours": 614.9,
+   "content": 4,
+   "ctr": 0.038
+  }
+ },
+ "2026-04": {
+  "ig": {
+   "followers": 30886,
+   "views": 2844981,
+   "reach": 1179691,
+   "interactions": 84086
+  },
+  "fb": {
+   "followers": 49574,
+   "views": 4702573,
+   "reach": 877864,
+   "interactions": 70628
+  },
+  "tg": {
+   "followers": 40723,
+   "avg_reach": 7544
+  },
+  "vb": {
+   "followers": 4061,
+   "active": 3022,
+   "messages": 312
+  },
+  "tt": {
+   "followers": 21350,
+   "views": 899841,
+   "reach": 879250,
+   "likes": 16689,
+   "comments": 1302,
+   "shares": 8121
+  },
+  "yt": {
+   "followers": 73377,
+   "views": 164014,
+   "watch_hours": 1050,
+   "content": 21,
+   "ctr": 0.042
+  }
+ },
+ "2026-05": {
+  "ig": {
+   "followers": 30748,
+   "views": 2206340,
+   "reach": 852774,
+   "interactions": 96568
+  },
+  "fb": {
+   "followers": 50245,
+   "views": 4384628,
+   "reach": 616293,
+   "interactions": 49080
+  },
+  "tg": {
+   "followers": 41039,
+   "avg_reach": 7201
+  },
+  "vb": {
+   "followers": 4009,
+   "active": 3133,
+   "messages": 416
+  },
+  "tt": {
+   "followers": 21565,
+   "views": 214856,
+   "reach": 194492,
+   "likes": 5114,
+   "comments": 392,
+   "shares": 1491
+  },
+  "yt": {
+   "followers": 73334,
+   "views": 34179,
+   "watch_hours": 463,
+   "content": 38,
+   "ctr": 0.044
+  }
+ },
+ "2026-06": {
+  "ig": {
+   "followers": 30967,
+   "views": 1178555,
+   "reach": 285205,
+   "interactions": 32779
+  },
+  "fb": {
+   "followers": 51069,
+   "views": 4441500,
+   "reach": 773694,
+   "interactions": 47243
+  },
+  "tg": {
+   "followers": 40597,
+   "avg_reach": 7590
+  },
+  "vb": {
+   "followers": 3936,
+   "active": 1749,
+   "messages": 203
+  },
+  "tt": {
+   "followers": 21761,
+   "views": 136458,
+   "reach": 119002,
+   "likes": 2858,
+   "comments": 295,
+   "shares": 1064
+  },
+  "yt": {
+   "followers": 73302,
+   "views": 30465,
+   "watch_hours": 609,
+   "content": 16,
+   "ctr": 0.051
+  }
+ }
+}
