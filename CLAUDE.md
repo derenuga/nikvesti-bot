@@ -67,6 +67,7 @@ handlers/
   social_store.py         — пам'ять тижневих зрізів соцмереж у Postgres (social_stats): знімок піггібеком на недільні звіти FB/IG, /social_capture, історія для NLQ-tool get_social_history
   social_sheet.py         — місячний знімок аналітики в Google-таблицю «Аналітика МикВісті» (SOCIAL_SPREADSHEET_ID): лист на рік, місяці рядками, блоки Сайт (GA4 + SC Search/News/Discover) / Facebook / Instagram / Telegram (парсинг t.me, дзеркала TG_WEB_BASES з фолбеком telegram.me) / YouTube (Analytics API через OAuth — перегляди й години перегляду, /youtube_backfill за всю історію) + блоки-каркаси TikTok/Viber (оформлені, з формулами; вручну/міграцією до підключення API, старі листи добудовуються самі); дельти MoM/підсумки року (останнє відоме для підписників, LOOKUP(9^99))/YoY/спарклайни — живі формули, стрілки ▲▼ — custom number format, вбудовані графіки; авто 1-го числа 10:30, /sheet_snapshot, /sheet_backfill, /sheet_format, /sheet_migrate_legacy
   youtube_analytics.py    — YouTube Analytics API (+ Data API) через OAuth: refresh-токен власника каналу → перегляди/години перегляду по місяцях (історичний бекфіл), поточні підписники; налаштування OAuth у docstring
+  tiktok_analytics.py     — TikTok Display API через OAuth: підписники + вовлеченість по відео місяця (перегляди/лайки/поширення/коментарі); охоплення й історію API не дає (тільки вперед). TikTok ротує refresh token — актуальний у storage.tiktok_oauth; налаштування у docstring
   gmail.py                — перевірка Gmail
   sheets.py               — запис у Google Sheets (Prozorro)
   reactions.py            — обробка реакцій на повідомлення про тендери
@@ -222,6 +223,9 @@ GOOGLE_KG_API_KEY            # опційно, простий API key (не се
 YOUTUBE_OAUTH_CLIENT_ID      # опційно, OAuth client (Desktop app) для YouTube Analytics API — YouTube-блок таблиці аналітики (перегляди, години перегляду, підписники)
 YOUTUBE_OAUTH_CLIENT_SECRET  # опційно, секрет того ж OAuth client
 YOUTUBE_OAUTH_REFRESH_TOKEN  # опційно, refresh token від власника каналу (scope yt-analytics.readonly); як дістати — docstring handlers/youtube_analytics.py
+TIKTOK_CLIENT_KEY            # опційно, TikTok Display API app (Login Kit) — TikTok-блок таблиці аналітики (підписники + вовлеченість по відео місяця; охоплення API не віддає)
+TIKTOK_CLIENT_SECRET         # опційно, секрет того ж TikTok app
+TIKTOK_REFRESH_TOKEN         # опційно, сід refresh token власника @nikvesti.com; TikTok ротує його, далі бот тримає актуальний у storage.tiktok_oauth. Налаштування — docstring handlers/tiktok_analytics.py
 SPREADSHEET_ID = 1bsKzGRsQ7O1aa4TpxmzqEfIjRM1A0dso7zueYvCXB1I
 SOCIAL_SPREADSHEET_ID        # опційно, таблиця «Аналітика МикВісті» (дефолт зашито: 1KNkxqN8ru4c2ez-x3nw9sEW-lXm562VdfJ3EEdbjGZk)
 SOCIAL_SHEET_THEME           # опційно, тема таблиці аналітики: dark (дефолт) | light
