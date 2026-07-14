@@ -63,6 +63,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from handlers import analytics_store
+from handlers import storage
 from handlers import telegram_stats as tg_stats
 from handlers.google_analytics import get_ga4_client, get_stats
 from handlers.helpers import MONTHS_UA
@@ -186,7 +187,7 @@ TGB = {"key": "tg", "band": 51, "hdr": 52, "m1": 53, "total": 65,
 # Набір колонок — за метриками старої таблиці редакції.
 YTB = {"key": "yt", "band": 67, "hdr": 68, "m1": 69, "total": 81,
        "color": YT, "emoji": "▶️",
-       "title": "YOUTUBE — МикВісті   (дані вручну — API ще не підключено)",
+       "title": "YOUTUBE — МикВісті   (час перегляду і CTR — вручну, до OAuth)",
        "headers": ["Місяць", "Підписники", "±", "Перегляди відео", "Δ",
                    "Час перегляду, год", "Контент", "CTR", "", "", "Тренд"]}
 TTB = {"key": "tt", "band": 83, "hdr": 84, "m1": 85, "total": 97,
@@ -285,9 +286,14 @@ def _avg_formula(block, col):
 
 
 def _last_value_formula(block, col):
-    """Останнє непорожнє значення колонки (підписники на кінець року)."""
+    """Останнє відоме значення колонки (підписники на кінець року).
+    LOOKUP(9^99;діапазон) — «останнє ЧИСЛО в діапазоні»: працює в Google
+    Sheets без масивного контексту. Класичний трюк LOOKUP(2;1/(rng<>"");rng)
+    тут НЕ працює — без ARRAYFORMULA порівняння діапазону дає помилку, яку
+    IFERROR тихо ховав у порожнечу (ловилось на проді: «Підсумок» підписників
+    стояв пустим навіть на повністю заповненому листі)."""
     rng = f"{col}{block['m1']}:{col}{block['m1'] + 11}"
-    return f'=IFERROR(LOOKUP(2;1/({rng}<>"");{rng});"")'
+    return f'=IFERROR(LOOKUP(9^99;{rng});"")'
 
 
 def _yoy_formula(year, block, col):
@@ -463,7 +469,7 @@ def _year_static_values(year, theme, blocks=BLOCKS):
         {"range": f"'{y}'!B2",
          "values": [["Веде бот: рядок місяця заповнюється 1-го числа наступного. "
                      "Підсумок року і стрілки Δ рахуються самі (формули). "
-                     "YouTube/TikTok/Viber — поки вручну, до підключення API."]]},
+                     "TikTok/Viber — поки вручну, до підключення API."]]},
     ]
     for b in blocks:
         data.extend(_block_static_values(year, b, theme))
@@ -785,7 +791,7 @@ def _upgrade_year_sheet(service, p, year):
     data.append({"range": f"'{year}'!B2",
                  "values": [["Веде бот: рядок місяця заповнюється 1-го числа наступного. "
                              "Підсумок року і стрілки Δ рахуються самі (формули). "
-                             "YouTube/TikTok/Viber — поки вручну, до підключення API."]]})
+                             "TikTok/Viber — поки вручну, до підключення API."]]})
     service.spreadsheets().values().batchUpdate(
         spreadsheetId=SOCIAL_SPREADSHEET_ID,
         body={"valueInputOption": "USER_ENTERED", "data": data},
@@ -1090,6 +1096,86 @@ def _collect_instagram(year, month, with_followers):
     return out
 
 
+# YouTube Data API v3: простий API key (як Knowledge Graph), канал NikVesti.
+# API віддає ЛИШЕ накопичені lifetime-лічильники (subscriberCount округлений,
+# viewCount, videoCount) — тому місячні перегляди/контент рахуємо як дельту
+# знімків лічильників на межах місяця (знімки в storage.youtube_counters).
+# Точні watch hours / CTR / сер. тривалість дає лише YouTube Analytics API,
+# а він вимагає OAuth від власника каналу (сервісні акаунти не підтримує) —
+# це окрема фаза; колонки F (час) і H (CTR) до того лишаються ручними.
+YOUTUBE_CHANNEL_ID = os.environ.get("YOUTUBE_CHANNEL_ID", "UC25UWq7xeoDDA208h_59fHA")
+
+
+def _yt_api_key():
+    return os.environ.get("YOUTUBE_API_KEY") or os.environ.get("GOOGLE_KG_API_KEY")
+
+
+def _yt_channel_counters():
+    """Поточні lifetime-лічильники каналу: (subscribers, views, videos)."""
+    key = _yt_api_key()
+    if not key:
+        raise RuntimeError("YOUTUBE_API_KEY/GOOGLE_KG_API_KEY не задано "
+                           "(потрібен ключ Google Cloud з увімкненим YouTube Data API v3)")
+    data = requests.get(
+        "https://www.googleapis.com/youtube/v3/channels",
+        params={"part": "statistics", "id": YOUTUBE_CHANNEL_ID, "key": key},
+        timeout=15,
+    ).json()
+    if "error" in data:
+        raise RuntimeError(data["error"].get("message"))
+    items = data.get("items")
+    if not items:
+        raise RuntimeError(f"канал {YOUTUBE_CHANNEL_ID} не знайдено")
+    st = items[0]["statistics"]
+    return (int(st.get("subscriberCount", 0)), int(st.get("viewCount", 0)),
+            int(st.get("videoCount", 0)))
+
+
+def _collect_youtube(year, month, with_followers):
+    """Знімок YouTube за місяць. Підписники — поточні (історії API не має).
+    Перегляди/контент за місяць = дельта lifetime-лічильників між знімком
+    на кінець цього місяця і кінець попереднього. Знімок «кінець місяця M»
+    в ідеалі береться 1-го числа M+1 (авто-запуск); при повторних запусках
+    лишається той, що зроблений ближче до опівночі межі місяця."""
+    subs, views_total, videos_total = _yt_channel_counters()
+    out = {"followers": subs if with_followers else None,
+           "views": None, "content": None}
+
+    last = calendar.monthrange(year, month)[1]
+    boundary = datetime(year, month, last, tzinfo=KYIV_TZ) + timedelta(days=1)
+    now = datetime.now(KYIV_TZ)
+    if now < boundary:
+        return out  # місяць ще не скінчився — дельту рахувати нема з чого
+
+    this_key = f"{year}-{month:02d}"
+    prev_y, prev_m = (year, month - 1) if month > 1 else (year - 1, 12)
+    prev_key = f"{prev_y}-{prev_m:02d}"
+
+    snaps = storage.get_youtube_counters()
+    cur = snaps.get(this_key)
+    candidate = {"views": views_total, "videos": videos_total, "at": now.isoformat()}
+    if cur is None:
+        snaps[this_key] = candidate
+        storage.save_youtube_counters(snaps)
+        cur = candidate
+    else:
+        # переграємо знімок, лише якщо теперішній момент ближче до межі місяця
+        try:
+            old_at = datetime.fromisoformat(cur["at"])
+        except (KeyError, ValueError):
+            old_at = now
+        if abs(now - boundary) < abs(old_at - boundary):
+            snaps[this_key] = candidate
+            storage.save_youtube_counters(snaps)
+            cur = candidate
+
+    prev = snaps.get(prev_key)
+    if prev:
+        out["views"] = max(0, cur["views"] - prev["views"])
+        out["content"] = max(0, cur["videos"] - prev["videos"])
+    return out
+
+
 _TG_SUBS_RE = re.compile(r"([\d\s ]+)\s*(?:subscribers|підписник)")
 
 
@@ -1173,7 +1259,7 @@ def _hyperlink(url, label):
     return f'=HYPERLINK("{url}";"{label}")'
 
 
-def _month_value_ranges(year, month, site, fb, ig, tg):
+def _month_value_ranges(year, month, site, fb, ig, tg, yt=None):
     """values.batchUpdate-діапазони рядка місяця. Пишемо ЛИШЕ сирі числа у
     «свої» клітинки (дельти/частки/спарклайни — формули, їх не чіпаємо);
     блок без даних пропускається повністю (не затираємо існуюче)."""
@@ -1231,14 +1317,22 @@ def _month_value_ranges(year, month, site, fb, ig, tg):
             data.append({"range": f"'{y}'!F{r}", "values": [[tg["posts"]]]})
         if tg.get("views_total") is not None:
             data.append({"range": f"'{y}'!G{r}", "values": [[tg["views_total"]]]})
+    if yt:
+        r = row(YTB)
+        if yt.get("followers") is not None:
+            data.append({"range": f"'{y}'!B{r}", "values": [[yt["followers"]]]})
+        if yt.get("views") is not None:
+            data.append({"range": f"'{y}'!D{r}", "values": [[yt["views"]]]})
+        if yt.get("content") is not None:
+            data.append({"range": f"'{y}'!G{r}", "values": [[yt["content"]]]})
     return data
 
 
 BLOCK_LABELS = {"site": "🌐 Сайт", "fb": "📘 Facebook", "ig": "📷 Instagram",
-                "tg": "✈️ Telegram"}
+                "tg": "✈️ Telegram", "yt": "▶️ YouTube"}
 
 
-async def capture_month(year, month, blocks=("site", "fb", "ig", "tg"),
+async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt"),
                         with_followers=True):
     """Знімок одного місяця: збирає джерела, гарантує лист року, пише рядок.
     Повертає {block: "✅ …"/"⛔ помилка"} — часткові збої не валять решту."""
@@ -1246,7 +1340,7 @@ async def capture_month(year, month, blocks=("site", "fb", "ig", "tg"),
     await asyncio.to_thread(_ensure_year_sheet, service, year)
 
     results = {}
-    site = fb = ig = tg = None
+    site = fb = ig = tg = yt = None
     if "site" in blocks:
         try:
             site = await asyncio.to_thread(_collect_site, year, month)
@@ -1282,8 +1376,21 @@ async def capture_month(year, month, blocks=("site", "fb", "ig", "tg"),
                                  f"сер. охоплення {tg.get('avg_views')}")
         except Exception as e:
             results["tg"] = f"⛔ {e}"
+    if "yt" in blocks:
+        try:
+            yt = await asyncio.to_thread(_collect_youtube, year, month, with_followers)
+            if not any(v is not None for v in yt.values()):
+                yt, results["yt"] = None, "⛔ API нічого не віддав"
+            elif yt.get("views") is None:
+                results["yt"] = (f"✅ підписники {yt.get('followers')} "
+                                 f"(дельта переглядів — з наступного місяця, база знята)")
+            else:
+                results["yt"] = (f"✅ перегляди {yt.get('views')}, "
+                                 f"контент {yt.get('content')}")
+        except Exception as e:
+            results["yt"] = f"⛔ {e}"
 
-    data = _month_value_ranges(year, month, site, fb, ig, tg)
+    data = _month_value_ranges(year, month, site, fb, ig, tg, yt)
     if data:
         await asyncio.to_thread(
             lambda: service.spreadsheets().values().batchUpdate(
@@ -1365,18 +1472,22 @@ async def sheet_format_handler(update, context):
         await update.message.reply_text("⛔ Тільки для редакції.")
         return
     year = datetime.now(KYIV_TZ).year
+    all_years = False
     theme_name = DEFAULT_THEME
     for arg in context.args or []:
         if arg.lower() in THEMES:
             theme_name = arg.lower()
+        elif arg.lower() == "all":
+            all_years = True
         else:
             try:
                 year = int(arg)
             except ValueError:
-                await update.message.reply_text("Формат: /sheet_format [2026] [dark|light]")
+                await update.message.reply_text("Формат: /sheet_format [2026|all] [dark|light]")
                 return
+    label = "усіх річних листів" if all_years else f"листа {year}"
     msg = await update.message.reply_text(
-        f"🦊 Перекатую оформлення листа {year} (тема {theme_name})…")
+        f"🦊 Перекатую оформлення {label} (тема {theme_name})…")
 
     def run():
         service = _get_sheets_service()
@@ -1384,17 +1495,22 @@ async def sheet_format_handler(update, context):
             spreadsheetId=SOCIAL_SPREADSHEET_ID, fields="sheets.properties",
         ).execute()
         props = [s["properties"] for s in meta.get("sheets", [])]
-        p = next((p for p in props if p["title"] == str(year)), None)
-        if p is None:
+        if all_years:
+            targets = [p for p in props if p["title"].isdigit()]
+        else:
+            targets = [p for p in props if p["title"] == str(year)]
+        if not targets:
             raise RuntimeError(f"листа «{year}» у таблиці немає")
         _ensure_locale(service)
-        _repair_year_sheet(service, p, year, THEMES[theme_name])
+        for p in sorted(targets, key=lambda p: p["title"]):
+            _repair_year_sheet(service, p, int(p["title"]), THEMES[theme_name])
+        return [p["title"] for p in targets]
 
     try:
-        await asyncio.to_thread(run)
+        done = await asyncio.to_thread(run)
         await msg.edit_text(
-            f"✅ Лист {year} перекачено в темі {theme_name}: шапки з лого, "
-            f"формати ▲▼, спарклайни, графіки. Дані місяців не чіпались.\n"
+            f"✅ Перекачено ({theme_name}): {', '.join(sorted(done))} — шапки з лого, "
+            f"формати ▲▼, формули, спарклайни, графіки. Дані місяців не чіпались.\n"
             f"{SPREADSHEET_URL}",
             disable_web_page_preview=True)
     except Exception as e:
