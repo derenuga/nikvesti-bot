@@ -10,7 +10,12 @@ Account to a YouTube account», developers.google.com/youtube/reporting).
 
 Одноразове налаштування (робить власник каналу):
 1. Google Cloud → APIs & Services: увімкнути «YouTube Analytics API» і
-   «YouTube Data API v3».
+   «YouTube Data API v3». OAuth consent screen → Publishing status →
+   PUBLISH APP (In production): у статусі «Testing» refresh token живе лише
+   7 днів і бот відвалиться за тиждень; у Production — безстроково (при
+   використанні раз на 6 міс). Верифікація/аудит для власного інструмента з
+   одним користувачем не потрібні — на згоді буде «unverified app»,
+   тиснути Advanced → Go to (це нормально).
 2. Credentials → створити OAuth client ID типу «Web application» (НЕ Desktop:
    для oauthplayground потрібен явний redirect URI, якого в Desktop-клієнта
    немає — інакше redirect_uri_mismatch). У «Authorized redirect URIs»
