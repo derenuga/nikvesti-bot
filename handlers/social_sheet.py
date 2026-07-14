@@ -907,15 +907,37 @@ def _month_bounds(year, month):
             int(start_dt.timestamp()), int(end_dt.timestamp()))
 
 
+# Кешовані клієнти Google API: get_ga4_client() створює НОВИЙ gRPC-канал на
+# кожен виклик і не закриває його — у бекфілі на 36 місяців канали
+# накопичувались, і після ~20 місяців запити починали валитись (симптом з
+# проду: перша 21 порція ок, далі всі «порожні»). Один клієнт на процес.
+_ga4_client_cache = None
+_sc_client_cache = None
+
+
+def _cached_ga4_client():
+    global _ga4_client_cache
+    if _ga4_client_cache is None:
+        _ga4_client_cache = get_ga4_client()
+    return _ga4_client_cache
+
+
+def _cached_sc_client():
+    global _sc_client_cache
+    if _sc_client_cache is None:
+        _sc_client_cache = analytics_store._sc_client()
+    return _sc_client_cache
+
+
 def _collect_site(year, month):
     """GA4 напряму (тримає всю історію, один дешевий запит) + Search Console
     тоталі по типах (історія ~16 міс; чого нема — блок пише без SC-колонок)."""
     start, end, _, _ = _month_bounds(year, month)
-    client = get_ga4_client()
+    client = _cached_ga4_client()
     users, sessions, pageviews = get_stats(client, start, end)
     sc = {}
     try:
-        sc_client = analytics_store._sc_client()
+        sc_client = _cached_sc_client()
         for st in analytics_store.SC_SEARCH_TYPES:
             body = {"startDate": start, "endDate": end, "type": st, "rowLimit": 1}
             try:
@@ -1422,25 +1444,33 @@ async def sheet_backfill_handler(update, context):
         f"Прогрес — у цьому повідомленні після кожного місяця."
     )
     ok, partial, failed, tg_skipped = 0, 0, 0, 0
+    last_err = None
     for i, (y, m) in enumerate(todo, 1):
         blocks = blocks_all
         if "tg" in blocks and datetime(y, m, 1, tzinfo=KYIV_TZ) < tg_floor:
             blocks = tuple(b for b in blocks if b != "tg")
             tg_skipped += 1
         try:
-            if blocks:
+            results = await capture_month(y, m, blocks=blocks, with_followers=False) if blocks else {}
+            errs = {k: v for k, v in results.items() if v.startswith("⛔")}
+            if errs and len(errs) == len(results):
+                # усі блоки місяця впали — схоже на разовий збій API/мережі,
+                # одна повторна спроба після паузи
+                await asyncio.sleep(3)
                 results = await capture_month(y, m, blocks=blocks, with_followers=False)
-            else:
-                results = {}
-            bad = sum(1 for v in results.values() if v.startswith("⛔"))
-            if not results or bad == len(results):
+                errs = {k: v for k, v in results.items() if v.startswith("⛔")}
+            for k, v in errs.items():
+                print(f"social_sheet: бекфіл {y}-{m:02d} {k} {v}")
+                last_err = f"{y}-{m:02d} {k}: {v[2:].strip()[:160]}"
+            if not results or len(errs) == len(results):
                 failed += 1
-            elif bad == 0:
+            elif not errs:
                 ok += 1
             else:
                 partial += 1
         except Exception as e:
             failed += 1
+            last_err = f"{y}-{m:02d}: {str(e)[:160]}"
             print(f"social_sheet: бекфіл {y}-{m:02d} упав — {e}")
         try:
             await msg.edit_text(
@@ -1451,9 +1481,10 @@ async def sheet_backfill_handler(update, context):
             pass  # текст не змінився / фладліміт — Telegram таке не любить
     note_tg = (f"\nTG для {tg_skipped} міс до {tg_floor.strftime('%Y-%m')} пропущено "
                f"(немає якорів каналу — ці цифри переносяться зі старої таблиці).") if tg_skipped else ""
+    note_err = f"\n⚠️ Остання помилка: {last_err}" if last_err and (failed or partial) else ""
     await msg.edit_text(
         f"✅ Бекфіл готовий: {len(todo)} міс — повних {ok}, часткових {partial}, "
         f"порожніх {failed}.\nЧасткові/порожні — це нормально для давніх місяців: "
         f"SC тримає ~16 міс, Meta ~2 роки, підписники заднім числом недоступні "
-        f"ніде (переносяться зі старої таблиці окремо).{note_tg}\n{SPREADSHEET_URL}"
+        f"ніде (переносяться зі старої таблиці окремо).{note_tg}{note_err}\n{SPREADSHEET_URL}"
     )
