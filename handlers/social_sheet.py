@@ -101,46 +101,61 @@ TOTAL_BG = "#EFEDE6"       # рядок підсумку року
 BORDER_SOFT = "#E0DED8"
 BORDER_STRONG = "#B9B6AD"
 
+# PNG-логотипи мереж для шапок блоків: стабільні thumb-URL Wikimedia Commons
+# (офіційні файли, хотлінк дозволений, Google IMAGE() їх фетчить). Лого живе
+# у клітинці A шапки на БІЛОМУ чипі (на кольоровій плашці синє лого FB
+# потонуло б), формула =IFERROR(IMAGE(...);емодзі) — якщо файл на Commons
+# перейменують, замість діри буде емодзі. Перевірено 14.07.2026: усі 200 OK.
+_WM = "https://upload.wikimedia.org/wikipedia/commons/thumb"
+LOGOS = {
+    "fb": f"{_WM}/5/51/Facebook_f_logo_%282019%29.svg/120px-Facebook_f_logo_%282019%29.svg.png",
+    "ig": f"{_WM}/e/e7/Instagram_logo_2016.svg/120px-Instagram_logo_2016.svg.png",
+    "tg": f"{_WM}/8/83/Telegram_2019_Logo.svg/120px-Telegram_2019_Logo.svg.png",
+    "yt": f"{_WM}/0/09/YouTube_full-color_icon_%282017%29.svg/120px-YouTube_full-color_icon_%282017%29.svg.png",
+    "tt": f"{_WM}/a/a6/Tiktok_icon.svg/120px-Tiktok_icon.svg.png",
+    "vb": f"{_WM}/5/5d/Viber_logo_2018_%28without_text%29.svg/120px-Viber_logo_2018_%28without_text%29.svg.png",
+}
+
 # Блоки: рядки band (кольорова шапка) / header (назви колонок) / перший місяць /
 # підсумок. Рядок місяця m = m1 + m - 1. МІНЯТИ ОБЕРЕЖНО: формули підсумків і
 # січневі порівняння з груднем минулого року зав'язані на ці адреси, і вони
 # однакові на всіх річних листах (INDIRECT("'{рік-1}'!B32") тощо).
 SITE = {"key": "site", "band": 3, "hdr": 4, "m1": 5, "total": 17,
-        "color": FOX, "tint": FOX_TINT,
-        "title": "🌐  САЙТ NIKVESTI.COM — GA4 + Search Console",
+        "color": FOX, "tint": FOX_TINT, "emoji": "🦊",
+        "title": "САЙТ NIKVESTI.COM — GA4 + Search Console",
         "headers": ["Місяць", "Користувачі", "Δ", "Сеанси", "Перегляди", "Δ",
                     "🔍 Search", "📰 News", "💡 Discover", "Discover %", "Тренд"]}
 FBB = {"key": "fb", "band": 19, "hdr": 20, "m1": 21, "total": 33,
-       "color": FB, "tint": FB_TINT,
-       "title": "📘  FACEBOOK — МикВісті",
+       "color": FB, "tint": FB_TINT, "emoji": "📘",
+       "title": "FACEBOOK — МикВісті",
        "headers": ["Місяць", "Підписники", "+ / −", "Перегляди", "Δ",
                    "Взаємодії", "Δ", "Пости", "Топ допис", "", "Тренд"]}
 IGB = {"key": "ig", "band": 35, "hdr": 36, "m1": 37, "total": 49,
-       "color": IG, "tint": IG_TINT,
-       "title": "📷  INSTAGRAM — @nikvesti",
+       "color": IG, "tint": IG_TINT, "emoji": "📷",
+       "title": "INSTAGRAM — @nikvesti",
        "headers": ["Місяць", "Підписники", "+ / −", "Перегляди", "Δ",
                    "Охоплення", "Взаємодії", "Δ", "Пости", "", "Тренд"]}
 TGB = {"key": "tg", "band": 51, "hdr": 52, "m1": 53, "total": 65,
-       "color": TG, "tint": TG_TINT,
-       "title": "✈️  TELEGRAM — @nikvesti",
+       "color": TG, "tint": TG_TINT, "emoji": "✈️",
+       "title": "TELEGRAM — @nikvesti",
        "headers": ["Місяць", "Підписники", "+ / −", "Сер. охоплення поста", "Δ",
                    "Пости", "Перегляди за місяць", "ERR", "", "", "Тренд"]}
 # Блоки-каркаси: бот їх не заповнює (API ще не підключені), числа приїдуть
 # міграцією зі старої ручної таблиці і згодом з API — формули оживають самі.
 # Набір колонок — за метриками старої таблиці редакції.
 YTB = {"key": "yt", "band": 67, "hdr": 68, "m1": 69, "total": 81,
-       "color": YT, "tint": YT_TINT,
-       "title": "▶️  YOUTUBE — МикВісті   (дані вручну — API ще не підключено)",
+       "color": YT, "tint": YT_TINT, "emoji": "▶️",
+       "title": "YOUTUBE — МикВісті   (дані вручну — API ще не підключено)",
        "headers": ["Місяць", "Підписники", "+ / −", "Перегляди відео", "Δ",
                    "Час перегляду, год", "Контент", "CTR", "", "", "Тренд"]}
 TTB = {"key": "tt", "band": 83, "hdr": 84, "m1": 85, "total": 97,
-       "color": TT, "tint": TT_TINT,
-       "title": "🎵  TIKTOK — @nikvesti   (дані вручну — API ще не підключено)",
+       "color": TT, "tint": TT_TINT, "emoji": "🎵",
+       "title": "TIKTOK — @nikvesti   (дані вручну — API ще не підключено)",
        "headers": ["Місяць", "Підписники", "+ / −", "Перегляди відео", "Δ",
                    "Охоплення", "Вподобайки", "Поширення", "Коментарі", "", "Тренд"]}
 VBB = {"key": "vb", "band": 99, "hdr": 100, "m1": 101, "total": 113,
-       "color": VB, "tint": VB_TINT,
-       "title": "💜  VIBER — МикВісті   (дані вручну — API ще не підключено)",
+       "color": VB, "tint": VB_TINT, "emoji": "💜",
+       "title": "VIBER — МикВісті   (дані вручну — API ще не підключено)",
        "headers": ["Місяць", "Підписники", "+ / −", "Активні користувачі", "Δ",
                    "Надіслано повідомлень", "", "", "", "", "Тренд"]}
 BLOCKS = [SITE, FBB, IGB, TGB, YTB, TTB, VBB]
@@ -273,13 +288,24 @@ def _avg_pct_formula(block, col):
     return f'=IF(COUNT({rng})=0;"";AVERAGE({rng}))'
 
 
+def _band_values(year, b):
+    """Шапка блоку: A — PNG-лого мережі на білому чипі (фолбек — емодзі,
+    якщо Commons перейменує файл), B — назва блоку (злита B:K)."""
+    y = str(year)
+    url = LOGOS.get(b["key"])
+    logo = f'=IFERROR(IMAGE("{url}";1);"{b["emoji"]}")' if url else b["emoji"]
+    return [
+        {"range": f"'{y}'!A{b['band']}", "values": [[logo]]},
+        {"range": f"'{y}'!B{b['band']}", "values": [[b["title"]]]},
+    ]
+
+
 def _block_static_values(year, b):
     """Статика одного блоку: шапка, назви місяців, формули дельт/підсумків/
     спарклайна. Використовується і при створенні листа, і при апгрейді
     старих листів новими блоками."""
     y = str(year)
-    data = [
-        {"range": f"'{y}'!A{b['band']}", "values": [[b["title"]]]},
+    data = _band_values(year, b) + [
         {"range": f"'{y}'!A{b['hdr']}:K{b['hdr']}", "values": [b["headers"]]},
         {"range": f"'{y}'!A{b['m1']}:A{b['m1'] + 11}",
          "values": [[MONTHS_UA[m]] for m in range(1, 13)]},
@@ -394,26 +420,43 @@ def _year_static_values(year, blocks=BLOCKS):
     return data
 
 
+def _band_format_requests(sheet_id, b):
+    """Оформлення шапки блоку: A — білий чип під PNG-лого, B:K — злита
+    кольорова плашка з назвою. Окремо від решти, бо перевикористовується
+    апгрейдом лого на вже створених листах."""
+    return [
+        {"mergeCells": {"range": _grid(sheet_id, b["band"], b["band"], 1, NUM_COLS),
+                        "mergeType": "MERGE_ALL"}},
+        {"repeatCell": {"range": _grid(sheet_id, b["band"], b["band"], 0, 1),
+                        "cell": {"userEnteredFormat": {
+                            "backgroundColorStyle": {"rgbColor": _rgb("#FFFFFF")},
+                            "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+                            "textFormat": {"fontSize": 12},
+                        }},
+                        "fields": "userEnteredFormat(backgroundColorStyle,textFormat,"
+                                  "horizontalAlignment,verticalAlignment)"}},
+        {"repeatCell": {"range": _grid(sheet_id, b["band"], b["band"], 1, NUM_COLS),
+                        "cell": {"userEnteredFormat": {
+                            "backgroundColorStyle": {"rgbColor": _rgb(b["color"])},
+                            "textFormat": {"bold": True, "fontSize": 11,
+                                           "foregroundColorStyle": {"rgbColor": _rgb("#FFFFFF")}},
+                            "verticalAlignment": "MIDDLE",
+                        }},
+                        "fields": "userEnteredFormat(backgroundColorStyle,textFormat,verticalAlignment)"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "ROWS",
+                      "startIndex": b["band"] - 1, "endIndex": b["band"]},
+            "properties": {"pixelSize": 32}, "fields": "pixelSize"}},
+    ]
+
+
 def _block_format_requests(sheet_id, blocks):
     """batchUpdate-запити оформлення блоків (шапки з кольорами мереж, формати
     чисел зі стрілками, чергування рядків, межі, злиті клітинки)."""
     req = []
     for b in blocks:
-        # Кольорова шапка блоку
-        req.append({"mergeCells": {"range": _grid(sheet_id, b["band"], b["band"]),
-                                   "mergeType": "MERGE_ALL"}})
-        req.append({"repeatCell": {"range": _grid(sheet_id, b["band"], b["band"]),
-                    "cell": {"userEnteredFormat": {
-                        "backgroundColorStyle": {"rgbColor": _rgb(b["color"])},
-                        "textFormat": {"bold": True, "fontSize": 11,
-                                       "foregroundColorStyle": {"rgbColor": _rgb("#FFFFFF")}},
-                        "verticalAlignment": "MIDDLE",
-                    }},
-                    "fields": "userEnteredFormat(backgroundColorStyle,textFormat,verticalAlignment)"}})
-        req.append({"updateDimensionProperties": {
-            "range": {"sheetId": sheet_id, "dimension": "ROWS",
-                      "startIndex": b["band"] - 1, "endIndex": b["band"]},
-            "properties": {"pixelSize": 30}, "fields": "pixelSize"}})
+        # Кольорова шапка блоку з лого
+        req.extend(_band_format_requests(sheet_id, b))
 
         # Рядок назв колонок
         req.append({"repeatCell": {"range": _grid(sheet_id, b["hdr"], b["hdr"]),
@@ -598,6 +641,42 @@ def _upgrade_year_sheet(service, p, year):
     print(f"social_sheet: лист {year} добудовано блоками YouTube/TikTok/Viber")
 
 
+def _upgrade_band_logos(service, sheet_id, year):
+    """Ретрофіт PNG-лого на листи, створені до появи лого-чипів: у старих
+    шапках банд злито A:K і в A лежить текст назви. Знімаємо злиття, ставимо
+    формат A-чип + B:K-плашка, пишемо лого-формулу і назву. Ідемпотентно —
+    маркер: у A вже формула IMAGE (або емодзі-чип без лого)."""
+    ranges = [f"'{year}'!A{b['band']}" for b in BLOCKS]
+    got = service.spreadsheets().values().batchGet(
+        spreadsheetId=SOCIAL_SPREADSHEET_ID, ranges=ranges,
+        valueRenderOption="FORMULA",
+    ).execute()
+    todo = []
+    for b, vr in zip(BLOCKS, got.get("valueRanges", [])):
+        rows = vr.get("values") or [[""]]
+        cell = str(rows[0][0]) if rows[0] else ""
+        if "IMAGE(" in cell or cell == b["emoji"]:
+            continue
+        todo.append(b)
+    if not todo:
+        return
+    req = []
+    for b in todo:
+        req.append({"unmergeCells": {"range": _grid(sheet_id, b["band"], b["band"])}})
+        req.extend(_band_format_requests(sheet_id, b))
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SOCIAL_SPREADSHEET_ID, body={"requests": req},
+    ).execute()
+    data = []
+    for b in todo:
+        data.extend(_band_values(year, b))
+    service.spreadsheets().values().batchUpdate(
+        spreadsheetId=SOCIAL_SPREADSHEET_ID,
+        body={"valueInputOption": "USER_ENTERED", "data": data},
+    ).execute()
+    print(f"social_sheet: лист {year} — шапки {len(todo)} блоків отримали PNG-лого")
+
+
 def _ensure_year_sheet(service, year):
     """Лист року: якщо є — повертає sheetId (добудувавши новими блоками, якщо
     лист старої розмітки), якщо немає — створює й оформлює (статичні тексти,
@@ -613,6 +692,7 @@ def _ensure_year_sheet(service, year):
     if str(year) in titles:
         p = next(p for p in props if p["title"] == str(year))
         _upgrade_year_sheet(service, p, year)
+        _upgrade_band_logos(service, p["sheetId"], year)
         return titles[str(year)]
     reply = service.spreadsheets().batchUpdate(
         spreadsheetId=SOCIAL_SPREADSHEET_ID,
