@@ -146,6 +146,7 @@ DEFAULT_THEME = os.environ.get("SOCIAL_SHEET_THEME", "dark")
 # перейменують, замість діри буде емодзі. Перевірено 14.07.2026: усі 200 OK.
 _WM = "https://upload.wikimedia.org/wikipedia/commons/thumb"
 LOGOS = {
+    "site": f"{_WM}/7/77/GAnalytics.svg/120px-GAnalytics.svg.png",  # глиф Google Analytics
     "fb": f"{_WM}/5/51/Facebook_f_logo_%282019%29.svg/120px-Facebook_f_logo_%282019%29.svg.png",
     "ig": f"{_WM}/e/e7/Instagram_logo_2016.svg/120px-Instagram_logo_2016.svg.png",
     "tg": f"{_WM}/8/83/Telegram_2019_Logo.svg/120px-Telegram_2019_Logo.svg.png",
