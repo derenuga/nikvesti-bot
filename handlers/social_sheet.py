@@ -1389,11 +1389,16 @@ async def sheet_backfill_handler(update, context):
         await update.message.reply_text("⛔ Тільки для редакції.")
         return
     months = 36
-    if context.args:
-        try:
-            months = min(max(1, int(context.args[0])), 120)
-        except ValueError:
-            pass
+    sel = []
+    for arg in context.args or []:
+        if arg.lower() in ("site", "fb", "ig", "tg"):
+            sel.append(arg.lower())
+        else:
+            try:
+                months = min(max(1, int(arg)), 120)
+            except ValueError:
+                pass
+    blocks_all = tuple(sel) if sel else ("site", "fb", "ig", "tg")
     year, month = _prev_month()
     todo = []
     y, m = year, month
@@ -1404,36 +1409,51 @@ async def sheet_backfill_handler(update, context):
             y, m = y - 1, 12
     todo.reverse()
 
+    # Гортати стрічку t.me має сенс лише там, де є калібрувальні якорі
+    # message_id (з 2025-01): нижче екстраполяція бреше, і бот витрачав
+    # 2–4 хв на місяць, щоб записати майже напевно порожньо. Ті місяці
+    # приїдуть міграцією зі старої ручної таблиці.
+    tg_floor = min(datetime.fromisoformat(d) for d in tg_stats.CALIBRATION_ANCHORS)
+    tg_floor = tg_floor.replace(tzinfo=KYIV_TZ)
+
     msg = await update.message.reply_text(
         f"🦊 Бекфіл {months} міс ({todo[0][0]}-{todo[0][1]:02d} → "
-        f"{todo[-1][0]}-{todo[-1][1]:02d})… Це кілька хвилин: Meta пагінація "
-        f"+ гортання стрічки t.me по місяцях."
+        f"{todo[-1][0]}-{todo[-1][1]:02d}), блоки: {', '.join(blocks_all)}. "
+        f"Прогрес — у цьому повідомленні після кожного місяця."
     )
-    ok, partial, failed = 0, 0, 0
+    ok, partial, failed, tg_skipped = 0, 0, 0, 0
     for i, (y, m) in enumerate(todo, 1):
+        blocks = blocks_all
+        if "tg" in blocks and datetime(y, m, 1, tzinfo=KYIV_TZ) < tg_floor:
+            blocks = tuple(b for b in blocks if b != "tg")
+            tg_skipped += 1
         try:
-            results = await capture_month(y, m, with_followers=False)
-            bad = sum(1 for v in results.values() if v.startswith("⛔"))
-            if bad == 0:
-                ok += 1
-            elif bad < len(results):
-                partial += 1
+            if blocks:
+                results = await capture_month(y, m, blocks=blocks, with_followers=False)
             else:
+                results = {}
+            bad = sum(1 for v in results.values() if v.startswith("⛔"))
+            if not results or bad == len(results):
                 failed += 1
+            elif bad == 0:
+                ok += 1
+            else:
+                partial += 1
         except Exception as e:
             failed += 1
             print(f"social_sheet: бекфіл {y}-{m:02d} упав — {e}")
-        if i % 6 == 0 or i == len(todo):
-            try:
-                await msg.edit_text(
-                    f"🦊 Бекфіл: {i}/{len(todo)} міс "
-                    f"(повних {ok}, часткових {partial}, порожніх {failed})…"
-                )
-            except Exception:
-                pass  # текст не змінився — Telegram таке не любить
+        try:
+            await msg.edit_text(
+                f"🦊 Бекфіл: {i}/{len(todo)} — {y}-{m:02d} готово "
+                f"(повних {ok}, часткових {partial}, порожніх {failed})…"
+            )
+        except Exception:
+            pass  # текст не змінився / фладліміт — Telegram таке не любить
+    note_tg = (f"\nTG для {tg_skipped} міс до {tg_floor.strftime('%Y-%m')} пропущено "
+               f"(немає якорів каналу — ці цифри переносяться зі старої таблиці).") if tg_skipped else ""
     await msg.edit_text(
         f"✅ Бекфіл готовий: {len(todo)} міс — повних {ok}, часткових {partial}, "
         f"порожніх {failed}.\nЧасткові/порожні — це нормально для давніх місяців: "
         f"SC тримає ~16 міс, Meta ~2 роки, підписники заднім числом недоступні "
-        f"ніде (переносяться зі старої таблиці окремо).\n{SPREADSHEET_URL}"
+        f"ніде (переносяться зі старої таблиці окремо).{note_tg}\n{SPREADSHEET_URL}"
     )
