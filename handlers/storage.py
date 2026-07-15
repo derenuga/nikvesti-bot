@@ -354,6 +354,28 @@ def get_ai_usage(month=None):
         return dict(usage.get(month, {})) if month else dict(usage)
 
 
+def record_viber_post():
+    """Лічильник постів, задзеркалених у Viber, по місяцях (для Viber-блоку
+    таблиці аналітики — «Надіслано повідомлень»). Викликається на кожен
+    успішний пост дзеркала Telegram→Viber. Viber API історії постів не дає —
+    рахуємо самі, від моменту запуску дзеркала."""
+    month = datetime.now().strftime("%Y-%m")
+    with _lock:
+        state = _read_state()
+        counts = state.setdefault("viber_posts", {})
+        counts[month] = counts.get(month, 0) + 1
+        if len(counts) > 60:  # ~5 років місяців, з запасом
+            for old in sorted(counts.keys())[:len(counts) - 60]:
+                del counts[old]
+        _write_state(state)
+
+
+def get_viber_post_count(month):
+    """К-сть постів, задзеркалених у Viber за місяць 'YYYY-MM' (None, якщо не було)."""
+    with _lock:
+        return _read_state().get("viber_posts", {}).get(month)
+
+
 def get_traffic_spikes_state():
     """Стан детектора сплесків трафіку: профіль типового трафіку по слотах
     (день тижня + година) і час останнього алерту. Порожній dict = перший запуск."""
