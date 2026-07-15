@@ -15,28 +15,80 @@ TikTok Display API (v2) через OAuth — для TikTok-блоку табли
   минулого немає — тому бекфілу як у YouTube нема, тільки вперед. Історія
   TikTok у таблиці — з міграції старої таблиці.
 
-Одноразове налаштування (робить власник акаунта):
-1. developers.tiktok.com → створити app → додати продукт «Login Kit» +
-   «Display API»; scopes: user.info.basic, user.info.stats, video.list.
-   Пройти App review (TikTok перевіряє вручну — дні).
-2. Дістати refresh token OAuth-флоу від власника акаунта @nikvesti.com.
-3. У Railway: TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET / TIKTOK_REFRESH_TOKEN
-   (останній — сід; далі бот сам ротує й тримає у storage.tiktok_oauth).
+Одноразове налаштування (робить власник акаунта). PRODUCTION TikTok НЕ
+одобрює для «internal/personal use» — але нам він і не потрібен: свій аккаунт
+читаємо через SANDBOX (без ревью):
+1. developers.tiktok.com → app → вкладка Sandbox → створити пісочницю;
+   Products: Login Kit + Display API; Scopes: user.info.basic,
+   user.info.stats, video.list; Sandbox settings → Target users: додати
+   @nikvesti.com (свій акаунт); URL properties: зареєструвати redirect URI
+   (напр. https://nikvesti.com/ — сторінка будь-яка, код читаємо з адреси).
+2. У Railway: TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET (з ВКЛАДКИ SANDBOX,
+   не Production) + TIKTOK_REDIRECT_URI (той самий, що зареєстрував).
+3. У боті: /tiktok_auth (без аргументів) → бот дасть посилання згоди →
+   увійти як @nikvesti, дозволити → скопіювати ?code=… з адреси →
+   /tiktok_auth <code>. Бот обміняє код на refresh token і збереже у
+   storage.tiktok_oauth. (Ручний TIKTOK_REFRESH_TOKEN у env — необов'язковий
+   фолбек-сід, /tiktok_auth зручніший.)
 
-УВАГА: TikTok ротує refresh token на кожному оновленні — тому актуальний
-токен живе в storage, а env лише сідує перший раз.
+Токени (звірено з developers.tiktok.com/doc/oauth-user-access-token-management):
+access token 24 год, refresh token 365 днів; TikTok РОТУЄ refresh token на
+кожному оновленні («returned refresh_token may be different — use the new
+one») — тому актуальний живе в storage, бот бере новий щоразу. Раз на рік
+варто перепройти /tiktok_auth про запас.
 """
 
 import os
 import time
+from urllib.parse import urlencode, unquote
 
 import requests
 
 from handlers import storage
 
+AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
 TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
 USER_URL = "https://open.tiktokapis.com/v2/user/info/"
 VIDEO_LIST_URL = "https://open.tiktokapis.com/v2/video/list/"
+
+SCOPES = "user.info.basic,user.info.stats,video.list"
+
+
+def build_authorize_url(redirect_uri, state="nikvesti"):
+    """URL згоди TikTok: відкрити, увійти як @nikvesti (target user sandbox),
+    дозволити scopes — TikTok перекине на redirect_uri з ?code=… в адресі."""
+    return AUTH_URL + "?" + urlencode({
+        "client_key": os.environ.get("TIKTOK_CLIENT_KEY", ""),
+        "scope": SCOPES,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "state": state,
+    })
+
+
+def exchange_code(code, redirect_uri):
+    """Обмін authorization code на токени (grant_type=authorization_code) і
+    збереження refresh token у storage.tiktok_oauth. code одноразовий і живе
+    ~10 хв; TikTok кодує в ньому '*' як %2A — розкодовуємо."""
+    key = os.environ.get("TIKTOK_CLIENT_KEY")
+    secret = os.environ.get("TIKTOK_CLIENT_SECRET")
+    if not (key and secret):
+        raise RuntimeError("TIKTOK_CLIENT_KEY/CLIENT_SECRET не задано")
+    resp = requests.post(TOKEN_URL, data={
+        "client_key": key,
+        "client_secret": secret,
+        "code": unquote(code.strip()),
+        "grant_type": "authorization_code",
+        "redirect_uri": redirect_uri,
+    }, headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=20).json()
+    if not resp.get("refresh_token"):
+        raise RuntimeError(resp.get("error_description") or resp.get("error") or resp)
+    storage.save_tiktok_oauth({
+        "access_token": resp.get("access_token"),
+        "access_expires_at": time.time() + int(resp.get("expires_in", 86400)),
+        "refresh_token": resp["refresh_token"],
+    })
+    return resp
 
 
 def is_configured():
