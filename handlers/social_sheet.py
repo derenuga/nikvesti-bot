@@ -1510,6 +1510,61 @@ async def sheet_format_handler(update, context):
         await msg.edit_text(f"❌ Не вдалось: {e}")
 
 
+async def tiktok_auth_handler(update, context):
+    """/tiktok_auth — разова авторизація TikTok:
+    1. без аргументів: бот дає посилання згоди (відкрити, увійти як @nikvesti,
+       дозволити) — TikTok перекине на redirect_uri з ?code=… в адресі;
+    2. /tiktok_auth <code>: бот обмінює код на refresh token і зберігає його.
+    Потрібні env TIKTOK_CLIENT_KEY/CLIENT_SECRET (з SANDBOX) і TIKTOK_REDIRECT_URI
+    (той самий, що зареєстровано в URL properties пісочниці)."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    from handlers import tiktok_analytics as tt
+    if not (os.environ.get("TIKTOK_CLIENT_KEY") and os.environ.get("TIKTOK_CLIENT_SECRET")):
+        await update.message.reply_text(
+            "🦊 Спершу пропиши в Railway TIKTOK_CLIENT_KEY і TIKTOK_CLIENT_SECRET "
+            "(з вкладки Sandbox, не Production!)."
+        )
+        return
+    redirect = os.environ.get("TIKTOK_REDIRECT_URI")
+    if not redirect:
+        await update.message.reply_text(
+            "🦊 Задай env TIKTOK_REDIRECT_URI і зареєструй той самий URL у "
+            "пісочниці (кнопка URL properties). Підійде напр. "
+            "https://nikvesti.com/ — сторінка може бути будь-яка, код читаємо "
+            "з адресного рядка."
+        )
+        return
+    if not context.args:
+        url = tt.build_authorize_url(redirect)
+        await update.message.reply_text(
+            "🦊 Крок 1. Відкрий це посилання, увійди як @nikvesti (target user "
+            "пісочниці) і дозволь доступ:\n\n" + url +
+            "\n\nПісля згоди браузер перекине на " + redirect +
+            "?code=… — скопіюй значення code з адреси (до першого &) і надішли:\n"
+            "/tiktok_auth <code>\n\n(код одноразовий і живе ~10 хв — не зволікай)",
+            disable_web_page_preview=True,
+        )
+        return
+    msg = await update.message.reply_text("🦊 Обмінюю код на refresh token…")
+    try:
+        resp = await asyncio.to_thread(tt.exchange_code, context.args[0], redirect)
+        scopes = resp.get("scope", "")
+        ok = await asyncio.to_thread(tt.get_user_stats)
+        await msg.edit_text(
+            f"✅ TikTok підключено. Refresh token збережено (scopes: {scopes}). "
+            f"Перевірка профілю: підписників {ok.get('followers')}.\n"
+            f"Тепер /sheet_snapshot заповнить TikTok-рядок. Токен бот ротує сам."
+        )
+    except Exception as e:
+        await msg.edit_text(
+            f"❌ Не вдалось: {e}\n\nЧасті причини: код протух (>10 хв) або вже "
+            f"використаний — візьми свіжий через /tiktok_auth без аргументів; "
+            f"redirect_uri не збігається з зареєстрованим у пісочниці."
+        )
+
+
 async def youtube_backfill_handler(update, context):
     """/youtube_backfill [рік-початок] — залити помісячну історію YouTube
     (перегляди відео → D, години перегляду → F) з YouTube Analytics API за

@@ -104,6 +104,7 @@ handlers/
 | /sheet_format \[рік\|all\] \[dark\|light\] | Примусово перекатити оформлення річного листа таблиці аналітики (шапки з лого, формати ▲▼, формули, спарклайни, графіки, тема); all — усі річні листи разом; дані місяців не чіпає. Дефолтна тема — dark (env SOCIAL_SHEET_THEME); тема документа глобальна для всіх листів. «Голий» лист бот лікує й сам при наступному записі |
 | /sheet_migrate_legacy | Разово перенести історію зі старої ручної таблиці «МикВісті SMM» (2024-02…2026-06, data/legacy_smm.json) у таблицю аналітики: підписники всіх мереж + IG/FB/TG метрики + YouTube/TikTok/Viber цілком; ідемпотентно |
 | /youtube_backfill \[рік\] | Залити помісячну історію YouTube (перегляди відео → D, години перегляду → F) з YouTube Analytics API одним запитом за всю історію каналу (дефолт старту 2022); потрібен OAuth (YOUTUBE_OAUTH_*). Ідемпотентно |
+| /tiktok_auth \[code\] | Разова авторизація TikTok (Sandbox): без аргументів — бот дає посилання згоди; /tiktok_auth \<code\> — обмінює код на refresh token і зберігає у storage.tiktok_oauth. Потрібні TIKTOK_CLIENT_KEY/SECRET (Sandbox) + TIKTOK_REDIRECT_URI |
 | /report | GA4 звіт за вчора в чат редакції (щоденний авто-пост прибрано, лишилась ручна команда) |
 | /checkmail | Перевірити Gmail |
 | /instagram | Тижнева статистика Instagram |
@@ -225,7 +226,8 @@ YOUTUBE_OAUTH_CLIENT_SECRET  # опційно, секрет того ж OAuth cl
 YOUTUBE_OAUTH_REFRESH_TOKEN  # опційно, refresh token від власника каналу (scope yt-analytics.readonly); як дістати — docstring handlers/youtube_analytics.py
 TIKTOK_CLIENT_KEY            # опційно, TikTok Display API app (Login Kit) — TikTok-блок таблиці аналітики (підписники + вовлеченість по відео місяця; охоплення API не віддає)
 TIKTOK_CLIENT_SECRET         # опційно, секрет того ж TikTok app
-TIKTOK_REFRESH_TOKEN         # опційно, сід refresh token власника @nikvesti.com; TikTok ротує його, далі бот тримає актуальний у storage.tiktok_oauth. Налаштування — docstring handlers/tiktok_analytics.py
+TIKTOK_REDIRECT_URI          # опційно, redirect URI, зареєстрований у пісочниці TikTok (напр. https://nikvesti.com/) — для /tiktok_auth
+TIKTOK_REFRESH_TOKEN         # опційно, ручний сід refresh token (зазвичай не треба — /tiktok_auth сам кладе токен у storage.tiktok_oauth). TikTok ротує його, бот тримає актуальний. Налаштування — docstring handlers/tiktok_analytics.py
 SPREADSHEET_ID = 1bsKzGRsQ7O1aa4TpxmzqEfIjRM1A0dso7zueYvCXB1I
 SOCIAL_SPREADSHEET_ID        # опційно, таблиця «Аналітика МикВісті» (дефолт зашито: 1KNkxqN8ru4c2ez-x3nw9sEW-lXm562VdfJ3EEdbjGZk)
 SOCIAL_SHEET_THEME           # опційно, тема таблиці аналітики: dark (дефолт) | light
