@@ -63,6 +63,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from handlers import analytics_store
+from handlers import storage
 from handlers import telegram_stats as tg_stats
 from handlers.google_analytics import get_ga4_client, get_stats
 from handlers.helpers import MONTHS_UA
@@ -181,9 +182,11 @@ TGB = {"key": "tg", "band": 51, "hdr": 52, "m1": 53, "total": 65,
        "title": "TELEGRAM — @nikvesti",
        "headers": ["Місяць", "Підписники", "±", "Сер. охоплення поста", "Δ",
                    "Пости", "Перегляди за місяць", "ERR", "", "", "Тренд"]}
-# Блоки-каркаси: бот їх не заповнює (API ще не підключені), числа приїдуть
-# міграцією зі старої ручної таблиці і згодом з API — формули оживають самі.
-# Набір колонок — за метриками старої таблиці редакції.
+# Блоки, додані після перших п'яти (набір колонок — за метриками старої
+# таблиці редакції). YT/TT/VB тепер наповнюються з API (YouTube/TikTok — повно,
+# Viber — лише підписники + власний лічильник постів; решта колонок Viber/TT
+# без API-джерела лишаються ручними). MANUAL_BLOCKS — набір для добудови старих
+# листів, а не «без авто-заповнення».
 YTB = {"key": "yt", "band": 67, "hdr": 68, "m1": 69, "total": 81,
        "color": YT, "emoji": "▶️",
        "title": "YOUTUBE — @nikvesti",
@@ -196,9 +199,9 @@ TTB = {"key": "tt", "band": 83, "hdr": 84, "m1": 85, "total": 97,
                    "Охоплення", "Вподобайки", "Поширення", "Коментарі", "", "Тренд"]}
 VBB = {"key": "vb", "band": 99, "hdr": 100, "m1": 101, "total": 113,
        "color": VB, "emoji": "💜",
-       "title": "VIBER — МикВісті   (дані вручну — API ще не підключено)",
+       "title": "VIBER — МикВісті",
        "headers": ["Місяць", "Підписники", "±", "Активні користувачі", "Δ",
-                   "Надіслано повідомлень", "", "", "", "", "Тренд"]}
+                   "Постів у канал", "", "", "", "", "Тренд"]}
 BLOCKS = [SITE, FBB, IGB, TGB, YTB, TTB, VBB]
 MANUAL_BLOCKS = [YTB, TTB, VBB]  # каркаси без авто-заповнення
 
@@ -1220,6 +1223,21 @@ def _collect_telegram(year, month, with_followers):
     return out
 
 
+def _collect_viber(year, month, with_followers):
+    """Viber: підписники (get_account_info — ЄДИНА метрика, яку віддає API;
+    просмотрів/охоплення/активних немає) + к-сть постів, задзеркалених ботом
+    за місяць (власний лічильник, бо Viber історії постів не дає). Підписники
+    пишемо лише як живий знімок (with_followers) — у минулі місяці поточне
+    число не заносимо."""
+    from handlers import viber_mirror as vb
+    out = {"subscribers": None, "posts": None}
+    if with_followers and vb.is_enabled():
+        info = vb.get_account_info()
+        out["subscribers"] = info.get("subscribers_count")
+    out["posts"] = storage.get_viber_post_count(f"{year}-{month:02d}")
+    return out
+
+
 # ---------- Запис місяця в лист ----------
 
 def _hyperlink(url, label):
@@ -1227,7 +1245,7 @@ def _hyperlink(url, label):
     return f'=HYPERLINK("{url}";"{label}")'
 
 
-def _month_value_ranges(year, month, site, fb, ig, tg, yt=None, tt=None):
+def _month_value_ranges(year, month, site, fb, ig, tg, yt=None, tt=None, vb=None):
     """values.batchUpdate-діапазони рядка місяця. Пишемо ЛИШЕ сирі числа у
     «свої» клітинки (дельти/частки/спарклайни — формули, їх не чіпаємо);
     блок без даних пропускається повністю (не затираємо існуюче)."""
@@ -1305,14 +1323,21 @@ def _month_value_ranges(year, month, site, fb, ig, tg, yt=None, tt=None):
             data.append({"range": f"'{y}'!H{r}", "values": [[tt["shares"]]]})
         if tt.get("comments") is not None:
             data.append({"range": f"'{y}'!I{r}", "values": [[tt["comments"]]]})
+    if vb:
+        r = row(VBB)   # D (Активні користувачі) лишається ручним — Viber API не віддає
+        if vb.get("subscribers") is not None:
+            data.append({"range": f"'{y}'!B{r}", "values": [[vb["subscribers"]]]})
+        if vb.get("posts") is not None:
+            data.append({"range": f"'{y}'!F{r}", "values": [[vb["posts"]]]})
     return data
 
 
 BLOCK_LABELS = {"site": "🌐 Сайт", "fb": "📘 Facebook", "ig": "📷 Instagram",
-                "tg": "✈️ Telegram", "yt": "▶️ YouTube", "tt": "🎵 TikTok"}
+                "tg": "✈️ Telegram", "yt": "▶️ YouTube", "tt": "🎵 TikTok",
+                "vb": "💜 Viber"}
 
 
-async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt", "tt"),
+async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt", "tt", "vb"),
                         with_followers=True):
     """Знімок одного місяця: збирає джерела, гарантує лист року, пише рядок.
     Повертає {block: "✅ …"/"⛔ помилка"} — часткові збої не валять решту."""
@@ -1320,7 +1345,7 @@ async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt", "tt
     await asyncio.to_thread(_ensure_year_sheet, service, year)
 
     results = {}
-    site = fb = ig = tg = yt = tt = None
+    site = fb = ig = tg = yt = tt = vb = None
     if "site" in blocks:
         try:
             site = await asyncio.to_thread(_collect_site, year, month)
@@ -1382,8 +1407,19 @@ async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt", "tt
                                  f"лайки {tt.get('likes')}")
         except Exception as e:
             results["tt"] = f"⛔ {e}"
+    if "vb" in blocks:
+        try:
+            vb = await asyncio.to_thread(_collect_viber, year, month, with_followers)
+            if not any(v is not None for v in vb.values()):
+                vb, results["vb"] = None, "⛔ Viber не налаштовано / немає даних"
+            else:
+                results["vb"] = (f"✅ підписники {vb.get('subscribers')}, "
+                                 f"пости {vb.get('posts')}")
+        except Exception as e:
+            vb = None
+            results["vb"] = f"⛔ {e}"
 
-    data = _month_value_ranges(year, month, site, fb, ig, tg, yt, tt)
+    data = _month_value_ranges(year, month, site, fb, ig, tg, yt, tt, vb)
     if data:
         await asyncio.to_thread(
             lambda: service.spreadsheets().values().batchUpdate(

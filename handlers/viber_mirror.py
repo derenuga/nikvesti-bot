@@ -139,7 +139,11 @@ async def mirror_channel_post(msg):
     text = build_text(msg)
     if not text:
         return None
-    return await asyncio.to_thread(post_text, text)
+    resp = await asyncio.to_thread(post_text, text)
+    # Лічильник для Viber-блоку таблиці аналітики (Viber API історії постів не дає)
+    from handlers import storage
+    await asyncio.to_thread(storage.record_viber_post)
+    return resp
 
 
 # ---------- Команди ----------
