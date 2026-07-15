@@ -1547,9 +1547,14 @@ async def tiktok_auth_handler(update, context):
             disable_web_page_preview=True,
         )
         return
+    # Терпимо до формату: голий код / code=…&state=… / повний redirect-URL
+    raw = context.args[0].strip()
+    if "code=" in raw:
+        raw = raw.split("code=", 1)[1]
+    raw = raw.split("&", 1)[0].split("#", 1)[0]
     msg = await update.message.reply_text("🦊 Обмінюю код на refresh token…")
     try:
-        resp = await asyncio.to_thread(tt.exchange_code, context.args[0], redirect)
+        resp = await asyncio.to_thread(tt.exchange_code, raw, redirect)
         scopes = resp.get("scope", "")
         ok = await asyncio.to_thread(tt.get_user_stats)
         await msg.edit_text(
