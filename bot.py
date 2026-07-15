@@ -44,6 +44,8 @@ from handlers.budget_snapshots import budget_execution_handler, budget_snapshot_
 from handlers.knowledge_graph import kg_handler
 from handlers.builder_monitor import builder_handler, builder_test_handler, is_builder_nudge
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
+from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, viber_test_handler
+from handlers.notifier import notify_error
 from handlers import storage
 
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -72,6 +74,13 @@ async def channel_post_handler(update, context):
         last_channel_post_time["time"] = datetime.now()
         # Індекс для /stat: article_id → message_id (запис у storage — в потоці)
         await asyncio.to_thread(index_channel_post, update.channel_post)
+        # Дзеркало у Viber (тихо вимкнено без VIBER_AUTH_TOKEN; репости/службові
+        # пропускаються всередині). Помилку ковтаємо + алерт, щоб не зламати індекс.
+        try:
+            await mirror_channel_post(update.channel_post)
+        except Exception as e:
+            print(f"viber mirror: не вдалось задзеркалити пост — {e}")
+            await notify_error(context.bot, "дзеркало Viber", e)
 
 async def group_reply_to_bot(update, context):
     """Reply на повідомлення бота в чаті редакції — теж іде в Intent Router,
@@ -318,6 +327,8 @@ def main():
     app.add_handler(CommandHandler("sheet_migrate_legacy", sheet_migrate_legacy_handler))
     app.add_handler(CommandHandler("youtube_backfill", youtube_backfill_handler))
     app.add_handler(CommandHandler("tiktok_auth", tiktok_auth_handler))
+    app.add_handler(CommandHandler("viber_setup", viber_setup_handler))
+    app.add_handler(CommandHandler("viber_test", viber_test_handler))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("checkmail", checkmail))
     app.add_handler(CommandHandler("instagram", instagram_handler))
