@@ -71,6 +71,7 @@ handlers/
   gmail.py                — перевірка Gmail
   sheets.py               — запис у Google Sheets (Prozorro)
   reactions.py            — обробка реакцій на повідомлення про тендери
+  viber_mirror.py         — дзеркало Telegram→Viber: кожен пост каналу @nikvesti (крім репостів/службових) автопоститься у Viber-канал через Channels Post API (звільнити журналістів від крос-постингу). Фаза 1 — текст+лінк; картинки/відео далі. /viber_setup, /viber_test; env VIBER_AUTH_TOKEN (+ VIBER_WEBHOOK_URL)
   energy_outage.py        — графік відключень електроенергії (off.energy.mk.ua): /outage, /outage_probe, /outage_export (CSV вулиць із чергами)
   notifier.py             — сповіщення про збої scheduled-задач у приват адміну (слухач EVENT_JOB_ERROR + прямий notify_error у модулях з власним try/except)
   ai_usage.py             — звіт про вартість AI-шару: /aicost за місяць + авто-звіт Олегу 1-го числа; оцінка за прайсом моделей із токенів у storage (record_ai_usage)
@@ -105,6 +106,8 @@ handlers/
 | /sheet_migrate_legacy | Разово перенести історію зі старої ручної таблиці «МикВісті SMM» (2024-02…2026-06, data/legacy_smm.json) у таблицю аналітики: підписники всіх мереж + IG/FB/TG метрики + YouTube/TikTok/Viber цілком; ідемпотентно |
 | /youtube_backfill \[рік\] | Залити помісячну історію YouTube (перегляди відео → D, години перегляду → F) з YouTube Analytics API одним запитом за всю історію каналу (дефолт старту 2022); потрібен OAuth (YOUTUBE_OAUTH_*). Ідемпотентно |
 | /tiktok_auth \[code\] | Разова авторизація TikTok (Sandbox): без аргументів — бот дає посилання згоди; /tiktok_auth \<code\> — обмінює код на refresh token і зберігає у storage.tiktok_oauth. Потрібні TIKTOK_CLIENT_KEY/SECRET (Sandbox) + TIKTOK_REDIRECT_URI |
+| /viber_setup | Налаштувати дзеркало Viber: зареєструвати webhook (VIBER_WEBHOOK_URL) і показати акаунт/супер-адміна каналу. Потрібен VIBER_AUTH_TOKEN |
+| /viber_test | Тестовий пост у Viber-канал (перевірка постингу) |
 | /report | GA4 звіт за вчора в чат редакції (щоденний авто-пост прибрано, лишилась ручна команда) |
 | /checkmail | Перевірити Gmail |
 | /instagram | Тижнева статистика Instagram |
@@ -228,6 +231,8 @@ TIKTOK_CLIENT_KEY            # опційно, TikTok Display API app (Login Kit
 TIKTOK_CLIENT_SECRET         # опційно, секрет того ж TikTok app
 TIKTOK_REDIRECT_URI          # опційно, redirect URI, зареєстрований у пісочниці TikTok (напр. https://nikvesti.com/) — для /tiktok_auth
 TIKTOK_REFRESH_TOKEN         # опційно, ручний сід refresh token (зазвичай не треба — /tiktok_auth сам кладе токен у storage.tiktok_oauth). TikTok ротує його, бот тримає актуальний. Налаштування — docstring handlers/tiktok_analytics.py
+VIBER_AUTH_TOKEN             # опційно, токен супер-адміна Viber-каналу (Developer Tools каналу) — дзеркало Telegram→Viber (handlers/viber_mirror.py)
+VIBER_WEBHOOK_URL            # опційно, HTTPS-endpoint, що віддає 200 (Viber вимагає заданий webhook перед постингом у канал); реєструється через /viber_setup
 SPREADSHEET_ID = 1bsKzGRsQ7O1aa4TpxmzqEfIjRM1A0dso7zueYvCXB1I
 SOCIAL_SPREADSHEET_ID        # опційно, таблиця «Аналітика МикВісті» (дефолт зашито: 1KNkxqN8ru4c2ez-x3nw9sEW-lXm562VdfJ3EEdbjGZk)
 SOCIAL_SHEET_THEME           # опційно, тема таблиці аналітики: dark (дефолт) | light
