@@ -57,13 +57,22 @@ def get_account_info():
 
 
 def _sender_id():
-    """Viber-id супер-адміна каналу (потрібен як `from` у pa/post). Кешуємо."""
+    """Viber-id супер-адміна каналу (потрібен як `from` у pa/post — саме він
+    визначає підпис автора поста). Кешуємо.
+
+    VIBER_SENDER_ID (env) жорстко закріплює автора. Інакше — перший
+    super admin (не будь-який адмін-журналіст), далі admin, далі id акаунта."""
     global _sender_cache
     if _sender_cache:
         return _sender_cache
+    pinned = os.environ.get("VIBER_SENDER_ID")
+    if pinned:
+        _sender_cache = pinned.strip()
+        return _sender_cache
     info = get_account_info()
     members = info.get("members") or []
-    admin = next((m for m in members if m.get("role") in ("superadmin", "admin")), None)
+    admin = (next((m for m in members if m.get("role") == "superadmin"), None)
+             or next((m for m in members if m.get("role") == "admin"), None))
     _sender_cache = (admin or {}).get("id") or info.get("id")
     if not _sender_cache:
         raise RuntimeError("не знайдено super admin id у get_account_info")
@@ -160,7 +169,14 @@ async def viber_setup_handler(update, context):
         info = await asyncio.to_thread(get_account_info)
         sender = await asyncio.to_thread(_sender_id)
         lines = [f"✅ Акаунт: {info.get('name')} (id {info.get('id')})",
-                 f"Супер-адмін (from): {sender}"]
+                 f"Автор постів (from): {sender}", ""]
+        members = info.get("members") or []
+        if members:
+            lines.append("Учасники (id — для VIBER_SENDER_ID, якщо хочеш іншого автора):")
+            for m in members:
+                mark = " ← зараз" if m.get("id") == sender else ""
+                lines.append(f"• {m.get('name')} — {m.get('role')} — {m.get('id')}{mark}")
+            lines.append("")
         if webhook:
             await asyncio.to_thread(set_webhook, webhook)
             lines.append(f"Webhook зареєстровано: {webhook}")
