@@ -54,6 +54,11 @@ VIDEO_LIST_URL = "https://open.tiktokapis.com/v2/video/list/"
 SCOPES = "user.info.basic,user.info.stats,video.list"
 
 
+class TikTokAuthError(RuntimeError):
+    """Refresh token недійсний/протух — потрібна переавторизація (/tiktok_auth).
+    Окремо від мережевих збоїв, щоб алертити лише коли справді треба re-auth."""
+
+
 def build_authorize_url(redirect_uri, state="nikvesti"):
     """URL згоди TikTok: відкрити, увійти як @nikvesti (target user sandbox),
     дозволити scopes — TikTok перекине на redirect_uri з ?code=… в адресі."""
@@ -121,8 +126,8 @@ def _access_token():
         "refresh_token": refresh,
     }, headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=20).json()
     if "access_token" not in resp:
-        raise RuntimeError(f"TikTok refresh не вдався: "
-                           f"{resp.get('error_description') or resp.get('error') or resp}")
+        raise TikTokAuthError(f"TikTok refresh не вдався: "
+                              f"{resp.get('error_description') or resp.get('error') or resp}")
     new = {
         "access_token": resp["access_token"],
         "access_expires_at": now + int(resp.get("expires_in", 86400)),

@@ -1408,6 +1408,34 @@ def _results_text(year, month, results):
     return "\n".join(lines)
 
 
+TIKTOK_REAUTH_TEXT = (
+    "🎵 TikTok відвалився — треба переавторизувати (токен протух або відкликаний).\n"
+    "Аналітика TikTok у таблиці зупиниться, поки не оновиш. Це 2 хвилини:\n\n"
+    "1. Надішли мені (в цей чат) /tiktok_auth\n"
+    "2. Відкрий посилання, яке я дам, увійди як @nikvesti, дозволь доступ\n"
+    "3. Браузер перекине на адресу з ?code=… — скопіюй code з адресного рядка\n"
+    "4. Надішли /tiktok_auth <code>\n\n"
+    "Готово — я збережу новий токен і далі веду TikTok сам. "
+    "(Нагадування, бо раз на рік токен треба поновлювати.)"
+)
+
+
+async def check_tiktok_health(bot):
+    """Щотижнева перевірка TikTok-токена: якщо refresh відвалився — особистий
+    алерт Олегу з інструкцією /tiktok_auth (щоб не згадувати через рік).
+    Тихо пропускає, поки TikTok не налаштовано; мережеві збої не алертить."""
+    from handlers import tiktok_analytics as tt
+    if not tt.is_configured():
+        return
+    try:
+        await asyncio.to_thread(tt.get_user_stats)
+    except tt.TikTokAuthError:
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=TIKTOK_REAUTH_TEXT,
+                               disable_web_page_preview=True)
+    except Exception as e:
+        print(f"check_tiktok_health: тимчасовий збій (не re-auth) — {e}")
+
+
 async def run_monthly_snapshot(bot):
     """Автозадача 1-го числа: знімок попереднього місяця в таблицю, короткий
     звіт Олегу в приват (раз на місяць — не шум)."""
