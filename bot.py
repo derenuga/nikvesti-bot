@@ -77,7 +77,7 @@ async def channel_post_handler(update, context):
         # Дзеркало у Viber (тихо вимкнено без VIBER_AUTH_TOKEN; репости/службові
         # пропускаються всередині). Помилку ковтаємо + алерт, щоб не зламати індекс.
         try:
-            await mirror_channel_post(update.channel_post)
+            await mirror_channel_post(context.bot, update.channel_post)
         except Exception as e:
             print(f"viber mirror: не вдалось задзеркалити пост — {e}")
             await notify_error(context.bot, "дзеркало Viber", e)
