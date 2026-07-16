@@ -139,44 +139,64 @@ def build_keyboard(dialog_key):
 
 # ---------- Звірка показаного списку з памʼяттю ----------
 #
-# Лис іноді (попри інструкцію «показуй УСІ items») показує не весь знайдений
-# список, а лише релевантний зріз, ще й перенумеровує його з 1. Тоді памʼять
-# тримала б, скажімо, 20 новин під номерами 1-20, а користувач бачив би 6 під
-# номерами 1-6: кнопок 20 замість 6, а тап по «3» вибирав би не ту новину, що
-# в тексті (нумерація розійшлась). Тому ПІСЛЯ відповіді Лиса зводимо памʼять
-# рівно під показаний список — парсимо рядки «N. … <a href="URL">», зіставляємо
-# URL з памʼяттю і лишаємо тільки показані новини під показаними номерами.
+# Кнопки-номери мають відповідати РІВНО тому списку, що Лис показав у тексті —
+# інакше вони безглузді. Два реальні баги, які це лагодить:
+#   1) Лис нічого не показав («нічого не знайшов»), але пошук наповнив памʼять
+#      25 результатами → раніше зʼявлялось 25 кнопок під відповіддю без списку.
+#   2) Лис показав N новин, але надрукував URL із рубрикою, а в памʼяті URL без
+#      рубрики (старі статті норою зберігались без category) → точний матч URL
+#      ламався, і з N новин лишалась 1 кнопка.
+# Тому ПІСЛЯ відповіді Лиса парсимо рядки «N. … <a href="URL">» і зводимо памʼять
+# рівно під показаний список. Матч показаного лінка з памʼяттю — гнучкий: повний
+# URL → slug-хвіст (останній сегмент) → id зі слага. Так розбіжність рубрики чи
+# дрібна нормалізація URL уже не викидає новину.
 
 _SHOWN_LINE_RE = re.compile(r'^\s*(\d+)\.\s.*?<a\s+href="([^"]+)"', re.MULTILINE)
+
+
+def _match_shown_url(url, by_url, by_tail, by_id):
+    """Знайти новину памʼяті за показаним лінком: точний URL → slug-хвіст → id."""
+    if url in by_url:
+        return by_url[url]
+    tail = _slug_from_url(url)
+    if tail and tail in by_tail:
+        return by_tail[tail]
+    m = re.match(r"^(\d+)", tail or "")
+    if m and int(m.group(1)) in by_id:
+        return by_id[int(m.group(1))]
+    return None
 
 
 def reconcile_shown(dialog_key, shown_text):
     """Звести памʼять останнього пошуку до новин, які Лис реально показав.
 
-    Повертає True, якщо памʼять переписано (кнопки треба будувати заново).
-    False — якщо у тексті не розпізнано список новин або показано рівно те,
-    що вже в памʼяті (тоді нічого не чіпаємо)."""
+    Повертає список показаних новин (перенумерований 1..k), під який зведено
+    памʼять — саме по ньому треба будувати кнопки. None — якщо у тексті НЕ
+    розпізнано список новин (напр. Лис відповів «нічого не знайшов»): тоді
+    кнопки показувати не можна, бо їм нема до чого приʼвʼязатись."""
     entry = _get_entry(dialog_key)
     if not entry or not entry["items"]:
-        return False
+        return None
     pairs = _SHOWN_LINE_RE.findall(shown_text or "")
     if not pairs:
-        return False
-    by_url = {it["url"]: it for it in entry["items"]}
-    shown = []
-    for i, (_n, url) in enumerate(pairs, start=1):
-        it = by_url.get(url)
-        if it:
-            shown.append({**it, "n": i})
+        return None
+    by_url, by_tail, by_id = {}, {}, {}
+    for it in entry["items"]:
+        by_url[it["url"]] = it
+        tail = _slug_from_url(it["url"])
+        if tail:
+            by_tail.setdefault(tail, it)
+        by_id[it["id"]] = it
+    shown, seen = [], set()
+    for _n, url in pairs:
+        it = _match_shown_url(url, by_url, by_tail, by_id)
+        if it and it["id"] not in seen:
+            seen.add(it["id"])
+            shown.append({**it, "n": len(shown) + 1})
     if not shown:
-        return False
-    # Показано рівно те, що в памʼяті (той самий набір і порядок) — no-op.
-    if len(shown) == len(entry["items"]) and all(
-        s["url"] == o["url"] for s, o in zip(shown, entry["items"])
-    ):
-        return False
+        return None
     remember_results(dialog_key, shown, turn_id=entry.get("turn_id"))
-    return True
+    return shown
 
 
 # ---------- Пошук ----------

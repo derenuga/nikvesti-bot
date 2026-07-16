@@ -1654,8 +1654,12 @@ async def handle_natural_language_query(update, context):
                     # Лис міг показати не весь знайдений список (релевантний зріз) і
                     # перенумерувати його — зводимо памʼять під показане, щоб кнопки
                     # й номери збігалися з текстом, а тап вибирав саме ту новину.
-                    news_archive.reconcile_shown(dialog_key, final_text)
-                    reply_markup = news_archive.build_keyboard(dialog_key)
+                    # reconcile повертає None, якщо списку в тексті немає (Лис нічого
+                    # не показав) — тоді кнопок не будуємо, інакше вони «висіли б» під
+                    # відповіддю без списку, привʼязані до прихованого пошуку.
+                    shown = news_archive.reconcile_shown(dialog_key, final_text)
+                    if shown:
+                        reply_markup = news_archive.build_keyboard(dialog_key)
                 # HTML-режим, коли у відповіді є розмітка: <a href> (архів/бек)
                 # або <b> (блоки змін бюджету) — інакше теги показуються голим
                 # текстом. Без розмітки — простий edit_text (менше шансів на 400).
