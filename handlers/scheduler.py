@@ -16,6 +16,7 @@ from handlers.law_enforcement import check_law_enforcement
 from handlers.energy_outage import check_outage_changes
 from handlers.traffic_spikes import check_traffic_spikes
 from handlers.builder_monitor import check_builder_staleness
+from handlers.fb_missing import check_fb_missing
 from handlers.archive_mirror import run_archive_sync
 from handlers.budget_snapshots import run_snapshot_check
 from handlers.entity_layer import sync_entities_incremental
@@ -184,6 +185,14 @@ async def monthly_social_sheet(bot):
     таблицю аналітики, короткий звіт Олегу в приват."""
     await run_monthly_snapshot(bot)
 
+async def run_check_fb_missing(bot):
+    try:
+        await check_fb_missing(bot)
+    except Exception as e:
+        print("Помилка монітора власних новин без ФБ: " + str(e))
+        await notify_error(bot, "власні новини без Facebook", e)
+
+
 async def weekly_tiktok_health(bot):
     """Щотижнева перевірка TikTok-токена: якщо протух — алерт Олегу з
     інструкцією /tiktok_auth (щоб не згадувати процедуру через рік)."""
@@ -259,5 +268,9 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # (публікують на початку місяця нерегулярно; перевірка дешева, тиха,
     # коли нового немає; тихо пропускається без BOT_DATABASE_URL)
     scheduler.add_job(run_snapshot_check, "cron", hour=11, minute=20, args=[bot])
+    # Монітор власних новин без Facebook-публікації — щогодини на :20 у робочі
+    # години (9–21 Києвом, гейт усередині функції). Вільна хвилина в розкладі;
+    # тихо пропускається без БД сайту. Перший запуск — тихий baseline.
+    scheduler.add_job(run_check_fb_missing, "cron", hour="9-21", minute=20, args=[bot])
     scheduler.start()
     return scheduler

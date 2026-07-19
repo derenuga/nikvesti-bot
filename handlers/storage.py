@@ -391,6 +391,24 @@ def save_traffic_spikes_state(spikes_state):
         _write_state(state)
 
 
+def get_fb_missing_state():
+    """Стан монітора власних новин без Facebook-публікації (fb_missing.py):
+    {"alerted": [node_id, ...], "baseline_done": bool}. alerted — новини, про
+    які вже нагадали (нагадуємо РІВНО раз); baseline_done — чи пройдено перший
+    тихий baseline (щоб перший запуск не завалив чат добовою історією).
+    Порожній dict = перший запуск."""
+    with _lock:
+        state = _read_state()
+        return state.get("fb_missing", {})
+
+
+def save_fb_missing_state(fb_missing_state):
+    with _lock:
+        state = _read_state()
+        state["fb_missing"] = fb_missing_state
+        _write_state(state)
+
+
 def get_tiktok_oauth():
     """OAuth-стан TikTok: {"refresh_token", "access_token", "access_expires_at"}.
     TikTok РОТУЄ refresh token на кожному оновленні (старий протухає), тому

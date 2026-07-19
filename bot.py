@@ -43,6 +43,7 @@ from handlers.budget_revisions import budget_load_handler, budget_status_handler
 from handlers.budget_snapshots import budget_execution_handler, budget_snapshot_check_handler, budget_execution_test_handler, budget_snapshot_reset_handler
 from handlers.knowledge_graph import kg_handler
 from handlers.builder_monitor import builder_handler, builder_test_handler, is_builder_nudge
+from handlers.fb_missing import fbmissing_handler, fbmissing_test_handler
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
 from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, viber_test_handler
 from handlers.notifier import notify_error
@@ -315,6 +316,8 @@ def main():
     app.add_handler(CommandHandler("myip", myip))
     app.add_handler(CommandHandler("builder", builder_handler))
     app.add_handler(CommandHandler("builder_test", builder_test_handler))
+    app.add_handler(CommandHandler("fbmissing", fbmissing_handler))
+    app.add_handler(CommandHandler("fbmissing_test", fbmissing_test_handler))
     app.add_handler(CommandHandler("analytics", analytics_handler))
     app.add_handler(CommandHandler("analytics_backfill", analytics_backfill_handler))
     app.add_handler(CommandHandler("sc_backfill", sc_backfill_handler))
