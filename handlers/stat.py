@@ -22,6 +22,7 @@ from google.oauth2 import service_account
 
 from handlers.telegram_stats import get_tg_stat, SEARCH_MAX_PAGES
 from handlers.facebook import get_reel_insights, fix_permalink
+from handlers import stat_instagram
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
@@ -414,7 +415,7 @@ def _short_fb_error(error):
 
 
 def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
-                        posts_scanned=None, fb_error=None):
+                        posts_scanned=None, fb_error=None, ig_stats=None):
     clean = _clean_url(article_url)
     lines = [
         f"📊 <b>Статистика матеріалу</b>",
@@ -475,6 +476,33 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
                 lines.append("")
                 lines.append(f'Разом переглядів: {fb_views_total:,}'.replace(",", " "))
 
+    # ---- Instagram ----
+    lines.append("")
+    lines.append("📷 <b>Instagram</b>")
+    ig_views_total = None
+    if not ig_stats:
+        lines.append("Допис не знайдено")
+    else:
+        several_ig = len(ig_stats) > 1
+        for i, item in enumerate(ig_stats):
+            if i > 0:
+                lines.append("")
+            label = "🎬 Рілз" if item.get("media_type") == "VIDEO" else "Допис"
+            num = f"{i + 1}. " if several_ig else ""
+            lines.append(f'{num}<a href="{item["permalink"]}">{label} від {item["date"]}</a>')
+            if item.get("views") is not None:
+                lines.append(f'👁 Перегляди: {item["views"]:,}'.replace(",", " "))
+            if item.get("reach") is not None:
+                lines.append(f'👀 Охоплення: {item["reach"]:,}'.replace(",", " "))
+            lines.append(f'❤️ Лайки: {item.get("likes", 0)}')
+            lines.append(f'💬 Коментарі: {item.get("comments", 0)}')
+        ig_views_known = [it["views"] for it in ig_stats if it.get("views") is not None]
+        if ig_views_known:
+            ig_views_total = sum(ig_views_known)
+            if several_ig:
+                lines.append("")
+                lines.append(f'Разом переглядів: {ig_views_total:,}'.replace(",", " "))
+
     # ---- Telegram ----
     lines.append("")
     lines.append("📣 <b>Telegram</b>")
@@ -492,7 +520,7 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
 
     # ---- Сукупно по всіх каналах ----
     # Сумуємо перегляди звідусіль, де є дані: сайт + Facebook + Telegram
-    channel_totals = [v for v in (site_total, fb_views_total, tg_views) if v is not None]
+    channel_totals = [v for v in (site_total, fb_views_total, ig_views_total, tg_views) if v is not None]
     if channel_totals:
         grand_total = sum(channel_totals)
         lines.append("")
@@ -553,5 +581,14 @@ async def stat_handler(update, context):
         tg_stat = None
         print(f"stat: помилка Telegram — {e}")
 
-    text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date, fb_scanned, fb_error)
+    # Instagram: у стрічці немає URL статті, тому шукаємо по смислу
+    # (сигнатура статті ↔ підпис допису), деталі — handlers/stat_instagram.py
+    try:
+        ig_stats = await stat_instagram.get_instagram_stat(article_url, pub_date)
+    except Exception as e:
+        ig_stats = []
+        print(f"stat: помилка Instagram — {e}")
+
+    text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date,
+                               fb_scanned, fb_error, ig_stats)
     await msg.edit_text(text, parse_mode="HTML")
