@@ -284,18 +284,47 @@ def _post_matches_article(post, clean_url, article_id):
     return False
 
 
-def _get_fb_reels(limit=50):
+def _reel_ts(reel):
+    """created_time рілза → unix (0, якщо не розпарсити)."""
+    try:
+        return int(datetime.strptime(reel.get("created_time", ""),
+                                     "%Y-%m-%dT%H:%M:%S%z").timestamp())
+    except Exception:
+        return 0
+
+
+def _get_fb_reels(since_ts=None, until_ts=None, max_pages=15):
+    """Рілзи сторінки. /video_reels не має фільтра since/until, віддає від
+    найновіших — тому гортаємо paging.next з ранньою зупинкою, щойно дійшли до
+    рілзів старших за since (як стрічка постів). Так рілз знаходиться на
+    будь-якій глибині, а не лише в останніх ~50 (старий відомий gap). Без
+    since — одна сторінка найновіших (фолбек, коли дату статті не визначили)."""
     url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/video_reels"
     params = {
         "fields": "id,description,permalink_url,created_time",
-        "limit": limit,
+        "limit": 100,
         "access_token": FACEBOOK_PAGE_TOKEN,
     }
-    resp = requests.get(url, params=params, timeout=15)
-    data = resp.json()
-    if "error" in data:
-        return []
-    return data.get("data", [])
+    out = []
+    pages = max_pages if since_ts else 1
+    for _ in range(pages):
+        data = requests.get(url, params=params, timeout=15).json()
+        if "error" in data:
+            break
+        reached_older = False
+        for reel in data.get("data", []):
+            ts = _reel_ts(reel)
+            if until_ts and ts and ts >= until_ts:
+                continue                      # новіше за вікно
+            if since_ts and ts and ts < since_ts:
+                reached_older = True          # найновіші → далі лише старіші
+                break
+            out.append(reel)
+        next_url = data.get("paging", {}).get("next")
+        if reached_older or not next_url:
+            break
+        url, params = next_url, None  # next_url уже містить усі параметри
+    return out
 
 
 def _get_reel_views(reel_id):
@@ -338,8 +367,9 @@ def _post_keys(post):
 
 
 def get_fb_stats(article_url, article_id, pub_date=None):
-    """Шукає ВСІ публікації про матеріал: звичайні пости (вікно від дати
-    публікації) і рілзи з посиланням в описі (останні ~50).
+    """Шукає ВСІ публікації про матеріал: звичайні пости і рілзи з посиланням
+    в описі — обидва в СПІЛЬНОМУ вікні від дати публікації (рілзи гортаються
+    пагінацією до старого краю вікна, тож знаходяться на будь-якій глибині).
 
     Рілз FB дублює ще й у стрічці постів (як відео-пост із тим самим
     контентом, але іншим лічильником переглядів). Такий дубль прибираємо —
@@ -352,9 +382,27 @@ def get_fb_stats(article_url, article_id, pub_date=None):
     reels_out = []
     reel_key_union = set()
 
-    # Рілзи спершу — щоб потім впізнати і прибрати їх дублі зі стрічки постів
+    # Вікно пошуку — СПІЛЬНЕ для рілзів і стрічки постів: від дати публікації
+    # вперед FB_SEARCH_FORWARD_DAYS (статтю постять у цей проміжок). Без дати —
+    # дефолт 14 днів назад.
+    if pub_date is None:
+        pub_date = get_article_published_date(article_url)
+    now = datetime.now()
+    if pub_date:
+        since_dt = pub_date.replace(tzinfo=None) - timedelta(days=1)
+        until_dt = min(pub_date.replace(tzinfo=None) + timedelta(days=FB_SEARCH_FORWARD_DAYS), now)
+    else:
+        until_dt = now
+        since_dt = until_dt - timedelta(days=14)
+    since_ts, until_ts = int(since_dt.timestamp()), int(until_dt.timestamp())
+
+    # Рілзи спершу — щоб потім впізнати і прибрати їх дублі зі стрічки постів.
+    # З вікном і пагінацією рілз знаходиться на будь-якій глибині (без дати —
+    # лише найновіша сторінка, як раніше)
     try:
-        for reel in _get_fb_reels():
+        reels = _get_fb_reels(since_ts if pub_date else None,
+                              until_ts if pub_date else None)
+        for reel in reels:
             if not _matches_article(reel.get("description") or "", clean, article_id):
                 continue
             reactions, comments, shares = get_reel_insights(reel["id"])
@@ -372,25 +420,12 @@ def get_fb_stats(article_url, article_id, pub_date=None):
     except Exception as e:
         print(f"stat: помилка пошуку рілзів — {e}")
 
-    # Вікно пошуку постів: якщо знаємо дату публікації — дивимось від неї
-    # вперед FB_SEARCH_FORWARD_DAYS днів (статтю постять у цей проміжок).
-    # Так знаходимо і старі матеріали, а не тільки за 14 днів. Без дати —
-    # дефолтне вікно 14 днів назад.
-    if pub_date is None:
-        pub_date = get_article_published_date(article_url)
-    now = datetime.now()
-    if pub_date:
-        since_dt = pub_date.replace(tzinfo=None) - timedelta(days=1)
-        until_dt = min(pub_date.replace(tzinfo=None) + timedelta(days=FB_SEARCH_FORWARD_DAYS), now)
-    else:
-        until_dt = now
-        since_dt = until_dt - timedelta(days=14)
-
-    # Помилку стрічки постів (напр. ліміт Graph API) ловимо тут — щоб не
-    # занулити всю секцію: рілзи вже зібрані, і повертаємо ознаку помилки
+    # Стрічка постів — те саме вікно (пораховане вище, спільне з рілзами).
+    # Помилку стрічки ловимо окремо — щоб не занулити всю секцію: рілзи вже
+    # зібрані, і повертаємо ознаку помилки
     error = None
     try:
-        posts = _get_fb_posts(int(since_dt.timestamp()), int(until_dt.timestamp()))
+        posts = _get_fb_posts(since_ts, until_ts)
     except Exception as e:
         posts = []
         error = str(e)
