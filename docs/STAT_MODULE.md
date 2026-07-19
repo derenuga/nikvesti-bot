@@ -10,6 +10,7 @@
 - **Facebook** — ВСІ публікації про матеріал (звичайні пости + рілзи з посиланням в описі), кожна з переглядами/реакціями/коментарями/шерами; якщо їх кілька — нумерація і "Разом переглядів"
 - **Instagram** — допис про матеріал, знайдений СЕМАНТИЧНО (по підпису, бо URL у стрічці немає) + перегляди/охоплення/лайки/коментарі/поширення/збереження
 - **TikTok** — відео про матеріал, той самий семантичний пошук (TikTok = дзеркало інсти); перегляди/лайки/коментарі/поширення. Показується лише коли налаштовано TikTok OAuth
+- **YouTube** — відео про матеріал, той самий семантичний пошук; перегляди/лайки/коментарі. Показується лише коли налаштовано YouTube OAuth
 - **Telegram** — пост у каналі @nikvesti з посиланням на матеріал + його перегляди
 - **GA4** — перегляди по мовних версіях (ua/ru/en) і загальна сума
 
@@ -18,8 +19,10 @@
 handlers/stat.py           — оркестрація: Facebook-пошук, Instagram, GA4 запит, Telegram, форматування
 handlers/stat_instagram.py — семантичний пошук допису Instagram про матеріал (сигнатура ↔ підпис); ядро скорингу/сигнатури/судді переиспользує і stat_tiktok
 handlers/stat_tiktok.py    — семантичний пошук відео TikTok (дзеркало інсти); те саме ядро, кандидати з TikTok Display API
+handlers/stat_youtube.py   — семантичний пошук відео YouTube; те саме ядро, кандидати з YouTube Data API
 handlers/instagram.py      — get_media_in_window (кандидати у вікні дат), get_media_insights (метрики допису)
 handlers/tiktok_analytics.py — get_videos_in_window (відео у вікні дат: video_description+title+метрики)
+handlers/youtube_analytics.py — get_videos_in_window (плейлист завантажень → videos.list: title+description+метрики)
 handlers/telegram_stats.py — перегляди в Telegram: індекс постів каналу + пошук по t.me/s
 handlers/storage.py        — ключ "tg_posts": {article_id: {"message_id": N}}
 ```
@@ -93,6 +96,13 @@ handlers/storage.py        — ключ "tg_posts": {article_id: {"message_id": 
 - **Опційність:** блок TikTok з'являється, лише коли налаштовано TikTok OAuth (`tiktok_analytics.is_configured()` — SANDBOX, `/tiktok_auth`). Без OAuth `get_tiktok_stat` повертає None і блок ховається (щоб не показувати «не знайдено» там, де мережа просто не під'єднана).
 - ⚠️ Живі виклики Display API на пошук по вікну для /stat не тестувались окремо — перший реальний тест на проді (механіка списку та сама, що в місячному зрізі таблиці аналітики).
 
+**YouTube (семантичний пошук — `handlers/stat_youtube.py`):**
+- **Той самий підхід і ядро**, що Instagram/TikTok. URL статті у відео немає → зіставляємо сигнатуру статті з `title + description` відео.
+- **Кандидати** — `youtube_analytics.get_videos_in_window(since, until)`: бере плейлист завантажень каналу (channels.list `mine=true` → uploads), гортає `playlistItems` від найновіших до межі `since`, потім добирає `snippet+statistics` пачками по 50 (`videos.list`). Токен — той самий OAuth `yt-analytics`, що для таблиці аналітики (Data API його приймає для `mine=true`, як у get_channel_stats).
+- **Метрики**: 👁 Перегляди (viewCount), ❤️ Лайки (likeCount), 💬 Коментарі (commentCount). Поширень і охоплення на рівні відео Data API не дає.
+- **Опційність:** блок YouTube — лише коли налаштовано YouTube OAuth (`youtube_analytics.is_configured()`); інакше `get_youtube_stat` повертає None і блок ховається.
+- **Застереження:** опис відео на YT часто містить сталий текст (лінки на соцмережі, підписка) — але coverage рахує частку слів СТАТТІ в описі, тож сталий текст збіг не роздуває. ⚠️ Живі виклики Data API на пошук по вікну для /stat не тестувались — перший реальний тест на проді; якщо scope токена не покриє Data API-лістинг (можливий 403) — треба дозволити `youtube.readonly` при перевипуску refresh token.
+
 **GA4:**
 - Фільтр: `pagePath CONTAINS "/{article_id}-"` (без фільтру по Сінгапуру — для /stat показуємо реальні цифри)
 - Метрика: `screenPageViews`
@@ -134,6 +144,12 @@ https://nikvesti.com/news/...
 ❤️ Лайки: 210
 💬 Коментарі: 14
 ✈️ Поширення: 33
+
+▶️ YouTube
+Відео від 25.06.2026 (посилання)
+👁 Перегляди: 4 100
+❤️ Лайки: 88
+💬 Коментарі: 5
 
 📣 Telegram
 t.me/nikvesti/12345

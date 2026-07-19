@@ -50,8 +50,11 @@ import requests
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 ANALYTICS_URL = "https://youtubeanalytics.googleapis.com/v2/reports"
 DATA_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+DATA_PLAYLISTITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
+DATA_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 
 _token_cache = {"access_token": None, "expires_at": 0}
+_uploads_cache = {"id": None}
 
 
 def is_configured():
@@ -104,6 +107,98 @@ def get_channel_stats():
     return {"subscribers": int(st.get("subscriberCount", 0)),
             "views": int(st.get("viewCount", 0)),
             "videos": int(st.get("videoCount", 0))}
+
+
+def _uploads_playlist_id():
+    """ID плейлиста завантажень власного каналу (усі відео каналу, найновіші
+    перші). Кешуємо на процес. Data API через той самий OAuth-токен, що й
+    get_channel_stats (mine=true)."""
+    if _uploads_cache["id"]:
+        return _uploads_cache["id"]
+    resp = requests.get(DATA_CHANNELS_URL, params={
+        "part": "contentDetails", "mine": "true",
+    }, headers=_auth_headers(), timeout=20).json()
+    if "error" in resp:
+        raise RuntimeError(resp["error"].get("message"))
+    items = resp.get("items")
+    if not items:
+        raise RuntimeError("канал власника токена не знайдено (mine=true)")
+    pid = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    _uploads_cache["id"] = pid
+    return pid
+
+
+def _iso_to_ts(value):
+    """'2026-07-16T15:30:00Z' → unix (UTC). 0, якщо не розпарсити."""
+    from datetime import datetime, timezone
+    try:
+        return int(datetime.strptime(str(value)[:19], "%Y-%m-%dT%H:%M:%S")
+                   .replace(tzinfo=timezone.utc).timestamp())
+    except Exception:
+        return 0
+
+
+def get_videos_in_window(since_ts, until_ts, max_pages=6):
+    """Відео каналу у вікні [since, until] (unix) з заголовком/описом і
+    метриками — для семантичного пошуку відео про матеріал (/stat). Гортає
+    плейлист завантажень від найновіших (playlistItems), зупиняється на старших
+    за since, потім добирає snippet+statistics пачками (videos.list). Повертає
+    list[dict]: id, title, description, published_at, url, views, likes,
+    comments."""
+    pid = _uploads_playlist_id()
+    ids = []
+    page_token = None
+    reached_older = False
+    for _ in range(max_pages):
+        params = {"part": "contentDetails", "playlistId": pid, "maxResults": 50}
+        if page_token:
+            params["pageToken"] = page_token
+        resp = requests.get(DATA_PLAYLISTITEMS_URL, params=params,
+                            headers=_auth_headers(), timeout=30).json()
+        if "error" in resp:
+            raise RuntimeError(resp["error"].get("message"))
+        for it in resp.get("items", []):
+            cd = it.get("contentDetails", {})
+            vid = cd.get("videoId")
+            if not vid:
+                continue
+            vpub = _iso_to_ts(cd.get("videoPublishedAt"))
+            if vpub and vpub >= until_ts:
+                continue                      # новіше за вікно
+            if vpub and vpub < since_ts:
+                reached_older = True          # найновіші → далі лише старіші
+                break
+            ids.append(vid)
+        page_token = resp.get("nextPageToken")
+        if reached_older or not page_token:
+            break
+    if not ids:
+        return []
+
+    out = []
+    for i in range(0, len(ids), 50):
+        chunk = ids[i:i + 50]
+        resp = requests.get(DATA_VIDEOS_URL, params={
+            "part": "snippet,statistics", "id": ",".join(chunk), "maxResults": 50,
+        }, headers=_auth_headers(), timeout=30).json()
+        if "error" in resp:
+            raise RuntimeError(resp["error"].get("message"))
+        for v in resp.get("items", []):
+            sn = v.get("snippet", {})
+            stt = v.get("statistics", {})
+            def _int(key):
+                return int(stt[key]) if stt.get(key) is not None else None
+            out.append({
+                "id": v.get("id"),
+                "title": sn.get("title"),
+                "description": sn.get("description"),
+                "published_at": sn.get("publishedAt"),
+                "url": f"https://youtu.be/{v.get('id')}",
+                "views": _int("viewCount"),
+                "likes": _int("likeCount"),
+                "comments": _int("commentCount"),
+            })
+    return out
 
 
 def _query_reports(start_date, end_date, dimensions=None,
