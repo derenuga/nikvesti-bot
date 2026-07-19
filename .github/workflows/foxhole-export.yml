@@ -1,17 +1,32 @@
-# Разовий службовий workflow для прототипу глибокого досьє
-# (ENTITY_LAYER_PLAN §2.2). Дістає статті по темі з Postgres бота
-# і комітить вигрузку в цю ж гілку. Видалити після експерименту.
+# Службовий workflow вигрузки статей з нори для скіла deep-dossier.
+# Раннер має відкриту мережу до Railway (пісочниця Claude Code — ні).
 #
-# Тригер: пуш файлу dossier_export/RUN у цю гілку (workflow_dispatch
-# недоступний, поки файл не на main). Формат RUN — два рядки:
-#   TSQUERY=Воронов:*
-#   DB_URL=postgresql://...
+# Тригер: пуш файлу dossier_export/REQUEST у будь-яку гілку. Формат REQUEST:
+#   TSQUERY=Кім:* | Ким:*
+#   DB_URL=postgresql://...          # публічний Railway URL; ротувати після
+#   OUT_PREFIX=dossier_export/topic  # опційно
+# Після прогону скіл видаляє REQUEST (ключ лишається в історії 1 коміту → ротація).
+#
+# Альтернатива (коли workflow на гілці за замовчуванням): workflow_dispatch
+# з інпутами tsquery/db_url — тоді ключ не комітиться, лише в логах прогону.
 name: foxhole-export
 
 on:
   push:
-    branches: [claude/deep-dossier-prototype-b2jo2b]
-    paths: [dossier_export/RUN]
+    branches: ["**"]
+    paths: [dossier_export/REQUEST]
+  workflow_dispatch:
+    inputs:
+      tsquery:
+        description: "to_tsquery('simple', ...) вираз"
+        required: true
+      db_url:
+        description: "Публічний connection string Railway Postgres"
+        required: true
+      out_prefix:
+        description: "Префікс вихідних файлів"
+        required: false
+        default: dossier_export/topic
 
 permissions:
   contents: write
@@ -26,14 +41,24 @@ jobs:
           python-version: "3.12"
       - run: pip install psycopg2-binary
       - name: Export from foxhole
+        env:
+          IN_TSQUERY: ${{ github.event.inputs.tsquery }}
+          IN_DBURL: ${{ github.event.inputs.db_url }}
+          IN_PREFIX: ${{ github.event.inputs.out_prefix }}
         run: |
-          set -a; source dossier_export/RUN; set +a
-          export FOXHOLE_DB_URL="$DB_URL" TOPIC_TSQUERY="$TSQUERY" OUT_PREFIX=dossier_export/topic
-          python scripts/foxhole_export.py
+          if [ -f dossier_export/REQUEST ]; then set -a; . dossier_export/REQUEST; set +a; fi
+          export FOXHOLE_DB_URL="${DB_URL:-$IN_DBURL}"
+          export TOPIC_TSQUERY="${TSQUERY:-$IN_TSQUERY}"
+          export OUT_PREFIX="${OUT_PREFIX:-${IN_PREFIX:-dossier_export/topic}}"
+          test -n "$FOXHOLE_DB_URL" || { echo "немає DB_URL"; exit 1; }
+          test -n "$TOPIC_TSQUERY" || { echo "немає TSQUERY"; exit 1; }
+          mkdir -p "$(dirname "$OUT_PREFIX")"
+          python scripts/dossier/export_foxhole.py
       - name: Commit export
         run: |
           git config user.name "foxhole-export"
           git config user.email "actions@github.com"
-          git add dossier_export/topic*
-          git commit -m "foxhole export"
+          git add dossier_export/topic* dossier_export/*.ndjson.gz dossier_export/*_index.tsv 2>/dev/null || true
+          git add -A dossier_export/
+          git commit -m "foxhole export" || { echo "нічого комітити"; exit 0; }
           git push
