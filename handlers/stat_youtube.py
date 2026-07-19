@@ -43,6 +43,7 @@ def _caption(video):
 
 def _pack(video, method):
     return {
+        "id": str(video.get("id") or ""),  # ключ швидкого шляху /stat (article_stats)
         "permalink": video.get("url", ""),
         "date": _fmt_date(video.get("published_at")),
         "views": video.get("views"),
@@ -50,6 +51,17 @@ def _pack(video, method):
         "comments": video.get("comments"),
         "method": method,  # 'lexical' | 'ai' — як знайшли (для діагностики)
     }
+
+
+async def get_youtube_stat_by_ids(stored_items):
+    """Швидкий шлях /stat: video_id відомі з індексу (article_stats) — минаємо
+    гортання плейлиста і матчинг, одразу videos.list по id. Кидає виняток при
+    порожній відповіді — виклик фолбекне на снімок з Нори."""
+    ids = [it.get("id") for it in stored_items if it.get("id")]
+    videos = await asyncio.to_thread(youtube_analytics.get_videos_by_ids, ids)
+    if not videos:
+        raise RuntimeError("videos.list нічого не повернув")
+    return [_pack(v, "index") for v in videos]
 
 
 async def get_youtube_stat(article_url, pub_date=None, sig=None):

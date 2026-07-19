@@ -179,7 +179,14 @@ def get_videos_in_window(since_ts, until_ts, max_pages=6):
             break
     if not ids:
         return []
+    return get_videos_by_ids(ids)
 
+
+def get_videos_by_ids(video_ids):
+    """Деталі відео за id (videos.list, чанки ≤50) — і фінальний крок листингу
+    вікна, і ШВИДКИЙ ШЛЯХ /stat (id відомі з індексу article_stats — минаємо
+    гортання плейлиста). Повертає list[dict] як get_videos_in_window."""
+    ids = [str(v) for v in video_ids if v]
     out = []
     for i in range(0, len(ids), 50):
         chunk = ids[i:i + 50]

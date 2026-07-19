@@ -25,6 +25,7 @@ from handlers.facebook import get_reel_insights, fix_permalink
 from handlers import stat_instagram
 from handlers import stat_tiktok
 from handlers import stat_youtube
+from handlers import stat_store
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
@@ -359,6 +360,7 @@ def get_fb_stats(article_url, article_id, pub_date=None):
             reactions, comments, shares = get_reel_insights(reel["id"])
             reels_out.append({
                 "type": "reel",
+                "id": str(reel["id"]),  # ключ швидкого шляху /stat (article_stats)
                 "permalink": fix_permalink(reel.get("permalink_url", "")),
                 "date": _fb_date(reel.get("created_time")),
                 "views": _get_reel_views(reel["id"]),
@@ -402,6 +404,7 @@ def get_fb_stats(article_url, article_id, pub_date=None):
         post_id_short = post["id"].split("_")[1]
         posts_out.append({
             "type": "post",
+            "id": str(post["id"]),  # ключ швидкого шляху /stat (article_stats)
             "permalink": f"https://www.facebook.com/nikvesti/posts/{post_id_short}",
             "date": _fb_date(post.get("created_time")),
             "views": _get_post_views(post["id"]),
@@ -411,6 +414,42 @@ def get_fb_stats(article_url, article_id, pub_date=None):
         })
 
     return posts_out + reels_out, len(posts), error
+
+
+def get_fb_stats_by_objects(stored_items):
+    """Швидкий шлях /stat: post/reel id відомі з індексу (article_stats) —
+    минаємо вікно, пагінацію і матчинг, одразу тягнемо свіжі метрики об'єктів.
+    permalink/дата/тип — зі снімка (не змінюються). Повертає той самий кортеж,
+    що get_fb_stats. Кидає виняток при помилці Graph API — виклик фолбекне
+    на снімок з Нори."""
+    out = []
+    for it in stored_items:
+        oid = it.get("id")
+        if not oid:
+            continue
+        if it.get("type") == "reel":
+            reactions, comments, shares = get_reel_insights(oid)
+            out.append({**it, "views": _get_reel_views(oid), "reactions": reactions,
+                        "comments": comments, "shares": shares, "method": "index"})
+        else:
+            data = requests.get(
+                f"https://graph.facebook.com/v25.0/{oid}",
+                params={"fields": "reactions.summary(true),comments.summary(true),shares",
+                        "access_token": FACEBOOK_PAGE_TOKEN},
+                timeout=15,
+            ).json()
+            if "error" in data:
+                raise RuntimeError(data["error"].get("message") or "пост недоступний")
+            out.append({
+                **it, "views": _get_post_views(oid),
+                "reactions": data.get("reactions", {}).get("summary", {}).get("total_count", 0),
+                "comments": data.get("comments", {}).get("summary", {}).get("total_count", 0),
+                "shares": data.get("shares", {}).get("count", 0),
+                "method": "index",
+            })
+    if not out:
+        raise RuntimeError("жоден збережений об'єкт не прочитався")
+    return out, None, None
 
 
 # ---------- GA4 ----------
@@ -479,6 +518,13 @@ def _short_fb_error(error):
     return f"помилка Facebook API: {error[:150]}"
 
 
+def _nora_note(items):
+    """Рядок-помітка фолбека: items узяті зі снімка Нори (живе джерело впало)."""
+    if items and isinstance(items[0], dict) and items[0].get("nora"):
+        return f'🗄 <i>живе джерело не відповіло — знімок з Нори від {items[0]["nora"]}</i>'
+    return None
+
+
 def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
                         posts_scanned=None, fb_error=None, ig_stats=None, tt_stats=None,
                         yt_stats=None):
@@ -523,6 +569,9 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
             window += f", переглянув {posts_scanned} постів у вікні + рілзи"
         lines.append(f"Публікацій не знайдено ({window})")
     else:
+        note = _nora_note(fb_stats)
+        if note:
+            lines.append(note)
         several = len(fb_stats) > 1
         for i, item in enumerate(fb_stats):
             if i > 0:
@@ -549,6 +598,9 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
     if not ig_stats:
         lines.append("Допис не знайдено")
     else:
+        note = _nora_note(ig_stats)
+        if note:
+            lines.append(note)
         several_ig = len(ig_stats) > 1
         for i, item in enumerate(ig_stats):
             if i > 0:
@@ -581,6 +633,9 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
         if not tt_stats:
             lines.append("Відео не знайдено")
         else:
+            note = _nora_note(tt_stats)
+            if note:
+                lines.append(note)
             several_tt = len(tt_stats) > 1
             for i, item in enumerate(tt_stats):
                 if i > 0:
@@ -610,6 +665,9 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
         if not yt_stats:
             lines.append("Відео не знайдено")
         else:
+            note = _nora_note(yt_stats)
+            if note:
+                lines.append(note)
             several_yt = len(yt_stats) > 1
             for i, item in enumerate(yt_stats):
                 if i > 0:
@@ -679,41 +737,64 @@ async def stat_handler(update, context):
 
     msg = await update.message.reply_text("⏳ Збираю статистику...")
 
-    # Сторінку статті тягнемо ОДИН раз — звідси і дата публікації (вікно пошуку
-    # FB/соцмереж + діагностика), і сигнатура (заголовок+лід) для семантичного
-    # пошуку в IG/TikTok/YouTube. Раніше сторінка фетчилась до 4 разів.
-    try:
-        ctx = await asyncio.to_thread(_fetch_article_context, article_url)
-    except Exception as e:
-        ctx = {"pub_date": None, "signature": None}
-        print(f"stat: помилка читання сторінки — {e}")
-    pub_date = ctx.get("pub_date")
-    sig = ctx.get("signature")
+    # Індекс попереднього /stat з Нори (article_stats): object_id знайдених
+    # постів/відео. Канали, що вже в індексі, минають пошук (вікна, листинги,
+    # скоринг, суддю) і тягнуть метрики одразу — повторні /stat у рази швидші.
+    index = await asyncio.to_thread(stat_store.load_index, article_id)
+    fb_idx = (index.get("facebook") or {}).get("items")
+    ig_idx = (index.get("instagram") or {}).get("items")
+    tt_idx = (index.get("tiktok") or {}).get("items")
+    yt_idx = (index.get("youtube") or {}).get("items")
 
-    # Усі канали — паралельно (кожен незалежний): сумарна затримка стає
-    # максимальною, а не сумою. return_exceptions=True — збій одного каналу не
-    # валить решту; fallback на кожен нижче.
+    # Сторінку статті тягнемо ОДИН раз — дата публікації (вікна пошуку) +
+    # сигнатура (семантика IG/TikTok/YouTube). Коли ВСІ соцканали в індексі —
+    # пошуку не буде, сторінка не потрібна взагалі.
+    pub_date, sig = None, None
+    if not (fb_idx and ig_idx and tt_idx and yt_idx):
+        try:
+            ctx = await asyncio.to_thread(_fetch_article_context, article_url)
+            pub_date = ctx.get("pub_date")
+            sig = ctx.get("signature")
+        except Exception as e:
+            print(f"stat: помилка читання сторінки — {e}")
+
+    # Усі канали — паралельно; кожен соцканал — швидким шляхом (по індексу)
+    # або повним пошуком. return_exceptions=True — збій одного не валить решту.
     fb_res, ga4_res, tg_res, ig_res, tt_res, yt_res = await asyncio.gather(
-        asyncio.to_thread(get_fb_stats, article_url, article_id, pub_date),
+        asyncio.to_thread(get_fb_stats_by_objects, fb_idx) if fb_idx
+        else asyncio.to_thread(get_fb_stats, article_url, article_id, pub_date),
         asyncio.to_thread(get_ga4_stat, article_id),
         asyncio.to_thread(get_tg_stat, article_id, pub_date),
-        stat_instagram.get_instagram_stat(article_url, pub_date, sig),
-        stat_tiktok.get_tiktok_stat(article_url, pub_date, sig),
-        stat_youtube.get_youtube_stat(article_url, pub_date, sig),
+        stat_instagram.get_instagram_stat_by_ids(ig_idx) if ig_idx
+        else stat_instagram.get_instagram_stat(article_url, pub_date, sig),
+        stat_tiktok.get_tiktok_stat_by_ids(tt_idx) if tt_idx
+        else stat_tiktok.get_tiktok_stat(article_url, pub_date, sig),
+        stat_youtube.get_youtube_stat_by_ids(yt_idx) if yt_idx
+        else stat_youtube.get_youtube_stat(article_url, pub_date, sig),
         return_exceptions=True,
     )
 
+    # Збій каналу + є снімок у Норі → показуємо снімок з поміткою дати
+    # (краще вчорашня цифра з позначкою, ніж «не знайдено» через ліміт API)
     if isinstance(fb_res, Exception):
-        fb_stats, fb_scanned, fb_error = [], None, str(fb_res)
         print(f"stat: помилка Facebook — {fb_res}")
+        if index.get("facebook"):
+            fb_stats, fb_scanned, fb_error = stat_store.mark_nora(index["facebook"]), None, None
+        else:
+            fb_stats, fb_scanned, fb_error = [], None, str(fb_res)
     else:
         fb_stats, fb_scanned, fb_error = fb_res
         if fb_error:
             print(f"stat: Facebook стрічка постів — {fb_error}")
+            if not fb_stats and index.get("facebook"):
+                fb_stats, fb_error = stat_store.mark_nora(index["facebook"]), None
 
     if isinstance(ga4_res, Exception):
-        ga4_stat = {}
         print(f"stat: помилка GA4 — {ga4_res}")
+        ga4_stat = {}
+        if index.get("site"):
+            site_items = index["site"]["items"]
+            ga4_stat = site_items[0].get("by_lang", {}) if site_items else {}
     else:
         ga4_stat = ga4_res
 
@@ -724,25 +805,49 @@ async def stat_handler(update, context):
         tg_stat = tg_res
 
     if isinstance(ig_res, Exception):
-        ig_stats = []
         print(f"stat: помилка Instagram — {ig_res}")
+        ig_stats = stat_store.mark_nora(index["instagram"]) if index.get("instagram") else []
     else:
         ig_stats = ig_res
 
     # TikTok/YouTube: None = OAuth не налаштовано → блок ховаємо; тому на збої
-    # теж None (не []), щоб не показувати «не знайдено» на технічній помилці
+    # без снімка теж None (не []), щоб не показувати «не знайдено» на помилці
     if isinstance(tt_res, Exception):
-        tt_stats = None
         print(f"stat: помилка TikTok — {tt_res}")
+        tt_stats = stat_store.mark_nora(index["tiktok"]) if index.get("tiktok") else None
     else:
         tt_stats = tt_res
 
     if isinstance(yt_res, Exception):
-        yt_stats = None
         print(f"stat: помилка YouTube — {yt_res}")
+        yt_stats = stat_store.mark_nora(index["youtube"]) if index.get("youtube") else None
     else:
         yt_stats = yt_res
 
     text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date,
                                fb_scanned, fb_error, ig_stats, tt_stats, yt_stats)
     await msg.edit_text(text, parse_mode="HTML")
+
+    # Снімок у Нору (upsert «останній стан»): лише СВІЖІ дані — фолбеки з Нори
+    # (позначені nora) не пересохраняємо. Після відповіді, щоб не тримати юзера.
+    def _fresh(items):
+        return items and not any(it.get("nora") for it in items)
+
+    per_channel = {}
+    if ga4_stat and not isinstance(ga4_res, Exception):
+        per_channel["site"] = {"by_lang": ga4_stat}
+    if _fresh(fb_stats):
+        per_channel["facebook"] = fb_stats
+    if _fresh(ig_stats):
+        per_channel["instagram"] = ig_stats
+    if tt_stats and _fresh(tt_stats):
+        per_channel["tiktok"] = tt_stats
+    if yt_stats and _fresh(yt_stats):
+        per_channel["youtube"] = yt_stats
+    if tg_stat:
+        per_channel["telegram"] = tg_stat
+    if per_channel:
+        try:
+            await asyncio.to_thread(stat_store.save_snapshot, article_id, per_channel)
+        except Exception as e:
+            print(f"stat: не вдалось зберегти снімок — {e}")

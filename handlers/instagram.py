@@ -109,6 +109,22 @@ def get_media_in_window(since_ts, until_ts, max_pages=6):
     return out
 
 
+def get_media_item(media_id):
+    """Одне медіа за id (лайки/коментарі/permalink/timestamp) — швидкий шлях
+    /stat: коли media_id вже відомий з індексу (article_stats), минаємо
+    листинг вікна і скоринг. Кидає RuntimeError, якщо медіа недоступне
+    (видалене) — виклик фолбекне на збережений снімок."""
+    url = f"https://graph.instagram.com/v21.0/{media_id}"
+    params = {
+        "fields": "id,caption,media_type,permalink,timestamp,like_count,comments_count",
+        "access_token": INSTAGRAM_TOKEN,
+    }
+    data = requests.get(url, params=params, timeout=15).json()
+    if "error" in data:
+        raise RuntimeError(data["error"].get("message") or "media недоступне")
+    return data
+
+
 def get_media_insights(media_id, media_type=None):
     """Метрики конкретного допису: перегляди (views) + охоплення (reach).
     Назви метрик у Graph відрізняються за типом і версією API, тому пробуємо

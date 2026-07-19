@@ -50,6 +50,7 @@ AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
 TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
 USER_URL = "https://open.tiktokapis.com/v2/user/info/"
 VIDEO_LIST_URL = "https://open.tiktokapis.com/v2/video/list/"
+VIDEO_QUERY_URL = "https://open.tiktokapis.com/v2/video/query/"
 
 SCOPES = "user.info.basic,user.info.stats,video.list"
 
@@ -190,6 +191,27 @@ def get_videos_in_window(since_ts, until_ts, max_pages=25):
         if reached_older or not data.get("has_more"):
             break
         cursor = data.get("cursor")
+    return out
+
+
+def get_videos_by_ids(video_ids):
+    """Відео за конкретними id (/v2/video/query/, filters.video_ids ≤20) —
+    швидкий шлях /stat: id вже відомі з індексу (article_stats), листинг і
+    матчинг не потрібні. Повертає list[dict] у форматі get_videos_in_window."""
+    fields = ("id,create_time,video_description,title,share_url,"
+              "view_count,like_count,comment_count,share_count")
+    out = []
+    ids = [str(v) for v in video_ids if v]
+    for i in range(0, len(ids), 20):
+        resp = requests.post(
+            VIDEO_QUERY_URL, params={"fields": fields},
+            json={"filters": {"video_ids": ids[i:i + 20]}},
+            headers=_auth_headers(), timeout=20,
+        ).json()
+        err = resp.get("error", {})
+        if err and err.get("code") not in ("ok", None):
+            raise RuntimeError(err.get("message") or err.get("code"))
+        out.extend(resp.get("data", {}).get("videos", []))
     return out
 
 

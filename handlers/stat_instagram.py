@@ -172,6 +172,7 @@ def _fmt_date(ts):
 def _pack(media, method):
     ins = instagram.get_media_insights(media.get("id"), media.get("media_type"))
     return {
+        "id": str(media.get("id") or ""),  # ключ швидкого шляху /stat (article_stats)
         "permalink": media.get("permalink", ""),
         "date": _fmt_date(media.get("timestamp")),
         "media_type": media.get("media_type"),
@@ -184,6 +185,19 @@ def _pack(media, method):
         "saved": ins.get("saved"),
         "method": method,  # 'lexical' | 'ai' — як знайшли (для діагностики)
     }
+
+
+async def get_instagram_stat_by_ids(stored_items):
+    """Швидкий шлях /stat: media_id відомі з індексу (article_stats) — минаємо
+    листинг вікна, скоринг і суддю, одразу тягнемо свіжі метрики. Кидає
+    виняток, якщо медіа недоступне — виклик фолбекне на снімок з Нори."""
+    def _fetch():
+        out = []
+        for it in stored_items:
+            media = instagram.get_media_item(it["id"])
+            out.append(_pack(media, "index"))
+        return out
+    return await asyncio.to_thread(_fetch)
 
 
 async def get_instagram_stat(article_url, pub_date=None, sig=None):

@@ -41,6 +41,7 @@ def _caption(video):
 
 def _pack(video, method):
     return {
+        "id": str(video.get("id") or ""),  # ключ швидкого шляху /stat (article_stats)
         "permalink": video.get("share_url", ""),
         "date": _fmt_date(video.get("create_time")),
         "views": video.get("view_count"),
@@ -49,6 +50,17 @@ def _pack(video, method):
         "shares": video.get("share_count"),
         "method": method,  # 'lexical' | 'ai' — як знайшли (для діагностики)
     }
+
+
+async def get_tiktok_stat_by_ids(stored_items):
+    """Швидкий шлях /stat: video_id відомі з індексу (article_stats) — минаємо
+    листинг і матчинг, одразу тягнемо свіжі метрики (/v2/video/query/). Кидає
+    виняток при порожній відповіді — виклик фолбекне на снімок з Нори."""
+    ids = [it.get("id") for it in stored_items if it.get("id")]
+    videos = await asyncio.to_thread(tiktok_analytics.get_videos_by_ids, ids)
+    if not videos:
+        raise RuntimeError("video/query нічого не повернув")
+    return [_pack(v, "index") for v in videos]
 
 
 async def get_tiktok_stat(article_url, pub_date=None, sig=None):

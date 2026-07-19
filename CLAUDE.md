@@ -42,7 +42,7 @@ handlers/
   scheduler.py            — APScheduler, розклад всіх автозавдань (Europe/Kiev)
   storage.py              — JSON-стан на Railway Volume (/data/prozorro_state.json)
   db.py                   — тонкий read-only адаптер до MySQL-БД сайту (SELECT only, SSL), /dbtest, /dbquery
-  bot_db.py               — власна Postgres-БД бота (Railway): дзеркало архіву, tsvector FTS, sync_state, daily_stats (історія трафіку GA4), social_stats (тижневі зрізи соцмереж)
+  bot_db.py               — власна Postgres-БД бота (Railway): дзеркало архіву, tsvector FTS, sync_state, daily_stats (історія трафіку GA4), social_stats (тижневі зрізи соцмереж), article_stats (снімки /stat + object_id для швидкого шляху)
   archive_mirror.py       — синк дзеркала архіву з БД сайту: /archive_backfill (разово), інкремент щогодини :50
   archive_search.py       — повнотекстовий пошук по дзеркалу (17 років, заголовки+текст), NLQ-tool search_archive_fulltext
   dossier.py              — /dossier <тема>: історія питання з архіву, таймлайн по роках з лінками
@@ -60,7 +60,8 @@ handlers/
   analytics_store.py      — пам'ять щоденної аналітики GA4 у Postgres (daily_stats): тихий щоденний захват (capture_yesterday), /analytics_backfill, серія для NLQ-tool get_traffic_history; ПЛЮС денний розріз Search Console по типах пошуку (sc_daily_stats: web/discover/googleNews) — захват піггібеком о 09:00 (трейлінг-вікно, бо SC латентить), /sc_backfill, тоталі по каналах для NLQ-tool get_search_console_history («трафік без Discover» дешево з локальної БД). AI Overviews/AI Mode Google окремим типом в API НЕ віддає — вони в 'web'
   weekly_digest.py        — «Тижневик Лиса»: понеділковий дайджест тижня сайту з порівнянням тиждень-до-тижня (заміна щоденного 09:00-звіту), /weekly
   traffic_spikes.py       — детектор сплесків трафіку (GA4 Realtime, самонавчальний профіль), /traffic
-  stat.py                 — /stat <url>: статистика матеріалу (Facebook + Instagram + TikTok + YouTube + Telegram + GA4)
+  stat.py                 — /stat <url>: статистика матеріалу (Facebook + Instagram + TikTok + YouTube + Telegram + GA4). Повторні виклики — швидким шляхом по індексу article_stats (минають пошук/матчинг), збій живого джерела → фолбек-снімок «з Нори»
+  stat_store.py           — снімки /stat у Нору (article_stats, upsert «останній стан»): збереження після кожного /stat, індекс object_id для швидкого шляху, mark_nora для фолбека
   stat_instagram.py       — пошук допису Instagram про матеріал для /stat СЕМАНТИЧНО: у стрічці інсти немає URL статті (діляться візуалом), тому зіставляємо сигнатуру статті (заголовок+лід із <meta description>) з підписами дописів у вікні дат; лексична схожість (coverage значущих слів) → впевнений збіг без AI, сіра зона → Claude-суддя (Haiku). Метрики допису — views/reach/поширення/збереження через get_media_insights
   stat_tiktok.py          — пошук відео TikTok про матеріал для /stat: TikTok у нас дзеркало інсти (той самий контент і підпис), URL у відео теж немає — тому той самий семантичний матчинг, що stat_instagram (переиспользує його скоринг/сигнатуру/суддю), лише джерело кандидатів — TikTok Display API (get_videos_in_window: video_description+title). Метрики — перегляди/лайки/коментарі/поширення; охоплення TikTok API не дає. Без OAuth (tiktok_analytics) блок TikTok у /stat ховається
   stat_youtube.py         — пошук відео YouTube про матеріал для /stat: те саме семантичне ядро stat_instagram, кандидати з YouTube Data API (youtube_analytics.get_videos_in_window: плейлист завантажень → videos.list, title+description). Метрики — перегляди/лайки/коментарі (поширень/охоплення Data API по відео не дає). Без OAuth (youtube_analytics) блок YouTube ховається

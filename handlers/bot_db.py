@@ -199,6 +199,25 @@ _SCHEMA_STATEMENTS = [
         """,
         True,
     ),
+    # Снімки /stat: останній стан метрик матеріалу по каналах (upsert, без
+    # історії — рішення Олега 19.07.2026) + object_id знайдених постів/відео.
+    # object_id — ключ ШВИДКОГО ШЛЯХУ /stat: повторний виклик минає весь пошук
+    # (вікна дат, листинги, семантичний скоринг, суддю) і йде одразу по метрики
+    # конкретних об'єктів. item — весь елемент виводу як є (permalink, date,
+    # метрики, method), щоб фолбек «з Нори» рендерився без добудови.
+    (
+        """
+        CREATE TABLE IF NOT EXISTS article_stats (
+            article_id  BIGINT NOT NULL,
+            channel     TEXT NOT NULL,
+            object_id   TEXT NOT NULL DEFAULT '',
+            item        JSONB,
+            captured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (article_id, channel, object_id)
+        )
+        """,
+        True,
+    ),
     # pg_trgm — для нечіткого збігу імен (Сєнкевич/Сенкевич) у майбутньому.
     # Опційно: якщо у Postgres-інстансу немає прав на CREATE EXTENSION,
     # модуль працює без trgm (тільки FTS).
@@ -576,6 +595,44 @@ def insert_social_stats_missing(rows):
             return cur.rowcount
     finally:
         conn.close()
+
+
+# ---------- Снімки /stat (article_stats) ----------
+
+def replace_channel_stats(article_id, channel, items):
+    """Перезаписує снімок КАНАЛУ для матеріалу: видаляє старі рядки каналу і
+    вставляє нові (останній стан, без історії). items — list[(object_id,
+    item_json_str)]. Порожній items НЕ видаляє старе — збій пошуку/матчингу не
+    має стирати робочий індекс (як COALESCE-підхід у social_stats)."""
+    if not items:
+        return 0
+    ensure_schema()
+    conn = _connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM article_stats WHERE article_id = %s AND channel = %s",
+                (int(article_id), channel),
+            )
+            psycopg2.extras.execute_values(
+                cur,
+                "INSERT INTO article_stats (article_id, channel, object_id, item, captured_at) VALUES %s",
+                [(int(article_id), channel, oid, item) for oid, item in items],
+                template="(%s, %s, %s, %s, now())",
+            )
+        return len(items)
+    finally:
+        conn.close()
+
+
+def get_article_stats(article_id):
+    """Останній снімок матеріалу: list[dict(channel, object_id, item,
+    captured_at)] — усі канали разом."""
+    return query(
+        "SELECT channel, object_id, item, captured_at FROM article_stats "
+        "WHERE article_id = %s ORDER BY channel, object_id",
+        (int(article_id),),
+    )
 
 
 # ---------- sync_state (курсори синхронізації) ----------
