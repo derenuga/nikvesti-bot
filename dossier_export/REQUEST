@@ -1,0 +1,3 @@
+TSQUERY='Решетілов:* | Решетилов:*'
+DB_URL='postgresql://postgres:CpPLrFSvrzUhcbTElzlptEcubDGVIWnY@reseau.proxy.rlwy.net:46884/railway'
+OUT_PREFIX='dossier_export/reshetilov'
