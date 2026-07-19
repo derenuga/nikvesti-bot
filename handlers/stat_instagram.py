@@ -172,14 +172,17 @@ def _pack(media, method):
     }
 
 
-async def get_instagram_stat(article_url, pub_date=None):
+async def get_instagram_stat(article_url, pub_date=None, sig=None):
     """Знаходить допис(и) Instagram про матеріал і збирає їхні метрики.
     Повертає list[dict] (як get_fb_stats — може бути кілька: пост + рілз) або
-    порожній список, якщо збігу немає / інста не налаштована."""
+    порожній список, якщо збігу немає / інста не налаштована. sig — готова
+    сигнатура статті {title,lead}; якщо None, тягнемо сторінку самі (щоб /stat
+    не фетчив сторінку кілька разів, він передає спільну сигнатуру)."""
     if not instagram.INSTAGRAM_TOKEN:
         return []
 
-    sig = await asyncio.to_thread(get_article_signature, article_url)
+    if sig is None:
+        sig = await asyncio.to_thread(get_article_signature, article_url)
     if not sig:
         return []
     sig_tokens = _norm_tokens(f"{sig.get('title', '')} {sig.get('lead', '')}")

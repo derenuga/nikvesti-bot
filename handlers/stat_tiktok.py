@@ -51,15 +51,17 @@ def _pack(video, method):
     }
 
 
-async def get_tiktok_stat(article_url, pub_date=None):
+async def get_tiktok_stat(article_url, pub_date=None, sig=None):
     """Знаходить відео TikTok про матеріал і збирає метрики. Повертає:
     - None, якщо TikTok OAuth не налаштовано (тоді блок TikTok у /stat ховаємо);
     - [] — налаштовано, але збігу немає;
-    - list[dict] — знайдені відео (як get_instagram_stat)."""
+    - list[dict] — знайдені відео (як get_instagram_stat).
+    sig — готова сигнатура статті {title,lead}; None → тягнемо сторінку самі."""
     if not tiktok_analytics.is_configured():
         return None
 
-    sig = await asyncio.to_thread(get_article_signature, article_url)
+    if sig is None:
+        sig = await asyncio.to_thread(get_article_signature, article_url)
     if not sig:
         return []
     sig_tokens = _norm_tokens(f"{sig.get('title', '')} {sig.get('lead', '')}")

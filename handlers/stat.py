@@ -121,6 +121,62 @@ def get_article_published_date(article_url):
         return None
 
 
+def _fetch_article_context(article_url):
+    """Один HTTP-запит сторінки статті → {'pub_date', 'signature'}. Раніше
+    сторінку тягли до 4 разів (дата публікації + сигнатура окремо в кожному з
+    IG/TikTok/YouTube) — тепер один раз, а /stat роздає результат усім. pub_date
+    — з JSON-LD datePublished / <meta article:published_time>; signature =
+    {'title' (og:title), 'lead' (<meta description>)} для семантичного пошуку по
+    соцмережах."""
+    ctx = {"pub_date": None, "signature": None}
+    try:
+        resp = requests.get(
+            article_url, timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; NikVesti-Bot/1.0)"},
+        )
+        if resp.status_code != 200:
+            return ctx
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Дата публікації (JSON-LD → meta)
+        for tag in soup.find_all("script", type="application/ld+json"):
+            raw = tag.string or tag.get_text()
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            dt = _find_date_published(data)
+            if dt:
+                ctx["pub_date"] = dt
+                break
+        if ctx["pub_date"] is None:
+            meta = soup.find("meta", property="article:published_time")
+            if meta and meta.get("content"):
+                ctx["pub_date"] = _parse_iso_date(meta["content"])
+
+        # Сигнатура (заголовок + лід) для семантичного пошуку
+        title = ""
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content"):
+            title = og_title["content"].strip()
+        elif soup.title and soup.title.string:
+            title = soup.title.string.strip()
+        elif soup.find("h1"):
+            title = soup.find("h1").get_text(strip=True)
+        lead = ""
+        desc = soup.find("meta", attrs={"name": "description"}) or \
+            soup.find("meta", property="og:description")
+        if desc and desc.get("content"):
+            lead = desc["content"].strip()
+        if title or lead:
+            ctx["signature"] = {"title": title, "lead": lead}
+    except Exception as e:
+        print(f"stat: не вдалося зчитати сторінку статті — {e}")
+    return ctx
+
+
 # ---------- Facebook ----------
 
 def _get_fb_posts(since_ts, until_ts, max_pages=15):
@@ -616,57 +672,69 @@ async def stat_handler(update, context):
 
     msg = await update.message.reply_text("⏳ Збираю статистику...")
 
-    # Всі мережеві виклики — в окремому потоці, щоб не блокувати event loop
-    # Дату публікації визначаємо один раз — і для вікна пошуку FB, і для діагностики
+    # Сторінку статті тягнемо ОДИН раз — звідси і дата публікації (вікно пошуку
+    # FB/соцмереж + діагностика), і сигнатура (заголовок+лід) для семантичного
+    # пошуку в IG/TikTok/YouTube. Раніше сторінка фетчилась до 4 разів.
     try:
-        pub_date = await asyncio.to_thread(get_article_published_date, article_url)
+        ctx = await asyncio.to_thread(_fetch_article_context, article_url)
     except Exception as e:
-        pub_date = None
-        print(f"stat: помилка визначення дати — {e}")
+        ctx = {"pub_date": None, "signature": None}
+        print(f"stat: помилка читання сторінки — {e}")
+    pub_date = ctx.get("pub_date")
+    sig = ctx.get("signature")
 
-    try:
-        fb_stats, fb_scanned, fb_error = await asyncio.to_thread(get_fb_stats, article_url, article_id, pub_date)
-    except Exception as e:
-        fb_stats, fb_scanned, fb_error = [], None, str(e)
-        print(f"stat: помилка Facebook — {e}")
-    if fb_error:
-        print(f"stat: Facebook стрічка постів — {fb_error}")
+    # Усі канали — паралельно (кожен незалежний): сумарна затримка стає
+    # максимальною, а не сумою. return_exceptions=True — збій одного каналу не
+    # валить решту; fallback на кожен нижче.
+    fb_res, ga4_res, tg_res, ig_res, tt_res, yt_res = await asyncio.gather(
+        asyncio.to_thread(get_fb_stats, article_url, article_id, pub_date),
+        asyncio.to_thread(get_ga4_stat, article_id),
+        asyncio.to_thread(get_tg_stat, article_id, pub_date),
+        stat_instagram.get_instagram_stat(article_url, pub_date, sig),
+        stat_tiktok.get_tiktok_stat(article_url, pub_date, sig),
+        stat_youtube.get_youtube_stat(article_url, pub_date, sig),
+        return_exceptions=True,
+    )
 
-    try:
-        ga4_stat = await asyncio.to_thread(get_ga4_stat, article_id)
-    except Exception as e:
+    if isinstance(fb_res, Exception):
+        fb_stats, fb_scanned, fb_error = [], None, str(fb_res)
+        print(f"stat: помилка Facebook — {fb_res}")
+    else:
+        fb_stats, fb_scanned, fb_error = fb_res
+        if fb_error:
+            print(f"stat: Facebook стрічка постів — {fb_error}")
+
+    if isinstance(ga4_res, Exception):
         ga4_stat = {}
-        print(f"stat: помилка GA4 — {e}")
+        print(f"stat: помилка GA4 — {ga4_res}")
+    else:
+        ga4_stat = ga4_res
 
-    try:
-        tg_stat = await asyncio.to_thread(get_tg_stat, article_id, pub_date)
-    except Exception as e:
+    if isinstance(tg_res, Exception):
         tg_stat = None
-        print(f"stat: помилка Telegram — {e}")
+        print(f"stat: помилка Telegram — {tg_res}")
+    else:
+        tg_stat = tg_res
 
-    # Instagram: у стрічці немає URL статті, тому шукаємо по смислу
-    # (сигнатура статті ↔ підпис допису), деталі — handlers/stat_instagram.py
-    try:
-        ig_stats = await stat_instagram.get_instagram_stat(article_url, pub_date)
-    except Exception as e:
+    if isinstance(ig_res, Exception):
         ig_stats = []
-        print(f"stat: помилка Instagram — {e}")
+        print(f"stat: помилка Instagram — {ig_res}")
+    else:
+        ig_stats = ig_res
 
-    # TikTok — дзеркало інсти, той самий семантичний пошук (stat_tiktok.py).
-    # None = OAuth не налаштовано → блок TikTok не показуємо
-    try:
-        tt_stats = await stat_tiktok.get_tiktok_stat(article_url, pub_date)
-    except Exception as e:
+    # TikTok/YouTube: None = OAuth не налаштовано → блок ховаємо; тому на збої
+    # теж None (не []), щоб не показувати «не знайдено» на технічній помилці
+    if isinstance(tt_res, Exception):
         tt_stats = None
-        print(f"stat: помилка TikTok — {e}")
+        print(f"stat: помилка TikTok — {tt_res}")
+    else:
+        tt_stats = tt_res
 
-    # YouTube — той самий семантичний пошук (stat_youtube.py).
-    # None = OAuth не налаштовано → блок YouTube не показуємо
-    try:
-        yt_stats = await stat_youtube.get_youtube_stat(article_url, pub_date)
-    except Exception as e:
+    if isinstance(yt_res, Exception):
         yt_stats = None
-        print(f"stat: помилка YouTube — {e}")
+        print(f"stat: помилка YouTube — {yt_res}")
+    else:
+        yt_stats = yt_res
 
     text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date,
                                fb_scanned, fb_error, ig_stats, tt_stats, yt_stats)
