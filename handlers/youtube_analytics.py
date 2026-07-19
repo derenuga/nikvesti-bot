@@ -57,9 +57,10 @@ ANALYTICS_URL = "https://youtubeanalytics.googleapis.com/v2/reports"
 DATA_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 DATA_PLAYLISTITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 DATA_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+DATA_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 
 _token_cache = {"access_token": None, "expires_at": 0}
-_uploads_cache = {"id": None}
+_uploads_cache = {"id": None, "channel_id": None}
 
 
 def is_configured():
@@ -114,23 +115,56 @@ def get_channel_stats():
             "videos": int(st.get("videoCount", 0))}
 
 
-def _uploads_playlist_id():
-    """ID плейлиста завантажень власного каналу (усі відео каналу, найновіші
-    перші). Кешуємо на процес. Data API через той самий OAuth-токен, що й
-    get_channel_stats (mine=true)."""
-    if _uploads_cache["id"]:
-        return _uploads_cache["id"]
+def _load_channel_meta():
+    """channels.list mine=true → кешує uploads-плейлист + channel id (для
+    search.list). Один запит на процес."""
     resp = requests.get(DATA_CHANNELS_URL, params={
-        "part": "contentDetails", "mine": "true",
+        "part": "id,contentDetails", "mine": "true",
     }, headers=_auth_headers(), timeout=20).json()
     if "error" in resp:
         raise RuntimeError(resp["error"].get("message"))
     items = resp.get("items")
     if not items:
         raise RuntimeError("канал власника токена не знайдено (mine=true)")
-    pid = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
-    _uploads_cache["id"] = pid
-    return pid
+    _uploads_cache["id"] = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    _uploads_cache["channel_id"] = items[0].get("id")
+
+
+def _uploads_playlist_id():
+    if not _uploads_cache["id"]:
+        _load_channel_meta()
+    return _uploads_cache["id"]
+
+
+def _channel_id():
+    if not _uploads_cache["channel_id"]:
+        _load_channel_meta()
+    return _uploads_cache["channel_id"]
+
+
+def _search_video_ids(since_ts, until_ts):
+    """search.list по каналу з фільтром дат — для СТАРИХ матеріалів, до вікна
+    яких плейлист завантажень не долистується (він віддає лише «від найновіших
+    назад», фільтра дат не має). Дорожче за квотою (100 юнітів проти 1), тому
+    лише фолбек. Повертає list[videoId]."""
+    from datetime import datetime, timezone
+
+    def _iso(ts):
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    resp = requests.get(DATA_SEARCH_URL, params={
+        "part": "id",
+        "channelId": _channel_id(),
+        "type": "video",
+        "publishedAfter": _iso(since_ts),
+        "publishedBefore": _iso(until_ts),
+        "order": "date",
+        "maxResults": 50,
+    }, headers=_auth_headers(), timeout=30).json()
+    if "error" in resp:
+        raise RuntimeError(resp["error"].get("message"))
+    return [it["id"]["videoId"] for it in resp.get("items", [])
+            if it.get("id", {}).get("videoId")]
 
 
 def _iso_to_ts(value):
@@ -146,10 +180,13 @@ def _iso_to_ts(value):
 def get_videos_in_window(since_ts, until_ts, max_pages=6):
     """Відео каналу у вікні [since, until] (unix) з заголовком/описом і
     метриками — для семантичного пошуку відео про матеріал (/stat). Гортає
-    плейлист завантажень від найновіших (playlistItems), зупиняється на старших
-    за since, потім добирає snippet+statistics пачками (videos.list). Повертає
-    list[dict]: id, title, description, published_at, url, views, likes,
-    comments."""
+    плейлист завантажень від найновіших (playlistItems, дешево: 1 юніт/стор.),
+    зупиняється на старших за since, потім добирає snippet+statistics пачками
+    (videos.list). СТАРІ матеріали: плейлист фільтра дат не має, і якщо за
+    max_pages до вікна не долистали (вичерпали сторінки, а відео все ще новіші
+    за until) — фолбек на search.list з publishedAfter/Before (дорожче, тому
+    лише тут). Повертає list[dict]: id, title, description, published_at, url,
+    views, likes, comments."""
     pid = _uploads_playlist_id()
     ids = []
     page_token = None
@@ -177,6 +214,10 @@ def get_videos_in_window(since_ts, until_ts, max_pages=6):
         page_token = resp.get("nextPageToken")
         if reached_older or not page_token:
             break
+    # Вікно глибше, ніж долистали: нічого не зібрали, до старого краю не дійшли
+    # (reached_older=False), і сторінки ще були (page_token) → шукаємо датами
+    if not ids and not reached_older and page_token:
+        ids = _search_video_ids(since_ts, until_ts)
     if not ids:
         return []
     return get_videos_by_ids(ids)
