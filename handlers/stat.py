@@ -44,8 +44,15 @@ def _clean_url(url):
     return url.split("?")[0].split("#")[0].rstrip("/")
 
 def _extract_article_id(url):
-    """Витягуємо числовий ID з URL: /news/justice/320102-... → '320102'"""
-    match = re.search(r'/(\d{4,})-', url)
+    """Витягуємо числовий ID з URL. Два формати:
+    - зі слагом: /news/justice/320102-slug → '320102' (ID перед дефісом);
+    - без слага (старі матеріали, зокрема /ru/…): /news/politics/111079 →
+      '111079' (ID — останній сегмент шляху)."""
+    clean = _clean_url(url)
+    match = re.search(r'/(\d{4,})-', clean)
+    if match:
+        return match.group(1)
+    match = re.search(r'/(\d{4,})$', clean)
     return match.group(1) if match else None
 
 
