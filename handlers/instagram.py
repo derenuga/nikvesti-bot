@@ -79,6 +79,72 @@ def get_top_media(since=None):
     media.sort(key=lambda x: x["engagement"], reverse=True)
     return media[:5]
 
+def get_media_in_window(since_ts, until_ts, max_pages=6):
+    """Усі дописи каналу у вікні [since, until] (unix-час) з пагінацією —
+    для пошуку допису про конкретний матеріал (/stat). Instagram фільтрує
+    /media за timestamp дописа; віддає найновіші перші, тому гортаємо
+    paging.next. Поля — ті, що потрібні для зіставлення (caption) і виводу.
+    Помилку ковтаємо (повертаємо що встигли), як у стрічці постів FB."""
+    url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/media"
+    params = {
+        "fields": "id,caption,media_type,media_url,permalink,timestamp,like_count,comments_count",
+        "since": since_ts,
+        "until": until_ts,
+        "limit": 100,
+        "access_token": INSTAGRAM_TOKEN,
+    }
+    out = []
+    for _ in range(max_pages):
+        try:
+            data = requests.get(url, params=params, timeout=20).json()
+        except Exception:
+            break
+        if "error" in data:
+            break
+        out.extend(data.get("data", []))
+        next_url = data.get("paging", {}).get("next")
+        if not next_url:
+            break
+        url, params = next_url, None  # next_url уже містить усі параметри
+    return out
+
+
+def get_media_insights(media_id, media_type=None):
+    """Метрики конкретного допису: перегляди (views) + охоплення (reach).
+    Назви метрик у Graph відрізняються за типом і версією API, тому пробуємо
+    від найбагатшого набору до мінімального — беремо перше, що віддалось.
+    Повертає dict name→value (може містити views, reach, likes, comments,
+    shares, saved) або порожній dict, якщо інсайти недоступні."""
+    def _fetch(metric):
+        try:
+            url = f"https://graph.instagram.com/v21.0/{media_id}/insights"
+            params = {"metric": metric, "access_token": INSTAGRAM_TOKEN}
+            data = requests.get(url, params=params, timeout=15).json()
+            if "error" in data:
+                return None
+            res = {}
+            for item in data.get("data", []):
+                vals = item.get("values")
+                if vals:
+                    res[item["name"]] = vals[0].get("value")
+                else:
+                    res[item["name"]] = item.get("total_value", {}).get("value")
+            return res or None
+        except Exception:
+            return None
+
+    for metric in (
+        "views,reach,likes,comments,shares,saved",
+        "reach,likes,comments,shares,saved",
+        "views,reach",
+        "reach",
+    ):
+        res = _fetch(metric)
+        if res:
+            return res
+    return {}
+
+
 def get_media_counts(since=None):
     if since is None:
         since = int((datetime.now() - timedelta(days=7)).timestamp())
