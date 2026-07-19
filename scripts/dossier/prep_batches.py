@@ -28,7 +28,10 @@ for line in gzip.open(SRC, "rt", encoding="utf-8"):
     text = r.get("text_ua") or r.get("text_ru") or ""
     title = r.get("title_ua") or r.get("title_ru") or ""
     slug = (r.get("slug") or "").strip()
-    url = f"https://nikvesti.com/news/{slug}" if slug else f"https://nikvesti.com/news/{r['id']}"
+    # канонічний URL сайту — з категорією: /news/{category}/{slug|id}
+    cat = (r.get("category") or "").strip()
+    tail = slug or str(r["id"])
+    url = f"https://nikvesti.com/news/{cat}/{tail}" if cat else f"https://nikvesti.com/news/{tail}"
     years[d.year] += 1
     arts.append({"id": r["id"], "date": f"{d:%Y-%m-%d}", "title": title,
                  "url": url, "text": text[:TEXT_CAP]})
