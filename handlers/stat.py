@@ -23,6 +23,7 @@ from google.oauth2 import service_account
 from handlers.telegram_stats import get_tg_stat, SEARCH_MAX_PAGES
 from handlers.facebook import get_reel_insights, fix_permalink
 from handlers import stat_instagram
+from handlers import stat_tiktok
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
@@ -415,7 +416,7 @@ def _short_fb_error(error):
 
 
 def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
-                        posts_scanned=None, fb_error=None, ig_stats=None):
+                        posts_scanned=None, fb_error=None, ig_stats=None, tt_stats=None):
     clean = _clean_url(article_url)
     lines = [
         f"📊 <b>Статистика матеріалу</b>",
@@ -507,6 +508,35 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
                 lines.append("")
                 lines.append(f'Разом переглядів: {ig_views_total:,}'.replace(",", " "))
 
+    # ---- TikTok ---- (тільки якщо OAuth налаштовано; інакше tt_stats=None)
+    tt_views_total = None
+    if tt_stats is not None:
+        lines.append("")
+        lines.append("🎵 <b>TikTok</b>")
+        if not tt_stats:
+            lines.append("Відео не знайдено")
+        else:
+            several_tt = len(tt_stats) > 1
+            for i, item in enumerate(tt_stats):
+                if i > 0:
+                    lines.append("")
+                num = f"{i + 1}. " if several_tt else ""
+                lines.append(f'{num}<a href="{item["permalink"]}">Відео від {item["date"]}</a>')
+                if item.get("views") is not None:
+                    lines.append(f'👁 Перегляди: {item["views"]:,}'.replace(",", " "))
+                if item.get("likes") is not None:
+                    lines.append(f'❤️ Лайки: {item["likes"]}')
+                if item.get("comments") is not None:
+                    lines.append(f'💬 Коментарі: {item["comments"]}')
+                if item.get("shares") is not None:
+                    lines.append(f'✈️ Поширення: {item["shares"]}')
+            tt_views_known = [it["views"] for it in tt_stats if it.get("views") is not None]
+            if tt_views_known:
+                tt_views_total = sum(tt_views_known)
+                if several_tt:
+                    lines.append("")
+                    lines.append(f'Разом переглядів: {tt_views_total:,}'.replace(",", " "))
+
     # ---- Telegram ----
     lines.append("")
     lines.append("📣 <b>Telegram</b>")
@@ -524,7 +554,7 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
 
     # ---- Сукупно по всіх каналах ----
     # Сумуємо перегляди звідусіль, де є дані: сайт + Facebook + Telegram
-    channel_totals = [v for v in (site_total, fb_views_total, ig_views_total, tg_views) if v is not None]
+    channel_totals = [v for v in (site_total, fb_views_total, ig_views_total, tt_views_total, tg_views) if v is not None]
     if channel_totals:
         grand_total = sum(channel_totals)
         lines.append("")
@@ -593,6 +623,14 @@ async def stat_handler(update, context):
         ig_stats = []
         print(f"stat: помилка Instagram — {e}")
 
+    # TikTok — дзеркало інсти, той самий семантичний пошук (stat_tiktok.py).
+    # None = OAuth не налаштовано → блок TikTok не показуємо
+    try:
+        tt_stats = await stat_tiktok.get_tiktok_stat(article_url, pub_date)
+    except Exception as e:
+        tt_stats = None
+        print(f"stat: помилка TikTok — {e}")
+
     text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date,
-                               fb_scanned, fb_error, ig_stats)
+                               fb_scanned, fb_error, ig_stats, tt_stats)
     await msg.edit_text(text, parse_mode="HTML")

@@ -155,6 +155,44 @@ def get_user_stats():
             "videos": user.get("video_count")}
 
 
+def get_videos_in_window(since_ts, until_ts, max_pages=25):
+    """Відео у вікні [since, until] (unix) з описом і метриками — для
+    семантичного пошуку відео про матеріал (/stat). Гортає /v2/video/list/ від
+    найновіших, зупиняється, коли дійшли до відео старших за since. Повертає
+    list[dict] з полями fields (video_description/title для зіставлення,
+    share_url для лінка, лічильники для метрик)."""
+    fields = ("id,create_time,video_description,title,share_url,"
+              "view_count,like_count,comment_count,share_count")
+    cursor = None
+    out = []
+    for _ in range(max_pages):
+        body = {"max_count": 20}
+        if cursor is not None:
+            body["cursor"] = cursor
+        resp = requests.post(VIDEO_LIST_URL, params={"fields": fields}, json=body,
+                             headers=_auth_headers(), timeout=30).json()
+        err = resp.get("error", {})
+        if err and err.get("code") not in ("ok", None):
+            raise RuntimeError(err.get("message") or err.get("code"))
+        data = resp.get("data", {})
+        videos = data.get("videos", [])
+        if not videos:
+            break
+        reached_older = False
+        for v in videos:
+            ct = v.get("create_time", 0)
+            if ct >= until_ts:
+                continue                      # новіше за вікно — пропускаємо
+            if ct < since_ts:
+                reached_older = True          # найновіші → далі лише старіші
+                break
+            out.append(v)
+        if reached_older or not data.get("has_more"):
+            break
+        cursor = data.get("cursor")
+    return out
+
+
 def get_month_video_stats(start_ts, end_ts, max_pages=25):
     """Сума метрик по відео, опублікованих у [start_ts, end_ts) (unix).
     Гортає /v2/video/list/ від найновіших; зупиняється, коли дійшли до відео

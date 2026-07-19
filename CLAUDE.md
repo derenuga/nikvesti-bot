@@ -60,8 +60,9 @@ handlers/
   analytics_store.py      — пам'ять щоденної аналітики GA4 у Postgres (daily_stats): тихий щоденний захват (capture_yesterday), /analytics_backfill, серія для NLQ-tool get_traffic_history; ПЛЮС денний розріз Search Console по типах пошуку (sc_daily_stats: web/discover/googleNews) — захват піггібеком о 09:00 (трейлінг-вікно, бо SC латентить), /sc_backfill, тоталі по каналах для NLQ-tool get_search_console_history («трафік без Discover» дешево з локальної БД). AI Overviews/AI Mode Google окремим типом в API НЕ віддає — вони в 'web'
   weekly_digest.py        — «Тижневик Лиса»: понеділковий дайджест тижня сайту з порівнянням тиждень-до-тижня (заміна щоденного 09:00-звіту), /weekly
   traffic_spikes.py       — детектор сплесків трафіку (GA4 Realtime, самонавчальний профіль), /traffic
-  stat.py                 — /stat <url>: статистика матеріалу (Facebook + Instagram + Telegram + GA4)
-  stat_instagram.py       — пошук допису Instagram про матеріал для /stat СЕМАНТИЧНО: у стрічці інсти немає URL статті (діляться візуалом), тому зіставляємо сигнатуру статті (заголовок+лід із <meta description>) з підписами дописів у вікні дат; лексична схожість (coverage значущих слів) → впевнений збіг без AI, сіра зона → Claude-суддя (Haiku). Метрики допису — views/reach через get_media_insights
+  stat.py                 — /stat <url>: статистика матеріалу (Facebook + Instagram + TikTok + Telegram + GA4)
+  stat_instagram.py       — пошук допису Instagram про матеріал для /stat СЕМАНТИЧНО: у стрічці інсти немає URL статті (діляться візуалом), тому зіставляємо сигнатуру статті (заголовок+лід із <meta description>) з підписами дописів у вікні дат; лексична схожість (coverage значущих слів) → впевнений збіг без AI, сіра зона → Claude-суддя (Haiku). Метрики допису — views/reach/поширення/збереження через get_media_insights
+  stat_tiktok.py          — пошук відео TikTok про матеріал для /stat: TikTok у нас дзеркало інсти (той самий контент і підпис), URL у відео теж немає — тому той самий семантичний матчинг, що stat_instagram (переиспользує його скоринг/сигнатуру/суддю), лише джерело кандидатів — TikTok Display API (get_videos_in_window: video_description+title). Метрики — перегляди/лайки/коментарі/поширення; охоплення TikTok API не дає. Без OAuth (tiktok_analytics) блок TikTok у /stat ховається
   telegram_stats.py       — перегляди постів каналу @nikvesti (індекс + парсинг t.me/s)
   english_report.py       — місячний звіт EN-версії (GA4 + Search Console + AI коментар)
   instagram.py            — тижнева статистика Instagram
@@ -122,7 +123,7 @@ handlers/
 | /documents_rebaseline | Зберегти поточні сторінки як бачені БЕЗ відправки (гасіння спаму) |
 | /competitors | Перевірити новини конкурентів |
 | /law | Перевірити новини правоохоронних органів |
-| /stat \<url\> | Статистика матеріалу (Facebook + Instagram + Telegram + GA4) за URL nikvesti.com. Instagram шукається семантично (по підпису, бо URL у стрічці немає) |
+| /stat \<url\> | Статистика матеріалу (Facebook + Instagram + TikTok + Telegram + GA4) за URL nikvesti.com. Instagram і TikTok шукаються семантично (по підпису, бо URL у стрічці немає); блок TikTok — лише коли налаштовано OAuth |
 | /english | Місячний звіт EN-версії сайту (GA4 + Search Console) |
 | /prozorro | Перевірити тендери Prozorro |
 | /prozorro_test_jump \[N\] | Діагностика зсуву офсету за N днів (дефолт 14) |

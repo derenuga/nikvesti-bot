@@ -112,9 +112,11 @@ def get_article_signature(article_url):
 
 # ---------- Claude-суддя (сіра зона) ----------
 
-async def _judge(sig, candidates):
+async def _judge(sig, candidates, platform="Instagram"):
     """Повертає індекс допису-збігу в candidates або None. Викликаємо лише в
-    сірій зоні лексики. Модель — FAST (Haiku), облік вартості — у fox_generate."""
+    сірій зоні лексики. Модель — FAST (Haiku), облік вартості — у fox_generate.
+    platform — назва мережі в промпті (Instagram/TikTok); кандидати завжди
+    несуть підпис у ключі 'caption'."""
     from handlers.ai_messages import fox_generate
 
     lines = []
@@ -123,9 +125,9 @@ async def _judge(sig, candidates):
         lines.append(f"{i}. {cap}")
     listed = "\n".join(lines)
     prompt = (
-        "Ти зіставляєш новину сайту з дописом в Instagram.\n\n"
+        f"Ти зіставляєш новину сайту з дописом у {platform}.\n\n"
         f"Новина:\nЗаголовок: {sig.get('title', '')}\nЛід: {sig.get('lead', '')}\n\n"
-        f"Підписи дописів Instagram:\n{listed}\n\n"
+        f"Підписи дописів {platform}:\n{listed}\n\n"
         "Який допис розповідає про ЦЮ САМУ новину? Відповідай ЛИШЕ числом — "
         "номером допису зі списку. Якщо жоден не про цю новину — відповідай 0. "
         "Тільки число, без пояснень."
