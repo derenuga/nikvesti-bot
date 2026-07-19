@@ -793,19 +793,46 @@ async def stat_handler(update, context):
         except Exception as e:
             print(f"stat: помилка читання сторінки — {e}")
 
+    # Живий прогрес: канали завершуються в різний час — по кожному оновлюємо
+    # статус-рядок у повідомленні (✅/⏳), щоб не висіло німе «Збираю…».
+    # Тротлінг 1.2с — щоб не впертись у ліміт Telegram на edit_text; помилки
+    # редагування ковтаємо (флуд-контроль не має ламати збір). Останній канал
+    # не редагує — одразу прийде фінальний текст зі статистикою.
+    _order = ["ga4", "fb", "ig", "tt", "yt", "tg"]
+    _labels = {"ga4": "сайт", "fb": "ФБ", "ig": "інста", "tt": "тікток",
+               "yt": "ютуб", "tg": "ТГ"}
+    _done = set()
+    _last_edit = [0.0]
+
+    async def _track(key, awaitable):
+        try:
+            return await awaitable
+        finally:
+            _done.add(key)
+            now = asyncio.get_running_loop().time()
+            if len(_done) < len(_order) and now - _last_edit[0] >= 1.2:
+                _last_edit[0] = now
+                ticks = "  ".join(
+                    ("✅ " if k in _done else "⏳ ") + _labels[k] for k in _order
+                )
+                try:
+                    await msg.edit_text(f"Збираю статистику…\n{ticks}")
+                except Exception:
+                    pass
+
     # Усі канали — паралельно; кожен соцканал — швидким шляхом (по індексу)
     # або повним пошуком. return_exceptions=True — збій одного не валить решту.
     fb_res, ga4_res, tg_res, ig_res, tt_res, yt_res = await asyncio.gather(
-        asyncio.to_thread(get_fb_stats_by_objects, fb_idx) if fb_idx
-        else asyncio.to_thread(get_fb_stats, article_url, article_id, pub_date),
-        asyncio.to_thread(get_ga4_stat, article_id),
-        asyncio.to_thread(get_tg_stat, article_id, pub_date),
-        stat_instagram.get_instagram_stat_by_ids(ig_idx) if ig_idx
-        else stat_instagram.get_instagram_stat(article_url, pub_date, sig),
-        stat_tiktok.get_tiktok_stat_by_ids(tt_idx) if tt_idx
-        else stat_tiktok.get_tiktok_stat(article_url, pub_date, sig),
-        stat_youtube.get_youtube_stat_by_ids(yt_idx) if yt_idx
-        else stat_youtube.get_youtube_stat(article_url, pub_date, sig),
+        _track("fb", asyncio.to_thread(get_fb_stats_by_objects, fb_idx) if fb_idx
+               else asyncio.to_thread(get_fb_stats, article_url, article_id, pub_date)),
+        _track("ga4", asyncio.to_thread(get_ga4_stat, article_id)),
+        _track("tg", asyncio.to_thread(get_tg_stat, article_id, pub_date)),
+        _track("ig", stat_instagram.get_instagram_stat_by_ids(ig_idx) if ig_idx
+               else stat_instagram.get_instagram_stat(article_url, pub_date, sig)),
+        _track("tt", stat_tiktok.get_tiktok_stat_by_ids(tt_idx) if tt_idx
+               else stat_tiktok.get_tiktok_stat(article_url, pub_date, sig)),
+        _track("yt", stat_youtube.get_youtube_stat_by_ids(yt_idx) if yt_idx
+               else stat_youtube.get_youtube_stat(article_url, pub_date, sig)),
         return_exceptions=True,
     )
 
