@@ -58,17 +58,31 @@ def _norm_tokens(text):
 
 def _score(sig_tokens, caption):
     """Схожість сигнатури статті (передобчислені токени) до підпису допису.
-    max(coverage, bigram-Jaccard). coverage = частка значущих слів статті,
-    що є в підписі — головний сигнал, бо інста переписує лід статті."""
+    Три сигнали, беремо максимум:
+    - coverage: частка значущих слів СТАТТІ, що є в підписі — головний для
+      довгих підписів (інста переписує лід статті);
+    - bigram-Jaccard: близькість формулювань;
+    - reverse coverage: частка слів ПІДПИСУ, що є в статті — для КОРОТКИХ
+      підписів (заголовок YouTube-шортса — витяжка з заголовка статті: пряма
+      coverage структурно низька, бо 7 слів не покриють 25-слівну сигнатуру,
+      а reverse = 1.0). Дисконт len/12 і поріг ≥5 токенів — щоб коротка
+      генерик-підпись («новини Миколаєва сьогодні») не матчила все підряд:
+      5-6 слів навіть із повним збігом потрапляють лише в сіру зону (суддя),
+      авто-ACCEPT — від ~7 повністю «статейних» слів."""
     ct = _norm_tokens(caption)
     if not sig_tokens or not ct:
         return 0.0
     st_set, ct_set = set(sig_tokens), set(ct)
-    coverage = len(st_set & ct_set) / len(st_set)
+    inter = len(st_set & ct_set)
+    coverage = inter / len(st_set)
     bg_s = set(zip(sig_tokens, sig_tokens[1:]))
     bg_c = set(zip(ct, ct[1:]))
     jacc = len(bg_s & bg_c) / len(bg_s | bg_c) if (bg_s or bg_c) else 0.0
-    return max(coverage, jacc)
+    score = max(coverage, jacc)
+    if len(ct_set) >= 5:
+        reverse = inter / len(ct_set)
+        score = max(score, reverse * min(1.0, len(ct_set) / 12))
+    return score
 
 
 # ---------- Сигнатура статті ----------

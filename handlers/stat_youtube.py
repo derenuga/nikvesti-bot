@@ -83,8 +83,10 @@ async def get_youtube_stat(article_url, pub_date=None, sig=None):
             int(since_dt.timestamp()), int(until_dt.timestamp()),
         )
     except Exception as e:
+        # Помилка API ≠ «відео немає»: ховаємо блок (None), а не показуємо
+        # оманливе «не знайдено» (напр. 403 по scope токена)
         print(f"stat_youtube: помилка списку відео — {e}")
-        return []
+        return None
     if not videos:
         return []
 

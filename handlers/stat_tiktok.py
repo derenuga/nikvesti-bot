@@ -82,8 +82,10 @@ async def get_tiktok_stat(article_url, pub_date=None, sig=None):
             int(since_dt.timestamp()), int(until_dt.timestamp()),
         )
     except Exception as e:
+        # Помилка API ≠ «відео немає»: ховаємо блок (None), а не показуємо
+        # оманливе «не знайдено»
         print(f"stat_tiktok: помилка списку відео — {e}")
-        return []
+        return None
     if not videos:
         return []
 
