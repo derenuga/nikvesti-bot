@@ -67,7 +67,10 @@ def main():
             d = datetime.fromtimestamp(row["published"], tz=timezone.utc)
             title = (row["title_ua"] or row["title_ru"] or "").replace("\t", " ")
             slug = (row["slug"] or "").strip()
-            url = f"https://nikvesti.com/news/{slug}" if slug else f"https://nikvesti.com/news/{row['id']}"
+            # канонічний URL сайту — з категорією: /news/{category}/{slug|id}
+            cat = (row.get("category") or "").strip()
+            tail = slug or str(row["id"])
+            url = f"https://nikvesti.com/news/{cat}/{tail}" if cat else f"https://nikvesti.com/news/{tail}"
             fi.write(f"{row['id']}\t{d:%Y-%m-%d}\t{title}\t{url}\n")
             n += 1
     print(f"exported {n} articles -> {ndjson_path}, {index_path}", flush=True)
