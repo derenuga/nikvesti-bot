@@ -155,16 +155,17 @@ def _fmt_date(ts):
 
 def _pack(media, method):
     ins = instagram.get_media_insights(media.get("id"), media.get("media_type"))
-    views = ins.get("views")
-    reach = ins.get("reach")
     return {
         "permalink": media.get("permalink", ""),
         "date": _fmt_date(media.get("timestamp")),
         "media_type": media.get("media_type"),
-        "views": views,
-        "reach": reach,
+        "views": ins.get("views"),
+        "reach": ins.get("reach"),
         "likes": media.get("like_count", 0),
         "comments": media.get("comments_count", 0),
+        # Поширення (✈️) і збереження (🔖) — лише з insights (у полях медіа їх немає)
+        "shares": ins.get("shares"),
+        "saved": ins.get("saved"),
         "method": method,  # 'lexical' | 'ai' — як знайшли (для діагностики)
     }
 

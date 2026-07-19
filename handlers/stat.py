@@ -496,6 +496,10 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
                 lines.append(f'👀 Охоплення: {item["reach"]:,}'.replace(",", " "))
             lines.append(f'❤️ Лайки: {item.get("likes", 0)}')
             lines.append(f'💬 Коментарі: {item.get("comments", 0)}')
+            if item.get("shares") is not None:
+                lines.append(f'✈️ Поширення: {item["shares"]:,}'.replace(",", " "))
+            if item.get("saved") is not None:
+                lines.append(f'🔖 Збереження: {item["saved"]:,}'.replace(",", " "))
         ig_views_known = [it["views"] for it in ig_stats if it.get("views") is not None]
         if ig_views_known:
             ig_views_total = sum(ig_views_known)
