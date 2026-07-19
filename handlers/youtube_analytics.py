@@ -23,7 +23,12 @@ Account to a YouTube account», developers.google.com/youtube/reporting).
    client_id і client_secret.
 3. Дістати refresh token через developers.google.com/oauthplayground:
    ⚙ → «Use your own OAuth credentials» → вставити client_id/secret →
-   авторизувати scope `https://www.googleapis.com/auth/yt-analytics.readonly`
+   авторизувати ОБИДВА scopes ОДНИМ токеном (через пробіл):
+   `https://www.googleapis.com/auth/yt-analytics.readonly` (Analytics API —
+   місячні перегляди/години для таблиці) і
+   `https://www.googleapis.com/auth/youtube.readonly` (Data API — листинг
+   відео для семантичного пошуку /stat: playlistItems/videos.list; без нього
+   листинг падає 403 і блок YouTube у /stat ховається) —
    акаунтом ВЛАСНИКА каналу (інакше channel==MINE поверне не той канал) →
    Exchange authorization code → скопіювати Refresh token.
 4. У Railway: YOUTUBE_OAUTH_CLIENT_ID / YOUTUBE_OAUTH_CLIENT_SECRET /
