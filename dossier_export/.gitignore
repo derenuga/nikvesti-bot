@@ -1,2 +1,4 @@
 topic.ndjson.gz
 topic_index.tsv
+*.ndjson.gz
+*_index.tsv
