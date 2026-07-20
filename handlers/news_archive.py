@@ -39,9 +39,9 @@ SEARCH_LIMIT_MAX = 20
 LEAD_MIN_CHARS = 60
 LEAD_MAX_CHARS = 700
 # Скільки новин максимум тягнемо в бек (щоб не роздувати промпт і текст).
-# Список у пошуку зазвичай до 10 новин — тому кап 12, щоб явний вибір
-# користувача (напр. усі 10 галочок) вліз повністю, а не обрізався до кількох.
-BACK_MAX_ITEMS = 12
+# Той самий кап обмежує і кількість галочок вибору (toggle_selection): скільки
+# бек візьме — стільки й можна вибрати, не більше. Список у пошуку зазвичай ≤10.
+BACK_MAX_ITEMS = 10
 
 _ALLOWED_USER_IDS = {
     int(uid)
@@ -90,13 +90,20 @@ def get_last_results(dialog_key):
     return entry["items"] if entry else []
 
 
+SELECTION_LIMIT_REACHED = "limit"  # сигнал: вибір уперся в кап (більше не можна)
+
+
 def toggle_selection(dialog_key, n):
-    """Перемкнути вибір новини №n для беку. Повертає entry або None (застаріло)."""
+    """Перемкнути вибір новини №n для беку. Повертає entry, None (застаріло) або
+    SELECTION_LIMIT_REACHED — коли намагаються вибрати понад BACK_MAX_ITEMS
+    (бек однаково більше не візьме, тож і виділяти більше не даємо)."""
     entry = _get_entry(dialog_key)
     if not entry:
         return None
     if n in entry["selected"]:
         entry["selected"].discard(n)
+    elif len(entry["selected"]) >= BACK_MAX_ITEMS:
+        return SELECTION_LIMIT_REACHED
     else:
         entry["selected"].add(n)
     storage.save_news_search(_dialog_id(dialog_key), {
@@ -543,6 +550,12 @@ async def news_select_callback(update, context):
     entry = await asyncio.to_thread(toggle_selection, dialog_key, n)
     if entry is None:
         await query.answer("Результати пошуку застаріли — повтори запит.", show_alert=True)
+        return
+    if entry == SELECTION_LIMIT_REACHED:
+        await query.answer(
+            f"Максимум {BACK_MAX_ITEMS} новин на бек. Зніми якусь, щоб вибрати іншу.",
+            show_alert=True,
+        )
         return
     # Відповідаємо Telegram ДО перемальовування клавіатури: спінер на кнопці
     # гасне одразу, а ✅ доїжджає наступним запитом.
