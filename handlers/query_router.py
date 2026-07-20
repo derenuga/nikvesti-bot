@@ -1541,6 +1541,9 @@ async def handle_natural_language_query(update, context):
     # Усі новини (id+url), які реально віддали news-tools за цей запит —
     # для санітизації лінків у фінальному тексті (захист від вигаданих слагів).
     news_items_seen = []
+    # Окремо — новини, чиї ЛІДИ читались для беку (get_news_leads /
+    # get_leads_from_urls): по них гарантуємо лінк у відповіді (дожим блоком).
+    lead_items_seen = []
     # Облік вартості (REVIEW в.5): сумуємо токени за весь tool-use цикл,
     # записуємо один раз у finally (менше файлових записів)
     usage_acc = {"input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_creation": 0}
@@ -1623,6 +1626,18 @@ async def handle_natural_language_query(update, context):
                 # Нерозривний пробіл (U+00A0) між розрядами тисяч ("23 037"),
                 # щоб Telegram не переносив число на новий рядок посередині
                 final_text = re.sub(r'(?<=\d) (?=\d{3}(?:\D|$))', '\u00A0', final_text)
+                # Санітизація лінків: кожен href на nikvesti.com звіряється з
+                # url новин, які реально віддали tools. Вигаданий моделлю слаг →
+                # канонічний url за id або розлінковка (інцидент 20.07: модель
+                # транслітерувала неіснуючі слаги для старих новин → 404).
+                if news_items_seen and "<a href=" in final_text:
+                    final_text = news_archive.sanitize_news_links(final_text, news_items_seen)
+                # Гарантія лінків у беку: новини з лідів, які модель не
+                # залінкувала в тексті (буває — «соромиться» коротких URL
+                # старих новин і мовчки пропускає лінк), дописуються блоком
+                # «Джерела» детерміновано — промпт цього не гарантує, код так.
+                if lead_items_seen:
+                    final_text = news_archive.append_missing_links(final_text, lead_items_seen)
                 # В історію діалогу — без footer джерел, щоб не накопичувати шум
                 _remember_exchange(dialog_key, question, final_text)
                 if used_tools:
@@ -1647,13 +1662,6 @@ async def handle_natural_language_query(update, context):
                         sources.append("бюджет Миколаєва в норі (рішення сесій + місячні знімки)")
                     if sources:
                         final_text += f"\n\n📊 Джерело даних: {' + '.join(sources)}{site_suffix}"
-
-                # Санітизація лінків: кожен href на nikvesti.com звіряється з
-                # url новин, які реально віддали tools. Вигаданий моделлю слаг →
-                # канонічний url за id або розлінковка (інцидент 20.07: модель
-                # транслітерувала неіснуючі слаги для старих новин → 404).
-                if news_items_seen and "<a href=" in final_text:
-                    final_text = news_archive.sanitize_news_links(final_text, news_items_seen)
 
                 # Після пошуку по архіву: клавіатура відбору (номери-чекбокси +
                 # кнопка беку) + HTML-режим (список містить <a href>).
@@ -1732,10 +1740,13 @@ async def handle_natural_language_query(update, context):
                 # лінків фінальної відповіді (модель НЕ сміє вигадувати слаги).
                 if (block.name in NEWS_TOOL_NAMES or block.name == "get_leads_from_urls") \
                         and isinstance(result, dict) and isinstance(result.get("items"), list):
-                    news_items_seen.extend(
+                    good_items = [
                         it for it in result["items"]
                         if isinstance(it, dict) and it.get("id") and it.get("url")
-                    )
+                    ]
+                    news_items_seen.extend(good_items)
+                    if block.name in ("get_news_leads", "get_leads_from_urls"):
+                        lead_items_seen.extend(good_items)
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
