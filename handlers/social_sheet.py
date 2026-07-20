@@ -456,6 +456,18 @@ def _block_static_values(year, b, theme):
     return data
 
 
+BASE_SUBTITLE = ("Веде бот: рядок місяця заповнюється 1-го числа наступного. "
+                 "Підсумок року і стрілки Δ рахуються самі (формули).")
+
+
+def _subtitle_text(dt=None):
+    """Сірий підзаголовок B2: спершу мітка останнього оновлення листа (день,
+    місяць, рік, час за Києвом), далі пояснення «веде бот». Мітку бот
+    переписує при кожному записі даних — видно, оновилось і коли."""
+    dt = dt or datetime.now(KYIV_TZ)
+    return f"🕒 Оновлено {dt:%d.%m.%Y %H:%M} · {BASE_SUBTITLE}"
+
+
 def _year_static_values(year, theme, blocks=BLOCKS):
     """Всі статичні значення листа: тексти, назви місяців, формули дельт,
     підсумків і спарклайнів. Пише бот один раз при створенні листа."""
@@ -468,10 +480,7 @@ def _year_static_values(year, theme, blocks=BLOCKS):
         {"range": f"'{y}'!A1", "values": [["🦊"]]},
         {"range": f"'{y}'!B1", "values": [[f"Аналітика МикВісті — {year}"]]},
         {"range": f"'{y}'!A2", "values": [[""]]},
-        {"range": f"'{y}'!B2",
-         "values": [["Веде бот: рядок місяця заповнюється 1-го числа наступного. "
-                     "Підсумок року і стрілки Δ рахуються самі (формули). "
-                     "TikTok/Viber — поки вручну, до підключення API."]]},
+        {"range": f"'{y}'!B2", "values": [[_subtitle_text()]]},
     ]
     for b in blocks:
         data.extend(_block_static_values(year, b, theme))
@@ -790,10 +799,7 @@ def _upgrade_year_sheet(service, p, year):
     data = []
     for b in MANUAL_BLOCKS:
         data.extend(_block_static_values(year, b, theme))
-    data.append({"range": f"'{year}'!B2",
-                 "values": [["Веде бот: рядок місяця заповнюється 1-го числа наступного. "
-                             "Підсумок року і стрілки Δ рахуються самі (формули). "
-                             "TikTok/Viber — поки вручну, до підключення API."]]})
+    data.append({"range": f"'{year}'!B2", "values": [[_subtitle_text()]]})
     service.spreadsheets().values().batchUpdate(
         spreadsheetId=SOCIAL_SPREADSHEET_ID,
         body={"valueInputOption": "USER_ENTERED", "data": data},
@@ -1421,6 +1427,9 @@ async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt", "tt
 
     data = _month_value_ranges(year, month, site, fb, ig, tg, yt, tt, vb)
     if data:
+        # Мітка останнього оновлення в сірий підзаголовок B2 — лише коли реально
+        # щось записали (видно, оновилось і коли, на кожному листі окремо)
+        data.append({"range": f"'{year}'!B2", "values": [[_subtitle_text()]]})
         await asyncio.to_thread(
             lambda: service.spreadsheets().values().batchUpdate(
                 spreadsheetId=SOCIAL_SPREADSHEET_ID,
