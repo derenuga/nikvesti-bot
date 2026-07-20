@@ -126,6 +126,7 @@ handlers/
 | /competitors | Перевірити новини конкурентів |
 | /law | Перевірити новини правоохоронних органів |
 | /stat \<url\> | Статистика матеріалу (Facebook + Instagram + TikTok + YouTube + Telegram + GA4) за URL nikvesti.com. Instagram/TikTok/YouTube шукаються семантично (по підпису, бо URL у стрічці немає); блоки TikTok і YouTube — лише коли налаштовано їхній OAuth |
+| /stat_forget \<url\|id\> | Забути матеріал у Норі (article_stats) та індексі TG (tg_posts) — наступний /stat пройде повний живий пошук по всіх каналах (демо, діагностика матчингу) |
 | /english | Місячний звіт EN-версії сайту (GA4 + Search Console) |
 | /prozorro | Перевірити тендери Prozorro |
 | /prozorro_test_jump \[N\] | Діагностика зсуву офсету за N днів (дефолт 14) |

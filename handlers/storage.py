@@ -302,6 +302,19 @@ def save_tg_post(article_id, message_id):
         _write_state(state)
 
 
+def delete_tg_post(article_id):
+    """Прибирає матеріал з індексу постів каналу (/stat_forget) — наступний
+    /stat шукатиме пост по t.me/s наживо. True, якщо запис був."""
+    with _lock:
+        state = _read_state()
+        posts = state.get("tg_posts", {})
+        if str(article_id) not in posts:
+            return False
+        del posts[str(article_id)]
+        _write_state(state)
+        return True
+
+
 def bulk_save_tg_posts(mapping):
     """Записує багато article_id→message_id ОДНИМ записом файлу (для бэкфілу)."""
     with _lock:

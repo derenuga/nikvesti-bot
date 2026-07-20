@@ -913,3 +913,38 @@ async def stat_handler(update, context):
             await asyncio.to_thread(stat_store.save_snapshot, article_id, per_channel)
         except Exception as e:
             print(f"stat: не вдалось зберегти снімок — {e}")
+
+
+async def stat_forget_handler(update, context):
+    """Забути матеріал у Норі й індексі TG (/stat_forget <url|id>) — наступний
+    /stat пройде повний шлях пошуку по всіх каналах (демо/діагностика матчингу)."""
+    if not context.args:
+        await update.message.reply_text(
+            "Використання: /stat_forget <url або ID матеріалу>"
+        )
+        return
+
+    arg = context.args[0]
+    article_id = arg if arg.isdigit() else _extract_article_id(arg)
+    if not article_id:
+        await update.message.reply_text("Не вдалося визначити ID матеріалу з URL")
+        return
+
+    from handlers import bot_db, storage
+
+    deleted = 0
+    if bot_db.is_configured():
+        try:
+            deleted = await asyncio.to_thread(bot_db.delete_article_stats, article_id)
+        except Exception as e:
+            await update.message.reply_text(f"Збій чистки Нори: {e}")
+            return
+    tg_dropped = storage.delete_tg_post(article_id)
+
+    parts = [
+        f"🦊 Забув матеріал {article_id}.",
+        f"Нора: прибрано {deleted} рядк." if deleted else "Нора: снімка не було.",
+        "Індекс TG: скинуто." if tg_dropped else "Індекс TG: запису не було.",
+        "Наступний /stat пройде повний пошук по всіх каналах.",
+    ]
+    await update.message.reply_text(" ".join(parts))
