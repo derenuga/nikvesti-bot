@@ -26,6 +26,7 @@ from handlers import stat_instagram
 from handlers import stat_tiktok
 from handlers import stat_youtube
 from handlers import stat_store
+from handlers.helpers import extract_article_id
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
@@ -45,16 +46,8 @@ def _clean_url(url):
     return url.split("?")[0].split("#")[0].rstrip("/")
 
 def _extract_article_id(url):
-    """Витягуємо числовий ID з URL. Два формати:
-    - зі слагом: /news/justice/320102-slug → '320102' (ID перед дефісом);
-    - без слага (старі матеріали, зокрема /ru/…): /news/politics/111079 →
-      '111079' (ID — останній сегмент шляху)."""
-    clean = _clean_url(url)
-    match = re.search(r'/(\d{4,})-', clean)
-    if match:
-        return match.group(1)
-    match = re.search(r'/(\d{4,})$', clean)
-    return match.group(1) if match else None
+    """Числовий ID з URL — канонічна реалізація в helpers.extract_article_id."""
+    return extract_article_id(url)
 
 
 FB_SEARCH_FORWARD_DAYS = 10  # від дати публікації дивимось уперед — статтю постять у ці дні

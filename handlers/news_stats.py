@@ -179,6 +179,33 @@ _VIEWS_NOTE = (
 )
 
 
+def own_material_by_ids(ids):
+    """own_material для матеріалів за їх node id: {'320252': True/False}.
+    Потрібно топам GA4 (query_router.get_ga4_top_articles), щоб відрізняти
+    власні матеріали від рерайтів: GA4 про атрибути БД сайту не знає, а підпис
+    автора на сторінці нічого не гарантує — редактори стрічки підписують і
+    агентські новини. Один SELECT по id — дешево, в межах лімітів KEY4.
+
+    Повертає None, якщо перевірити не вдалося (БД не налаштована чи запит
+    упав) — це сигнал «невідомо», а НЕ «не власні». ID, відсутні в nodes,
+    просто відсутні в результаті."""
+    clean_ids = sorted({int(i) for i in ids if str(i).isdigit()})
+    if not clean_ids:
+        return {}
+    if not db.is_configured():
+        return None
+    placeholders = ", ".join(["%s"] * len(clean_ids))
+    try:
+        rows = db.query(
+            f"SELECT id, own_material FROM nodes WHERE id IN ({placeholders})",
+            tuple(clean_ids),
+        )
+        return {str(r["id"]): bool(r["own_material"]) for r in rows}
+    except Exception as e:
+        print(f"news_stats: own_material_by_ids не вдався — {e}")
+        return None
+
+
 def count_news(title_contains=None, year=None, month=None, year_from=None, year_to=None,
                own_material=None, category=None, region=None, author=None,
                language=None, group_by=None, metric="count"):

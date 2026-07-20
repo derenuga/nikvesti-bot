@@ -30,7 +30,7 @@ from googleapiclient.discovery import build as gapi_build
 
 from handlers import analytics_store, archive_search, budget_nlq, news_archive, news_stats, social_store, storage
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, clean_ai_text
-from handlers.helpers import get_author_from_url
+from handlers.helpers import extract_article_id, get_author_from_url
 
 CHARTS_DIR = "/tmp/nlq_charts"
 os.makedirs(CHARTS_DIR, exist_ok=True)
@@ -181,7 +181,18 @@ def get_ga4_metric(metric, period, start_date=None, end_date=None):
     return {"metric": metric, "start_date": start, "end_date": end, "value": value}
 
 
-def get_ga4_top_articles(period, limit=5, start_date=None, end_date=None):
+# Пояснення ознаки own у топах — щоб Лис не робив хибний висновок «автор з
+# редакції ⇒ власний матеріал» (редактори стрічки підписують і рерайти).
+_TOP_ARTICLES_NOTE = (
+    "own: true — власний матеріал редакції (own_material=1 у БД сайту), "
+    "false — рерайт/агентська новина, null — визначити не вдалося. "
+    "own_material проставлений лише з певного року — у старих матеріалів false "
+    "може бути помилковим. Підпис автора на сторінці НЕ означає власний "
+    "матеріал: редактори стрічки підписують і агентські новини."
+)
+
+
+def get_ga4_top_articles(period, limit=5, start_date=None, end_date=None, own_only=False):
     start, end = _resolve_period(period, start_date, end_date)
     client = _ga4_client()
 
@@ -191,11 +202,12 @@ def get_ga4_top_articles(period, limit=5, start_date=None, end_date=None):
         dimensions=[Dimension(name="pagePath"), Dimension(name="pageTitle")],
         metrics=[Metric(name="screenPageViews")],
         order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
-        limit=50,
+        # З фільтром «лише власні» топ рідшає — беремо глибший зріз тим самим запитом.
+        limit=100 if own_only else 50,
     )
     response = client.run_report(request)
 
-    results = []
+    candidates = []
     for row in response.rows:
         path = row.dimension_values[0].value
         title = row.dimension_values[1].value
@@ -206,17 +218,41 @@ def get_ga4_top_articles(period, limit=5, start_date=None, end_date=None):
             continue
         if not (path.startswith("/news") or path.startswith("/articles") or path.startswith("/blog")):
             continue
-        author = get_author_from_url(BASE_URL + path)
+        candidates.append({"path": path, "title": title, "views": views,
+                           "article_id": extract_article_id(path)})
+
+    # Доганяємо own_material з БД сайту по ID зі шляху: GA4 атрибутів матеріалу
+    # не знає, тому «власний чи рерайт» визначається тільки тут.
+    own_map = news_stats.own_material_by_ids(
+        [c["article_id"] for c in candidates if c["article_id"]])
+    # own_map=None — БД недоступна: не фільтруємо (краще загальний топ із
+    # own=null і поясненням, ніж порожня відповідь), Лис побачить note.
+    filter_own = own_only and own_map is not None
+
+    results = []
+    for c in candidates:
+        own = own_map.get(c["article_id"]) if own_map is not None else None
+        if filter_own and own is not True:
+            continue
+        # Автор — HTTP-запит на сторінку, тому тягнемо лише для фінального списку.
+        author = get_author_from_url(BASE_URL + c["path"])
         results.append({
-            "url": BASE_URL + path,
-            "title": title,
-            "views": views,
+            "url": BASE_URL + c["path"],
+            "title": c["title"],
+            "views": c["views"],
             "author": author,
+            "own": own,
         })
         if len(results) == limit:
             break
 
-    return {"start_date": start, "end_date": end, "articles": results}
+    note = _TOP_ARTICLES_NOTE
+    if own_map is None:
+        note += (" УВАГА: цього разу звірити з БД сайту не вдалося, own=null у "
+                 "всіх; фільтр «лише власні» НЕ застосовано — скажи про це користувачу.")
+    elif own_only:
+        note += " Показано лише власні матеріали (own_only=true), рерайти відфільтровано."
+    return {"start_date": start, "end_date": end, "articles": results, "note": note}
 
 
 def get_ga4_geo_breakdown(period, dimension="region", limit=10, start_date=None, end_date=None):
@@ -912,7 +948,12 @@ TOOLS = [
     },
     {
         "name": "get_ga4_top_articles",
-        "description": "Топ статей сайту nikvesti.com за переглядами за вказаний період, з автором кожної статті.",
+        "description": (
+            "Топ статей сайту nikvesti.com за переглядами (GA4) за вказаний період, з автором і "
+            "ознакою own для кожної статті (own_material з БД сайту: власний матеріал чи "
+            "рерайт/агентська новина). Підпис автора НЕ означає власний матеріал — власність "
+            "визначає ЛИШЕ own. Якщо питання про топ саме власних матеріалів — став own_only=true."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -921,6 +962,7 @@ TOOLS = [
                     "enum": ["today", "yesterday", "last_7_days", "last_30_days", "this_month", "last_month", "this_quarter", "custom"],
                 },
                 "limit": {"type": "integer", "description": "Скільки статей повернути, за замовчуванням 5"},
+                "own_only": {"type": "boolean", "description": "true — лише власні матеріали редакції (own_material=1 у БД сайту), рерайти/агентські відфільтровуються. Ставити, коли питання саме про власні/оригінальні матеріали. Дефолт false — загальний топ, але кожна стаття все одно має ознаку own"},
                 "start_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
                 "end_date": {"type": "string", "description": "YYYY-MM-DD, тільки якщо period='custom'"},
             },

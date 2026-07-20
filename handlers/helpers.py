@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from calendar import monthrange
 
@@ -33,6 +34,19 @@ def parse_month_arg(args):
     end = datetime(year, month_num, last_day, 23, 59, 59)
     label = f"{MONTHS_UA[month_num]} {year}"
     return start, end, label
+
+def extract_article_id(url):
+    """Числовий ID матеріалу (nodes.id) з URL або шляху nikvesti.com. Два формати:
+    - зі слагом: /news/justice/320102-slug → '320102' (ID перед дефісом);
+    - без слага (старі матеріали, зокрема /ru/…): /news/politics/111079 →
+      '111079' (ID — останній сегмент шляху)."""
+    clean = url.split("?")[0].split("#")[0].rstrip("/")
+    match = re.search(r'/(\d{4,})-', clean)
+    if match:
+        return match.group(1)
+    match = re.search(r'/(\d{4,})$', clean)
+    return match.group(1) if match else None
+
 
 def escape_html(text):
     """Екранування для Telegram parse_mode=HTML. Єдина копія для всіх модулів."""
