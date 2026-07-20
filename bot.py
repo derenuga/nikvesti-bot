@@ -18,7 +18,7 @@ from handlers.prozorro import check_prozorro_tenders, diagnose_offset_jump, conf
 from handlers.documents import check_documents, test_documents, rebaseline_documents
 from handlers.competitors import check_competitors
 from handlers.law_enforcement import check_law_enforcement
-from handlers.stat import stat_handler
+from handlers.stat import stat_handler, stat_forget_handler
 from handlers.query_router import handle_natural_language_query, reset_dialog
 from handlers.reactions import handle_message_reaction
 from handlers.english_report import english_report_handler
@@ -349,6 +349,7 @@ def main():
     app.add_handler(CommandHandler("competitors", competitors_check))
     app.add_handler(CommandHandler("law", law_check))
     app.add_handler(CommandHandler("stat", stat_handler))
+    app.add_handler(CommandHandler("stat_forget", stat_forget_handler))
     app.add_handler(CommandHandler("english", english_report_handler))
     app.add_handler(CommandHandler("traffic", traffic_handler))
     app.add_handler(CommandHandler("outage", outage_handler))

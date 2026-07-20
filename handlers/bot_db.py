@@ -635,6 +635,23 @@ def get_article_stats(article_id):
     )
 
 
+def delete_article_stats(article_id):
+    """Видаляє ВЕСЬ снімок матеріалу (усі канали) — /stat_forget: наступний
+    /stat піде повним шляхом пошуку, без швидкого шляху й фолбека. Повертає
+    кількість видалених рядків."""
+    ensure_schema()
+    conn = _connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM article_stats WHERE article_id = %s",
+                (int(article_id),),
+            )
+            return cur.rowcount
+    finally:
+        conn.close()
+
+
 # ---------- sync_state (курсори синхронізації) ----------
 
 def get_state(key, default=None):
