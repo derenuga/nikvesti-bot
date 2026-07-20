@@ -258,6 +258,28 @@ def sanitize_news_links(text, items):
     return result
 
 
+def append_missing_links(text, items):
+    """Детермінований дожим лінків у бек: новини з items, чий url НЕ зʼявився
+    лінком у тексті, дописуються блоком «Джерела» з канонічними лінками.
+
+    Модель стохастична: попри промпт вона періодично «соромиться» коротких
+    URL старих новин і не ставить лінки (інцидент 20.07, скріни 2/5). Промпт
+    гарантій не дає — гарантію дає код: кожна новина беку в результаті
+    залінкована або в тексті, або в цьому блоці."""
+    if not text or not items:
+        return text
+    missing = [it for it in items if it.get("url") and it["url"] not in text]
+    if not missing:
+        return text
+    lines = []
+    for it in missing:
+        title = (it.get("title") or it.get("url") or "").strip()
+        title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        lines.append(f'• {it.get("date", "")} — <a href="{it["url"]}">{title}</a>')
+    print(f"append_missing_links: модель не залінкувала {len(missing)} новин, дописуємо блоком")
+    return text + "\n\n📎 Згадані матеріали без лінка в тексті:\n" + "\n".join(lines)
+
+
 # ---------- Пошук ----------
 
 def _news_url(row):
@@ -490,7 +512,9 @@ def fetch_items_by_urls(urls):
             (slug, slug),
         )
         if not rows:
-            m = re.match(r"^(\d+)-", slug)
+            # id: і з префікса слага (143444-slug), і ГОЛИЙ id без слага
+            # (/news/business/143444 — канонічний лінк старих новин).
+            m = re.match(r"^(\d+)(?:-|$)", slug)
             if m:
                 rows = db.query(
                     f"SELECT {cols} FROM nodes WHERE id = %s LIMIT 1",
@@ -575,7 +599,9 @@ async def compose_back(items):
         print(f"ai_usage: не вдалось записати news_back — {e}")
     text = clean_ai_text("".join(b.text for b in message.content if b.type == "text")).strip()
     # Захист від вигаданих слагів: кожен лінк звіряється з url новин із бази.
-    return sanitize_news_links(text, items)
+    text = sanitize_news_links(text, items)
+    # Гарантія лінків: новини без лінка в тексті дописуються блоком «Джерела».
+    return append_missing_links(text, items)
 
 
 # ---------- Колбеки кнопок ----------
