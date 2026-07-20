@@ -196,8 +196,9 @@ ul.traj .ty {{ font-weight:700; color:var(--blue-dark); font-variant-numeric:tab
 .period p {{ margin:0 0 18px; }}
 .period p strong {{ font-weight:700; }}
 
-table.hom {{ width:100%; border-collapse:collapse; font-size:16px; margin:6px 0; }}
-table.hom td {{ padding:10px 4px; border-bottom:1px solid var(--line2); }}
+/* явний color: reset в'ювера артефактів перебиває успадкування для table */
+table.hom {{ width:100%; border-collapse:collapse; font-size:16px; margin:6px 0; color:var(--ink); }}
+table.hom td {{ padding:10px 4px; border-bottom:1px solid var(--line2); color:var(--ink); }}
 table.hom td.num {{ text-align:right; font-variant-numeric:tabular-nums; font-weight:700;
   color:var(--blue-dark); width:64px; }}
 table.hom tr:last-child td {{ border-bottom:none; }}
