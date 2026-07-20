@@ -68,7 +68,7 @@ handle_natural_language_query() в query_router.py
 | Tool | Призначення |
 |---|---|
 | `get_ga4_metric(metric, period, start_date?, end_date?)` | Одна метрика за період: `activeUsers`, `screenPageViews`, `screenPageViewsPerSession`, `newUsers`, `returningUsers` (рахується як `activeUsers - newUsers`) |
-| `get_ga4_top_articles(period, limit?, start_date?, end_date?)` | Топ статей за переглядами з атрибуцією автора |
+| `get_ga4_top_articles(period, limit?, start_date?, end_date?, own_only?)` | Топ статей за переглядами з атрибуцією автора. Кожна стаття має ознаку `own` (true/false/null) — `own_material` доганяється з БД сайту (`news_stats.own_material_by_ids`) по ID з pagePath, бо GA4 атрибутів матеріалу не знає, а підпис автора нічого не гарантує (редактори стрічки підписують і рерайти). `own_only=true` — топ лише власних матеріалів (глибший зріз GA4, limit=100); якщо БД сайту недоступна — фільтр не застосовується, `own=null` і Лис попереджає користувача (note) |
 | `get_ga4_geo_breakdown(period, dimension?, limit?, ...)` | Географія аудиторії по Україні: `region` або `city` |
 | `get_ga4_hourly_breakdown(period, ...)` | Активність по годинах доби (0-23) — найкращий час публікації |
 | `get_ga4_custom_report(dimensions, metrics, period, limit?, page_path_contains?, filter_dimension?, filter_value_contains?, ...)` | Запасний інструмент для довільних GA4 dimensions/metrics (пристрої, браузери, джерела трафіку, день тижня тощо). `page_path_contains` звужує до конкретної статті (ID з URL). `filter_dimension`+`filter_value_contains` — довільний CONTAINS-фільтр по будь-якій dimension (наприклад `sessionSource` містить `derstandard.de`), щоб деталізувати трафік з конкретного джерела навіть при малій кількості сесій |
