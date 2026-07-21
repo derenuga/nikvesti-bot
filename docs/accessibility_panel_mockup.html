@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>МикВісті — макет панелі доступності (референс для розробника)</title>
+
+<!--
+  Референс-реалізація панелі доступності для nikvesti.com.
+  Що тут виправлено відносно поточної версії demo.nikvesti.com — див.
+  docs/ACCESSIBILITY_WIDGET_REVIEW.md (пункти A1–A6, B1–B5, C).
+
+  Ключове для перенесення на сайт:
+  1) Рядки панелі — словник I18N за мовою версії сайту (ua/ru/en).
+  2) Групи опцій — role="radiogroup" + role="radio" + aria-checked + стрілки.
+  3) Модалка — focus trap + Esc + повернення фокуса на тогл.
+  4) Масштаб шрифту — через font-size на <html> (без обходу DOM інлайн-стилями).
+  5) Теми — лише через CSS-змінні на :root[data-am-theme=...].
+  6) Анти-спалах: інлайн-скрипт нижче в <head> вішає тему ДО рендера.
+-->
+<script>
+  (function () {
+    try {
+      var s = JSON.parse(localStorage.getItem('nv_a11y') || '{}');
+      if (s.theme && s.theme !== 'default') {
+        document.documentElement.setAttribute('data-am-theme', s.theme);
+      }
+      if (s.fontScale && s.fontScale !== '1') {
+        document.documentElement.style.fontSize = (parseFloat(s.fontScale) * 100) + '%';
+      }
+    } catch (e) {}
+  })();
+</script>
+
+<style>
+  /* ============ 1. Палітра сайту через CSS-змінні ============
+     На сайті це разова міграція: всі кольори верстки — тільки з цих змінних.
+     Тоді тема — це заміна значень, без переліку сотень селекторів. */
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #f2f4f7;
+    --text: #111111;
+    --text-muted: #5d6673;
+    --link: #0a58ca;
+    --accent: #1677ff;
+    --border: #d9dde3;
+    --focus-ring: #1677ff;
+  }
+  :root[data-am-theme="dark"] {
+    --bg: #000000;
+    --bg-soft: #16181c;
+    --text: #ffffff;
+    --text-muted: #b9c0cc;
+    --link: #ffe600;
+    --accent: #4da3ff;
+    --border: #3a3f47;
+    --focus-ring: #ffe600;
+  }
+  :root[data-am-theme="light"] {
+    --bg: #fffbe6;
+    --bg-soft: #fff3bf;
+    --text: #111111;
+    --text-muted: #4a4a3a;
+    --link: #8a4b00;
+    --border: #d9cf9e;
+    --focus-ring: #8a4b00;
+  }
+  :root[data-am-theme="contrast"] {
+    --bg: #000000;
+    --bg-soft: #000000;
+    --text: #ffff00;
+    --text-muted: #ffff00;
+    --link: #00ffff;
+    --accent: #ffff00;
+    --border: #ffff00;
+    --focus-ring: #00ffff;
+  }
+
+  /* ============ 2. Налаштування читання ============ */
+  :root { --am-line-height: 1.5; --am-letter-spacing: 0em; }
+
+  html[data-am-lh] body .content-area p,
+  html[data-am-lh] body .content-area li,
+  html[data-am-lh] body .content-area h1,
+  html[data-am-lh] body .content-area h2,
+  html[data-am-lh] body .content-area h3 { line-height: var(--am-line-height) !important; }
+
+  html[data-am-ls] body .content-area p,
+  html[data-am-ls] body .content-area li,
+  html[data-am-ls] body .content-area h1,
+  html[data-am-ls] body .content-area h2,
+  html[data-am-ls] body .content-area h3 { letter-spacing: var(--am-letter-spacing) !important; }
+
+  html[data-am-font="serif"] body .content-area { font-family: Georgia, 'Times New Roman', serif !important; }
+  html[data-am-font="sans"]  body .content-area { font-family: Arial, Helvetica, sans-serif !important; }
+
+  /* Зображення: ховаємо ЛИШЕ контентні (img/picture/figure), іконки інтерфейсу не чіпаємо */
+  html[data-am-grayscale] body .content-area img,
+  html[data-am-grayscale] body .content-area picture { filter: grayscale(100%); }
+  html[data-am-noimg] body .content-area img,
+  html[data-am-noimg] body .content-area picture,
+  html[data-am-noimg] body .content-area figure { visibility: hidden !important; }
+
+  html[data-am-links] body a { text-decoration: underline !important; text-underline-offset: 2px; }
+
+  html[data-am-nomotion] *,
+  html[data-am-nomotion] *::before,
+  html[data-am-nomotion] *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+
+  html[data-am-cursor], html[data-am-cursor] * {
+    cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='36' height='36' viewBox='0 0 36 36'><circle cx='18' cy='18' r='10' fill='black' stroke='white' stroke-width='3'/></svg>") 18 18, auto !important;
+  }
+
+  .am-reading-guide {
+    position: fixed; left: 0; width: 100%; height: 4px;
+    background: #ff3b30; pointer-events: none; z-index: 2147483647;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.5);
+  }
+
+  /* ============ 3. Демо-контент (на сайті цього блоку немає) ============ */
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Commissioner', system-ui, sans-serif;
+    font-size: 1rem; line-height: 1.5;
+  }
+  .demo-header {
+    background: #26439c; color: #fff; padding: 1rem 1.5rem;
+    font-weight: 800; font-size: 1.4rem; letter-spacing: .02em;
+  }
+  :root[data-am-theme="contrast"] .demo-header { background: #000; color: #ffff00; border-bottom: 2px solid #ffff00; }
+  .content-area { max-width: 680px; margin: 0 auto; padding: 1.5rem; }
+  .content-area h1 { font-size: 1.6rem; margin: 0 0 .75rem; }
+  .content-area h2 { font-size: 1.2rem; margin: 1.25rem 0 .5rem; }
+  .content-area p { margin: 0 0 .75rem; color: var(--text); }
+  .content-area a { color: var(--link); }
+  .content-area figure { margin: 1rem 0; }
+  .content-area figure div {
+    height: 160px; border-radius: 8px;
+    background: linear-gradient(120deg, #26439c, #4da3ff);
+  }
+  .content-area figcaption { font-size: .85rem; color: var(--text-muted); padding-top: .35rem; }
+  .demo-note {
+    background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: 8px; padding: .75rem 1rem; font-size: .9rem; margin-bottom: 1.25rem;
+  }
+
+  /* Видимий фокус — глобально (WCAG 2.4.7) */
+  :focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; border-radius: 4px; }
+
+  /* Skip-link — на сайті зараз відсутній, обовʼязковий елемент */
+  .skip-link {
+    position: absolute; left: -9999px; top: 0; z-index: 100001;
+    background: var(--accent); color: #fff; padding: .6rem 1rem; border-radius: 0 0 8px 0;
+    font-weight: 600; text-decoration: none;
+  }
+  .skip-link:focus { left: 0; }
+
+  /* ============ 4. Панель ============ */
+  .am-toggle {
+    position: fixed; right: 20px; bottom: 20px; z-index: 99990;
+    width: 56px; height: 56px; display: flex; align-items: center; justify-content: center;
+    background: #1677ff; color: #fff; border: none; border-radius: 50%;
+    cursor: pointer; box-shadow: 0 10px 24px rgba(22,119,255,.35);
+  }
+  .am-toggle:hover { background: #0f5fd1; }
+  :root[data-am-theme="contrast"] .am-toggle { background: #ffff00; color: #000; }
+  .am-toggle svg { width: 30px; height: 30px; }
+
+  .am-wrap[hidden] { display: none; }
+  .am-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 99991; }
+
+  .am-panel {
+    position: fixed; top: 12px; right: 12px; bottom: 12px; z-index: 99992;
+    width: 400px; max-width: calc(100vw - 24px);
+    display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 16px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.25);
+    font-size: 15px; line-height: 1.35;
+  }
+  .am-panel__header, .am-panel__footer {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; flex: 0 0 auto;
+  }
+  .am-panel__header { border-bottom: 1px solid var(--border); }
+  .am-panel__footer { border-top: 1px solid var(--border); gap: 10px; }
+  .am-panel__title { font-size: 18px; font-weight: 800; }
+  .am-panel__body { overflow-y: auto; padding: 6px 18px 14px; flex: 1 1 auto; }
+
+  .am-group { margin-top: 14px; }
+  .am-group__title { font-weight: 700; margin-bottom: 8px; font-size: 14px; }
+
+  .am-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 8px; }
+
+  /* Кнопка-опція: іконка/прев'ю + видимий підпис. Мінімальна ціль 44px (WCAG 2.5.5) */
+  .am-option {
+    min-height: 58px; padding: 6px 4px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    background: var(--bg); color: var(--text);
+    border: 1.5px solid var(--border); border-radius: 10px; cursor: pointer;
+    font: inherit; font-size: 12px;
+  }
+  .am-option:hover { border-color: var(--accent); }
+  .am-option[aria-checked="true"] {
+    background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 700;
+  }
+  .am-option .am-preview { font-size: 18px; font-weight: 600; line-height: 1; }
+  .am-option .am-preview--serif { font-family: Georgia, serif; }
+  .am-option .am-preview--sans { font-family: Arial, sans-serif; }
+  .am-option .am-swatch {
+    width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--border);
+  }
+
+  .am-switch {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 0; cursor: pointer; font-size: 14px;
+  }
+  .am-switch input { width: 20px; height: 20px; accent-color: var(--accent); flex: 0 0 auto; }
+
+  .am-btn {
+    font: inherit; font-weight: 700; font-size: 14px;
+    border-radius: 10px; padding: 11px 18px; cursor: pointer;
+    background: var(--text); color: var(--bg); border: 1.5px solid var(--text);
+  }
+  .am-btn--ghost { background: transparent; color: var(--text); border-color: var(--border); }
+  .am-btn--ghost:hover { border-color: var(--text); }
+  .am-close {
+    background: transparent; border: none; cursor: pointer; color: var(--text);
+    font-size: 20px; line-height: 1; padding: 8px; border-radius: 8px;
+  }
+
+  @media (max-width: 640px) {
+    .am-panel { top: auto; right: 0; left: 0; bottom: 0; width: 100%; max-width: 100%;
+      max-height: 88vh; border-radius: 16px 16px 0 0; }
+  }
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#main">Перейти до вмісту</a>
+
+<header class="demo-header">МикВісті — демо панелі доступності</header>
+
+<main id="main" class="content-area">
+  <p class="demo-note">Це макет-референс: текст нижче — «стаття», на якій видно дію
+    кожного налаштування. Кнопка панелі — праворуч унизу. Спробуйте пройти все
+    з клавіатури: Tab / стрілки / Enter / Esc.</p>
+
+  <h1>Миколаїв відновлює водогін: що зміниться для мешканців</h1>
+  <p>Міська рада затвердила <a href="#">план реконструкції магістрального водогону</a>,
+    який має завершитися до кінця року. Проєкт фінансується коштом міжнародних донорів
+    та міського бюджету.</p>
+  <figure>
+    <div role="img" aria-label="Ілюстрація: ремонт водогону"></div>
+    <figcaption>Ремонтні роботи на магістралі. Фото: МикВісті</figcaption>
+  </figure>
+  <h2>Що це означає для міста</h2>
+  <p>За словами підрядника, роботи розділені на три черги. Перша черга охоплює
+    центральну частину міста, друга — Інгульський район, третя — Корабельний.
+    На час робіт можливі тимчасові відключення води.</p>
+  <p>Редакція стежитиме за перебігом робіт і публікуватиме
+    <a href="#">оновлення в рубриці «Комунальне»</a>.</p>
+</main>
+
+<!-- Тогл: має accessible name, звʼязок з панеллю, стан -->
+<button type="button" class="am-toggle" id="am-toggle"
+        aria-haspopup="dialog" aria-controls="am-panel" aria-expanded="false"
+        aria-label="Налаштування доступності">
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+    <circle cx="12" cy="4.5" r="2.2"/>
+    <path d="M12 8c-2.8 0-5.4-.6-7.5-1.2l-.5 2c1.9.6 3.8 1 5.5 1.1v3.1l-2.3 7.2 1.9.7 2.4-6.9h1l2.4 6.9 1.9-.7-2.3-7.2V9.9c1.7-.1 3.6-.5 5.5-1.1l-.5-2C17.4 7.4 14.8 8 12 8z"/>
+  </svg>
+</button>
+
+<div class="am-wrap" id="am-wrap" hidden>
+  <div class="am-backdrop" data-am-close></div>
+
+  <aside id="am-panel" class="am-panel" role="dialog" aria-modal="true" aria-labelledby="am-title">
+    <div class="am-panel__header">
+      <h2 class="am-panel__title" id="am-title">Налаштування доступності</h2>
+      <button type="button" class="am-close" data-am-close aria-label="Закрити">✕</button>
+    </div>
+
+    <div class="am-panel__body">
+
+      <section class="am-group">
+        <div class="am-group__title" id="am-lbl-size">Розмір тексту</div>
+        <div class="am-options" role="radiogroup" aria-labelledby="am-lbl-size" data-setting="fontScale">
+          <button type="button" class="am-option" role="radio" data-value="1">
+            <span class="am-preview" style="font-size:14px" aria-hidden="true">А</span>
+            <span>100%</span>
+          </button>
+          <button type="button" class="am-option" role="radio" data-value="1.15">
+            <span class="am-preview" style="font-size:17px" aria-hidden="true">А</span>
+            <span>115%</span>
+          </button>
+          <button type="button" class="am-option" role="radio" data-value="1.3">
+            <span class="am-preview" style="font-size:20px" aria-hidden="true">А</span>
+            <span>130%</span>
+          </button>
+          <button type="button" class="am-option" role="radio" data-value="1.45">
+            <span class="am-preview" style="font-size:23px" aria-hidden="true">А</span>
+            <span>145%</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="am-group">
+        <div class="am-group__title" id="am-lbl-lh">Міжрядковий інтервал</div>
+        <div class="am-options" role="radiogroup" aria-labelledby="am-lbl-lh" data-setting="lineHeight">
+          <button type="button" class="am-option" role="radio" data-value="default"><span>Звичайний</span></button>
+          <button type="button" class="am-option" role="radio" data-value="1.7"><span>Збільшений</span></button>
+          <button type="button" class="am-option" role="radio" data-value="2"><span>Великий</span></button>
+        </div>
+      </section>
+
+      <section class="am-group">
+        <div class="am-group__title" id="am-lbl-ls">Інтервал між літерами</div>
+        <div class="am-options" role="radiogroup" aria-labelledby="am-lbl-ls" data-setting="letterSpacing">
+          <button type="button" class="am-option" role="radio" data-value="default"><span>Звичайний</span></button>
+          <button type="button" class="am-option" role="radio" data-value="0.05em"><span>Збільшений</span></button>
+          <button type="button" class="am-option" role="radio" data-value="0.1em"><span>Великий</span></button>
+        </div>
+      </section>
+
+      <section class="am-group">
+        <div class="am-group__title" id="am-lbl-font">Шрифт</div>
+        <div class="am-options" role="radiogroup" aria-labelledby="am-lbl-font" data-setting="fontFamily">
+          <button type="button" class="am-option" role="radio" data-value="default">
+            <span class="am-preview" aria-hidden="true">Аа</span><span>Сайту</span>
+          </button>
+          <button type="button" class="am-option" role="radio" data-value="serif">
+            <span class="am-preview am-preview--serif" aria-hidden="true">Аа</span><span>Із засічками</span>
+          </button>
+          <button type="button" class="am-option" role="radio" data-value="sans">
+            <span class="am-preview am-preview--sans" aria-hidden="true">Аа</span><span>Без засічок</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="am-group">
+        <div class="am-group__title" id="am-lbl-theme">Кольорова тема</div>
+        <div class="am-options" role="radiogroup" aria-labelledby="am-lbl-theme" data-setting="theme">
+          <button type="button" class="am-option" role="radio" data-value="default">
+            <span class="am-swatch" style="background:linear-gradient(135deg,#fff 50%,#26439c 50%)" aria-hidden="true"></span>
+            <span>Звичайна</span>
+          </button>
+          <button type="button" class="am-option" role="radio" data-value="dark">
+            <span class="am-swatch" style="background:#000" aria-hidden="true"></span>
+            <span>Темна</span>
+          </button>
+          <button type="button" class="am-option" role="radio" data-value="light">
+            <span class="am-swatch" style="background:#fffbe6" aria-hidden="true"></span>
+            <span>Світла</span>
+          </button>
+          <button type="button" class="am-option" role="radio" data-value="contrast">
+            <span class="am-swatch" style="background:linear-gradient(135deg,#000 50%,#ff0 50%)" aria-hidden="true"></span>
+            <span>Контрастна</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="am-group">
+        <div class="am-group__title">Зображення</div>
+        <label class="am-switch"><input type="checkbox" data-setting="grayscale"><span>Чорно-білі зображення</span></label>
+        <label class="am-switch"><input type="checkbox" data-setting="noimg"><span>Приховати зображення</span></label>
+      </section>
+
+      <section class="am-group">
+        <div class="am-group__title">Читання</div>
+        <label class="am-switch"><input type="checkbox" data-setting="links"><span>Підкреслювати посилання</span></label>
+        <label class="am-switch"><input type="checkbox" data-setting="guide"><span>Лінія читання</span></label>
+        <label class="am-switch"><input type="checkbox" data-setting="cursor"><span>Великий курсор</span></label>
+        <label class="am-switch"><input type="checkbox" data-setting="nomotion"><span>Зупинити анімації</span></label>
+      </section>
+    </div>
+
+    <div class="am-panel__footer">
+      <button type="button" class="am-btn am-btn--ghost" id="am-reset">Скинути все</button>
+      <button type="button" class="am-btn" data-am-close>Готово</button>
+    </div>
+  </aside>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* На сайті: словник за мовою версії (ua/ru/en); тут для стислості лише розмітка UA. */
+
+  var STORAGE_KEY = 'nv_a11y';
+  var DEFAULTS = {
+    fontScale: '1', lineHeight: 'default', letterSpacing: 'default',
+    fontFamily: 'default', theme: 'default',
+    grayscale: false, noimg: false, links: false, guide: false, cursor: false, nomotion: false
+  };
+
+  var root = document.documentElement;
+  var toggle = document.getElementById('am-toggle');
+  var wrap = document.getElementById('am-wrap');
+  var panel = document.getElementById('am-panel');
+  var guideEl = null;
+  var lastFocused = null;
+
+  var state = load();
+
+  function load() {
+    try {
+      return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'));
+    } catch (e) { return Object.assign({}, DEFAULTS); }
+  }
+  function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+  /* ---------- Застосування стану: тільки атрибути на <html> + CSS-змінні ---------- */
+  function apply() {
+    root.style.fontSize = state.fontScale === '1' ? '' : (parseFloat(state.fontScale) * 100) + '%';
+
+    setAttr('data-am-lh', state.lineHeight !== 'default');
+    root.style.setProperty('--am-line-height', state.lineHeight === 'default' ? '1.5' : state.lineHeight);
+
+    setAttr('data-am-ls', state.letterSpacing !== 'default');
+    root.style.setProperty('--am-letter-spacing', state.letterSpacing === 'default' ? '0em' : state.letterSpacing);
+
+    if (state.fontFamily === 'default') root.removeAttribute('data-am-font');
+    else root.setAttribute('data-am-font', state.fontFamily);
+
+    if (state.theme === 'default') root.removeAttribute('data-am-theme');
+    else root.setAttribute('data-am-theme', state.theme);
+
+    setAttr('data-am-grayscale', state.grayscale);
+    setAttr('data-am-noimg', state.noimg);
+    setAttr('data-am-links', state.links);
+    setAttr('data-am-cursor', state.cursor);
+    setAttr('data-am-nomotion', state.nomotion);
+
+    if (state.guide) enableGuide(); else disableGuide();
+    render();
+  }
+  function setAttr(name, on) { on ? root.setAttribute(name, '') : root.removeAttribute(name); }
+
+  /* ---------- Відображення стану в контролах (aria-checked, чекбокси) ---------- */
+  function render() {
+    panel.querySelectorAll('[role="radiogroup"][data-setting]').forEach(function (group) {
+      var key = group.dataset.setting;
+      var current = String(state[key]);
+      var radios = group.querySelectorAll('[role="radio"]');
+      var hasChecked = false;
+      radios.forEach(function (btn) {
+        var checked = String(btn.dataset.value) === current;
+        btn.setAttribute('aria-checked', checked ? 'true' : 'false');
+        btn.tabIndex = checked ? 0 : -1;   /* roving tabindex */
+        if (checked) hasChecked = true;
+      });
+      if (!hasChecked && radios.length) radios[0].tabIndex = 0;
+    });
+    panel.querySelectorAll('input[data-setting]').forEach(function (input) {
+      input.checked = !!state[input.dataset.setting];
+    });
+  }
+
+  /* ---------- Radiogroup: клік + стрілочна навігація ---------- */
+  panel.querySelectorAll('[role="radiogroup"][data-setting]').forEach(function (group) {
+    var key = group.dataset.setting;
+
+    group.addEventListener('click', function (e) {
+      var btn = e.target.closest('[role="radio"]');
+      if (!btn) return;
+      state[key] = String(btn.dataset.value);
+      save(); apply();
+      btn.focus();
+    });
+
+    group.addEventListener('keydown', function (e) {
+      var keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
+      if (keys.indexOf(e.key) === -1) return;
+      var radios = Array.prototype.slice.call(group.querySelectorAll('[role="radio"]'));
+      var idx = radios.indexOf(document.activeElement);
+      if (idx === -1) return;
+      e.preventDefault();
+      var next = (e.key === 'ArrowRight' || e.key === 'ArrowDown') ? idx + 1 : idx - 1;
+      next = (next + radios.length) % radios.length;
+      state[key] = String(radios[next].dataset.value);
+      save(); apply();
+      radios[next].focus();
+    });
+  });
+
+  panel.querySelectorAll('input[data-setting]').forEach(function (input) {
+    input.addEventListener('change', function () {
+      state[input.dataset.setting] = input.checked;
+      save(); apply();
+    });
+  });
+
+  document.getElementById('am-reset').addEventListener('click', function () {
+    state = Object.assign({}, DEFAULTS);
+    localStorage.removeItem(STORAGE_KEY);
+    apply();
+  });
+
+  /* ---------- Модалка: відкриття, Esc, focus trap, повернення фокуса ---------- */
+  function focusables() {
+    return panel.querySelectorAll('button, input, [tabindex="0"]');
+  }
+
+  function open() {
+    lastFocused = document.activeElement;
+    wrap.removeAttribute('hidden');
+    toggle.setAttribute('aria-expanded', 'true');
+    document.addEventListener('keydown', onKeydown);
+    var first = focusables()[0];
+    if (first) first.focus();
+  }
+
+  function close() {
+    wrap.setAttribute('hidden', '');
+    toggle.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('keydown', onKeydown);
+    (lastFocused || toggle).focus();
+  }
+
+  function onKeydown(e) {
+    if (e.key === 'Escape') { close(); return; }
+    if (e.key !== 'Tab') return;
+    /* focus trap: Tab циклиться в межах панелі */
+    var items = Array.prototype.filter.call(focusables(), function (el) {
+      return el.offsetParent !== null && el.tabIndex !== -1;
+    });
+    if (!items.length) return;
+    var first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+
+  toggle.addEventListener('click', open);
+  wrap.querySelectorAll('[data-am-close]').forEach(function (el) {
+    el.addEventListener('click', close);
+  });
+
+  /* ---------- Лінія читання: миша + клавіатурний фокус ---------- */
+  function moveGuide(y) { if (guideEl) guideEl.style.top = y + 'px'; }
+  function onMouse(e) { moveGuide(e.clientY); }
+  function onFocus(e) {
+    if (!e.target.getBoundingClientRect) return;
+    var r = e.target.getBoundingClientRect();
+    moveGuide(r.top + r.height / 2);
+  }
+  function enableGuide() {
+    if (guideEl) return;
+    guideEl = document.createElement('div');
+    guideEl.className = 'am-reading-guide';
+    guideEl.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(guideEl);
+    window.addEventListener('mousemove', onMouse, { passive: true });
+    document.addEventListener('focusin', onFocus);
+  }
+  function disableGuide() {
+    if (!guideEl) return;
+    window.removeEventListener('mousemove', onMouse);
+    document.removeEventListener('focusin', onFocus);
+    guideEl.remove();
+    guideEl = null;
+  }
+
+  apply();
+})();
+</script>
+</body>
+</html>
