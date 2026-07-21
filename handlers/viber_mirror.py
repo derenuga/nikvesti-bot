@@ -17,6 +17,10 @@ getFile Telegram, ≤180 с; крупніше/довше — текстом). me
 фолбек на текст, щоб пост не губився. Підпис до відео — окремим текстом
 (Viber video підпису не має).
 
+Альбом (кілька фото) TG шле окремими постами з одним media_group_id, а Viber
+альбомів не має — тому постимо лише перший пост групи (він несе підпис+лінк),
+решту пропускаємо (інакше кожне фото окремим постом). Повний набір — за лінком.
+
 Налаштування:
 1. Бути super admin Viber-каналу → інфо каналу → Developer Tools → auth_token.
 2. Railway: VIBER_AUTH_TOKEN (+ VIBER_WEBHOOK_URL — будь-який HTTPS-endpoint,
@@ -30,6 +34,7 @@ getFile Telegram, ≤180 с; крупніше/довше — текстом). me
 """
 
 import os
+from collections import deque
 
 import requests
 
@@ -44,6 +49,10 @@ VIDEO_MAX_BYTES = 20_000_000  # Telegram getFile тягне лише ≤20 МБ 
 VIDEO_MAX_DURATION = 180      # Viber: відео ≤180 с
 
 _sender_cache = None
+# Альбоми (кілька фото) приходять з TG окремими постами з одним media_group_id;
+# Viber альбомів не має. Постимо лише ПЕРШИЙ пост групи (він несе підпис+лінк),
+# решту-«близнюків» пропускаємо — інакше кожне фото окремим постом (спам).
+_seen_albums = deque(maxlen=256)
 
 
 def _token():
@@ -213,6 +222,12 @@ async def mirror_channel_post(bot, msg):
     import asyncio
     if not is_enabled() or not should_mirror(msg):
         return None
+    # Альбом: постимо лише перше фото групи (з підписом), близнюків — пропуск
+    gid = getattr(msg, "media_group_id", None)
+    if gid:
+        if gid in _seen_albums:
+            return None
+        _seen_albums.append(gid)
     caption = build_text(msg)
     posted = False
     try:
