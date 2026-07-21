@@ -15,6 +15,17 @@
 Плюс гейт на робочі години (щоб напоминання падало, коли його можуть відпрацювати,
 а не серед ночі).
 
+Гейт «час настав» (перевірено на реальному кейсі 20.07.2026, id 321354):
+nodes.published у БД НЕ завжди відбиває фактичний час виходу — запланована
+в адмінці новина може мати минулий published (і тому проходити SQL-вікно),
+хоча на сайті вона з'явиться пізніше. При цьому сторінка статті по прямому
+URL віддається ще ДО виходу, і саме її JSON-LD datePublished несе справжній
+запланований час. Тому перед перевіркою ФБ читаємо сторінку: якщо
+datePublished ще не настав (плюс той самий грейс MIN_AGE від РЕАЛЬНОГО часу
+виходу) — пропускаємо БЕЗ позначки баченою і перепробуємо наступної години.
+Сторінка не читається (не-200/збій) → теж відкласти, не марк: не можемо
+підтвердити, що новина жива.
+
 Стан (storage 'fb_missing'):
 - alerted — id новин, про які вже сказали → нагадуємо РІВНО раз;
 - baseline_done — перший запуск проходить ТИХО: усі новини поточного вікна
@@ -32,7 +43,7 @@ import json
 import os
 import random
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -114,6 +125,55 @@ def _fb_status(row):
     return "present" if fb_stats else "missing"
 
 
+# ---------- Сторінка статті: чи настав час, чернетка ----------
+
+def _fetch_article_html(article_url):
+    """HTML сторінки статті або None (не-200/збій). Один запит на кандидата:
+    з нього ж і гейт datePublished, і чернетка поста."""
+    try:
+        resp = requests.get(
+            article_url, timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; NikVesti-Bot/1.0)"},
+        )
+        if resp.status_code != 200:
+            print(f"fb_missing: сторінка {article_url} віддала {resp.status_code}")
+            return None
+        return resp.text
+    except Exception as e:
+        print(f"fb_missing: не вдалося прочитати сторінку {article_url} — {e}")
+        return None
+
+
+def _published_dt_from_page(page_html):
+    """Фактичний час публікації зі сторінки: JSON-LD datePublished (формат
+    '2026-07-20T16:30:00+03:00'), фолбек — <meta article:published_time>.
+    Aware datetime або None. Це джерело істини про час виходу: у запланованої
+    новини він у майбутньому, навіть коли nodes.published у БД — минулий."""
+    def _parse(value):
+        try:
+            dt = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=KYIV_TZ)
+
+    soup = BeautifulSoup(page_html, "html.parser")
+    for tag in soup.find_all("script", type="application/ld+json"):
+        raw = tag.string or tag.get_text()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        dt = _parse(_find_key(data, "datePublished"))
+        if dt:
+            return dt
+    meta = soup.find("meta", property="article:published_time")
+    if meta and meta.get("content"):
+        return _parse(meta["content"])
+    return None
+
+
 # ---------- Чернетка поста для ФБ ----------
 
 def _find_article_node(node):
@@ -154,18 +214,17 @@ def _find_key(node, key):
     return None
 
 
-def get_post_draft(article_url):
+def get_post_draft(article_url, page_html=None):
     """Чернетковий пост для ФБ: заголовок (json-ld title) + одне речення за
     змістом (json-ld description) + лінк. Фолбек — og:title / meta description.
-    Повертає готовий текст або None, якщо сторінку не прочитати."""
+    page_html — вже завантажена сторінка (щоб не тягти двічі); без нього
+    тягнемо самі. Повертає готовий текст або None, якщо сторінку не прочитати."""
     try:
-        resp = requests.get(
-            article_url, timeout=10,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; NikVesti-Bot/1.0)"},
-        )
-        if resp.status_code != 200:
+        if page_html is None:
+            page_html = _fetch_article_html(article_url)
+        if page_html is None:
             return None
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(page_html, "html.parser")
 
         datas = []
         for tag in soup.find_all("script", type="application/ld+json"):
@@ -268,9 +327,10 @@ def _author_html(row):
     return "автор невідомий"
 
 
-async def _send_alert(bot, chat_id, row, note=None):
+async def _send_alert(bot, chat_id, row, note=None, page_html=None):
     """Повідомлення в чат: підказка + автор + лінк, а нижче — чернетка поста
-    окремим блоком коду (готова до копіювання)."""
+    окремим блоком коду (готова до копіювання). page_html — вже завантажена
+    сторінка статті, щоб не тягти її вдруге."""
     url = _article_url(row)
     lines = [
         "🦊 Ось цієї власної новини досі немає у Facebook. "
@@ -283,7 +343,7 @@ async def _send_alert(bot, chat_id, row, note=None):
     if note:
         lines.append(f"<i>{html.escape(note)}</i>")
 
-    draft = await asyncio.to_thread(get_post_draft, url)
+    draft = await asyncio.to_thread(get_post_draft, url, page_html)
     if draft:
         lines.append("")
         lines.append("Готовий пост для ФБ:")
@@ -334,20 +394,42 @@ async def check_fb_missing(bot, chat_id=None, force=False):
 
     flagged = 0
     checked = 0
+    postponed = 0
+    now_dt = datetime.now(KYIV_TZ)
     for row in rows:
         if row["id"] in alerted:
             continue
+
+        # Гейт «час настав»: nodes.published бреше для запланованих новин, тож
+        # справжній час виходу беремо зі сторінки (JSON-LD datePublished). Ще
+        # не вийшла / не читається → відкласти БЕЗ марку, перепробуємо за годину.
+        url = _article_url(row)
+        page_html = await asyncio.to_thread(_fetch_article_html, url)
+        if page_html is None:
+            postponed += 1
+            continue
+        page_dt = _published_dt_from_page(page_html)
+        if page_dt and page_dt > now_dt - timedelta(hours=MIN_AGE_HOURS):
+            # Запланована на майбутнє або вийшла щойно — грейс MIN_AGE рахуємо
+            # від РЕАЛЬНОГО часу виходу, а не від published у БД
+            print(f"fb_missing: {row['id']} ще не на часі (datePublished {page_dt.isoformat()})")
+            postponed += 1
+            continue
+
         status = await asyncio.to_thread(_fb_status, row)
         if status == "unknown":
             continue  # помилка API — перепробуємо наступної години, не марк seen
         checked += 1
         alerted.add(row["id"])  # перевірено → нагадуємо РІВНО раз
         if status == "missing":
-            await _send_alert(bot, chat_id, row)
+            await _send_alert(bot, chat_id, row, page_html=page_html)
             flagged += 1
 
     storage.save_fb_missing_state({"alerted": _cap(alerted), "baseline_done": True})
-    return f"Перевірено {checked} нових власних новин, без ФБ — {flagged}."
+    summary = f"Перевірено {checked} нових власних новин, без ФБ — {flagged}."
+    if postponed:
+        summary += f" Відкладено (час не настав / сторінка не читається) — {postponed}."
+    return summary
 
 
 # ---------- Ручні команди ----------
