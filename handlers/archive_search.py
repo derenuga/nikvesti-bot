@@ -248,17 +248,21 @@ def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
     # з наскрізною нумерацією, а не затираємо. spread_years має власний
     # таймлайн по роках (yr ASC) — його не мержимо, щоб не ламати порядок.
     prev_items = []
+    prev_query = None
     if turn_id and not spread_years:
         entry = news_archive._get_entry(dialog_key)
         if entry and entry.get("turn_id") == turn_id:
             prev_items = entry["items"]
+            prev_query = entry.get("query")
     seen_ids = {it["id"] for it in prev_items}
     all_items = prev_items + [it for it in items if it["id"] not in seen_ids]
     if prev_items:
         all_items.sort(key=lambda it: it.get("published", 0), reverse=True)
         for i, it in enumerate(all_items, start=1):
             it["n"] = i
-    news_archive.remember_results(dialog_key, all_items, turn_id=turn_id)
+    # Тема пошуку — для обліку беків (usage_report); злиті пошуки склеюються.
+    q_text = query if not prev_query or prev_query == query else f"{prev_query} + {query}"
+    news_archive.remember_results(dialog_key, all_items, turn_id=turn_id, query=q_text)
     note = (
         "Повнотекстовий пошук по «лисячій норі» — архіву nikvesti.com "
         "(заголовки + теги + текст, зважене ранжування, вся історія; "

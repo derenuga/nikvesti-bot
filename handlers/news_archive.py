@@ -63,10 +63,12 @@ def _dialog_id(dialog_key):
     return f"{dialog_key[0]}:{dialog_key[1]}"
 
 
-def remember_results(dialog_key, items, turn_id=None):
+def remember_results(dialog_key, items, turn_id=None, query=None):
+    # query — людський текст пошуку: тема для обліку беків (usage_report),
+    # «по каким вопросам беки формировали» у щоденному звіті адміну.
     storage.save_news_search(_dialog_id(dialog_key), {
         "items": items, "selected": [], "at": datetime.now().isoformat(),
-        "turn_id": turn_id,
+        "turn_id": turn_id, "query": query,
     })
 
 
@@ -204,7 +206,8 @@ def reconcile_shown(dialog_key, shown_text):
             shown.append({**it, "n": len(shown) + 1})
     if not shown:
         return None
-    remember_results(dialog_key, shown, turn_id=entry.get("turn_id"))
+    remember_results(dialog_key, shown, turn_id=entry.get("turn_id"),
+                     query=entry.get("query"))
     return shown
 
 
@@ -345,9 +348,11 @@ def search_news(dialog_key, keywords, limit=10, period_days=None, turn_id=None):
     # Той самий NLQ-запит вже шукав? Доклеюємо до існуючого списку
     # (наскрізна нумерація), а не затираємо його.
     prev_items = []
+    prev_query = None
     entry = _get_entry(dialog_key)
     if turn_id and entry and entry.get("turn_id") == turn_id:
         prev_items = entry["items"]
+        prev_query = entry.get("query")
     seen_ids = {it["id"] for it in prev_items}
 
     new_items = []
@@ -372,7 +377,11 @@ def search_news(dialog_key, keywords, limit=10, period_days=None, turn_id=None):
     all_items.sort(key=lambda it: it.get("published", 0), reverse=True)
     for i, it in enumerate(all_items, start=1):
         it["n"] = i
-    remember_results(dialog_key, all_items, turn_id=turn_id)
+    # Кілька пошуків одного запиту → теми склеюються («Панченко + Кантор»)
+    q_text = " ".join(words)
+    if prev_query and prev_query != q_text:
+        q_text = f"{prev_query} + {q_text}"
+    remember_results(dialog_key, all_items, turn_id=turn_id, query=q_text)
     return {
         "query": words,
         "found_new": len(new_items),
@@ -681,5 +690,15 @@ async def news_back_callback(update, context):
         # циклічного імпорту query_router ↔ news_archive на старті.
         from handlers.query_router import remember_exchange
         remember_exchange(dialog_key, "Напиши бек по знайдених новинах", text)
+        # Облік для щоденного звіту адміну (usage_report): тема беку —
+        # пошуковий запит, з якого прийшов список (фолбек — перший заголовок).
+        try:
+            from handlers.usage_report import display_name
+            topic = entry.get("query") or (items[0].get("title") if items else "")
+            await asyncio.to_thread(
+                storage.record_usage_back, user_id, display_name(query.from_user),
+                topic, len(items[:BACK_MAX_ITEMS]))
+        except Exception as e:
+            print(f"usage: не вдалось записати бек — {e}")
     except Exception as e:
         await msg.edit_text(f"❌ Не вийшло скласти бек: {e}")

@@ -32,6 +32,9 @@ import json
 import os
 import threading
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_KYIV_TZ = ZoneInfo("Europe/Kiev")
 
 STATE_PATH = os.environ.get("STATE_PATH", "/data/prozorro_state.json")
 
@@ -502,6 +505,91 @@ def save_seen_competitor_ids(source_id, ids):
             state["competitor_ids"] = {}
         state["competitor_ids"][source_id] = list(ids)[-SEEN_COMPETITOR_IDS_MAX:]
         _write_state(state)
+
+
+# ---------- Облік користування ботом (щоденний звіт адміну) ----------
+#
+# Хто зі співробітників що робив з ботом за день: команди, NLQ-питання з
+# використаними tools, складені беки з темами. Ключ дня — за Києвом (сервер
+# Railway працює в UTC, «вчора» у звіті має збігатись із людським «вчора»).
+# Структура:
+# "bot_usage": {
+#   "2026-07-21": {
+#     "56424866": {
+#       "name": "Катерина Середа (@sereda_ka)",
+#       "commands": {"stat": 2},
+#       "nlq": 3,
+#       "questions": ["скільки трафіку за тиждень", ...],
+#       "tools": {"get_traffic_history": 2},
+#       "backs": [{"topic": "Сєнкевич марафон", "items": 3}]
+#     }
+#   }
+# }
+
+USAGE_MAX_DAYS = 30        # тримаємо місяць історії
+USAGE_QUESTIONS_MAX = 40   # питань на користувача на день (захист від роздування)
+USAGE_BACKS_MAX = 20       # беків на користувача на день
+USAGE_TEXT_MAX = 200       # обрізка збережених питань/тем
+
+
+def _usage_day_rec(state, user_id, user_name):
+    """Запис користувача за СЬОГОДНІ (Київ) + прюнінг старих днів."""
+    day = datetime.now(_KYIV_TZ).strftime("%Y-%m-%d")
+    usage = state.setdefault("bot_usage", {})
+    if len(usage) > USAGE_MAX_DAYS:
+        for old in sorted(usage.keys())[:len(usage) - USAGE_MAX_DAYS]:
+            del usage[old]
+    day_rec = usage.setdefault(day, {})
+    rec = day_rec.setdefault(str(user_id), {
+        "name": "", "commands": {}, "nlq": 0, "questions": [], "tools": {}, "backs": [],
+    })
+    if user_name:
+        rec["name"] = user_name  # ім'я освіжаємо щоразу (могли змінити username)
+    return rec
+
+
+def _usage_clip(text):
+    text = " ".join((text or "").split())
+    return text[:USAGE_TEXT_MAX] + "…" if len(text) > USAGE_TEXT_MAX else text
+
+
+def record_usage_command(user_id, user_name, command):
+    """Залічити виклик команди (/stat, /weekly, …) — без слеша й аргументів."""
+    with _lock:
+        state = _read_state()
+        rec = _usage_day_rec(state, user_id, user_name)
+        rec["commands"][command] = rec["commands"].get(command, 0) + 1
+        _write_state(state)
+
+
+def record_usage_nlq(user_id, user_name, question, tools=None):
+    """Залічити природномовне питання до Лиса + tools, які воно задіяло."""
+    with _lock:
+        state = _read_state()
+        rec = _usage_day_rec(state, user_id, user_name)
+        rec["nlq"] = rec.get("nlq", 0) + 1
+        q = _usage_clip(question)
+        if q and len(rec["questions"]) < USAGE_QUESTIONS_MAX:
+            rec["questions"].append(q)
+        for t in tools or []:
+            rec["tools"][t] = rec["tools"].get(t, 0) + 1
+        _write_state(state)
+
+
+def record_usage_back(user_id, user_name, topic, items_count=None):
+    """Залічити складений бек: тема (пошуковий запит/питання) + к-сть новин."""
+    with _lock:
+        state = _read_state()
+        rec = _usage_day_rec(state, user_id, user_name)
+        if len(rec["backs"]) < USAGE_BACKS_MAX:
+            rec["backs"].append({"topic": _usage_clip(topic), "items": items_count})
+        _write_state(state)
+
+
+def get_usage_day(day):
+    """Зріз користування за день 'YYYY-MM-DD': {user_id(str): rec}. Порожній dict — тиша."""
+    with _lock:
+        return dict(_read_state().get("bot_usage", {}).get(day, {}))
 
 
 # ---------- Кеш зіставлення тегів із Wikidata (/tags_wiki) ----------

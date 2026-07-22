@@ -22,6 +22,7 @@ from handlers.budget_snapshots import run_snapshot_check
 from handlers.entity_layer import sync_entities_incremental
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
+from handlers.usage_report import send_daily_usage_report
 from handlers.weekly_digest import send_weekly_digest
 from handlers.social_sheet import run_monthly_snapshot, check_tiktok_health
 from handlers import analytics_store
@@ -248,6 +249,10 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # Детектор сплесків трафіку — кожні 30 хв (:05 і :35, щоб не збігатись
     # з тендерами/конкурентами/документами на :00/:15/:30)
     scheduler.add_job(check_traffic_spikes, "cron", minute="5,35", args=[bot])
+    # Щоденний звіт про користування ботом за вчора — 09:25 у приват Олегу
+    # (:25 — вільна хвилина: :00 тендери, :05/:35 сплески, :15 конкуренти,
+    # :20 fb_missing, :30 документи, :50/:55 синк архіву/сутностей)
+    scheduler.add_job(send_daily_usage_report, "cron", hour=9, minute=25, args=[bot])
     # Вартість AI за попередній місяць — 1-го числа о 10:00, в особистий чат Олегу
     scheduler.add_job(monthly_ai_cost, "cron", day=1, hour=10, minute=0, args=[bot])
     # Місячний знімок аналітики в Google-таблицю — 1-го числа о 10:30
