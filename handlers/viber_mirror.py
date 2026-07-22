@@ -17,11 +17,11 @@ getFile Telegram, ≤180 с; крупніше/довше — текстом). me
 фолбек на текст, щоб пост не губився. Підпис до відео — окремим текстом
 (Viber video підпису не має).
 
-Альбом (кілька фото) TG шле окремими постами з одним media_group_id (у
-довільному порядку, підпис лише на одному). Viber альбомів не має — тому
-збираємо всю групу в буфер (ALBUM_DEBOUNCE) і публікуємо разом: перше фото з
-підписом+лінком, решту фото слідом. Так у Viber «кілька фото + опис», а не
-одиноке фото без тексту.
+Альбом (кілька фото/відео) TG шле окремими постами з одним media_group_id (у
+довільному порядку, підпис лише на одному). Viber альбомів не має — кожне
+медіа окремим постом = спам, тому збираємо всю групу в буфер (ALBUM_DEBOUNCE)
+і публікуємо ОДНИМ постом: перше фото з підписом+лінком. Решту фото й відео
+пропускаємо (повний набір — за лінком). Якщо фото нема (лише відео) — текст+лінк.
 
 Налаштування:
 1. Бути super admin Viber-каналу → інфо каналу → Developer Tools → auth_token.
@@ -241,9 +241,11 @@ async def _send_one(bot, msg, caption):
 
 
 async def _flush_album(bot, gid):
-    """Публікує зібраний альбом одним блоком: перше фото з підписом, решта
-    фото слідом (Viber альбомів не має). Викликається з затримкою, щоб
-    долетіли всі фото групи."""
+    """Публікує зібраний альбом ОДНИМ постом: перше фото з підписом+лінком.
+    Viber альбомів не має — кожне медіа окремим постом = спам, тому решту фото
+    й відео пропускаємо (повний набір — за лінком у підписі). Якщо фото в групі
+    нема (лише відео) — шлемо текст+лінк. Викликається із затримкою, щоб долетіли
+    всі елементи групи."""
     try:
         await asyncio.sleep(ALBUM_DEBOUNCE)
     except asyncio.CancelledError:
@@ -260,23 +262,18 @@ async def _flush_album(bot, gid):
         if c:
             caption = c
             break
-    posted_any = False
-    caption_done = False
-    for m in msgs:
-        cap = "" if caption_done else caption
+    photo_msg = next((m for m in msgs if m.photo), None)
+    posted = False
+    if photo_msg:
         try:
-            ok = await _send_one(bot, m, cap)
+            posted = await _mirror_photo(bot, photo_msg, caption)
         except Exception as e:
             print(f"viber mirror album: {e}")
-            ok = False
-        if ok:
-            posted_any = True
-            if cap:
-                caption_done = True  # підпис пішов з першим відправленим фото
-    if not posted_any and caption:
+            posted = False
+    if not posted and caption:
         await asyncio.to_thread(post_text, caption)
-        posted_any = True
-    if posted_any:
+        posted = True
+    if posted:
         from handlers import storage
         await asyncio.to_thread(storage.record_viber_post)  # альбом = один пост
 
