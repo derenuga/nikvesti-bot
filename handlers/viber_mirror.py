@@ -17,9 +17,11 @@ getFile Telegram, ≤180 с; крупніше/довше — текстом). me
 фолбек на текст, щоб пост не губився. Підпис до відео — окремим текстом
 (Viber video підпису не має).
 
-Альбом (кілька фото) TG шле окремими постами з одним media_group_id, а Viber
-альбомів не має — тому постимо лише перший пост групи (він несе підпис+лінк),
-решту пропускаємо (інакше кожне фото окремим постом). Повний набір — за лінком.
+Альбом (кілька фото) TG шле окремими постами з одним media_group_id (у
+довільному порядку, підпис лише на одному). Viber альбомів не має — тому
+збираємо всю групу в буфер (ALBUM_DEBOUNCE) і публікуємо разом: перше фото з
+підписом+лінком, решту фото слідом. Так у Viber «кілька фото + опис», а не
+одиноке фото без тексту.
 
 Налаштування:
 1. Бути super admin Viber-каналу → інфо каналу → Developer Tools → auth_token.
@@ -33,6 +35,7 @@ getFile Telegram, ≤180 с; крупніше/довше — текстом). me
 Тихо вимкнено, поки VIBER_AUTH_TOKEN не задано.
 """
 
+import asyncio
 import os
 from collections import deque
 
@@ -49,10 +52,14 @@ VIDEO_MAX_BYTES = 20_000_000  # Telegram getFile тягне лише ≤20 МБ 
 VIDEO_MAX_DURATION = 180      # Viber: відео ≤180 с
 
 _sender_cache = None
-# Альбоми (кілька фото) приходять з TG окремими постами з одним media_group_id;
-# Viber альбомів не має. Постимо лише ПЕРШИЙ пост групи (він несе підпис+лінк),
-# решту-«близнюків» пропускаємо — інакше кожне фото окремим постом (спам).
+# Альбоми (кілька фото) приходять з TG окремими постами з одним media_group_id,
+# у довільному порядку, підпис — лише на одному з них. Viber альбомів не має,
+# тож збираємо всю групу в буфер і публікуємо разом: ПЕРШЕ фото з підписом,
+# решту фото слідом (несколько фото + опис). _seen_albums — щоб пізні одинаки
+# тієї ж групи (після флашу) не дублювались.
+_album_buffer = {}            # media_group_id -> {"msgs": [msg, ...]}
 _seen_albums = deque(maxlen=256)
+ALBUM_DEBOUNCE = 3.0          # с чекаємо, поки долетять усі фото альбому
 
 
 def _token():
@@ -215,20 +222,9 @@ async def _mirror_video(bot, msg, caption):
     return True
 
 
-async def mirror_channel_post(bot, msg):
-    """Дублює один пост каналу у Viber: фото/відео з підписом, інакше текст.
-    Будь-який збій медіа → фолбек на текст (пост не губиться). Тихо виходить,
-    якщо вимкнено або пост не підлягає дзеркаленню."""
-    import asyncio
-    if not is_enabled() or not should_mirror(msg):
-        return None
-    # Альбом: постимо лише перше фото групи (з підписом), близнюків — пропуск
-    gid = getattr(msg, "media_group_id", None)
-    if gid:
-        if gid in _seen_albums:
-            return None
-        _seen_albums.append(gid)
-    caption = build_text(msg)
+async def _send_one(bot, msg, caption):
+    """Публікує один пост/елемент альбому: фото → picture, відео → video,
+    інакше (або збій медіа) → текст. True, якщо щось відправлено."""
     posted = False
     try:
         if msg.photo:
@@ -238,11 +234,74 @@ async def mirror_channel_post(bot, msg):
     except Exception as e:
         print(f"viber mirror: медіа не пішло ({e}) — фолбек на текст")
         posted = False
-    if not posted:
-        if not caption:
-            return None
+    if not posted and caption:
         await asyncio.to_thread(post_text, caption)
-    # Лічильник для Viber-блоку таблиці аналітики (Viber API історії постів не дає)
+        posted = True
+    return posted
+
+
+async def _flush_album(bot, gid):
+    """Публікує зібраний альбом одним блоком: перше фото з підписом, решта
+    фото слідом (Viber альбомів не має). Викликається з затримкою, щоб
+    долетіли всі фото групи."""
+    try:
+        await asyncio.sleep(ALBUM_DEBOUNCE)
+    except asyncio.CancelledError:
+        return
+    entry = _album_buffer.pop(gid, None)
+    _seen_albums.append(gid)  # пізні одинаки цієї групи — ігнор
+    if not entry:
+        return
+    msgs = sorted(entry["msgs"], key=lambda m: m.message_id)
+    # Підпис альбому лежить лише на одному повідомленні — беремо перший непорожній
+    caption = ""
+    for m in msgs:
+        c = build_text(m)
+        if c:
+            caption = c
+            break
+    posted_any = False
+    caption_done = False
+    for m in msgs:
+        cap = "" if caption_done else caption
+        try:
+            ok = await _send_one(bot, m, cap)
+        except Exception as e:
+            print(f"viber mirror album: {e}")
+            ok = False
+        if ok:
+            posted_any = True
+            if cap:
+                caption_done = True  # підпис пішов з першим відправленим фото
+    if not posted_any and caption:
+        await asyncio.to_thread(post_text, caption)
+        posted_any = True
+    if posted_any:
+        from handlers import storage
+        await asyncio.to_thread(storage.record_viber_post)  # альбом = один пост
+
+
+async def mirror_channel_post(bot, msg):
+    """Дублює пост каналу у Viber: фото/відео з підписом, інакше текст. Альбом
+    (media_group_id) буферизується і публікується разом (перше фото з описом,
+    решта слідом). Збій медіа → фолбек на текст. Тихо виходить, якщо вимкнено
+    або пост не підлягає дзеркаленню."""
+    if not is_enabled() or not should_mirror(msg):
+        return None
+    gid = getattr(msg, "media_group_id", None)
+    if gid:
+        if gid in _seen_albums:
+            return None
+        entry = _album_buffer.get(gid)
+        if entry is None:
+            _album_buffer[gid] = {"msgs": [msg]}
+            asyncio.create_task(_flush_album(bot, gid))
+        else:
+            entry["msgs"].append(msg)
+        return None
+    caption = build_text(msg)
+    if not await _send_one(bot, msg, caption):
+        return None
     from handlers import storage
     await asyncio.to_thread(storage.record_viber_post)
     return True
