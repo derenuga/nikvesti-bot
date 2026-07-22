@@ -8,7 +8,10 @@
   довгі слова автоматично обрізаються на 1-2 символи закінчення — "стадіону"
   знайде і "стадіон", і "стадіоном";
 - стратифікація по роках (spread_years) — для "історії питання" беремо
-  топ-N з КОЖНОГО року, а не 10 найсвіжіших: історія не тоне під свіжаком.
+  топ-N з КОЖНОГО року, а не 10 найсвіжіших: історія не тоне під свіжаком;
+- у звичайному режимі (без spread_years) кілька слотів видачі (FRESH_SLOTS)
+  завжди віддаються найсвіжішим за датою збігам, решта — за релевантністю:
+  «що останнього писали про X» не програє статтям із багатьма згадками.
 
 Результати кладуться в ту саму пам'ять пошуку, що й news_archive.search_news
 (storage.news_search) → під відповіддю Лиса працюють ті самі кнопки відбору
@@ -24,6 +27,15 @@ BASE_URL = "https://nikvesti.com"
 
 SEARCH_LIMIT_MAX = 30
 EXCERPT_CHARS = 900
+
+# Гарантовані слоти свіжини у звичайному пошуку (без spread_years): стільки
+# НАЙСВІЖІШИХ за датою збігів потрапляють у видачу незалежно від ts_rank.
+# Інцидент 22.07.2026: на «що останнього писали про Ліски» свіжа новина про
+# тендер (2 згадки «Лісках») програла за рангом десятці статей про парк
+# «Ліски» (багато згадок у тексті) і випала з топ-10 — список виглядав так,
+# ніби свіжішого за травень нічого немає. Свіжина для питань «що останнє»
+# важливіша за частоту згадок, тому кілька слотів завжди її.
+FRESH_SLOTS = 3
 
 
 # ---------- tsquery ----------
@@ -115,6 +127,8 @@ def search_items(query, limit=10, year_from=None, year_to=None,
                  own_material=None, category=None, region=None, tag=None):
     """Ядро пошуку: повертає list[dict] (n/id/date/title/url/own) без побічних
     ефектів. Використовується і NLQ-tool'ом (з пам'яттю), і /dossier (без).
+    Без spread_years видача — FRESH_SLOTS найсвіжіших збігів + добір до limit
+    за релевантністю (ts_rank); показ у будь-якому разі хронологічний.
     Фільтри: own_material (тільки власні), category (слаг), region (код), tag (назва)."""
     tsquery = _build_tsquery(query)
     if not tsquery:
@@ -156,15 +170,32 @@ def search_items(query, limit=10, year_from=None, year_to=None,
         """
         params.extend([max(1, int(per_year or 3)), limit])
     else:
+        # Видача = FRESH_SLOTS найсвіжіших збігів (гарантія, що «останнє» не
+        # тоне) + добір до limit найрелевантнішими з решти. Разом рівно limit
+        # (коли збігів вистачає): fresh і top_ranked не перетинаються (NOT IN).
+        fresh = min(FRESH_SLOTS, limit)
         sql = f"""
-            WITH q AS (SELECT to_tsquery('simple', %s) AS query)
-            SELECT a.id, a.published, a.title_ua, a.title_ru, a.slug, a.category, a.own_material
-            FROM articles a, q
-            WHERE {where}
-            ORDER BY ts_rank(a.fts, q.query) DESC, a.published DESC
-            LIMIT %s
+            WITH q AS (SELECT to_tsquery('simple', %s) AS query),
+            matches AS (
+                SELECT a.id, a.published, a.title_ua, a.title_ru, a.slug, a.category, a.own_material,
+                       ts_rank(a.fts, q.query) AS rank
+                FROM articles a, q
+                WHERE {where}
+            ),
+            fresh AS (
+                SELECT id FROM matches ORDER BY published DESC, id DESC LIMIT %s
+            ),
+            top_ranked AS (
+                SELECT id FROM matches
+                WHERE id NOT IN (SELECT id FROM fresh)
+                ORDER BY rank DESC, published DESC
+                LIMIT %s
+            )
+            SELECT id, published, title_ua, title_ru, slug, category, own_material
+            FROM matches
+            WHERE id IN (SELECT id FROM fresh UNION SELECT id FROM top_ranked)
         """
-        params.append(limit)
+        params.extend([fresh, limit - fresh])
 
     rows = bot_db.query(sql, tuple(params))
     # Релевантністю (ts_rank) вибираємо, ЯКІ новини показати (топ-N), але
@@ -230,7 +261,8 @@ def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
     news_archive.remember_results(dialog_key, all_items, turn_id=turn_id)
     note = (
         "Повнотекстовий пошук по «лисячій норі» — архіву nikvesti.com "
-        "(заголовки + теги + текст, зважене ранжування, вся історія). "
+        "(заголовки + теги + текст, зважене ранжування, вся історія; "
+        "найсвіжіші за датою збіги гарантовано включені у видачу). "
         + ("Режим історії питання: до кількох результатів з кожного року, від давніх до свіжих. "
            if spread_years else "")
         + "У items — ПОВНИЙ накопичений список цього запиту (кілька пошуків одного "
