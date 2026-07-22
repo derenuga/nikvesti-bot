@@ -1820,3 +1820,17 @@ async def handle_natural_language_query(update, context):
                 storage.record_ai_usage(ROUTER_MODEL, **usage_acc)
             except Exception as e:
                 print(f"ai_usage: не вдалось записати NLQ — {e}")
+        # Облік користування (щоденний звіт адміну, usage_report): питання +
+        # використані tools; бек, складений текстовим запитом (Лис читав ліди
+        # через get_news_leads / get_leads_from_urls), рахуємо і як бек —
+        # тема беку = саме питання користувача.
+        try:
+            from handlers.usage_report import display_name
+            user = update.effective_user
+            name = display_name(user)
+            storage.record_usage_nlq(user.id, name, question, sorted(used_tools))
+            if used_tools & {"get_news_leads", "get_leads_from_urls"}:
+                storage.record_usage_back(
+                    user.id, name, question, len(lead_items_seen) or None)
+        except Exception as e:
+            print(f"usage: не вдалось записати NLQ-користування — {e}")

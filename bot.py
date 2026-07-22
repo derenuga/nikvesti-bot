@@ -47,6 +47,7 @@ from handlers.fb_missing import fbmissing_handler, fbmissing_test_handler
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
 from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, viber_test_handler
 from handlers.notifier import notify_error
+from handlers.usage_report import usage_handler, display_name
 from handlers import storage
 
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -69,6 +70,27 @@ async def check_allowed(update, context):
             if update.message:
                 await update.message.reply_text("⛔ Доступ заборонено.")
             raise ApplicationHandlerStop
+
+async def track_usage(update, context):
+    """Тихий облік користування ботом для щоденного звіту адміну
+    (handlers/usage_report.py): тут рахуються КОМАНДИ від людей; NLQ-питання
+    і tools пише query_router, беки — news_archive. Ніколи не блокує обробку
+    і не шумить — будь-яка помилка ковтається в лог."""
+    try:
+        msg = update.message
+        user = update.effective_user
+        if not msg or not user or user.is_bot:
+            return
+        text = msg.text or msg.caption or ""
+        if not text.startswith("/"):
+            return
+        command = text.split()[0].split("@")[0].lstrip("/").lower()
+        if not command:
+            return
+        await asyncio.to_thread(
+            storage.record_usage_command, user.id, display_name(user), command)
+    except Exception as e:
+        print(f"usage: не вдалось записати команду — {e}")
 
 async def channel_post_handler(update, context):
     if update.channel_post and update.channel_post.chat.username == CHANNEL_USERNAME:
@@ -285,7 +307,11 @@ def main():
     # незалежними (стан — у storage під lock), паралельність безпечна.
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).concurrent_updates(True).build()
     app.add_handler(TypeHandler(Update, check_allowed), group=-1)
+    # Облік команд — у тій самій групі ПІСЛЯ check_allowed: заблоковані
+    # чужинці не рахуються (ApplicationHandlerStop зупиняє групу до нас).
+    app.add_handler(TypeHandler(Update, track_usage), group=-1)
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("usage", usage_handler))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("stat_backfill", stat_backfill))
