@@ -28,9 +28,12 @@ EN-застереження: рахуємо матеріали з непорож
 залили пізніше за оригінал — він все одно рахується в місяці публікації оригіналу.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from handlers import db
+
+KYIV_TZ = ZoneInfo("Europe/Kiev")
 
 # Кеш інтроспекції колонок (одна перевірка на процес): SHOW COLUMNS дешевий,
 # але і його зайвий раз ганяти нема потреби.
@@ -204,6 +207,112 @@ def own_material_by_ids(ids):
     except Exception as e:
         print(f"news_stats: own_material_by_ids не вдався — {e}")
         return None
+
+
+def _list_period_bounds(period, start_date, end_date):
+    """Межі періоду для list_news у unix (за Києвом), end ексклюзивний.
+
+    Окремо від _period_conds (той працює роками/місяцями для підрахунків):
+    перелік опублікованого питають днями — «сьогодні», «вчора», «за тиждень»."""
+    now = datetime.now(KYIV_TZ)
+    today0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "custom":
+        if not (start_date and end_date):
+            raise ValueError("Для period='custom' потрібні start_date і end_date (YYYY-MM-DD)")
+        s = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=KYIV_TZ)
+        e = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=KYIV_TZ) + timedelta(days=1)
+    elif period == "today":
+        s, e = today0, today0 + timedelta(days=1)
+    elif period == "yesterday":
+        s, e = today0 - timedelta(days=1), today0
+    elif period == "last_7_days":
+        s, e = today0 - timedelta(days=7), today0 + timedelta(days=1)
+    elif period == "last_30_days":
+        s, e = today0 - timedelta(days=30), today0 + timedelta(days=1)
+    elif period == "this_month":
+        s, e = today0.replace(day=1), today0 + timedelta(days=1)
+    elif period == "last_month":
+        first_this = today0.replace(day=1)
+        s, e = (first_this - timedelta(days=1)).replace(day=1), first_this
+    else:
+        raise ValueError(f"Невідомий period: {period}. Використай 'custom' зі start_date/end_date.")
+    return int(s.timestamp()), int(e.timestamp())
+
+
+_LIST_NOTE = (
+    "Перелік опублікованого прямо з БД сайту (nodes), за датою публікації, "
+    "найсвіжіші зверху. total — скільки всього матчить фільтрам за період, навіть "
+    "якщо в items показано менше. Автор — за owner_id (колонка author порожня). "
+    "Підпис автора НЕ означає власний матеріал — власність визначає лише поле own "
+    "(own_material у БД): редактори стрічки підписують і рерайти."
+)
+
+
+def list_news(period="today", start_date=None, end_date=None, own_material=None,
+              category=None, author=None, limit=30):
+    """Перелік опублікованих матеріалів за період: заголовок, час, автор, url,
+    ознака own. Відповідь на «що вийшло сьогодні і хто автор» — count_news дає
+    лише числа, а get_ga4_top_articles — топ за переглядами, не опубліковане."""
+    if not db.is_configured():
+        return {"error": "БД сайту не налаштована (DB_* env) — перелік недоступний."}
+    try:
+        start_ts, end_ts = _list_period_bounds(period, start_date, end_date)
+    except ValueError as e:
+        return {"error": str(e)}
+    limit = max(1, min(int(limit or 30), 60))
+
+    # published <= now — той самий гейт, що всюди: заплановані в адмінці
+    # матеріали мають published у майбутньому і ще не вийшли.
+    now = int(datetime.now().timestamp())
+    conds = ["n.type = 'news'", "n.status = 1",
+             "n.published >= %s", "n.published < %s", "n.published <= %s"]
+    params = [start_ts, end_ts, now]
+    if own_material:
+        conds.append("n.own_material = 1")
+    if category:
+        conds.append("n.category = %s")
+        params.append(str(category))
+    if author:
+        name_cols = _author_name_columns()
+        like = f"%{author.strip()}%"
+        ors = " OR ".join(f"u.{c} LIKE %s" for c in name_cols)
+        conds.append(f"n.owner_id IN (SELECT u.id FROM users u WHERE {ors})")
+        params += [like] * len(name_cols)
+    where = " AND ".join(conds)
+
+    try:
+        total = int(db.query(
+            f"SELECT COUNT(*) AS c FROM nodes n WHERE {where}", tuple(params))[0]["c"])
+        rows = db.query(
+            "SELECT n.id, n.published, n.title_ua, n.title, n.slug_ua, n.slug, "
+            "n.category, n.own_material, "
+            "TRIM(CONCAT(COALESCE(u.first_name,''), ' ', COALESCE(u.last_name,''))) AS author_name "
+            "FROM nodes n LEFT JOIN users u ON u.id = n.owner_id "
+            f"WHERE {where} ORDER BY n.published DESC LIMIT {int(limit)}",
+            tuple(params),
+        )
+    except Exception as e:
+        return {"error": f"Перелік із БД сайту не вдався: {e}"}
+
+    # Канонічний URL — та сама логіка, що в архіві новин (/news/{category}/{slug},
+    # історія багів навчила не дублювати її). Імпорт тут — щоб не тягнути
+    # bs4/telegram із news_archive при імпорті модуля.
+    from handlers.news_archive import _news_url
+
+    items = []
+    for i, row in enumerate(rows, start=1):
+        dt = datetime.fromtimestamp(int(row["published"]), KYIV_TZ)
+        items.append({
+            "n": i,
+            "id": row["id"],
+            "date": dt.strftime("%d.%m.%Y"),
+            "time": dt.strftime("%H:%M"),
+            "title": (row.get("title_ua") or row.get("title") or "").strip(),
+            "url": _news_url(row),
+            "author": (row.get("author_name") or "").strip() or None,
+            "own": bool(row.get("own_material")),
+        })
+    return {"total": total, "shown": len(items), "items": items, "note": _LIST_NOTE}
 
 
 def count_news(title_contains=None, year=None, month=None, year_from=None, year_to=None,
