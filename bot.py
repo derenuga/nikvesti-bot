@@ -46,6 +46,7 @@ from handlers.builder_monitor import builder_handler, builder_test_handler, is_b
 from handlers.fb_missing import fbmissing_handler, fbmissing_test_handler
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
 from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, viber_test_handler
+from handlers.webapp import start_webapp, team_handler
 from handlers.notifier import notify_error
 from handlers.usage_report import usage_handler, display_name
 from handlers import storage
@@ -299,6 +300,12 @@ async def law_check(update, context):
 
 async def post_init(application):
     setup_scheduler(application.bot, last_channel_post_time)
+    # Mini App «Команда»: aiohttp у тому ж event loop. Збій веб-шару не має
+    # класти бота — ловимо все і лишаємо тільки алерт у лог.
+    try:
+        await start_webapp(application)
+    except Exception as e:
+        print(f"webapp: не стартував — {e}")
 
 def main():
     # concurrent_updates: без цього PTB обробляє апдейти строго по черзі,
@@ -356,6 +363,7 @@ def main():
     app.add_handler(CommandHandler("sheet_migrate_legacy", sheet_migrate_legacy_handler))
     app.add_handler(CommandHandler("youtube_backfill", youtube_backfill_handler))
     app.add_handler(CommandHandler("tiktok_auth", tiktok_auth_handler))
+    app.add_handler(CommandHandler("team", team_handler))
     app.add_handler(CommandHandler("viber_setup", viber_setup_handler))
     app.add_handler(CommandHandler("viber_test", viber_test_handler))
     app.add_handler(CommandHandler("report", report))
