@@ -81,8 +81,12 @@ handlers/
   notifier.py             — сповіщення про збої scheduled-задач у приват адміну (слухач EVENT_JOB_ERROR + прямий notify_error у модулях з власним try/except)
   ai_usage.py             — звіт про вартість AI-шару: /aicost за місяць + авто-звіт Олегу 1-го числа; оцінка за прайсом моделей із токенів у storage (record_ai_usage)
   usage_report.py         — щоденний звіт адміну про використання бота співробітниками (щодня 09:25 у приват Олегу, за вчора, БЕЗ активності самого Олега): хто які команди викликав, NLQ-питання з використаними tools, складені беки з темами. Збір: команди — TypeHandler track_usage у bot.py, NLQ+tools — query_router (finally), беки — кнопка в news_archive (тема = query пошуку з news_search) і текстові запити беку в NLQ (тема = питання). Стан — storage.bot_usage (день за Києвом, 30 днів). /usage [вчора|YYYY-MM-DD] — ручний зріз (дефолт сьогодні, показує і адміна)
+  team_roster.py          — ростер команди для Mini App «Команда»: відділи (KPI-групи), прапорець менеджера, резолв initData → людина (кеш team_users → відомі id → username), кеш tg_id для пінгів
+  team_tasks.py           — таски команди в Норі (team_tasks/team_task_events): персональні по проєктах, цикл todo→doing→review→done/dropped, CRUD, пінги від Лиса (best-effort: нове завдання / здано / прийнято 🎉 / повернуто)
+  webapp.py               — aiohttp-сервер Mini App поруч із polling (post_init, стартує лише з PORT): перевірка HMAC initData, API тасків з правами за роллю, статика webapp/, /health (придатний як VIBER_WEBHOOK_URL), команда /team
   helpers.py              — спільні утиліти (парсинг місяців, get_author_from_url)
   query_router.py         — Intent Router: природномовні запити до Лиса (GA4 + Search Console, tool use)
+webapp/                   — SPA Mini App «Команда» без збірки (index.html + style.css + app.js): екран менеджера (ставить/приймає, таби Завдання/Люди, ＋) і журналістки (мої таски, здача з лінком, конфеті), теми Telegram
   news_archive.py         — архів новин сайту (БД): пошук "що ми писали про X", ліди, генерація беку, кнопка "Написати бек"
   news_stats.py           — підрахунки по БД сайту (nodes): NLQ-tool count_news — скільки матеріалів за період / власних (own) / по рубриках / по авторах (owner_id→users) / мовою (ua/ru/en, EN-колонку визначає інтроспекцією); metric=views сумує перегляди (лічильник сайту, за весь час) — «хто з журналістів набрав більше переглядів». Джерело істини, свіже, рахує й англ. версію (якої немає в норі). ПЛЮС NLQ-tool list_news — перелік опублікованого за період (заголовок, час виходу, автор за owner_id, лінк, ознака own) — «що вийшло сьогодні і хто автор», «скільки своїх сьогодні і які»; НЕ плутати з GA4-топом за переглядами
   tags_wikidata.py        — прив'язка тегів сайту до Q-сутностей Wikidata для schema.org about: /tags_export (топ-N тегів у CSV), /tags_wiki (топ-N → Wikidata wbsearchentities → Claude добирає QID+@type → CSV на ревʼю + готовий ALTER/UPDATE .sql, бо БД сайту read-only)
@@ -112,6 +116,7 @@ handlers/
 | /sheet_migrate_legacy | Разово перенести історію зі старої ручної таблиці «МикВісті SMM» (2024-02…2026-06, data/legacy_smm.json) у таблицю аналітики: підписники всіх мереж + IG/FB/TG метрики + YouTube/TikTok/Viber цілком; ідемпотентно |
 | /youtube_backfill \[рік\] | Залити помісячну історію YouTube (перегляди відео → D, години перегляду → F) з YouTube Analytics API одним запитом за всю історію каналу (дефолт старту 2022); потрібен OAuth (YOUTUBE_OAUTH_*). Ідемпотентно |
 | /tiktok_auth \[code\] | Разова авторизація TikTok (Sandbox): без аргументів — бот дає посилання згоди; /tiktok_auth \<code\> — обмінює код на refresh token і зберігає у storage.tiktok_oauth. Потрібні TIKTOK_CLIENT_KEY/SECRET (Sandbox) + TIKTOK_REDIRECT_URI |
+| /team | Кнопка відкриття Mini App «Команда» (таски + KPI): у приваті — нативна web_app, у групі — прямий лінк WEBAPP_DIRECT_LINK; без налаштованого WEBAPP_URL пояснює, чого бракує |
 | /viber_setup | Налаштувати дзеркало Viber: зареєструвати webhook (VIBER_WEBHOOK_URL) і показати акаунт/супер-адміна каналу. Потрібен VIBER_AUTH_TOKEN |
 | /viber_test | Тестовий пост у Viber-канал (перевірка постингу) |
 | /report | GA4 звіт за вчора в чат редакції (щоденний авто-пост прибрано, лишилась ручна команда) |
@@ -246,6 +251,8 @@ TIKTOK_REFRESH_TOKEN         # опційно, ручний сід refresh token
 VIBER_AUTH_TOKEN             # опційно, токен супер-адміна Viber-каналу (Developer Tools каналу) — дзеркало Telegram→Viber (handlers/viber_mirror.py)
 VIBER_WEBHOOK_URL            # опційно, HTTPS-endpoint, що віддає 200 (Viber вимагає заданий webhook перед постингом у канал); реєструється через /viber_setup
 VIBER_SENDER_ID              # опційно, Viber-id, що жорстко закріплює автора постів (підпис під каналом); без нього — перший super admin каналу. Список id усіх учасників показує /viber_setup
+WEBAPP_URL                   # опційно, https-домен сервісу на Railway — Mini App «Команда» (handlers/webapp.py); без нього + PORT (Generate Domain на Railway) веб-шар спить
+WEBAPP_DIRECT_LINK           # опційно, прямий лінк апки з BotFather /newapp (https://t.me/mykvisti_bot/team) — запуск із групових чатів
 SPREADSHEET_ID = 1bsKzGRsQ7O1aa4TpxmzqEfIjRM1A0dso7zueYvCXB1I
 SOCIAL_SPREADSHEET_ID        # опційно, таблиця «Аналітика МикВісті» (дефолт зашито: 1KNkxqN8ru4c2ez-x3nw9sEW-lXm562VdfJ3EEdbjGZk)
 SOCIAL_SHEET_THEME           # опційно, тема таблиці аналітики: dark (дефолт) | light
@@ -344,6 +351,7 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
 - [`docs/REVIEW_2026_07.md`](docs/REVIEW_2026_07.md) — ревізія липня 2026: апрувнутий план оптимізацій і розвитку (хвилі впровадження)
 - [`docs/BUDGET_REVISIONS_MODULE.md`](docs/BUDGET_REVISIONS_MODULE.md) — бюджет Миколаєва: версії плану з «Порівняльних таблиць» рішень сесії, схема budget, парсер xlsx, валідація, дельти
 - [`docs/SOCIAL_SHEET_MODULE.md`](docs/SOCIAL_SHEET_MODULE.md) — Google-таблиця аналітики: структура річного листа, джерела місячних метрик, формули/оформлення, план перенесення старої ручної таблиці
+- [`docs/TEAM_APP_MODULE.md`](docs/TEAM_APP_MODULE.md) — Mini App «Команда»: таски і KPI редакції, архітектура, налаштування (Railway домен + BotFather /newapp), дорожня карта хвиль (KPI по відділах, геймифікація, «мої матеріали»)
 
 ---
 

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Команда МикВісті</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <div id="screen-loading" class="screen">
+    <div class="fox-loader">🦊</div>
+    <p>Микита будить нору…</p>
+  </div>
+
+  <div id="screen-error" class="screen hidden">
+    <div class="fox-big">🦊</div>
+    <h2 id="error-title">Ой</h2>
+    <p id="error-text"></p>
+  </div>
+
+  <div id="screen-main" class="screen hidden">
+    <header id="header">
+      <div class="hello">
+        <div class="fox-avatar">🦊</div>
+        <div>
+          <h1 id="greeting"></h1>
+          <div id="dept-badge" class="badge"></div>
+        </div>
+      </div>
+      <div id="stat-chips" class="chips"></div>
+    </header>
+
+    <nav id="tabs" class="tabs hidden">
+      <button class="tab active" data-tab="board">Завдання</button>
+      <button class="tab" data-tab="people">Люди</button>
+    </nav>
+
+    <main id="content"></main>
+
+    <button id="fab" class="fab hidden" title="Нове завдання">＋</button>
+  </div>
+
+  <div id="sheet-backdrop" class="backdrop hidden">
+    <div id="sheet" class="sheet"></div>
+  </div>
+
+  <div id="confetti-layer"></div>
+  <div id="toast" class="toast hidden"></div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
