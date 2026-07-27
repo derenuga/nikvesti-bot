@@ -19,7 +19,7 @@ const STATE = {
   currentProject: null,
   currentNorm: null,
   kpi: null,
-  kpiView: "now",
+  homeView: "tasks",
   dash: { period: "week", offset: 0, data: null },
   form: null,
 };
@@ -271,9 +271,28 @@ function donorOf(t) {
   return tp.partner || tp.projName || "Позапроєктні";
 }
 
-/* Головна редактора: команда кружечками, у кожної — скільки завдань і по
-   яких донорах. Тап по людині → її персональний трекер (KPI + таски). */
+/* Головна редактора: перемикач Завдання/Звіт. Завдання — команда кружечками
+   зі скільки в кого відкритих завдань і по яких донорах (тап → трекер).
+   Звіт — дашборд виконання KPI з кільцями і гортанням по періодах. */
 function renderHome() {
+  const seg = `
+    <div class="two seg-slim">
+      <button class="bigbtn slim ${STATE.homeView !== "report" ? "on" : ""}" data-hv="tasks">Завдання</button>
+      <button class="bigbtn slim ${STATE.homeView === "report" ? "on" : ""}" data-hv="report">Звіт</button>
+    </div>`;
+  const wire = () => $("content").querySelectorAll("[data-hv]").forEach((b) =>
+    b.onclick = () => { STATE.homeView = b.dataset.hv === "report" ? "report" : "tasks"; renderHome(); });
+
+  if (STATE.homeView === "report") {
+    $("content").innerHTML = `
+      <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
+      ${seg}
+      <div id="dash-body"><div class="empty-hint">Завантажую…</div></div>`;
+    wire();
+    renderDashboard();
+    return;
+  }
+
   const open = STATE.tasks.filter((t) => t.status === "open");
   const perPerson = {};
   open.forEach((t) => {
@@ -309,8 +328,10 @@ function renderHome() {
   }).join("");
   $("content").innerHTML = `
     <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
-    <div class="h-sub">${new Date().toLocaleDateString("uk-UA", { weekday: "long", day: "numeric", month: "long" })} · відкритих завдань: ${open.length}</div>
+    ${seg}
+    <div class="h-sub">відкритих завдань: ${open.length}</div>
     ${rows || `<div class="empty-hint">Відкритих завдань ні в кого немає.<br>Натисни «+» або зайди в проєкт, щоб поставити.</div>`}`;
+  wire();
 }
 
 /* Персональний трекер людини (для редактора): її рекурентні KPI зі шторкою
@@ -1152,25 +1173,10 @@ function normById(id) {
 }
 
 async function renderKpi() {
-  const seg = `
-    <div class="two seg-slim">
-      <button class="bigbtn slim ${STATE.kpiView !== "report" ? "on" : ""}" data-kv="now">Зараз</button>
-      <button class="bigbtn slim ${STATE.kpiView === "report" ? "on" : ""}" data-kv="report">Звіт</button>
-    </div>`;
-  const wire = () => $("content").querySelectorAll("[data-kv]").forEach((b) =>
-    b.onclick = () => { STATE.kpiView = b.dataset.kv === "report" ? "report" : "now"; renderKpi(); });
-
-  if (STATE.kpiView === "report") {
-    $("content").innerHTML = `<div class="h-big">KPI</div>${seg}<div id="dash-body"><div class="empty-hint">Завантажую…</div></div>`;
-    wire();
-    return renderDashboard();
-  }
-
   if (!STATE.kpi) {
-    $("content").innerHTML = `<div class="h-big">KPI</div>${seg}<div class="empty-hint">Завантажую…</div>`;
-    wire();
+    $("content").innerHTML = `<div class="h-big">KPI</div><div class="empty-hint">Завантажую…</div>`;
     try { await loadKpi(); } catch (e) { toast(e.message); return; }
-    if (STATE.view !== "kpi" || STATE.kpiView === "report") return;
+    if (STATE.view !== "kpi") return;
   }
   const k = STATE.kpi;
   const byDept = {};
@@ -1190,29 +1196,35 @@ async function renderKpi() {
       </button>`;
     }).join("")}`).join("");
   $("content").innerHTML = `
-    <div class="h-big">KPI</div>
-    ${seg}
-    <div class="h-sub">норма на відділ, облік по людині</div>
+    <div class="h-big">Налаштування KPI</div>
+    <div class="h-sub">норма на відділ, облік по людині · звіт — на Головній</div>
     ${sections || `<div class="empty-hint">Норм ще немає.<br>Додай першу — і прогрес рахуватиметься сам із сайту.</div>`}
     <button class="add-theme" id="add-norm">${icon("plus")} Додати норму</button>
     ${!k.site_db ? `<div class="tl-note">БД сайту недоступна — факт тимчасово не рахується.</div>` : ""}`;
-  wire();
   $("add-norm").onclick = normCreateSheet;
   $("content").querySelectorAll("[data-norm]").forEach((b) =>
     b.onclick = () => nav("kpinorm", +b.dataset.norm));
 }
 
-/* Кільце навколо аватарки: % виконання KPI за період */
-function avatarRing(person, entry, pct, done, size) {
+/* Колір за % виконання: червоний (погано) → жовтий → зелений (добре).
+   hue 0→120 лінійно від pct; null (немає факту) — сірий трек без кольору. */
+function pctColor(pct) {
+  if (pct == null) return null;
+  const p = Math.max(0, Math.min(100, pct));
+  return `hsl(${Math.round(1.2 * p)}, 68%, 45%)`;
+}
+
+/* Кільце навколо аватарки: % виконання KPI за період, колір за рівнем */
+function avatarRing(person, entry, pct, size) {
   const r = 45, c = 2 * Math.PI * r;
   const p = pct == null ? 0 : Math.max(0, Math.min(100, pct));
   const off = c * (1 - p / 100);
-  const cls = done ? "done" : pct == null ? "nofact" : p >= 100 ? "done" : "part";
-  return `<span class="avaring ${cls}" style="width:${size}px;height:${size}px">
+  const color = pctColor(pct);
+  return `<span class="avaring" style="width:${size}px;height:${size}px">
     <svg viewBox="0 0 100 100" class="ring">
       <circle class="track" cx="50" cy="50" r="${r}"/>
       <circle class="prog" cx="50" cy="50" r="${r}"
-        style="stroke-dasharray:${c.toFixed(1)};stroke-dashoffset:${off.toFixed(1)}"/>
+        style="stroke-dasharray:${c.toFixed(1)};stroke-dashoffset:${off.toFixed(1)};stroke:${color || "transparent"}"/>
     </svg>
     <span class="ava-inner">${avatar(person, entry, size - 16)}</span>
   </span>`;
@@ -1230,7 +1242,7 @@ async function renderDashboard() {
     if (body) body.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
     return;
   }
-  if (STATE.view !== "kpi" || STATE.kpiView !== "report") return;
+  if (STATE.view !== "home" || STATE.homeView !== "report") return;
   const data = d.data;
   const byDept = {};
   data.people.forEach((p) => (byDept[p.dept_title] = byDept[p.dept_title] || []).push(p));
@@ -1239,9 +1251,9 @@ async function renderDashboard() {
     <div class="ring-grid">
       ${list.map((p) => `
         <button class="ring-cell" data-rperson="${esc(p.person)}">
-          ${avatarRing(p.person, personEntry(p.person), p.overall_pct, p.all_done, 76)}
+          ${avatarRing(p.person, personEntry(p.person), p.overall_pct, 76)}
           <span class="rc-name">${esc(p.person.split(" ")[0])}</span>
-          <span class="rc-pct ${p.all_done ? "done" : ""}">${p.overall_pct == null ? "—" : p.overall_pct + "%"}</span>
+          <span class="rc-pct" style="color:${pctColor(p.overall_pct) || "var(--muted)"}">${p.overall_pct == null ? "—" : p.overall_pct + "%"}</span>
         </button>`).join("")}
     </div>`).join("");
   const body = $("dash-body");
