@@ -260,14 +260,30 @@ def get_project_order():
 
 
 def set_project_order(project_ids):
-    """Перезаписує порядок повністю (список у апки завжди цілий, ~десятки)."""
+    """Перезаписує порядок повністю (список у апки завжди цілий, ~десятки).
+
+    Одна транзакція і два statement замість DELETE + N окремих INSERT. Було
+    41 з'єднання і ~384 мс на 40 проєктів (на Railway ще втричі більше), а
+    головне — без транзакції: обрив посеред циклу лишав список наполовину
+    впорядкованим, тобто гірше, ніж якби Катя нічого не перетягувала.
+
+    Дублі id відкидаємо, зберігаючи перше входження: PRIMARY KEY на
+    project_id, і повторюваний id завалив би весь запис."""
     ensure_team_schema()
-    bot_db.execute("DELETE FROM team_project_order")
-    for pos, pid in enumerate(project_ids):
-        bot_db.execute(
-            "INSERT INTO team_project_order (project_id, position) VALUES (%s, %s)",
-            (int(pid), pos),
-        )
+    seen, ids = set(), []
+    for pid in project_ids:
+        pid = int(pid)
+        if pid not in seen:
+            seen.add(pid)
+            ids.append(pid)
+    with bot_db.transaction():
+        bot_db.execute("DELETE FROM team_project_order")
+        if ids:
+            bot_db.execute(
+                "INSERT INTO team_project_order (project_id, position) "
+                "SELECT unnest(%s::bigint[]), generate_subscripts(%s::bigint[], 1) - 1",
+                (ids, ids),
+            )
 
 
 # ---------- Папки проєктів на Google Drive ----------

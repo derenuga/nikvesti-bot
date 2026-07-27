@@ -374,6 +374,34 @@ def session():
         _drop_session_conn()
 
 
+@contextmanager
+def transaction():
+    """Один блок — ОДНА транзакція: або застосується все, або нічого.
+    На відміну від session(), де кожен statement фіксується сам.
+
+    Потрібно там, де операція складена і половина роботи гірша за жодної —
+    наприклад перезапис порядку проєктів (DELETE + INSERT): збій посередині
+    лишав би список без порядку взагалі."""
+    if not is_configured():
+        yield
+        return
+    prev_conn, prev_tx = _session_conn(), getattr(_local, "in_tx", False)
+    ensure_schema()
+    conn = _connect()
+    conn.autocommit = False
+    _local.conn = conn
+    _local.in_tx = True
+    try:
+        with conn:  # psycopg2: commit на виході, rollback на винятку
+            yield
+    finally:
+        _local.conn, _local.in_tx = prev_conn, prev_tx
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _run(sql, params, cursor_factory):
     """Виконує statement у з'єднанні сесії або у власному. Повертає
     (рядки, rowcount)."""
@@ -384,7 +412,11 @@ def _run(sql, params, cursor_factory):
                 cur.execute(sql, params)
                 return (cur.fetchall() if cur.description else []), cur.rowcount
         except Exception:
-            _drop_session_conn()
+            # У транзакції з'єднання не чіпаємо: його має відкотити й закрити
+            # transaction(), інакше rollback піде по вже закритому конекту і
+            # затулить справжню помилку.
+            if not getattr(_local, "in_tx", False):
+                _drop_session_conn()
             raise
     conn = _connect()
     try:
