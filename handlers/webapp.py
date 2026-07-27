@@ -752,7 +752,12 @@ def _task_for_theme(actor, match, theme_id, person):
         print(f"webapp: проєкт для нового завдання не прочитався — {e}")
     today = datetime.now(team_tasks.KYIV_TZ)
     last_day = calendar.monthrange(today.year, today.month)[1]
+    # Тип беремо з формату тематики, а якщо його не задано — з САМОЇ публікації,
+    # яку зараз зараховуємо. Інакше завдання, заведене з черги під новину,
+    # називалось безликим «матеріал», хоча тип відомий достеменно.
     type_ = theme["format"] if theme["format"] in ("news", "article") else None
+    if not type_ and match.get("node_type") in ("news", "article"):
+        type_ = match["node_type"]
     return team_tasks.create_task(
         creator=actor, person=person, type_=type_,
         project_id=match["project_id"], project_name=project_name,
@@ -807,6 +812,35 @@ def _decide_blocking(match_id, actor, action, task_id, theme_id=None, person=Non
             tasks.append(task)
     team_matches.attach_progress(tasks)
     return {"match": match, "tasks": tasks, "pending_count": team_matches.pending_count()}
+
+
+async def api_matches_queue(request):
+    """POST /api/matches/queue {url} — покласти публікацію в чергу руками.
+    Для матеріалів, яких прогін не побачив (не той автор у CMS, поза
+    проєктом, старіші за вікно) — редактор кидає лінк і вирішує по них там
+    само, де й по решті."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    result = await _in_session(_queue_blocking, payload.get("url"), person)
+    if isinstance(result, str):
+        raise web.HTTPBadRequest(text=result)
+    return web.json_response(result)
+
+
+def _queue_blocking(url, actor):
+    from handlers import team_matching
+
+    match, touched = team_matching.queue_publication(url, actor)
+    if not match:
+        return touched if isinstance(touched, str) else "Не вдалося додати"
+    tasks = []
+    for tid in touched:
+        updated, _ = team_matches.apply_progress(tid, actor)
+        if updated:
+            tasks.append(updated)
+    team_matches.attach_progress(tasks)
+    return {"match": match, "tasks": tasks,
+            "pending_count": team_matches.pending_count()}
 
 
 async def api_matches_decide(request):
@@ -1200,6 +1234,7 @@ async def start_webapp(application):
         web.get("/api/matches/pending", api_matches_pending),
         web.get("/api/notifications", api_notifications),
         web.post("/api/notifications/read", api_notifications_read),
+        web.post("/api/matches/queue", api_matches_queue),
         web.post("/api/matches/{match_id:\\d+}/decide", api_matches_decide),
         web.post("/api/tasks/{task_id:\\d+}/attach", api_task_attach),
         web.get("/api/kpi", api_kpi),

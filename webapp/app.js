@@ -1582,9 +1582,14 @@ function notifRow(n) {
 async function renderAlerts() {
   const already = STATE.pending && STATE.notifs;
   $("content").innerHTML = `
-    <div class="h-big">Сповіщення</div>
+    <div class="head-row">
+      <div class="h-big">Сповіщення</div>
+      <button class="icon-btn" id="queue-add" aria-label="Додати публікацію в чергу">
+        ${icon("link")}${icon("plus", "ic sm")}</button>
+    </div>
     <div class="h-sub">що просить підтвердити і що вже сталось</div>
     <div id="alerts-body">${already ? "" : skeleton("rows", 3)}</div>`;
+  $("queue-add").onclick = queueAddSheet;
   if (!already) {
     try {
       // Черга і стрічка — різні джерела; тягнемо паралельно, бо екран один
@@ -1602,6 +1607,45 @@ async function renderAlerts() {
   }
   paintAlerts();
   markNotifsRead();
+}
+
+/* Додати публікацію в чергу руками. Прогін бачить не все: автор у CMS може
+   бути не той, матеріал — поза проєктом або старіший за вікно. Тоді редактор
+   кидає лінк, і публікація стає в ту саму чергу, що й решта. */
+function queueAddSheet() {
+  openSheet(`
+    <h2>Додати публікацію в чергу</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+      Розберемо її тут само — кому і в яку тематику зарахувати.</p>
+    <input id="q-url" type="url" inputmode="url" placeholder="https://nikvesti.com/…">
+    <div class="mr-hint">Можна і лінк поста каналу (t.me/nikvesti/…).
+      Уже зараховане повернеться в чергу, а не подвоїться.</div>
+    <div class="sheet-actions">
+      <button class="sbtn" id="q-cancel">Скасувати</button>
+      <button class="sbtn primary" id="q-save">Додати</button>
+    </div>`);
+  $("q-cancel").onclick = closeSheet;
+  $("q-save").onclick = async () => {
+    const url = $("q-url").value.trim();
+    if (!url) { toast("Встав лінк публікації"); return; }
+    $("q-save").disabled = true;
+    try {
+      const res = await api("/api/matches/queue", {
+        method: "POST", body: JSON.stringify({ url }),
+      });
+      haptic("success");
+      (res.tasks || []).forEach(patchTask);
+      STATE.pendingCount = res.pending_count;
+      STATE.pending = null;          // перечитаємо чергу з кандидатами
+      closeSheet();
+      syncAlertsBadge();
+      renderAlerts();
+      toast("Додав у чергу");
+    } catch (e) {
+      $("q-save").disabled = false;
+      toast(e.message);
+    }
+  };
 }
 
 /* Побачила — прочитано. Позначаємо ПІСЛЯ малювання, щоб непрочитані ще раз
