@@ -21,7 +21,7 @@ const STATE = {
   currentNorm: null,
   kpi: null,
   homeView: "tasks",
-  dash: { period: "week", offset: 0, data: null },
+  dash: { period: "week", offset: -1, data: null },
   form: null,
 };
 
@@ -158,6 +158,19 @@ function toast(msg) {
   t.classList.remove("hidden");
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.classList.add("hidden"), 2400);
+}
+
+/* Сегментований перемикач. Було дві окремі обведені кнопки: у темній темі
+   рамка (--line світло-блакитна) світилась білим на чорному, і пара читалась
+   як дві незалежні дії, а не як вибір одного з двох. Тепер одна доріжка з
+   «таблеткою» активного пункту. sub — вкладений рівень: підкреслення замість
+   таблетки, щоб два перемикачі поспіль не сперечались за увагу. */
+function segment(attr, options, active, { sub = false } = {}) {
+  return `<div class="seg${sub ? " sub" : ""}" role="tablist">
+    ${options.map(([value, label]) => `
+      <button role="tab" aria-selected="${value === active}"
+        class="${value === active ? "on" : ""}" ${attr}="${esc(value)}">${esc(label)}</button>`).join("")}
+  </div>`;
 }
 
 function icon(name, cls = "ic") {
@@ -370,11 +383,9 @@ function donorOf(t) {
    зі скільки в кого відкритих завдань і по яких донорах (тап → трекер).
    Звіт — дашборд виконання KPI з кільцями і гортанням по періодах. */
 function renderHome() {
-  const seg = `
-    <div class="two seg-slim">
-      <button class="bigbtn slim ${STATE.homeView !== "report" ? "on" : ""}" data-hv="tasks">Завдання</button>
-      <button class="bigbtn slim ${STATE.homeView === "report" ? "on" : ""}" data-hv="report">Звіт</button>
-    </div>`;
+  const seg = segment("data-hv",
+    [["tasks", "Завдання"], ["report", "Звіт"]],
+    STATE.homeView === "report" ? "report" : "tasks");
   const wire = () => $("content").querySelectorAll("[data-hv]").forEach((b) =>
     b.onclick = () => { STATE.homeView = b.dataset.hv === "report" ? "report" : "tasks"; renderHome(); });
 
@@ -783,11 +794,8 @@ function searchBox(id, value, placeholder) {
 }
 
 function renderProjects() {
-  const seg = `
-    <div class="two seg-slim">
-      <button class="bigbtn slim ${STATE.projView === "list" ? "on" : ""}" data-pv="list">Список</button>
-      <button class="bigbtn slim ${STATE.projView === "timeline" ? "on" : ""}" data-pv="timeline">Таймлайн</button>
-    </div>`;
+  const seg = segment("data-pv",
+    [["list", "Список"], ["timeline", "Таймлайн"]], STATE.projView);
   // Поле пошуку — лише в списку і лише коли є що шукати
   const withSearch = STATE.projView === "list" && STATE.projects.length > 8;
   if (!withSearch) STATE.projQuery = "";
@@ -1370,6 +1378,14 @@ async function renderKpi() {
     b.onclick = () => nav("kpinorm", +b.dataset.norm));
 }
 
+/* Звіт відкриваємо на МИНУЛОМУ тижні: у понеділок-четвер поточний ще
+   напівпорожній і нічого не каже — усі кружечки червоні просто тому, що
+   тиждень не скінчився. Місяць лишаємо поточним: там видно прогрес до цілі.
+   Гортання ‹ › працює як раніше, тож «зараз» за один тап. */
+function defaultOffset(period) {
+  return period === "week" ? -1 : 0;
+}
+
 /* Колір за % виконання: червоний (погано) → жовтий → зелений (добре).
    hue 0→120 лінійно від pct; null (немає факту) — сірий трек без кольору. */
 function pctColor(pct) {
@@ -1380,7 +1396,7 @@ function pctColor(pct) {
 
 /* Кільце навколо аватарки: % виконання KPI за період, колір за рівнем */
 function avatarRing(person, entry, pct, size) {
-  const r = 45, c = 2 * Math.PI * r;
+  const r = 44, c = 2 * Math.PI * r;
   const p = pct == null ? 0 : Math.max(0, Math.min(100, pct));
   const off = c * (1 - p / 100);
   const color = pctColor(pct);
@@ -1390,7 +1406,7 @@ function avatarRing(person, entry, pct, size) {
       <circle class="prog" cx="50" cy="50" r="${r}"
         style="stroke-dasharray:${c.toFixed(1)};stroke-dashoffset:${off.toFixed(1)};stroke:${color || "transparent"}"/>
     </svg>
-    <span class="ava-inner">${avatar(person, entry, size - 16)}</span>
+    <span class="ava-inner">${avatar(person, entry, size - 18)}</span>
   </span>`;
 }
 
@@ -1415,7 +1431,7 @@ async function renderDashboard() {
     <div class="ring-grid">
       ${list.map((p) => `
         <button class="ring-cell" data-rperson="${esc(p.person)}">
-          ${avatarRing(p.person, personEntry(p.person), p.overall_pct, 76)}
+          ${avatarRing(p.person, personEntry(p.person), p.overall_pct, 104)}
           <span class="rc-name">${esc(p.person.split(" ")[0])}</span>
           <span class="rc-pct" style="color:${pctColor(p.overall_pct) || "var(--muted)"}">${p.overall_pct == null ? "—" : p.overall_pct + "%"}</span>
         </button>`).join("")}
@@ -1423,19 +1439,17 @@ async function renderDashboard() {
   const body = $("dash-body");
   if (!body) return;
   body.innerHTML = `
-    <div class="two seg-slim" style="margin-top:12px">
-      <button class="bigbtn slim ${d.period === "week" ? "on" : ""}" data-dp="week">Тиждень</button>
-      <button class="bigbtn slim ${d.period === "month" ? "on" : ""}" data-dp="month">Місяць</button>
-    </div>
+    ${segment("data-dp", [["week", "Тиждень"], ["month", "Місяць"]], d.period, { sub: true })}
     <div class="month-nav">
       <button class="arr" data-doff="-1">${icon("chevron-left")}</button>
-      <b>${esc(data.label)}${data.is_current ? " · зараз" : ""}</b>
+      <b>${esc(data.label)}${data.is_current ? " · зараз"
+      : d.offset === -1 ? " · минулий" : ""}</b>
       <button class="arr" data-doff="1" ${data.is_current ? "disabled" : ""}>${icon("chevron-right")}</button>
     </div>
     ${grid || `<div class="empty-hint">Норм на цей період немає.</div>`}
     ${!data.site_db ? `<div class="tl-note">БД сайту недоступна — факт не рахується.</div>` : ""}`;
   body.querySelectorAll("[data-dp]").forEach((b) => b.onclick = () => {
-    d.period = b.dataset.dp; d.offset = 0; renderDashboard();
+    d.period = b.dataset.dp; d.offset = defaultOffset(d.period); renderDashboard();
   });
   body.querySelectorAll("[data-doff]").forEach((b) => b.onclick = () => {
     if (b.disabled) return;
@@ -1472,6 +1486,14 @@ async function renderPersonHistory() {
     body.innerHTML = `<div class="empty-hint">У відділі немає місячної норми —<br>динаміку показати нема з чого.</div>`;
     return;
   }
+  body.innerHTML = historyChartHtml(data);
+  scrollHistoryToEnd();
+}
+
+/* Стовпчики помісячного виконання KPI. Спільні для профілю людини у Звіті
+   (редакторський вид) і для власної динаміки журналістки — щоб дівчата
+   бачили ті самі цифри, що бачить редакція, а не інші. */
+function historyChartHtml(data, chartId = "hist-chart") {
   const maxH = 120;
   const bars = data.months.map((m) => {
     const pct = m.overall_pct;
@@ -1489,11 +1511,15 @@ async function renderPersonHistory() {
       <div class="hb-month">${esc(m.label)}</div>
     </div>`;
   }).join("");
-  body.innerHTML = `
-    <div class="h-sub">виконання KPI по місяцях${data.months[0].norms[0] ? " · " + esc(data.months[data.months.length - 1].norms[0].label) : ""}</div>
-    <div class="hist-chart" id="hist-chart">${bars}</div>
+  const norm = data.months[data.months.length - 1].norms[0];
+  return `
+    <div class="h-sub">виконання KPI по місяцях${norm ? " · " + esc(norm.label) : ""}</div>
+    <div class="hist-chart" id="${chartId}">${bars}</div>
     ${!data.site_db ? `<div class="tl-note">БД сайту недоступна — факт не рахується.</div>` : ""}`;
-  const chart = $("hist-chart");
+}
+
+function scrollHistoryToEnd(chartId = "hist-chart") {
+  const chart = $(chartId);
   if (chart) chart.scrollLeft = chart.scrollWidth;  // до найсвіжішого місяця
 }
 
@@ -1754,6 +1780,7 @@ function renderJournalist() {
     <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
     <div class="h-sub">твої завдання і KPI</div>
     <div id="my-kpi"></div>
+    <div id="my-history"></div>
     ${open.length ? `<div class="soft-card">${open.map((t) => {
       const tp = taskProject(t);
       return `
@@ -1774,6 +1801,25 @@ function renderJournalist() {
     <div class="empty-hint" style="padding-top:16px">Це попередній перегляд —
       повний твій інтерфейс уже в розробці.</div>`;
   renderMyKpi();
+  renderMyHistory();
+}
+
+/* Власна помісячна динаміка журналістки — ті самі стовпчики, що бачить
+   редакція у Звіті. Вантажиться після основного екрана, окремо від «Моїх
+   KPI»: обидва блоки йдуть у БД сайту, і якщо один не відповість, другий
+   усе одно з'явиться. */
+async function renderMyHistory() {
+  let data;
+  try {
+    data = await api("/api/kpi/person");   // сервер сам підставить мене
+  } catch (e) { return; }
+  const box = $("my-history");
+  if (!box || !data.has_norms || !data.months || !data.months.length) return;
+  box.innerHTML = `<div class="soft-card">
+    <div class="sc-t">Як іде місяць до місяця</div>
+    ${historyChartHtml(data, "my-hist-chart")}
+  </div>`;
+  scrollHistoryToEnd("my-hist-chart");
 }
 
 /* «Мої KPI» журналістки: норми її відділу зі своїм фактом тижня/місяця.

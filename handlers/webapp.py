@@ -628,9 +628,11 @@ async def api_kpi_dashboard(request):
 
 
 async def api_kpi_person(request):
-    """Профіль співробітника: помісячна динаміка виконання KPI. Тільки менеджери."""
-    person, info, _ = await _require_manager(request)
-    who = request.query.get("person")
+    """Помісячна динаміка виконання KPI. Менеджер бачить будь-кого (профіль зі
+    Звіту), журналістка — ТІЛЬКИ себе: параметр person у неї ігнорується, тож
+    підмінити його і зазирнути в чужі цифри не вийде."""
+    person, info, _ = await _authenticate(request)
+    who = request.query.get("person") if info["manager"] else person
     if who not in team_roster.ROSTER:
         raise web.HTTPBadRequest(text="Невідома людина")
     try:
