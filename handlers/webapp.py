@@ -35,6 +35,7 @@ GET /health віддає 200 — придатний і як VIBER_WEBHOOK_URL (V
 """
 
 import asyncio
+import calendar
 import hashlib
 import hmac
 import json
@@ -301,16 +302,55 @@ async def api_tasks_create(request):
 
 
 async def api_tasks_patch(request):
+    """PATCH таска: {status} — зміна статусу; інакше редагування полів
+    (qty, deadline, note, theme_id)."""
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
-    status = payload.get("status")
-    if status not in team_tasks.TASK_STATUSES:
-        raise web.HTTPBadRequest(text="status: open, done або dropped")
-    task = await asyncio.to_thread(
-        team_tasks.set_status, int(request.match_info["task_id"]), person, status
-    )
-    if not task:
+    task_id = int(request.match_info["task_id"])
+
+    if "status" in payload:
+        status = payload.get("status")
+        if status not in team_tasks.TASK_STATUSES:
+            raise web.HTTPBadRequest(text="status: open, done або dropped")
+        task = await asyncio.to_thread(team_tasks.set_status, task_id, person, status)
+        if not task:
+            raise web.HTTPNotFound(text="Таска немає")
+        return web.json_response({"task": task})
+
+    current = await asyncio.to_thread(team_tasks.get_task, task_id)
+    if not current:
         raise web.HTTPNotFound(text="Таска немає")
+    kwargs = {}
+    if "qty" in payload:
+        try:
+            kwargs["qty"] = int(payload["qty"])
+            assert 1 <= kwargs["qty"] <= 99
+        except (TypeError, ValueError, AssertionError):
+            raise web.HTTPBadRequest(text="qty: 1–99")
+    if "deadline" in payload:
+        deadline = payload.get("deadline") or None
+        if deadline:
+            try:
+                time.strptime(deadline, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                raise web.HTTPBadRequest(text="deadline: YYYY-MM-DD")
+        kwargs["deadline"] = deadline
+    if "note" in payload:
+        kwargs["note"] = payload.get("note")
+    if "theme_id" in payload:
+        theme_id = payload.get("theme_id") or None
+        theme_name = None
+        if theme_id:
+            themes = await asyncio.to_thread(team_tasks.list_themes)
+            theme = next((t for t in themes if t["id"] == int(theme_id)), None)
+            if not theme or theme["project_id"] != current["project_id"]:
+                raise web.HTTPBadRequest(text="Тематика не з проєкту цього таска")
+            theme_name = theme["name"]
+        kwargs["theme_id"] = theme_id
+        kwargs["theme_name"] = theme_name
+    task = await asyncio.to_thread(
+        team_tasks.update_task_fields, task_id, person, **kwargs
+    )
     return web.json_response({"task": task})
 
 
@@ -365,6 +405,67 @@ async def api_themes_delete(request):
     if not deleted:
         raise web.HTTPNotFound(text="Тематики немає")
     return web.json_response({"ok": True})
+
+
+async def api_tasks_bulk(request):
+    """Масова постановка з проєкту (Олег, 27.07): тематика (опційно) + місяць +
+    {людина: скільки}. Кожній створюється таска з дедлайном на кінець місяця,
+    тип — з формату тематики (news/article; інші формати → «будь-який»),
+    кожній летить пінг."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+
+    project_id = payload.get("project_id")
+    if not project_id:
+        raise web.HTTPBadRequest(text="Потрібен project_id")
+    projects = await asyncio.to_thread(team_projects.list_projects, False)
+    project = next((p for p in projects if p["id"] == int(project_id)), None)
+    if not project:
+        raise web.HTTPBadRequest(text="Невідомий проєкт")
+
+    theme = None
+    if payload.get("theme_id"):
+        themes = await asyncio.to_thread(team_tasks.list_themes)
+        theme = next((t for t in themes if t["id"] == int(payload["theme_id"])), None)
+        if not theme or theme["project_id"] != int(project_id):
+            raise web.HTTPBadRequest(text="Тематика не з цього проєкту")
+
+    month = payload.get("month") or ""
+    try:
+        y, m = int(month[:4]), int(month[5:7])
+        assert month[4] == "-" and 1 <= m <= 12 and 2020 <= y <= 2100
+    except (ValueError, AssertionError, IndexError):
+        raise web.HTTPBadRequest(text="month: YYYY-MM")
+    # Дедлайн — останній день місяця
+    deadline = f"{y:04d}-{m:02d}-{calendar.monthrange(y, m)[1]:02d}"
+
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        raise web.HTTPBadRequest(text="items: [{person, qty}]")
+    for item in items:
+        if item.get("person") not in team_roster.ROSTER:
+            raise web.HTTPBadRequest(text=f"Невідома людина: {item.get('person')}")
+        try:
+            assert 1 <= int(item.get("qty")) <= 99
+        except (TypeError, ValueError, AssertionError):
+            raise web.HTTPBadRequest(text="qty: 1–99")
+
+    type_ = theme["format"] if theme and theme["format"] in team_tasks.TASK_TYPES else None
+    if type_ == "post":
+        type_ = None  # платформа в масовій постановці не задається
+
+    loop = asyncio.get_running_loop()
+    created = []
+    for item in items:
+        task = await asyncio.to_thread(
+            team_tasks.create_task,
+            person, item["person"], type_, project["id"], project["name"],
+            theme["id"] if theme else None, theme["name"] if theme else None,
+            int(item["qty"]), None, deadline, project["partner"],
+        )
+        created.append(task)
+        loop.create_task(team_tasks.ping_assigned(request.app["bot"], task))
+    return web.json_response({"created": len(created)})
 
 
 # ---------- Порядок проєктів (drag-n-drop) ----------
@@ -582,6 +683,7 @@ async def start_webapp(application):
         web.get("/health", health),
         web.get("/api/bootstrap", api_bootstrap),
         web.post("/api/tasks", api_tasks_create),
+        web.post("/api/tasks/bulk", api_tasks_bulk),
         web.patch("/api/tasks/{task_id:\\d+}", api_tasks_patch),
         web.post("/api/themes", api_themes_create),
         web.patch("/api/themes/{theme_id:\\d+}", api_themes_patch),
