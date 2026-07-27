@@ -695,14 +695,17 @@ def _pending_payload():
     pool = team_tasks.list_open_tasks()
     counted = team_matches.counted_by_task([t["id"] for t in pool])
     for m in pending:
-        options = [
+        # Автор відомий (публікація сайту) — кандидати лише його. Автор
+        # невідомий (пост Telegram: у каналі його немає ніде) — усі відкриті
+        # таски проєкту, і Катя обирає заразом людину й тематику.
+        m["options"] = [
             {"id": t["id"], "theme_name": t["theme_name"], "type": t["type"],
              "qty": t["qty"], "done_count": len(counted.get(t["id"], [])),
              "person": t["person"], "project_id": t["project_id"]}
             for t in pool
-            if t["person"] == m["person"] and t["project_id"] == m["project_id"]
+            if t["project_id"] == m["project_id"]
+            and (m["person"] is None or t["person"] == m["person"])
         ]
-        m["options"] = options
     return {"pending": pending}
 
 
@@ -715,8 +718,19 @@ async def api_matches_pending(request):
 
 
 def _decide_blocking(match_id, actor, action, task_id):
-    """Рішення + перерахунок прогресу обох зачеплених тасків в одній сесії."""
-    match, touched = team_matches.decide_match(match_id, actor, action, task_id=task_id)
+    """Рішення + перерахунок прогресу обох зачеплених тасків в одній сесії.
+
+    Виконавицю беремо з обраного таска, а не з тіла запиту: для постів
+    Telegram автор невідомий, і саме вибір Каті («кому зарахувати») робить
+    його відомим — довіряти тут клієнту нема потреби."""
+    person = None
+    if action == "confirm" and task_id:
+        task = team_tasks.get_task(task_id)
+        if not task:
+            return None
+        person = task["person"]
+    match, touched = team_matches.decide_match(match_id, actor, action,
+                                               task_id=task_id, person=person)
     if not match:
         return None
     tasks = []

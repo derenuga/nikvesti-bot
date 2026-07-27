@@ -295,9 +295,13 @@ class ScanReport:
         self.errors = 0
         self.closed = []        # [(person, task)] — таски, що закрились самі
         self.judged = 0         # скільки разів реально смикали AI
+        self.tg_seen = 0        # постів каналу переглянуто (за дисклеймером)
+        self.tg_queued = 0      # з них проєктних — у чергу Каті
 
     def as_text(self):
         parts = [f"переглянуто {self.seen}"]
+        if self.tg_seen:
+            parts[0] += f" (+{self.tg_seen} постів каналу)"
         if self.auto:
             parts.append(f"зараховано {self.auto}")
         if self.pending:
@@ -437,6 +441,15 @@ async def run_matching_scan(bot, days=SCAN_DAYS, ping=True, chat_id=None):
     rows = await asyncio.to_thread(fetch_project_nodes, since)
     ping_cb = (lambda person, task: _ping_done(bot, person, task)) if ping else None
     report = await judge_nodes(rows, ping=ping_cb)
+    # Telegram-пости за дисклеймером — той самий прогін, інше джерело і без AI.
+    # Окремим try: збій t.me не має чіпати зарахування з сайту.
+    try:
+        from handlers import team_tg_match
+        seen_posts, queued = await asyncio.to_thread(team_tg_match.scan_posts)
+        report.tg_seen, report.tg_queued = seen_posts, queued
+        report.pending += queued
+    except Exception as e:
+        print(f"team_matching: пости каналу не переглянулись — {e}")
     if report.auto or report.pending or report.errors:
         print(f"team_matching: прогін — {report.as_text()}")
     if chat_id:
@@ -698,6 +711,32 @@ async def match_scan_handler(update, context):
     if report.pending:
         lines.append(f"\n🤔 {report.pending} спірних — у «Сповіщеннях» апки.")
     await msg.edit_text("\n".join(lines), disable_web_page_preview=True)
+
+
+async def match_tg_handler(update, context):
+    """/match_tg [сторінок] — переглянути пости каналу за дисклеймерами зараз
+    (авто — разом зі щогодинним прогоном). AI тут не задіяний."""
+    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    from handlers import team_tg_match
+
+    try:
+        pages = max(1, min(20, int(context.args[0]))) if context.args else \
+            team_tg_match.SCAN_PAGES
+    except ValueError:
+        pages = team_tg_match.SCAN_PAGES
+    msg = await update.message.reply_text(f"🦊 Дивлюсь {pages} стор. каналу…")
+    try:
+        seen, queued = await asyncio.to_thread(team_tg_match.scan_posts, pages)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось переглянути канал: {e}")
+        return
+    await msg.edit_text(
+        f"🦊 Постів переглянуто: {seen}\n"
+        + (f"Проєктних (за дисклеймером) у чергу: {queued} — розібрати в "
+           f"«Сповіщеннях» апки."
+           if queued else "Нових проєктних постів немає."))
 
 
 async def match_test_handler(update, context):

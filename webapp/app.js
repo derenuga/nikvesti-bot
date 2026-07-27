@@ -1429,7 +1429,8 @@ function matchCard(m) {
     <div class="al-head">
       ${proj ? logoSq(proj, 36) : ""}
       <span class="al-h-txt">
-        <span class="al-who">${esc(m.person || "автор невідомий")}</span>
+        <span class="al-who">${m.person ? esc(m.person)
+          : m.source === "telegram" ? "Пост каналу" : "Автор невідомий"}</span>
         <span class="al-proj">${esc([donor, proj && proj.name].filter(Boolean).join(" · "))}</span>
       </span>
       ${m.confidence ? `<span class="al-conf ${esc(m.confidence)}">${esc(CONF_LABEL[m.confidence] || m.confidence)}</span>` : ""}
@@ -1439,7 +1440,9 @@ function matchCard(m) {
     ${suggested
       ? `<div class="al-guess">Схоже на «${esc(suggested.theme_name || "без тематики")}» —
            ${suggested.done_count}/${suggested.qty}</div>`
-      : `<div class="al-guess muted">Суддя не обрав тематику — обери сама</div>`}
+      : `<div class="al-guess muted">${m.source === "telegram"
+           ? "Проєкт видно з дисклеймера — обери, кому і в яку тематику"
+           : "Суддя не обрав тематику — обери сама"}</div>`}
     <div class="al-actions">
       <button class="sbtn danger" data-mreject="${m.id}">Не те</button>
       <button class="sbtn primary" data-mconfirm="${m.id}">Зарахувати</button>
@@ -1550,15 +1553,19 @@ function matchThemeSheet(m) {
     return;
   }
   const sorted = [...options].sort((a, b) =>
-    (b.id === m.task_id) - (a.id === m.task_id));
+    (b.id === m.task_id) - (a.id === m.task_id)
+    || a.person.localeCompare(b.person, "uk"));
+  // Автора немає (пост каналу) — рядок має сказати ще й КОМУ зараховуємо
+  const unknownAuthor = !m.person;
   openSheet(`
-    <h2>Куди зарахувати?</h2>
+    <h2>${unknownAuthor ? "Кому і куди зарахувати?" : "Куди зарахувати?"}</h2>
     <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(m.title)}</p>
     ${sorted.map((o) => `
       <button class="pick-row" data-mtask="${o.id}">
+        ${unknownAuthor ? avatar(o.person, personEntry(o.person), 36) : ""}
         <span>
-          <span class="pk-name">${esc(o.theme_name || "Без тематики")}</span>
-          <span class="pk-meta">${o.done_count}/${o.qty}${o.id === m.task_id ? " · пропозиція Лиса" : ""}</span>
+          <span class="pk-name">${unknownAuthor ? esc(o.person) : esc(o.theme_name || "Без тематики")}</span>
+          <span class="pk-meta">${unknownAuthor ? esc(o.theme_name || "Без тематики") + " · " : ""}${o.done_count}/${o.qty}${o.id === m.task_id ? " · пропозиція Лиса" : ""}</span>
         </span>
         ${o.id === m.task_id ? icon("check", "ic chev") : ""}
       </button>`).join("")}`);
