@@ -21,7 +21,7 @@ BUILDER_MONITOR_MODULE.md).
 """
 
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from handlers import bot_db, db, team_roster
@@ -100,27 +100,30 @@ def ensure_kpi_schema():
 
 # ---------- Періоди (Київ) ----------
 
-def period_bounds(period, today=None):
-    """(start_date, end_date_exclusive) поточного періоду за Києвом."""
+def period_bounds(period, offset=0, today=None):
+    """(start_date, end_date_exclusive) періоду за Києвом. offset — зсув
+    у періодах назад/вперед (0 — поточний, -1 — попередній тиждень/місяць)."""
     today = today or datetime.now(KYIV_TZ).date()
     if period == "week":
-        start = today - timedelta(days=today.weekday())
+        start = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
         return start, start + timedelta(days=7)
-    start = today.replace(day=1)
+    # місяць: зсуваємо по індексу (year*12 + month), щоб не ловити переходи року
+    idx = today.year * 12 + (today.month - 1) + offset
+    start = date(idx // 12, idx % 12 + 1, 1)
     return start, (start + timedelta(days=32)).replace(day=1)
 
 
-def period_label(period, today=None):
-    start, end = period_bounds(period, today)
+def period_label(period, offset=0, today=None):
+    start, end = period_bounds(period, offset, today)
     if period == "week":
         last = end - timedelta(days=1)
         return f"{start.day:02d}–{last.day:02d}.{last.month:02d}"
-    return MONTHS_UA[start.month - 1]
+    return f"{MONTHS_UA[start.month - 1]} {start.year}"
 
 
-def _period_ts_range(period):
+def _period_ts_range(period, offset=0):
     """(unix_start, unix_end) періоду — межі за київською північчю."""
-    start, end = period_bounds(period)
+    start, end = period_bounds(period, offset)
     to_ts = lambda d: int(datetime(d.year, d.month, d.day, tzinfo=KYIV_TZ).timestamp())
     return to_ts(start), to_ts(end)
 
@@ -201,8 +204,8 @@ def clear_override(norm_id, person):
     )
 
 
-def _overrides_for(norm_id, period):
-    start, _ = period_bounds(period)
+def _overrides_for(norm_id, period, offset=0):
+    start, _ = period_bounds(period, offset)
     return {
         r["person"]: {"target": r["target"], "note": r["note"]}
         for r in bot_db.query(
@@ -262,13 +265,14 @@ def resolve_site_user_id(person, links=None, name_map=None):
     return name_map.get(_norm_name(person))
 
 
-def fact_counts(metric, period, own=False):
-    """{person: к-сть опублікованого цього періоду} для ВСІХ людей ростера,
-    або None, якщо БД сайту недоступна. own=True — лише власні матеріали
-    (nodes.own_material=1). Кеш 5 хв на (metric, period, own)."""
+def fact_counts(metric, period, own=False, offset=0):
+    """{person: к-сть опублікованого за період} для ВСІХ людей ростера, або
+    None, якщо БД сайту недоступна. offset — зсув періоду (історія рахується
+    з nodes, які тримають весь `published`). own=True — лише власні матеріали.
+    Кеш 5 хв на (metric, period, own, offset)."""
     if not db.is_configured():
         return None
-    start, _ = period_bounds(period)
+    start, _ = period_bounds(period, offset)
     cache_key = (metric, period, bool(own), start.isoformat())
     hit = _fact_cache.get(cache_key)
     if hit and hit[0] > time.monotonic():
@@ -282,7 +286,7 @@ def fact_counts(metric, period, own=False):
             person_by_uid[uid] = person
     result = {p: 0 for p in team_roster.ROSTER}
     if person_by_uid:
-        ts_start, ts_end = _period_ts_range(period)
+        ts_start, ts_end = _period_ts_range(period, offset)
         own_cond = "AND own_material = 1 " if own else ""
         rows = db.query(
             "SELECT owner_id, COUNT(*) AS c FROM nodes "
@@ -433,4 +437,69 @@ def kpi_payload(for_person=None):
         "week_label": period_label("week"),
         "month_label": period_label("month"),
         "site_db": db.is_configured(),
+    }
+
+
+def kpi_dashboard(period, offset=0):
+    """Звітний дашборд за період (з історією через offset): по кожній людині,
+    що має норму цього типу періоду — факт/ціль і % виконання (для кільця
+    навколо аватарки). Норми беруться поточні (історії норм не тримаємо),
+    правки — за конкретний період (team_kpi_overrides по period_start),
+    факт — з nodes за цей період."""
+    if period not in KPI_PERIODS:
+        period = "week"
+    norms = [n for n in list_norms() if n["period"] == period]
+    depts = team_roster.dept_overrides()
+
+    # факти рахуємо раз на (metric, own) — не на кожну людину
+    fact_cache = {}
+    def facts_for(n):
+        key = (n["metric"], n["own"])
+        if key not in fact_cache:
+            fact_cache[key] = fact_counts(n["metric"], period, n["own"], offset)
+        return fact_cache[key]
+
+    # людина → її норми цього періоду (за фактичним відділом) з фактом
+    per_person = {}
+    for n in norms:
+        overrides = _overrides_for(n["id"], period, offset)
+        facts = facts_for(n)
+        for person, info in team_roster.ROSTER.items():
+            if info["manager"] or team_roster.effective_dept(person, depts) != n["dept"]:
+                continue
+            ov = overrides.get(person)
+            if ov and ov["target"] == 0:
+                continue  # звільнена цього періоду — у дашборд не тягнемо
+            target = ov["target"] if ov else n["target"]
+            fact = None if facts is None else facts.get(person)
+            per_person.setdefault(person, {"dept": n["dept"], "norms": []})["norms"].append({
+                "label": f"{target} {n['metric']}" + (" власних" if n["own"] else ""),
+                "metric": n["metric"], "own": n["own"],
+                "fact": fact, "target": target,
+                "pct": None if fact is None or target <= 0 else min(100, round(fact / target * 100)),
+                "done": fact is not None and target > 0 and fact >= target,
+            })
+
+    people = []
+    for person, d in per_person.items():
+        pcts = [x["pct"] for x in d["norms"] if x["pct"] is not None]
+        overall = round(sum(pcts) / len(pcts)) if pcts else None
+        people.append({
+            "person": person,
+            "dept": d["dept"],
+            "dept_title": team_roster.DEPT_TITLES.get(d["dept"], d["dept"]),
+            "norms": d["norms"],
+            "overall_pct": overall,
+            "all_done": bool(d["norms"]) and all(x["done"] for x in d["norms"]),
+        })
+    # спершу хто відстає (менший %), звільнені/без норм не потрапили
+    people.sort(key=lambda p: (p["overall_pct"] if p["overall_pct"] is not None else 999,
+                               p["person"]))
+    return {
+        "period": period,
+        "offset": offset,
+        "label": period_label(period, offset),
+        "is_current": offset == 0,
+        "site_db": db.is_configured(),
+        "people": people,
     }

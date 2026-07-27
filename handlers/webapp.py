@@ -582,6 +582,22 @@ async def api_kpi(request):
     return web.json_response(payload)
 
 
+async def api_kpi_dashboard(request):
+    """Звітний дашборд KPI за період з історією: ?period=week|month&offset=0.
+    offset ≤ 0 (у майбутнє не листаємо). Тільки менеджери."""
+    person, info, _ = await _require_manager(request)
+    period = request.query.get("period", "week")
+    if period not in team_kpi.KPI_PERIODS:
+        period = "week"
+    try:
+        offset = min(0, int(request.query.get("offset", "0")))
+        offset = max(-60, offset)  # розумна межа углиб історії
+    except ValueError:
+        offset = 0
+    data = await asyncio.to_thread(team_kpi.kpi_dashboard, period, offset)
+    return web.json_response(data)
+
+
 async def api_kpi_norm_create(request):
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
@@ -695,6 +711,7 @@ async def start_webapp(application):
         web.delete("/api/project_deadlines/{dl_id:\\d+}", api_deadline_delete),
         web.put("/api/people/dept", api_people_dept),
         web.get("/api/kpi", api_kpi),
+        web.get("/api/kpi/dashboard", api_kpi_dashboard),
         web.post("/api/kpi/norms", api_kpi_norm_create),
         web.patch("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_patch),
         web.delete("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_delete),

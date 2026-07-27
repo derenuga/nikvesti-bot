@@ -19,6 +19,8 @@ const STATE = {
   currentProject: null,
   currentNorm: null,
   kpi: null,
+  kpiView: "now",
+  dash: { period: "week", offset: 0, data: null },
   form: null,
 };
 
@@ -1150,10 +1152,25 @@ function normById(id) {
 }
 
 async function renderKpi() {
+  const seg = `
+    <div class="two seg-slim">
+      <button class="bigbtn slim ${STATE.kpiView !== "report" ? "on" : ""}" data-kv="now">Зараз</button>
+      <button class="bigbtn slim ${STATE.kpiView === "report" ? "on" : ""}" data-kv="report">Звіт</button>
+    </div>`;
+  const wire = () => $("content").querySelectorAll("[data-kv]").forEach((b) =>
+    b.onclick = () => { STATE.kpiView = b.dataset.kv === "report" ? "report" : "now"; renderKpi(); });
+
+  if (STATE.kpiView === "report") {
+    $("content").innerHTML = `<div class="h-big">KPI</div>${seg}<div id="dash-body"><div class="empty-hint">Завантажую…</div></div>`;
+    wire();
+    return renderDashboard();
+  }
+
   if (!STATE.kpi) {
-    $("content").innerHTML = `<div class="h-big">KPI</div><div class="empty-hint">Завантажую…</div>`;
+    $("content").innerHTML = `<div class="h-big">KPI</div>${seg}<div class="empty-hint">Завантажую…</div>`;
+    wire();
     try { await loadKpi(); } catch (e) { toast(e.message); return; }
-    if (STATE.view !== "kpi") return;
+    if (STATE.view !== "kpi" || STATE.kpiView === "report") return;
   }
   const k = STATE.kpi;
   const byDept = {};
@@ -1174,13 +1191,97 @@ async function renderKpi() {
     }).join("")}`).join("");
   $("content").innerHTML = `
     <div class="h-big">KPI</div>
-    <div class="h-sub">тиждень ${esc(k.week_label)} · ${esc(k.month_label)} · норма на відділ, облік по людині</div>
+    ${seg}
+    <div class="h-sub">норма на відділ, облік по людині</div>
     ${sections || `<div class="empty-hint">Норм ще немає.<br>Додай першу — і прогрес рахуватиметься сам із сайту.</div>`}
     <button class="add-theme" id="add-norm">${icon("plus")} Додати норму</button>
     ${!k.site_db ? `<div class="tl-note">БД сайту недоступна — факт тимчасово не рахується.</div>` : ""}`;
+  wire();
   $("add-norm").onclick = normCreateSheet;
   $("content").querySelectorAll("[data-norm]").forEach((b) =>
     b.onclick = () => nav("kpinorm", +b.dataset.norm));
+}
+
+/* Кільце навколо аватарки: % виконання KPI за період */
+function avatarRing(person, entry, pct, done, size) {
+  const r = 45, c = 2 * Math.PI * r;
+  const p = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+  const off = c * (1 - p / 100);
+  const cls = done ? "done" : pct == null ? "nofact" : p >= 100 ? "done" : "part";
+  return `<span class="avaring ${cls}" style="width:${size}px;height:${size}px">
+    <svg viewBox="0 0 100 100" class="ring">
+      <circle class="track" cx="50" cy="50" r="${r}"/>
+      <circle class="prog" cx="50" cy="50" r="${r}"
+        style="stroke-dasharray:${c.toFixed(1)};stroke-dashoffset:${off.toFixed(1)}"/>
+    </svg>
+    <span class="ava-inner">${avatar(person, entry, size - 16)}</span>
+  </span>`;
+}
+
+/* Звітний дашборд: перемикач тиждень/місяць + гортання період-влево/вправо,
+   люди кружечками з кільцем % виконання KPI. Дані — з /api/kpi/dashboard
+   (історія рахується з nodes за минулі періоди). */
+async function renderDashboard() {
+  const d = STATE.dash;
+  try {
+    d.data = await api(`/api/kpi/dashboard?period=${d.period}&offset=${d.offset}`);
+  } catch (e) {
+    const body = $("dash-body");
+    if (body) body.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+    return;
+  }
+  if (STATE.view !== "kpi" || STATE.kpiView !== "report") return;
+  const data = d.data;
+  const byDept = {};
+  data.people.forEach((p) => (byDept[p.dept_title] = byDept[p.dept_title] || []).push(p));
+  const grid = Object.entries(byDept).map(([dept, list]) => `
+    <div class="dept-title">${esc(dept)}</div>
+    <div class="ring-grid">
+      ${list.map((p) => `
+        <button class="ring-cell" data-rperson="${esc(p.person)}">
+          ${avatarRing(p.person, personEntry(p.person), p.overall_pct, p.all_done, 76)}
+          <span class="rc-name">${esc(p.person.split(" ")[0])}</span>
+          <span class="rc-pct ${p.all_done ? "done" : ""}">${p.overall_pct == null ? "—" : p.overall_pct + "%"}</span>
+        </button>`).join("")}
+    </div>`).join("");
+  const body = $("dash-body");
+  if (!body) return;
+  body.innerHTML = `
+    <div class="two seg-slim" style="margin-top:12px">
+      <button class="bigbtn slim ${d.period === "week" ? "on" : ""}" data-dp="week">Тиждень</button>
+      <button class="bigbtn slim ${d.period === "month" ? "on" : ""}" data-dp="month">Місяць</button>
+    </div>
+    <div class="month-nav">
+      <button class="arr" data-doff="-1">${icon("chevron-left")}</button>
+      <b>${esc(data.label)}${data.is_current ? " · зараз" : ""}</b>
+      <button class="arr" data-doff="1" ${data.is_current ? "disabled" : ""}>${icon("chevron-right")}</button>
+    </div>
+    ${grid || `<div class="empty-hint">Норм на цей період немає.</div>`}
+    ${!data.site_db ? `<div class="tl-note">БД сайту недоступна — факт не рахується.</div>` : ""}`;
+  body.querySelectorAll("[data-dp]").forEach((b) => b.onclick = () => {
+    d.period = b.dataset.dp; d.offset = 0; renderDashboard();
+  });
+  body.querySelectorAll("[data-doff]").forEach((b) => b.onclick = () => {
+    if (b.disabled) return;
+    d.offset = Math.min(0, d.offset + (+b.dataset.doff)); renderDashboard();
+  });
+  body.querySelectorAll("[data-rperson]").forEach((b) => b.onclick = () =>
+    dashPersonSheet(data.people.find((p) => p.person === b.dataset.rperson)));
+}
+
+function dashPersonSheet(p) {
+  if (!p) return;
+  openSheet(`
+    <h2>${esc(p.person)}</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(STATE.dash.data.label)} · ${esc(p.dept_title)}</p>
+    ${p.norms.map((n) => `
+      <div class="mykpi-row">
+        <span class="mk-t">${esc(n.label)}</span>
+        <span class="kp-fact ${n.done ? "ok" : ""}">${n.fact == null ? "—" : `${n.fact}/${n.target}`}</span>
+        <span class="kbar wide"><i class="${n.done ? "ok" : ""}" style="width:${n.pct == null ? 0 : n.pct}%"></i></span>
+      </div>`).join("")}
+    <div class="sheet-actions"><button class="sbtn primary" id="dp-close">Закрити</button></div>`);
+  $("dp-close").onclick = closeSheet;
 }
 
 function normCreateSheet() {
