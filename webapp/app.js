@@ -1,27 +1,25 @@
-/* Mini App «Команда» — логіка (хвиля 1: таски).
-   Ролі: менеджер (Олег/головред) — ставить і приймає; журналістка — виконує.
-   Авторизація: initData Telegram у кожному запиті, сервер сам вирішує, хто ти. */
+/* Mini App «Команда» — прототип редакторського інтерфейсу (концепція v2).
+   Флоу Каті: «+» → людина → creative task (проєкт/позапроєкт, тип, тематика,
+   кількість, нотатка). Проєкти і фото — з БД сайту, тематики й таски — з Нори.
+   Журналіст поки бачить свої завдання read-only — його інтерфейс наступний. */
 
 const tg = window.Telegram ? window.Telegram.WebApp : null;
-
 const $ = (id) => document.getElementById(id);
 
 const STATE = {
   me: null,
   tasks: [],
-  roster: [],
-  tab: "board",
+  people: [],
+  projects: [],
+  view: "home",
+  currentProject: null,
+  form: null,
 };
 
-const STATUS_TITLES = {
-  todo: "Черга",
-  doing: "У роботі",
-  review: "На перевірці",
-  done: "Перемоги тижня",
-  dropped: "Зняті",
+const TYPE_WORDS = {
+  news: { one: "новина", few: "новини", many: "новин" },
+  article: { one: "стаття", few: "статті", many: "статей" },
 };
-
-const PRIO_ICON = { 0: "", 1: "", 2: "🔥" };
 
 /* ---------- API ---------- */
 
@@ -34,10 +32,7 @@ async function api(path, options = {}) {
       ...(options.headers || {}),
     },
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `HTTP ${res.status}`);
-  }
+  if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
   return res.json();
 }
 
@@ -61,292 +56,414 @@ function toast(msg) {
   t._timer = setTimeout(() => t.classList.add("hidden"), 2400);
 }
 
-function confetti() {
-  const layer = $("confetti-layer");
-  const emoji = ["🦊", "🎉", "⭐", "🧡", "✨", "🏆"];
-  for (let i = 0; i < 26; i++) {
-    const c = document.createElement("div");
-    c.className = "confetto";
-    c.textContent = emoji[i % emoji.length];
-    c.style.left = Math.random() * 100 + "vw";
-    c.style.animationDuration = 1.6 + Math.random() * 1.6 + "s";
-    c.style.animationDelay = Math.random() * 0.4 + "s";
-    c.style.fontSize = 16 + Math.random() * 16 + "px";
-    layer.appendChild(c);
-    setTimeout(() => c.remove(), 3800);
-  }
+function icon(name, cls = "ic") {
+  return `<svg class="${cls}"><use href="#i-${name}"/></svg>`;
 }
 
-function fmtDate(iso) {
-  if (!iso) return "";
-  const d = new Date(iso + "T00:00:00");
-  return d.toLocaleDateString("uk-UA", { day: "numeric", month: "short" });
+function initials(name) {
+  return name.split(" ").slice(0, 2).map((w) => w[0] || "").join("").toUpperCase();
 }
 
-function isOverdue(task) {
-  if (!task.deadline || task.status === "done" || task.status === "dropped") return false;
-  return task.deadline < new Date().toISOString().slice(0, 10);
+function avatar(person, photo, size) {
+  return `<span class="ava" style="width:${size}px;height:${size}px">
+    <span class="init" style="font-size:${Math.round(size / 3)}px">${esc(initials(person))}</span>
+    ${photo ? `<img src="${esc(photo)}" alt="" loading="lazy" onerror="this.remove()">` : ""}
+  </span>`;
 }
 
-function firstName(full) {
-  return full.split(" ")[0];
+function logoSq(name, logo, size) {
+  return `<span class="logo-sq" style="width:${size}px;height:${size}px">
+    <span class="init" style="font-size:${Math.round(size / 3.4)}px">${esc(initials(name))}</span>
+    ${logo ? `<img src="${esc(logo)}" alt="" loading="lazy" onerror="this.remove()">` : ""}
+  </span>`;
 }
 
-/* ---------- Рендер ---------- */
-
-function renderHeader() {
-  const me = STATE.me;
-  const hour = new Date().getHours();
-  const hi = hour < 11 ? "Доброго ранку" : hour < 18 ? "Привіт" : "Доброго вечора";
-  $("greeting").textContent = `${hi}, ${me.first_name}!`;
-  $("dept-badge").textContent = me.dept_title + (me.manager ? " · менеджер" : "");
-  const s = me.stats;
-  $("stat-chips").innerHTML = `
-    <div class="chip fire"><div class="num">${s.active}</div><div class="lbl">в роботі</div></div>
-    <div class="chip"><div class="num">${s.review}</div><div class="lbl">на перевірці</div></div>
-    <div class="chip win"><div class="num">${s.done_week}</div><div class="lbl">✅ цього тижня</div></div>`;
+function fmtUnixDate(ts) {
+  if (!ts) return null;
+  return new Date(ts * 1000).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
-function taskCard(task) {
-  const me = STATE.me;
-  const overdue = isOverdue(task);
-  const metas = [];
-  if (task.project) metas.push(`<span class="meta project">${esc(task.project)}</span>`);
-  if (task.deadline)
-    metas.push(`<span class="meta deadline${overdue ? " overdue" : ""}">⏰ ${fmtDate(task.deadline)}${overdue ? " · прострочено" : ""}</span>`);
-  if (me.manager) metas.push(`<span class="meta who">${esc(firstName(task.assignee))}</span>`);
-  else if (task.creator !== task.assignee) metas.push(`<span class="meta who">від ${esc(firstName(task.creator))}</span>`);
-  if (task.article_url)
-    metas.push(`<span class="meta link"><a href="${esc(task.article_url)}" target="_blank">матеріал ↗</a></span>`);
-
-  const actions = [];
-  const own = task.assignee === me.name;
-  if (task.status === "todo" && own)
-    actions.push(`<button class="btn primary" data-act="doing" data-id="${task.id}">Беру в роботу 🏃‍♀️</button>`);
-  if (task.status === "doing" && own) {
-    actions.push(`<button class="btn primary" data-act="submit" data-id="${task.id}">Здаю на перевірку ✋</button>`);
-    actions.push(`<button class="btn ghost" data-act="todo" data-id="${task.id}">У чергу</button>`);
-  }
-  if (task.status === "review" && own && !me.manager)
-    actions.push(`<button class="btn ghost" data-act="doing" data-id="${task.id}">Повернути в роботу</button>`);
-  if (task.status === "review" && me.manager) {
-    actions.push(`<button class="btn accept" data-act="done" data-id="${task.id}">Прийняти ✅</button>`);
-    actions.push(`<button class="btn" data-act="return" data-id="${task.id}">Повернути ↩</button>`);
-  }
-  if (me.manager && task.status !== "done" && task.status !== "dropped")
-    actions.push(`<button class="btn ghost" data-act="edit" data-id="${task.id}">Редагувати</button>`);
-
-  return `<div class="task-card st-${task.status}${overdue ? " overdue" : ""}">
-    <div class="task-top">
-      <div class="task-title">${esc(task.title)}</div>
-      ${PRIO_ICON[task.priority] ? `<div class="prio">${PRIO_ICON[task.priority]}</div>` : ""}
-    </div>
-    ${metas.length ? `<div class="task-meta">${metas.join("")}</div>` : ""}
-    ${task.body ? `<div class="task-body">${esc(task.body)}</div>` : ""}
-    ${actions.length ? `<div class="task-actions">${actions.join("")}</div>` : ""}
-  </div>`;
+function qtyWord(type, qty) {
+  const w = TYPE_WORDS[type];
+  if (qty === 1) return w.one;
+  return qty < 5 ? w.few : w.many;
 }
 
-function section(title, tasks, icon) {
-  if (!tasks.length) return "";
-  return `<div class="section-title">${icon || ""} ${title}
-      <span class="count">${tasks.length}</span></div>
-    ${tasks.map(taskCard).join("")}`;
+function taskSummary(t) {
+  let line = t.qty > 1 ? `${t.qty} ${qtyWord(t.type, t.qty)}` : qtyWord(t.type, 1);
+  if (t.project_name) line += ` · ${t.project_name}`;
+  else line += " · позапроєктне";
+  if (t.theme_name) line += ` (${t.theme_name})`;
+  return line;
 }
 
-function renderBoard() {
-  const tasks = STATE.tasks;
-  const by = (st) => tasks.filter((t) => t.status === st);
-  let html = "";
-  if (STATE.me.manager) {
-    html += section("Чекають перевірки", by("review"), "👀");
-    html += section("У роботі", by("doing"), "🏃‍♀️");
-    html += section("Черга", by("todo"), "📋");
-    html += section("Закриті недавно", by("done"), "🏆");
-    html += section("Зняті", by("dropped"), "🗑");
-  } else {
-    html += section("На перевірці", by("review"), "👀");
-    html += section("У роботі", by("doing"), "🔥");
-    html += section("Черга", by("todo"), "📋");
-    html += section("Перемоги", by("done"), "🏆");
-  }
-  if (!html) {
-    html = `<div class="empty"><div class="fox-big">🦊💤</div>
-      ${STATE.me.manager
-        ? "Завдань немає. Натисни ＋, щоб поставити перше."
-        : "Завдань немає — Микита теж відпочиває.<br>Гарного дня!"}</div>`;
-  }
-  $("content").innerHTML = html;
+function personPhoto(name) {
+  const p = STATE.people.find((x) => x.name === name);
+  return p ? p.photo : null;
 }
 
-function renderPeople() {
-  const load = {};
-  STATE.tasks.forEach((t) => {
-    if (t.status === "done" || t.status === "dropped") return;
-    load[t.assignee] = (load[t.assignee] || 0) + 1;
-  });
-  const rows = STATE.roster
-    .filter((p) => !p.manager)
-    .map((p) => {
-      const n = load[p.name] || 0;
-      return `<div class="person-row">
-        <div style="flex:1">
-          <div class="p-name">${esc(p.name)}</div>
-          <div class="p-dept">${esc(p.dept_title)}</div>
-        </div>
-        <div class="p-load${n ? "" : " free"}">${n ? n + " акт." : "вільна"}</div>
-      </div>`;
-    });
-  $("content").innerHTML = rows.join("");
+/* ---------- Навігація ---------- */
+
+function nav(view, arg) {
+  STATE.view = view;
+  if (view === "project") STATE.currentProject = arg;
+  if (view === "form") STATE.form = {
+    person: arg, project: undefined, type: "news", theme_id: null, qty: 1, note: "",
+  };
+  document.querySelectorAll("#bottomnav .bn").forEach((b) =>
+    b.classList.toggle("on", b.dataset.view === view));
+  render();
+  window.scrollTo(0, 0);
 }
 
 function render() {
-  renderHeader();
-  if (STATE.me.manager) {
-    $("tabs").classList.remove("hidden");
-    $("fab").classList.remove("hidden");
-  }
-  if (STATE.tab === "people") renderPeople();
-  else renderBoard();
+  const v = STATE.view;
+  if (v === "home") renderHome();
+  else if (v === "people") renderPeople();
+  else if (v === "form") renderForm();
+  else if (v === "projects") renderProjects();
+  else if (v === "project") renderProject();
+  else if (v === "kpi") renderKpi();
+  else if (v === "team") renderTeam();
 }
 
-/* ---------- Шторки ---------- */
+/* ---------- Головна ---------- */
+
+function renderHome() {
+  const open = STATE.tasks.filter((t) => t.status === "open");
+  const closed = STATE.tasks.filter((t) => t.status !== "open").slice(0, 10);
+  const row = (t) => `
+    <button class="task-row" data-task="${t.id}">
+      ${avatar(t.person, personPhoto(t.person), 42)}
+      <span class="tr-main">
+        <span class="tr-who">${esc(t.person.split(" ")[0])} ${esc(t.person.split(" ")[1] || "")}</span>
+        <span class="tr-what">${esc(taskSummary(t))}</span>
+      </span>
+      <span class="status-dot ${t.status}"></span>
+    </button>`;
+  $("content").innerHTML = `
+    <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
+    <div class="h-sub">${new Date().toLocaleDateString("uk-UA", { weekday: "long", day: "numeric", month: "long" })}</div>
+    ${open.length ? `<div class="soft-card"><div class="sc-t">Відкриті завдання · ${open.length}</div>${open.map(row).join("")}</div>` : ""}
+    ${closed.length ? `<div class="soft-card"><div class="sc-t">Нещодавно закриті</div>${closed.map(row).join("")}</div>` : ""}
+    ${!open.length && !closed.length ? `<div class="empty-hint">Завдань поки немає.<br>Натисни «+» унизу, щоб поставити перше.</div>` : ""}
+  `;
+}
+
+function taskSheet(t) {
+  openSheet(`
+    <h2>${esc(t.person)}</h2>
+    <p style="color:var(--muted);margin:-8px 0 6px">${esc(taskSummary(t))}</p>
+    ${t.note ? `<p style="margin-bottom:6px">${esc(t.note)}</p>` : ""}
+    <p style="color:var(--muted);font-size:12.5px">поставила ${esc(t.creator.split(" ")[0])} · ${new Date(t.created_at).toLocaleDateString("uk-UA")}</p>
+    <div class="sheet-actions">
+      ${t.status === "open"
+        ? `<button class="sbtn danger" data-status="dropped">Зняти</button>
+           <button class="sbtn primary" data-status="done">Виконано</button>`
+        : `<button class="sbtn" data-status="open">Повернути у відкриті</button>`}
+    </div>`);
+  $("sheet").addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-status]");
+    if (!btn) return;
+    try {
+      await api(`/api/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify({ status: btn.dataset.status }) });
+      closeSheet();
+      haptic("success");
+      await reload();
+    } catch (err) { toast(err.message); }
+  }, { once: true });
+}
+
+/* ---------- Вибір людини ---------- */
+
+function renderPeople() {
+  const byDept = {};
+  STATE.people.forEach((p) => (byDept[p.dept_title] = byDept[p.dept_title] || []).push(p));
+  const blocks = Object.entries(byDept).map(([dept, list]) => `
+    <div class="dept-title">${esc(dept)}</div>
+    <div class="people-grid">
+      ${list.map((p) => `
+        <button class="pv" data-person="${esc(p.name)}">
+          ${avatar(p.name, p.photo, 76)}
+          <span class="nm">${esc(p.name.split(" ")[0])}</span>
+          <span class="dp">${esc(p.name.split(" ")[1] || "")}</span>
+        </button>`).join("")}
+    </div>`).join("");
+  $("content").innerHTML = `
+    <button class="back" data-nav="home">${icon("chevron-left")} Скасувати</button>
+    <div class="h-big">Кому ставимо завдання?</div>
+    <div class="h-sub">&nbsp;</div>
+    ${blocks}`;
+}
+
+/* ---------- Форма creative task ---------- */
+
+function currentProjectObj() {
+  const f = STATE.form;
+  if (!f || !f.project) return null;
+  return STATE.projects.find((p) => p.id === f.project) || null;
+}
+
+function renderForm() {
+  const f = STATE.form;
+  const proj = currentProjectObj();
+  const themes = proj ? proj.themes : [];
+  const projLabel = f.project === undefined
+    ? `<span class="ph">Обрати проєкт…</span>`
+    : f.project === null
+      ? `Позапроєктне завдання`
+      : `${logoSq(proj.name, proj.logo, 32)} ${esc(proj.name)}`;
+  $("content").innerHTML = `
+    <button class="back" data-nav="people">${icon("chevron-left")} Назад</button>
+    <div class="who">
+      ${avatar(f.person, personPhoto(f.person), 48)}
+      <div><div class="wn">${esc(f.person)}</div>
+      <div class="wd">${esc((STATE.people.find((p) => p.name === f.person) || {}).dept_title || "")}</div></div>
+    </div>
+
+    <div class="f-label">Проєкт</div>
+    <button class="bigpick" id="f-project">${projLabel}${icon("chevron-right", "ic chev")}</button>
+
+    <div class="f-label">Тип матеріалу</div>
+    <div class="two">
+      <button class="bigbtn ${f.type === "news" ? "on" : ""}" data-type="news">Новина</button>
+      <button class="bigbtn ${f.type === "article" ? "on" : ""}" data-type="article">Стаття</button>
+    </div>
+
+    ${proj ? `
+      <div class="f-label">Тематика проєкту</div>
+      ${themes.length
+        ? `<div class="chips">${themes.map((t) => `
+            <button class="chip ${f.theme_id === t.id ? "on" : ""}" data-theme="${t.id}">${esc(t.name)}</button>`).join("")}
+           </div>`
+        : `<div style="color:var(--muted);font-size:13px">У проєкту ще немає тематик —
+             їх можна завести на вкладці «Проєкти».</div>`}
+    ` : ""}
+
+    <div class="f-label">Кількість і нотатка</div>
+    <div class="count-row">
+      <div class="stepper">
+        <button id="qty-minus">${icon("minus")}</button>
+        <b id="qty-val">${f.qty}</b>
+        <button id="qty-plus">${icon("plus")}</button>
+      </div>
+      <textarea id="f-note" maxlength="1000" placeholder="нотатка, тема, деталі…">${esc(f.note)}</textarea>
+    </div>
+
+    <button class="cta" id="f-create" ${f.project === undefined ? "disabled" : ""}>Поставити завдання</button>`;
+
+  $("f-project").onclick = projectPickerSheet;
+  $("qty-minus").onclick = () => { f.qty = Math.max(1, f.qty - 1); $("qty-val").textContent = f.qty; };
+  $("qty-plus").onclick = () => { f.qty = Math.min(99, f.qty + 1); $("qty-val").textContent = f.qty; };
+  $("f-note").oninput = (e) => { f.note = e.target.value; };
+  $("content").querySelectorAll("[data-type]").forEach((b) => b.onclick = () => { f.type = b.dataset.type; renderForm(); });
+  $("content").querySelectorAll("[data-theme]").forEach((b) => b.onclick = () => {
+    const id = +b.dataset.theme;
+    f.theme_id = f.theme_id === id ? null : id;
+    renderForm();
+  });
+  $("f-create").onclick = createTask;
+}
+
+function projectPickerSheet() {
+  const f = STATE.form;
+  openSheet(`
+    <h2>Проєкт</h2>
+    <button class="pick-row plain" data-proj="none">
+      <span class="pk-name">Позапроєктне завдання</span>
+    </button>
+    ${STATE.projects.map((p) => `
+      <button class="pick-row" data-proj="${p.id}">
+        ${logoSq(p.name, p.logo, 40)}
+        <span>
+          <span class="pk-name">${esc(p.name)}</span>
+          <span class="pk-meta">${p.end_date ? "до " + fmtUnixDate(p.end_date) : ""}${p.kpi_news || p.kpi_articles ? ` · квота ${p.kpi_news || 0}+${p.kpi_articles || 0}` : ""}</span>
+        </span>
+      </button>`).join("")}`);
+  $("sheet").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-proj]");
+    if (!btn) return;
+    f.project = btn.dataset.proj === "none" ? null : +btn.dataset.proj;
+    f.theme_id = null;
+    closeSheet();
+    renderForm();
+  }, { once: true });
+}
+
+async function createTask() {
+  const f = STATE.form;
+  const btn = $("f-create");
+  btn.disabled = true;
+  try {
+    await api("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        person: f.person,
+        project_id: f.project || null,
+        type: f.type,
+        theme_id: f.theme_id,
+        qty: f.qty,
+        note: f.note.trim(),
+      }),
+    });
+    haptic("success");
+    toast(`Завдання полетіло до ${f.person.split(" ")[0]}`);
+    await reload();
+    nav("home");
+  } catch (e) {
+    btn.disabled = false;
+    toast(e.message);
+  }
+}
+
+/* ---------- Проєкти ---------- */
+
+function renderProjects() {
+  $("content").innerHTML = `
+    <div class="h-big">Проєкти</div>
+    <div class="h-sub">квоти — з CMS сайту, тематики — тут</div>
+    ${STATE.projects.length ? STATE.projects.map((p) => `
+      <button class="proj-row" data-project="${p.id}">
+        ${logoSq(p.name, p.logo, 46)}
+        <span>
+          <span class="pr-name">${esc(p.name)}</span>
+          <span class="pr-meta">${p.end_date ? "до " + fmtUnixDate(p.end_date) : "без строку"}
+            ${p.kpi_news || p.kpi_articles ? ` · квота ${p.kpi_news || 0} новин + ${p.kpi_articles || 0} статей` : ""}
+            · тематик: ${p.themes.length}</span>
+        </span>
+        ${icon("chevron-right", "ic chev")}
+      </button>`).join("")
+      : `<div class="empty-hint">Не бачу проєктів — БД сайту недоступна.</div>`}`;
+}
+
+function renderProject() {
+  const p = STATE.projects.find((x) => x.id === STATE.currentProject);
+  if (!p) { nav("projects"); return; }
+  const quotaTotal = (p.kpi_news || 0) + (p.kpi_articles || 0);
+  const planned = p.themes.reduce((s, t) => s + (t.planned || 0), 0);
+  $("content").innerHTML = `
+    <button class="back" data-nav="projects">${icon("chevron-left")} Проєкти</button>
+    <div class="proj-head">
+      ${logoSq(p.name, p.logo, 56)}
+      <div>
+        <div class="pn">${esc(p.name)}</div>
+        <div class="pd">${p.partner ? esc(p.partner) + " · " : ""}${p.end_date ? "до " + fmtUnixDate(p.end_date) : "без строку"}</div>
+      </div>
+    </div>
+    ${quotaTotal ? `<div class="quota-pill">Квота з сайту: <b>${p.kpi_news || 0} новин + ${p.kpi_articles || 0} статей</b></div>` : ""}
+    <div class="f-label">Тематики</div>
+    ${p.themes.map((t) => `
+      <div class="theme-row">
+        <span class="tn">${esc(t.name)}</span>
+        <span class="tc">${t.planned || ""}</span>
+        <button class="tact" data-edit-theme="${t.id}" aria-label="Редагувати">${icon("edit")}</button>
+      </div>`).join("")}
+    <button class="add-theme" id="add-theme">${icon("plus")} Додати тематику</button>
+    ${quotaTotal && planned ? `<div class="left-hint">розкроєно ${planned} із ${quotaTotal}${planned < quotaTotal ? ` · <b>ще ${quotaTotal - planned} без тематики</b>` : ""}</div>` : ""}`;
+  $("add-theme").onclick = () => themeSheet(p, null);
+  $("content").querySelectorAll("[data-edit-theme]").forEach((b) =>
+    b.onclick = () => themeSheet(p, p.themes.find((t) => t.id === +b.dataset.editTheme)));
+}
+
+function themeSheet(project, theme) {
+  openSheet(`
+    <h2>${theme ? "Тематика" : "Нова тематика"}</h2>
+    <div class="field"><label>Назва</label>
+      <input id="t-name" maxlength="120" placeholder="напр. Репортажі з сесій" value="${theme ? esc(theme.name) : ""}"></div>
+    <div class="field"><label>Скільки матеріалів (необовʼязково)</label>
+      <input id="t-planned" type="number" min="0" max="999" inputmode="numeric" value="${theme && theme.planned ? theme.planned : ""}"></div>
+    <div class="sheet-actions">
+      ${theme ? `<button class="sbtn danger" id="t-delete">Видалити</button>` : ""}
+      <button class="sbtn" id="t-cancel">Скасувати</button>
+      <button class="sbtn primary" id="t-save">Зберегти</button>
+    </div>`);
+  $("t-cancel").onclick = closeSheet;
+  if (theme) $("t-delete").onclick = async () => {
+    try {
+      await api(`/api/themes/${theme.id}`, { method: "DELETE" });
+      closeSheet();
+      await reload();
+      nav("project", project.id);
+    } catch (e) { toast(e.message); }
+  };
+  $("t-save").onclick = async () => {
+    const name = $("t-name").value.trim();
+    if (!name) { toast("Потрібна назва"); return; }
+    const planned = $("t-planned").value ? +$("t-planned").value : null;
+    try {
+      if (theme) await api(`/api/themes/${theme.id}`, { method: "PATCH", body: JSON.stringify({ name, planned }) });
+      else await api("/api/themes", { method: "POST", body: JSON.stringify({ project_id: project.id, name, planned }) });
+      closeSheet();
+      haptic("success");
+      await reload();
+      nav("project", project.id);
+    } catch (e) { toast(e.message); }
+  };
+}
+
+/* ---------- KPI (заглушка) і Команда ---------- */
+
+function renderKpi() {
+  $("content").innerHTML = `
+    <div class="h-big">KPI</div>
+    <div class="h-sub">рекурентні норми на тиждень і місяць</div>
+    <div class="soft-card">
+      <div class="sc-t">Скоро</div>
+      <p style="color:var(--muted)">Налаштування зʼявляться після рішення,
+      як задаються норми: на відділ чи персонально. Правки по людині
+      (відпустка, відрядження) будуть у будь-якому разі.</p>
+    </div>`;
+}
+
+function renderTeam() {
+  $("content").innerHTML = `
+    <div class="h-big">Команда</div>
+    <div class="h-sub">фото — з профілів на сайті</div>
+    ${STATE.people.map((p) => `
+      <div class="team-row">
+        ${avatar(p.name, p.photo, 46)}
+        <div><div class="tn">${esc(p.name)}</div><div class="td">${esc(p.dept_title)}</div></div>
+      </div>`).join("")}`;
+}
+
+/* ---------- Журналістський режим (read-only, інтерфейс — наступний крок) ---------- */
+
+function renderJournalist() {
+  const open = STATE.tasks.filter((t) => t.status === "open");
+  $("content").innerHTML = `
+    <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
+    <div class="h-sub">твої завдання</div>
+    ${open.length ? `<div class="soft-card">${open.map((t) => `
+      <div class="task-row">
+        <span class="tr-main">
+          <span class="tr-who">${esc(taskSummary(t))}</span>
+          ${t.note ? `<span class="tr-what">${esc(t.note)}</span>` : ""}
+        </span>
+        <span class="status-dot open"></span>
+      </div>`).join("")}</div>`
+      : `<div class="empty-hint">Відкритих завдань немає.</div>`}
+    <div class="empty-hint" style="padding-top:16px">Це попередній перегляд —
+      повний твій інтерфейс уже в розробці.</div>`;
+}
+
+/* ---------- Шторка ---------- */
 
 function openSheet(html) {
   $("sheet").innerHTML = html;
   $("sheet-backdrop").classList.remove("hidden");
 }
-
 function closeSheet() {
   $("sheet-backdrop").classList.add("hidden");
-}
-
-function sheetCreateOrEdit(task) {
-  const isEdit = !!task;
-  const people = STATE.roster
-    .map((p) => `<option value="${esc(p.name)}"${task && task.assignee === p.name ? " selected" : ""}>
-        ${esc(p.name)} — ${esc(p.dept_title)}</option>`)
-    .join("");
-  openSheet(`
-    <h2>${isEdit ? "Редагувати завдання" : "🦊 Нове завдання"}</h2>
-    <div class="field"><label>Що зробити</label>
-      <input id="f-title" maxlength="200" placeholder="Заголовок завдання" value="${task ? esc(task.title) : ""}"></div>
-    <div class="field"><label>Кому</label>
-      <select id="f-assignee">${people}</select></div>
-    <div class="field"><label>Проєкт (необовʼязково)</label>
-      <input id="f-project" maxlength="80" placeholder="Бюджет-2026, Афіша…" value="${task ? esc(task.project) : ""}"></div>
-    <div class="field"><label>Дедлайн</label>
-      <input id="f-deadline" type="date" value="${task && task.deadline ? task.deadline : ""}"></div>
-    <div class="field"><label>Пріоритет</label>
-      <div class="seg" id="f-prio">
-        <button data-v="0">🌿 не горить</button>
-        <button data-v="1">📌 звичайний</button>
-        <button data-v="2">🔥 терміново</button>
-      </div></div>
-    <div class="field"><label>Деталі</label>
-      <textarea id="f-body" maxlength="2000" placeholder="Контекст, джерела, очікування…">${task ? esc(task.body) : ""}</textarea></div>
-    <div class="sheet-actions">
-      ${isEdit ? `<button class="btn danger" id="f-drop">Зняти</button>` : ""}
-      <button class="btn ghost" id="f-cancel">Скасувати</button>
-      <button class="btn primary" id="f-save">${isEdit ? "Зберегти" : "Поставити"}</button>
-    </div>`);
-
-  let prio = task ? task.priority : 1;
-  const seg = $("f-prio");
-  const paint = () => seg.querySelectorAll("button").forEach(
-    (b) => b.classList.toggle("on", +b.dataset.v === prio));
-  paint();
-  seg.addEventListener("click", (e) => {
-    const b = e.target.closest("button");
-    if (b) { prio = +b.dataset.v; paint(); }
-  });
-  $("f-cancel").onclick = closeSheet;
-  if (isEdit) {
-    $("f-drop").onclick = async () => {
-      await patchTask(task.id, { status: "dropped" });
-      closeSheet();
-      toast("Знято 🗑");
-    };
-  }
-  $("f-save").onclick = async () => {
-    const payload = {
-      title: $("f-title").value.trim(),
-      assignee: $("f-assignee").value,
-      project: $("f-project").value.trim(),
-      deadline: $("f-deadline").value || null,
-      priority: prio,
-      body: $("f-body").value.trim(),
-    };
-    if (!payload.title) { toast("Потрібен заголовок"); return; }
-    try {
-      if (isEdit) await patchTask(task.id, payload);
-      else {
-        await api("/api/tasks", { method: "POST", body: JSON.stringify(payload) });
-        await reload();
-        haptic("success");
-        toast(`Полетіло до ${firstName(payload.assignee)} 🦊`);
-      }
-      closeSheet();
-    } catch (e) { toast(e.message); }
-  };
-}
-
-function sheetSubmit(task) {
-  openSheet(`
-    <h2>✋ Здати на перевірку</h2>
-    <p style="color:var(--hint);font-size:13.5px;margin-bottom:12px">«${esc(task.title)}»</p>
-    <div class="field"><label>Лінк на матеріал (якщо є)</label>
-      <input id="f-url" type="url" placeholder="https://nikvesti.com/…" value="${esc(task.article_url)}"></div>
-    <div class="sheet-actions">
-      <button class="btn ghost" id="f-cancel">Скасувати</button>
-      <button class="btn primary" id="f-go">Здаю ✋</button>
-    </div>`);
-  $("f-cancel").onclick = closeSheet;
-  $("f-go").onclick = async () => {
-    try {
-      await patchTask(task.id, { status: "review", article_url: $("f-url").value.trim() });
-      closeSheet();
-      haptic("success");
-      confetti();
-      toast("Пішло на перевірку — тримаю кулаки 🦊");
-    } catch (e) { toast(e.message); }
-  };
-}
-
-/* ---------- Дії ---------- */
-
-async function patchTask(id, fields) {
-  await api(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify(fields) });
-  await reload();
-}
-
-async function handleAction(act, id) {
-  const task = STATE.tasks.find((t) => t.id === +id);
-  if (!task) return;
-  try {
-    if (act === "doing") { await patchTask(id, { status: "doing" }); haptic("success"); }
-    else if (act === "todo") { await patchTask(id, { status: "todo" }); }
-    else if (act === "submit") { sheetSubmit(task); }
-    else if (act === "done") {
-      await patchTask(id, { status: "done" });
-      haptic("success"); confetti();
-      toast(`Прийнято! ${firstName(task.assignee)} отримає вітання 🎉`);
-    }
-    else if (act === "return") { await patchTask(id, { status: "doing" }); toast("Повернуто в роботу ↩"); }
-    else if (act === "edit") { sheetCreateOrEdit(task); }
-  } catch (e) { toast(e.message); }
 }
 
 /* ---------- Завантаження ---------- */
 
 async function reload() {
-  const [me, tasks] = await Promise.all([api("/api/me"), api("/api/tasks")]);
-  STATE.me = me;
-  STATE.tasks = tasks.tasks;
-  if (me.manager && !STATE.roster.length) {
-    STATE.roster = (await api("/api/roster")).people;
-  }
-  render();
+  const data = await api("/api/bootstrap");
+  STATE.me = data.me;
+  STATE.tasks = data.tasks || [];
+  STATE.people = data.people || [];
+  STATE.projects = data.projects || [];
 }
 
 function fail(title, text) {
@@ -368,6 +485,12 @@ async function boot() {
     await reload();
     $("screen-loading").classList.add("hidden");
     $("screen-main").classList.remove("hidden");
+    if (STATE.me.manager) {
+      $("bottomnav").classList.remove("hidden");
+      nav("home");
+    } else {
+      renderJournalist();
+    }
   } catch (e) {
     fail("Не пустили", e.message);
   }
@@ -376,19 +499,23 @@ async function boot() {
 /* ---------- Події ---------- */
 
 $("content").addEventListener("click", (e) => {
-  const btn = e.target.closest("button[data-act]");
-  if (btn) handleAction(btn.dataset.act, btn.dataset.id);
+  const navBtn = e.target.closest("[data-nav]");
+  if (navBtn) { nav(navBtn.dataset.nav); return; }
+  const person = e.target.closest("[data-person]");
+  if (person) { nav("form", person.dataset.person); return; }
+  const proj = e.target.closest("[data-project]");
+  if (proj) { nav("project", +proj.dataset.project); return; }
+  const task = e.target.closest("[data-task]");
+  if (task && STATE.me.manager) {
+    const t = STATE.tasks.find((x) => x.id === +task.dataset.task);
+    if (t) taskSheet(t);
+  }
 });
 
-$("tabs").addEventListener("click", (e) => {
-  const tab = e.target.closest(".tab");
-  if (!tab) return;
-  STATE.tab = tab.dataset.tab;
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
-  render();
+$("bottomnav").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-view]");
+  if (btn) nav(btn.dataset.view);
 });
-
-$("fab").addEventListener("click", () => sheetCreateOrEdit(null));
 
 $("sheet-backdrop").addEventListener("click", (e) => {
   if (e.target === $("sheet-backdrop")) closeSheet();
