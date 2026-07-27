@@ -47,7 +47,7 @@ try:
 except ImportError:  # локальний dev без aiohttp — модуль просто "не налаштований"
     web = None
 
-from handlers import team_projects, team_roster, team_tasks
+from handlers import team_kpi, team_projects, team_roster, team_tasks
 from handlers.helpers import normalize_https_url
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -245,10 +245,17 @@ async def api_tasks_create(request):
             raise web.HTTPBadRequest(text="Тематика не з цього проєкту")
         theme_name = theme["name"]
 
+    deadline = payload.get("deadline") or None
+    if deadline:
+        try:
+            time.strptime(deadline, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            raise web.HTTPBadRequest(text="deadline: YYYY-MM-DD")
+
     task = await asyncio.to_thread(
         team_tasks.create_task,
         person, assignee, type_, project_id, project_name,
-        theme_id, theme_name, qty, payload.get("note"),
+        theme_id, theme_name, qty, payload.get("note"), deadline,
     )
     # Пінг після відповіді — створення таска не має висіти на Telegram API
     asyncio.get_running_loop().create_task(
@@ -313,6 +320,90 @@ async def api_themes_delete(request):
     return web.json_response({"ok": True})
 
 
+# ---------- KPI ----------
+
+async def api_kpi(request):
+    """Зведення KPI: менеджер — всі норми з людьми і прогресом; журналістка —
+    норми свого відділу зі своїм рядком (для «Мої KPI»)."""
+    person, info, _ = await _authenticate(request)
+    payload = await asyncio.to_thread(
+        team_kpi.kpi_payload, None if info["manager"] else person
+    )
+    return web.json_response(payload)
+
+
+async def api_kpi_norm_create(request):
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    dept = payload.get("dept")
+    if dept not in team_roster.DEPT_TITLES or dept == team_roster.DEPT_LEADERSHIP:
+        raise web.HTTPBadRequest(text="Невідомий відділ")
+    if payload.get("metric") not in team_kpi.KPI_METRICS:
+        raise web.HTTPBadRequest(text="metric: news або article")
+    if payload.get("period") not in team_kpi.KPI_PERIODS:
+        raise web.HTTPBadRequest(text="period: week або month")
+    try:
+        target = int(payload.get("target"))
+        assert 1 <= target <= 500
+    except (TypeError, ValueError, AssertionError):
+        raise web.HTTPBadRequest(text="target: число від 1 до 500")
+    norm = await asyncio.to_thread(
+        team_kpi.add_norm, person, dept, payload["metric"], payload["period"], target
+    )
+    return web.json_response({"norm": norm})
+
+
+async def api_kpi_norm_patch(request):
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    try:
+        target = int(payload.get("target"))
+        assert 1 <= target <= 500
+    except (TypeError, ValueError, AssertionError):
+        raise web.HTTPBadRequest(text="target: число від 1 до 500")
+    norm = await asyncio.to_thread(
+        team_kpi.update_norm, int(request.match_info["norm_id"]), target
+    )
+    if not norm:
+        raise web.HTTPNotFound(text="Норми немає")
+    return web.json_response({"norm": norm})
+
+
+async def api_kpi_norm_delete(request):
+    person, info, _ = await _require_manager(request)
+    deleted = await asyncio.to_thread(
+        team_kpi.delete_norm, int(request.match_info["norm_id"])
+    )
+    if not deleted:
+        raise web.HTTPNotFound(text="Норми немає")
+    return web.json_response({"ok": True})
+
+
+async def api_kpi_override(request):
+    """Правка людини на поточний період: target (0 = звільнена) + нотатка;
+    {clear: true} — прибрати правку (повернути дефолт відділу)."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    norm_id = payload.get("norm_id")
+    who = payload.get("person")
+    if not norm_id or who not in team_roster.ROSTER:
+        raise web.HTTPBadRequest(text="Потрібні norm_id і людина")
+    if payload.get("clear"):
+        await asyncio.to_thread(team_kpi.clear_override, int(norm_id), who)
+        return web.json_response({"ok": True})
+    try:
+        target = int(payload.get("target"))
+        assert 0 <= target <= 500
+    except (TypeError, ValueError, AssertionError):
+        raise web.HTTPBadRequest(text="target: число від 0 до 500 (0 — звільнена)")
+    ok = await asyncio.to_thread(
+        team_kpi.set_override, person, int(norm_id), who, target, payload.get("note")
+    )
+    if not ok:
+        raise web.HTTPNotFound(text="Норми немає")
+    return web.json_response({"ok": True})
+
+
 # ---------- Статика ----------
 
 async def index(request):
@@ -345,6 +436,11 @@ async def start_webapp(application):
         web.post("/api/themes", api_themes_create),
         web.patch("/api/themes/{theme_id:\\d+}", api_themes_patch),
         web.delete("/api/themes/{theme_id:\\d+}", api_themes_delete),
+        web.get("/api/kpi", api_kpi),
+        web.post("/api/kpi/norms", api_kpi_norm_create),
+        web.patch("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_patch),
+        web.delete("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_delete),
+        web.put("/api/kpi/override", api_kpi_override),
         web.static("/static", _STATIC_DIR),
     ])
     runner = web.AppRunner(app)

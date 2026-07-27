@@ -74,12 +74,15 @@ _SCHEMA_STATEMENTS = [
         theme_name   TEXT,
         qty          SMALLINT NOT NULL DEFAULT 1,
         note         TEXT,
+        deadline     DATE,
         status       TEXT NOT NULL DEFAULT 'open',
         created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
         done_at      TIMESTAMPTZ
     )
     """,
+    # Ідемпотентна міграція для таблиці, створеної до появи дедлайну (27.07)
+    "ALTER TABLE team_creative_tasks ADD COLUMN IF NOT EXISTS deadline DATE",
     "CREATE INDEX IF NOT EXISTS idx_team_ctasks_person ON team_creative_tasks (person, status)",
     "CREATE INDEX IF NOT EXISTS idx_team_ctasks_status ON team_creative_tasks (status)",
     """
@@ -177,6 +180,7 @@ def _row_to_task(r):
         "theme_name": r["theme_name"],
         "qty": r["qty"],
         "note": r["note"] or "",
+        "deadline": r["deadline"].isoformat() if r["deadline"] else None,
         "status": r["status"],
         "created_at": r["created_at"].astimezone(KYIV_TZ).isoformat(),
         "done_at": r["done_at"].astimezone(KYIV_TZ).isoformat() if r["done_at"] else None,
@@ -214,20 +218,20 @@ def _add_event(task_id, actor, event, detail=None):
 
 
 def create_task(creator, person, type_, project_id=None, project_name=None,
-                theme_id=None, theme_name=None, qty=1, note=None):
+                theme_id=None, theme_name=None, qty=1, note=None, deadline=None):
     ensure_team_schema()
     rows = bot_db.query(
         """
         INSERT INTO team_creative_tasks
-            (person, creator, project_id, project_name, type, theme_id, theme_name, qty, note)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (person, creator, project_id, project_name, type, theme_id, theme_name, qty, note, deadline)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
         """,
         (person, creator,
          int(project_id) if project_id else None, project_name or None,
          type_,
          int(theme_id) if theme_id else None, theme_name or None,
-         max(1, int(qty)), (note or "").strip() or None),
+         max(1, int(qty)), (note or "").strip() or None, deadline or None),
     )
     task = _row_to_task(rows[0])
     _add_event(task["id"], creator, "created", f"→ {person}")
@@ -299,6 +303,9 @@ def task_summary(task):
 
 async def ping_assigned(bot, task):
     text = f"🦊 {task['creator']} має для тебе завдання:\n{task_summary(task)}"
+    if task["deadline"]:
+        d = datetime.fromisoformat(task["deadline"])
+        text += f"\nДедлайн: {d.strftime('%d.%m')}"
     if task["note"]:
         text += f"\n\n{task['note']}"
     await _ping(bot, task["person"], text)

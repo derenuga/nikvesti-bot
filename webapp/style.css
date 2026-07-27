@@ -318,6 +318,53 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 .left-hint { font-size: 12.5px; color: var(--muted); margin-top: 14px; text-align: center; }
 .left-hint b { color: var(--ink); }
 
+/* ---------- KPI ---------- */
+.norm-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 14px 15px; margin-bottom: 9px;
+}
+.norm-row .nr-txt { flex: 1; min-width: 0; }
+.norm-row .nr-title { display: block; font-weight: 700; font-size: 15px; }
+.norm-row .nr-meta { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.norm-row .nr-done { font-size: 12.5px; font-weight: 700; color: var(--good); font-variant-numeric: tabular-nums; }
+.norm-row .chev { color: var(--muted); flex-shrink: 0; }
+
+.kpi-person {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 12px 14px; margin-bottom: 9px;
+}
+.kpi-person .kp-main { flex: 1; min-width: 0; }
+.kpi-person .kp-name { font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.kp-badge {
+  font-size: 10.5px; font-weight: 700; color: var(--blue);
+  background: var(--blue-soft); border-radius: 8px; padding: 1px 8px;
+}
+.kp-fact { font-size: 14px; font-weight: 800; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kp-fact.ok { color: var(--good); }
+.kp-excused { font-size: 12px; font-weight: 700; color: var(--muted); }
+.kp-nofact { font-size: 14px; color: var(--muted); }
+
+.dl { color: var(--muted); }
+.dl-over { color: var(--red); font-weight: 700; }
+
+.kbar {
+  display: block; height: 5px; border-radius: 3px; background: var(--line);
+  margin-top: 7px; overflow: hidden;
+}
+.kbar i { display: block; height: 100%; border-radius: 3px; background: var(--blue); }
+.kbar i.ok { background: var(--good); }
+.kbar.wide { flex-basis: 100%; margin-top: 4px; }
+
+.mykpi-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px;
+  padding: 10px 0; border-top: 1px solid var(--line);
+}
+.mykpi-row:first-of-type { border-top: 0; }
+.mykpi-row .mk-t { flex: 1; font-size: 13.5px; font-weight: 600; }
+.mykpi-row .mk-p { color: var(--muted); font-weight: 500; font-size: 12px; }
+
 /* ---------- команда ---------- */
 .team-row {
   display: flex; align-items: center; gap: 13px;
