@@ -38,7 +38,8 @@ MONTHS = [
 
 BOOT_JOURNALIST = {
     "me": {"name": "Юлія Бойченко", "first_name": "Юлія", "dept": "creative",
-           "dept_title": "Creative", "manager": False},
+           "dept_title": "Creative", "manager": False,
+           "photo": None, "photo_sm": None, "photo_orig": None},
     "site_db": True, "nora": True, "people": [], "projects": [],
     "tasks": [{"id": 1, "person": "Юлія Бойченко", "creator": "Катерина Середа",
                "project_id": None, "project_name": None, "partner_name": "IMS",
@@ -47,6 +48,18 @@ BOOT_JOURNALIST = {
                "deadline": "2026-07-31", "status": "open",
                "created_at": "2026-07-01T10:00:00+03:00", "done_at": None}],
 }
+
+# Норми журналістки: місячна (для кільця у шапці) + тижнева (у кільце не йде)
+MY_NORMS = [
+    {"id": 1, "dept": "creative", "metric": "news", "period": "month", "target": 60,
+     "own": True, "dept_title": "Creative", "period_label": "липень 2026",
+     "rows": [{"person": "Юлія Бойченко", "fact": 30, "target": 60, "base_target": 60,
+               "overridden": False, "note": None, "excused": False, "done": False}]},
+    {"id": 2, "dept": "creative", "metric": "news", "period": "week", "target": 15,
+     "own": True, "dept_title": "Creative", "period_label": "27–02.08",
+     "rows": [{"person": "Юлія Бойченко", "fact": 1, "target": 15, "base_target": 15,
+               "overridden": False, "note": None, "excused": False, "done": False}]},
+]
 
 BOOT_MANAGER = {
     "me": {"name": "Олег Деренюга", "first_name": "Олег", "dept": "admin",
@@ -82,7 +95,8 @@ window.fetch = async (url) => {
     return json({ person: "Юлія Бойченко", dept_title: "Creative",
       has_norms: true, site_db: true, months: window.MONTHS });
   }
-  if (url === "/api/kpi") return json({ norms: [], week_label: "", month_label: "", site_db: true });
+  if (url === "/api/kpi") return json({ norms: window.MY_NORMS || [],
+    week_label: "27–02.08", month_label: "липень 2026", site_db: true });
   return json({ ok: true });
 };
 """
@@ -107,7 +121,8 @@ async def _open(pw, boot):
     await page.route("https://app.local/", lambda r: asyncio.ensure_future(
         r.fulfill(path=str(WEBAPP / "index.html"), content_type="text/html")))
     await page.add_init_script(
-        f"window.BOOT = {json.dumps(boot)}; window.MONTHS = {json.dumps(MONTHS)};" + STUB)
+        f"window.BOOT = {json.dumps(boot)}; window.MONTHS = {json.dumps(MONTHS)};"
+        f"window.MY_NORMS = {json.dumps(MY_NORMS)};" + STUB)
     await page.goto("https://app.local/")
     await page.wait_for_selector("#screen-main:not(.hidden)", timeout=10000)
     return browser, page
@@ -224,6 +239,17 @@ async def main():
             calls = await page.evaluate("window.__personCalls")
             check("апка не підставляє чуже ім'я в запит",
                   calls and "person=" not in calls[0])
+
+            # кільце KPI у шапці: завжди зелене і за ПОТОЧНИЙ МІСЯЦЬ
+            ring = await page.inner_html("#me-ring")
+            check("у шапці є кільце з фото", 'class="avaring"' in ring)
+            check("смуга кільця зелена, а не за рівнем виконання",
+                  "var(--good)" in ring and "hsl(" not in ring)
+            cap = await page.inner_text("#me-ring")
+            check("під кільцем видно, що це за поточний місяць",
+                  "липень 2026" in cap)
+            check("і сам відсоток — за МІСЯЧНОЮ нормою (30/60), не за тижневою",
+                  "50%" in cap)
         finally:
             await browser.close()
 
