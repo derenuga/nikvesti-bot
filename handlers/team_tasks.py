@@ -1,30 +1,32 @@
 """
-Таски команди — дата-шар Mini App «Команда» (хвиля 1).
+Creative tasks і тематики проєктів — дата-шар Mini App «Команда» (концепція v2).
 
-Модель: таск персональний (один виконавець з ростера), належить «проєкту»
-(вільний ярлик: «Бюджет-2026», «Афіша», назва спецпроєкту) — рішення Олега
-24.07.2026: таски персональні по проєктах, KPI — по відділах (KPI — хвиля 2).
+Модель (Олег, 27.07.2026, docs/TEAM_APP_MODULE.md):
+- **Creative task** — завдання від редактора: людина + тип (news/article) +
+  проєкт з CMS АБО позапроєктне + тематика проєкту + кількість + нотатка.
+  Деталізація вільна: від «стаття на тему відбудова» до «стаття про Снігурівку».
+  Статуси прості: open → done / dropped (цикл doing/review з хвилі 1 прибрано —
+  переусложнення; виконання з часом звірятиметься з nodes автоматично).
+- **Тематика проєкту** — шар апки, якого немає в БД сайту: Катя розкроює квоту
+  з CMS («IWPR: 60 публікацій») на тематики з цифрами («20 репортажів з сесій,
+  15 інфозапитів…»). Тематики підказуються у формі creative task.
+- project_id/theme_id зберігаємо РАЗОМ зі снапшотом назв (project_name,
+  theme_name): проєкт живе в чужій БД (може зникнути з вибірки), тематику
+  можуть перейменувати/видалити — а історія тасків має лишатись читабельною.
 
-Життєвий цикл: todo → doing → review → done (менеджер приймає) / dropped.
-Журналістка рухає СВІЙ таск todo↔doing→review і чіпляє лінк на матеріал;
-менеджер (ростер manager=True) — усе: створення, редагування, done/dropped.
-Права перевіряє API-шар (handlers/webapp.py), тут — чиста робота з Норою.
+Люди — канонічним ім'ям ростера (team_roster), як у хвилі 1: numeric id
+більшості невідомі до першого входу в апку. Пінги — best-effort через
+team_roster.tg_id_for.
 
-Люди зберігаються КАНОНІЧНИМ ІМ'ЯМ ростера (не tg_id): numeric id більшості
-команди невідомі до першого входу в апку, а ім'я стабільне. Пінги резолвлять
-ім'я → id через team_roster.tg_id_for у момент відправки (best-effort: немає
-id або людина не стартувала бота — пінг тихо пропускається, апка лишається
-джерелом правди).
-
-Таблиці (схема — тут, НЕ в bot_db._SCHEMA_STATEMENTS: модуль опційний і
-самодостатній, як budget_*): team_users (кеш tg_id ↔ людина, пише
-team_roster), team_tasks, team_task_events (журнал змін — історія в картці
-таска і матеріал для геймифікації хвилі 2).
+Таблиці (Нора, ensure ліниво): team_users (кеш tg_id, пише team_roster),
+team_creative_tasks, team_project_themes, team_task_events (журнал).
+Таблиця team_tasks хвилі 1 в проді не створювалась (сервер ще не стартував) —
+код її більше не згадує.
 """
 
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
@@ -35,11 +37,9 @@ KYIV_TZ = ZoneInfo("Europe/Kiev")
 
 WEBAPP_URL = os.environ.get("WEBAPP_URL", "").rstrip("/")
 
-STATUSES = ("todo", "doing", "review", "done", "dropped")
-# Дозволені ходи виконавиці по ВЛАСНОМУ таску; решта переходів — менеджерські.
-EXECUTOR_MOVES = {("todo", "doing"), ("doing", "todo"), ("doing", "review"), ("review", "doing")}
-
-PRIORITY_TITLES = {0: "не горить", 1: "звичайний", 2: "терміново"}
+TASK_TYPES = ("news", "article")
+TASK_STATUSES = ("open", "done", "dropped")
+TYPE_TITLES = {"news": "новина", "article": "стаття"}
 
 _SCHEMA_STATEMENTS = [
     """
@@ -52,24 +52,35 @@ _SCHEMA_STATEMENTS = [
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS team_tasks (
-        id          BIGSERIAL PRIMARY KEY,
-        project     TEXT,
-        title       TEXT NOT NULL,
-        body        TEXT,
-        assignee    TEXT NOT NULL,
-        creator     TEXT NOT NULL,
-        priority    SMALLINT NOT NULL DEFAULT 1,
-        status      TEXT NOT NULL DEFAULT 'todo',
-        deadline    DATE,
-        article_url TEXT,
-        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-        done_at     TIMESTAMPTZ
+    CREATE TABLE IF NOT EXISTS team_project_themes (
+        id         BIGSERIAL PRIMARY KEY,
+        project_id BIGINT NOT NULL,
+        name       TEXT NOT NULL,
+        planned    INTEGER,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_team_tasks_assignee ON team_tasks (assignee, status)",
-    "CREATE INDEX IF NOT EXISTS idx_team_tasks_status ON team_tasks (status)",
+    "CREATE INDEX IF NOT EXISTS idx_team_themes_project ON team_project_themes (project_id)",
+    """
+    CREATE TABLE IF NOT EXISTS team_creative_tasks (
+        id           BIGSERIAL PRIMARY KEY,
+        person       TEXT NOT NULL,
+        creator      TEXT NOT NULL,
+        project_id   BIGINT,
+        project_name TEXT,
+        type         TEXT NOT NULL,
+        theme_id     BIGINT,
+        theme_name   TEXT,
+        qty          SMALLINT NOT NULL DEFAULT 1,
+        note         TEXT,
+        status       TEXT NOT NULL DEFAULT 'open',
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        done_at      TIMESTAMPTZ
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_team_ctasks_person ON team_creative_tasks (person, status)",
+    "CREATE INDEX IF NOT EXISTS idx_team_ctasks_status ON team_creative_tasks (status)",
     """
     CREATE TABLE IF NOT EXISTS team_task_events (
         id      BIGSERIAL PRIMARY KEY,
@@ -96,61 +107,102 @@ def ensure_team_schema():
     _schema_done = True
 
 
+# ---------- Тематики проєктів ----------
+
+def list_themes():
+    """Усі тематики всіх проєктів (їх десятки, не тисячі) — фронт групує сам."""
+    ensure_team_schema()
+    return [
+        {"id": r["id"], "project_id": r["project_id"], "name": r["name"], "planned": r["planned"]}
+        for r in bot_db.query(
+            "SELECT id, project_id, name, planned FROM team_project_themes ORDER BY project_id, id"
+        )
+    ]
+
+
+def add_theme(project_id, name, planned=None):
+    ensure_team_schema()
+    rows = bot_db.query(
+        "INSERT INTO team_project_themes (project_id, name, planned) "
+        "VALUES (%s, %s, %s) RETURNING id, project_id, name, planned",
+        (int(project_id), name.strip(), int(planned) if planned else None),
+    )
+    r = rows[0]
+    return {"id": r["id"], "project_id": r["project_id"], "name": r["name"], "planned": r["planned"]}
+
+
+def update_theme(theme_id, name=None, planned=..., ):
+    """planned=... (сентинел) — «не чіпати»; None — явно стерти цифру."""
+    ensure_team_schema()
+    sets, params = [], []
+    if name is not None:
+        sets.append("name = %s")
+        params.append(name.strip())
+    if planned is not ...:
+        sets.append("planned = %s")
+        params.append(int(planned) if planned else None)
+    if not sets:
+        return None
+    params.append(int(theme_id))
+    rows = bot_db.query(
+        f"UPDATE team_project_themes SET {', '.join(sets)} WHERE id = %s "
+        "RETURNING id, project_id, name, planned",
+        params,
+    )
+    if not rows:
+        return None
+    r = rows[0]
+    return {"id": r["id"], "project_id": r["project_id"], "name": r["name"], "planned": r["planned"]}
+
+
+def delete_theme(theme_id):
+    ensure_team_schema()
+    return bot_db.execute(
+        "DELETE FROM team_project_themes WHERE id = %s", (int(theme_id),)
+    )
+
+
+# ---------- Creative tasks ----------
+
 def _row_to_task(r):
     return {
         "id": r["id"],
-        "project": r["project"] or "",
-        "title": r["title"],
-        "body": r["body"] or "",
-        "assignee": r["assignee"],
+        "person": r["person"],
         "creator": r["creator"],
-        "priority": r["priority"],
+        "project_id": r["project_id"],
+        "project_name": r["project_name"],
+        "type": r["type"],
+        "theme_id": r["theme_id"],
+        "theme_name": r["theme_name"],
+        "qty": r["qty"],
+        "note": r["note"] or "",
         "status": r["status"],
-        "deadline": r["deadline"].isoformat() if r["deadline"] else None,
-        "article_url": r["article_url"] or "",
         "created_at": r["created_at"].astimezone(KYIV_TZ).isoformat(),
-        "updated_at": r["updated_at"].astimezone(KYIV_TZ).isoformat(),
         "done_at": r["done_at"].astimezone(KYIV_TZ).isoformat() if r["done_at"] else None,
     }
 
 
-def list_tasks(assignee=None, done_days=30):
-    """Активні таски (+ закриті/зняті за останні done_days — для стрічки
-    перемог і недавньої історії). assignee=None — всі (менеджерський вид)."""
+def list_tasks(person=None, done_days=30, limit=200):
+    """Відкриті таски + закриті/зняті за останні done_days.
+    person=None — усі (редакторський вид)."""
     ensure_team_schema()
     sql = (
-        "SELECT * FROM team_tasks WHERE "
-        "(status NOT IN ('done','dropped') OR updated_at > now() - %s * INTERVAL '1 day')"
+        "SELECT * FROM team_creative_tasks WHERE "
+        "(status = 'open' OR updated_at > now() - %s * INTERVAL '1 day')"
     )
     params = [done_days]
-    if assignee:
-        sql += " AND assignee = %s"
-        params.append(assignee)
-    sql += " ORDER BY (status = 'review') DESC, priority DESC, deadline ASC NULLS LAST, id DESC"
+    if person:
+        sql += " AND person = %s"
+        params.append(person)
+    sql += " ORDER BY (status = 'open') DESC, id DESC LIMIT %s"
+    params.append(limit)
     return [_row_to_task(r) for r in bot_db.query(sql, params)]
 
 
 def get_task(task_id):
     ensure_team_schema()
-    rows = bot_db.query("SELECT * FROM team_tasks WHERE id = %s", (int(task_id),))
+    rows = bot_db.query("SELECT * FROM team_creative_tasks WHERE id = %s", (int(task_id),))
     return _row_to_task(rows[0]) if rows else None
-
-
-def get_task_events(task_id):
-    ensure_team_schema()
-    return [
-        {
-            "actor": r["actor"],
-            "event": r["event"],
-            "detail": r["detail"],
-            "at": r["at"].astimezone(KYIV_TZ).isoformat(),
-        }
-        for r in bot_db.query(
-            "SELECT actor, event, detail, at FROM team_task_events "
-            "WHERE task_id = %s ORDER BY at",
-            (int(task_id),),
-        )
-    ]
 
 
 def _add_event(task_id, actor, event, detail=None):
@@ -160,93 +212,58 @@ def _add_event(task_id, actor, event, detail=None):
     )
 
 
-def create_task(creator, assignee, title, project=None, body=None, deadline=None, priority=1):
-    """Створює таск, повертає його dict. deadline — 'YYYY-MM-DD' або None."""
+def create_task(creator, person, type_, project_id=None, project_name=None,
+                theme_id=None, theme_name=None, qty=1, note=None):
     ensure_team_schema()
     rows = bot_db.query(
         """
-        INSERT INTO team_tasks (project, title, body, assignee, creator, priority, deadline)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO team_creative_tasks
+            (person, creator, project_id, project_name, type, theme_id, theme_name, qty, note)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
         """,
-        (project or None, title, body or None, assignee, creator,
-         int(priority), deadline or None),
+        (person, creator,
+         int(project_id) if project_id else None, project_name or None,
+         type_,
+         int(theme_id) if theme_id else None, theme_name or None,
+         max(1, int(qty)), (note or "").strip() or None),
     )
     task = _row_to_task(rows[0])
-    _add_event(task["id"], creator, "created", f"→ {assignee}")
+    _add_event(task["id"], creator, "created", f"→ {person}")
     return task
 
 
-def update_task(task_id, actor, fields):
-    """Оновлює поля таска (без перевірки прав — це робить API-шар).
-    fields — dict з підмножини: title, body, project, assignee, deadline,
-    priority, status, article_url. Повертає оновлений таск або None."""
+def set_status(task_id, actor, status):
+    """open → done/dropped (і назад open, якщо закрили помилково)."""
     ensure_team_schema()
     current = get_task(task_id)
     if not current:
         return None
-    allowed = ("title", "body", "project", "assignee", "deadline", "priority", "status", "article_url")
-    sets, params = [], []
-    for key in allowed:
-        if key not in fields:
-            continue
-        value = fields[key]
-        if key == "priority":
-            value = int(value)
-        if key in ("body", "project", "deadline", "article_url") and not value:
-            value = None
-        sets.append(f"{key} = %s")
-        params.append(value)
-    if not sets:
-        return current
-    sets.append("updated_at = now()")
-    new_status = fields.get("status")
-    if new_status == "done" and current["status"] != "done":
-        sets.append("done_at = now()")
-    params.append(int(task_id))
-    bot_db.execute(f"UPDATE team_tasks SET {', '.join(sets)} WHERE id = %s", params)
-    if new_status and new_status != current["status"]:
-        _add_event(task_id, actor, "status", f"{current['status']} → {new_status}")
-    edited = [k for k in fields if k != "status" and fields.get(k) != current.get(k)]
-    if edited:
-        _add_event(task_id, actor, "edited", ", ".join(edited))
-    return get_task(task_id)
-
-
-def stats_for(person):
-    """Лічильники для шапки екрана журналістки: активні / на перевірці /
-    закриті цього тижня (тиждень від понеділка, Київ) — паливо геймифікації."""
-    ensure_team_schema()
-    now = datetime.now(KYIV_TZ)
-    week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    done_at_sql = "now()" if status == "done" else "NULL"
     rows = bot_db.query(
-        """
-        SELECT
-            count(*) FILTER (WHERE status IN ('todo','doing')) AS active,
-            count(*) FILTER (WHERE status = 'review') AS review,
-            count(*) FILTER (WHERE status = 'done' AND done_at >= %s) AS done_week
-        FROM team_tasks WHERE assignee = %s
-        """,
-        (week_start, person),
+        f"UPDATE team_creative_tasks SET status = %s, updated_at = now(), "
+        f"done_at = {done_at_sql} WHERE id = %s RETURNING *",
+        (status, int(task_id)),
     )
-    r = rows[0]
-    return {"active": r["active"], "review": r["review"], "done_week": r["done_week"]}
+    task = _row_to_task(rows[0])
+    if status != current["status"]:
+        _add_event(task_id, actor, "status", f"{current['status']} → {status}")
+    return task
 
 
 # ---------- Пінги від Лиса ----------
 
 def _open_app_markup():
-    """Кнопка «Відкрити» — web_app працює в приваті, куди й шлються пінги."""
     if not WEBAPP_URL:
         return None
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🦊 Відкрити завдання", web_app=WebAppInfo(url=WEBAPP_URL))]]
+        [[InlineKeyboardButton("Відкрити завдання", web_app=WebAppInfo(url=WEBAPP_URL))]]
     )
 
 
 async def _ping(bot, person, text):
-    """Best-effort приват від Лиса: немає id у кеші або людина не стартувала
-    бота — тихо пропускаємо (апка — джерело правди, пінг лише зручність)."""
+    """Best-effort приват: немає tg_id (людина ще не відкривала апку) або
+    людина не стартувала бота — тихо пропускаємо, апка лишається джерелом правди."""
     tg_id = await asyncio.to_thread(team_roster.tg_id_for, person)
     if not tg_id:
         print(f"team_tasks: пінг для «{person}» пропущено — tg_id ще невідомий")
@@ -262,40 +279,25 @@ async def _ping(bot, person, text):
         return False
 
 
-def _deadline_phrase(task):
-    if not task["deadline"]:
-        return ""
-    d = datetime.fromisoformat(task["deadline"]).strftime("%d.%m")
-    return f"\nДедлайн: {d}"
+def task_summary(task):
+    """Людський рядок таска: «3 новини · Мінна безпека (Критичні потреби)»."""
+    qty = task["qty"]
+    type_word = TYPE_TITLES[task["type"]]
+    if qty > 1:
+        # 2-4 новини/статті, 5+ новин/статей — досить грубої форми
+        type_word = ("новини" if qty < 5 else "новин") if task["type"] == "news" \
+            else ("статті" if qty < 5 else "статей")
+    parts = [f"{qty} {type_word}" if qty > 1 else type_word]
+    if task["project_name"]:
+        parts.append(task["project_name"])
+    line = " · ".join(parts)
+    if task["theme_name"]:
+        line += f" ({task['theme_name']})"
+    return line
 
 
 async def ping_assigned(bot, task):
-    urgency = " 🔥 Терміново!" if task["priority"] == 2 else ""
-    project = f" (проєкт «{task['project']}»)" if task["project"] else ""
-    await _ping(
-        bot, task["assignee"],
-        f"🦊 {task['creator']} має для тебе завдання{project}:\n"
-        f"«{task['title']}»{urgency}{_deadline_phrase(task)}",
-    )
-
-
-async def ping_review(bot, task):
-    await _ping(
-        bot, task["creator"],
-        f"🦊 {task['assignee']} здає роботу на перевірку:\n«{task['title']}»"
-        + (f"\n{task['article_url']}" if task["article_url"] else ""),
-    )
-
-
-async def ping_done(bot, task):
-    await _ping(
-        bot, task["assignee"],
-        f"🎉 «{task['title']}» — прийнято! Микита пишається. 🦊",
-    )
-
-
-async def ping_returned(bot, task):
-    await _ping(
-        bot, task["assignee"],
-        f"🦊 «{task['title']}» повернуто на доопрацювання — зазирни в картку.",
-    )
+    text = f"🦊 {task['creator']} має для тебе завдання:\n{task_summary(task)}"
+    if task["note"]:
+        text += f"\n\n{task['note']}"
+    await _ping(bot, task["person"], text)

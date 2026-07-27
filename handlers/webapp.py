@@ -1,5 +1,5 @@
 """
-Веб-шар Mini App «Команда»: aiohttp-сервер поруч із polling-ботом (хвиля 1).
+Веб-шар Mini App «Команда»: aiohttp-сервер поруч із polling-ботом.
 
 Один процес — два входи: python-telegram-bot крутить polling, aiohttp слухає
 HTTP на тому ж Railway-сервісі. Стартує з post_init (event loop уже живий) і
@@ -20,6 +20,16 @@ HMAC-ом рядок з user id/username. Перевіряємо підпис с
 через team_roster (чужинець = 403, навіть із валідним підписом). Це САМОСТІЙНИЙ
 захист: закритість чату, звідки відкрили апку, ролі не грає.
 
+API прототипу (концепція v2 — редакторський інтерфейс):
+  GET  /api/bootstrap        — усе для старту апки одним запитом: я, люди з фото
+                               (БД сайту), проєкти з лого і квотами (БД сайту),
+                               тематики (Нора), останні creative tasks
+  POST /api/tasks            — створити creative task (менеджер) + пінг
+  PATCH /api/tasks/{id}      — статус open/done/dropped (менеджер)
+  POST/PATCH/DELETE /api/themes… — тематики проєкту (менеджер)
+Обидві БД опційні: без БД сайту люди без фото і проєкти порожні, без Нори
+таски/тематики порожні — апка деградує, а не падає (site_db/nora у відповіді).
+
 GET /health віддає 200 — придатний і як VIBER_WEBHOOK_URL (Viber вимагає
 живий endpoint перед постингом у канал).
 """
@@ -37,7 +47,7 @@ try:
 except ImportError:  # локальний dev без aiohttp — модуль просто "не налаштований"
     web = None
 
-from handlers import team_roster, team_tasks
+from handlers import team_projects, team_roster, team_tasks
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 PORT = os.environ.get("PORT") or os.environ.get("WEBAPP_PORT")
@@ -112,68 +122,133 @@ async def _authenticate(request):
     return person, team_roster.person_info(person), tg_user
 
 
+async def _require_manager(request):
+    person, info, tg_user = await _authenticate(request)
+    if not info["manager"]:
+        raise web.HTTPForbidden(text="Це редакторська дія")
+    return person, info, tg_user
+
+
+async def _json(request):
+    try:
+        return await request.json()
+    except Exception:
+        raise web.HTTPBadRequest(text="Очікую JSON")
+
+
 # ---------- API ----------
 
-async def api_me(request):
-    person, info, tg_user = await _authenticate(request)
-    stats = await asyncio.to_thread(team_tasks.stats_for, person)
-    return web.json_response({
+def _me_payload(person, info, tg_user):
+    return {
         "name": person,
         "first_name": tg_user.get("first_name") or person.split()[0],
         "dept": info["dept"],
         "dept_title": team_roster.DEPT_TITLES.get(info["dept"], info["dept"]),
         "manager": info["manager"],
-        "stats": stats,
-    })
+    }
 
 
-async def api_roster(request):
-    person, info, _ = await _authenticate(request)
-    people = [
+def _bootstrap_blocking(person, is_manager):
+    """Уся стартова вибірка одним потоком: БД сайту (люди/проєкти) + Нора
+    (тематики/таски). Кожне джерело деградує окремо."""
+    out = {"site_db": False, "nora": False}
+
+    try:
+        out["tasks"] = team_tasks.list_tasks(None if is_manager else person)
+        out["nora"] = True
+    except Exception as e:
+        print(f"webapp: Нора недоступна — {e}")
+        out["tasks"] = []
+
+    if not is_manager:
+        return out
+
+    names = [n for n, p in team_roster.ROSTER.items() if not p["manager"]]
+    photos = {}
+    projects = []
+    try:
+        photos = team_projects.avatar_map(names)
+        projects = team_projects.list_projects()
+        out["site_db"] = team_projects.is_configured()
+    except Exception as e:
+        print(f"webapp: БД сайту недоступна — {e}")
+        photos = {n: None for n in names}
+
+    themes = []
+    if out["nora"]:
+        try:
+            themes = team_tasks.list_themes()
+        except Exception as e:
+            print(f"webapp: тематики не прочитались — {e}")
+
+    theme_by_project = {}
+    for t in themes:
+        theme_by_project.setdefault(t["project_id"], []).append(
+            {"id": t["id"], "name": t["name"], "planned": t["planned"]}
+        )
+    for p in projects:
+        p["themes"] = theme_by_project.get(p["id"], [])
+
+    out["people"] = [
         {
-            "name": name,
-            "dept": p["dept"],
-            "dept_title": team_roster.DEPT_TITLES.get(p["dept"], p["dept"]),
-            "manager": p["manager"],
+            "name": n,
+            "dept": team_roster.ROSTER[n]["dept"],
+            "dept_title": team_roster.DEPT_TITLES.get(team_roster.ROSTER[n]["dept"], ""),
+            "photo": photos.get(n),
         }
-        for name, p in team_roster.ROSTER.items()
+        for n in names
     ]
-    return web.json_response({"people": people})
+    out["projects"] = projects
+    return out
 
 
-async def api_tasks_list(request):
-    person, info, _ = await _authenticate(request)
-    assignee = None if info["manager"] else person
-    tasks = await asyncio.to_thread(team_tasks.list_tasks, assignee)
-    return web.json_response({"tasks": tasks})
+async def api_bootstrap(request):
+    person, info, tg_user = await _authenticate(request)
+    data = await asyncio.to_thread(_bootstrap_blocking, person, info["manager"])
+    data["me"] = _me_payload(person, info, tg_user)
+    return web.json_response(data)
 
 
 async def api_tasks_create(request):
-    person, info, _ = await _authenticate(request)
-    if not info["manager"]:
-        raise web.HTTPForbidden(text="Таски ставлять Олег і головред")
-    try:
-        payload = await request.json()
-    except Exception:
-        raise web.HTTPBadRequest(text="Очікую JSON")
-    title = (payload.get("title") or "").strip()
-    assignee = payload.get("assignee")
-    if not title:
-        raise web.HTTPBadRequest(text="Порожній заголовок")
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+
+    assignee = payload.get("person")
     if assignee not in team_roster.ROSTER:
-        raise web.HTTPBadRequest(text="Невідома виконавиця")
-    priority = payload.get("priority", 1)
-    if priority not in (0, 1, 2):
-        raise web.HTTPBadRequest(text="priority: 0, 1 або 2")
+        raise web.HTTPBadRequest(text="Невідома людина")
+    type_ = payload.get("type")
+    if type_ not in team_tasks.TASK_TYPES:
+        raise web.HTTPBadRequest(text="type: news або article")
+    qty = payload.get("qty", 1)
+    try:
+        qty = max(1, min(99, int(qty)))
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="qty: число")
+
+    project_id = payload.get("project_id") or None
+    project_name = None
+    if project_id:
+        projects = await asyncio.to_thread(team_projects.list_projects, False)
+        match = next((p for p in projects if p["id"] == int(project_id)), None)
+        if not match:
+            raise web.HTTPBadRequest(text="Невідомий проєкт")
+        project_name = match["name"]
+
+    theme_id = payload.get("theme_id") or None
+    theme_name = None
+    if theme_id:
+        themes = await asyncio.to_thread(team_tasks.list_themes)
+        theme = next((t for t in themes if t["id"] == int(theme_id)), None)
+        if not theme or (project_id and theme["project_id"] != int(project_id)):
+            raise web.HTTPBadRequest(text="Тематика не з цього проєкту")
+        theme_name = theme["name"]
+
     task = await asyncio.to_thread(
         team_tasks.create_task,
-        person, assignee, title,
-        (payload.get("project") or "").strip(),
-        (payload.get("body") or "").strip(),
-        payload.get("deadline") or None,
-        priority,
+        person, assignee, type_, project_id, project_name,
+        theme_id, theme_name, qty, payload.get("note"),
     )
-    # Пінг — після відповіді не чекаємо: створення таска не має висіти на Telegram API
+    # Пінг після відповіді — створення таска не має висіти на Telegram API
     asyncio.get_running_loop().create_task(
         team_tasks.ping_assigned(request.app["bot"], task)
     )
@@ -181,56 +256,59 @@ async def api_tasks_create(request):
 
 
 async def api_tasks_patch(request):
-    person, info, _ = await _authenticate(request)
-    task_id = int(request.match_info["task_id"])
-    current = await asyncio.to_thread(team_tasks.get_task, task_id)
-    if not current:
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    status = payload.get("status")
+    if status not in team_tasks.TASK_STATUSES:
+        raise web.HTTPBadRequest(text="status: open, done або dropped")
+    task = await asyncio.to_thread(
+        team_tasks.set_status, int(request.match_info["task_id"]), person, status
+    )
+    if not task:
         raise web.HTTPNotFound(text="Таска немає")
-    try:
-        payload = await request.json()
-    except Exception:
-        raise web.HTTPBadRequest(text="Очікую JSON")
-
-    if not info["manager"]:
-        # Виконавиця: тільки власний таск, тільки статусні ходи + лінк на матеріал
-        if current["assignee"] != person:
-            raise web.HTTPForbidden(text="Це не твій таск")
-        extra = set(payload) - {"status", "article_url"}
-        if extra:
-            raise web.HTTPForbidden(text="Можна змінювати лише статус і лінк на матеріал")
-        new_status = payload.get("status")
-        if new_status and (current["status"], new_status) not in team_tasks.EXECUTOR_MOVES:
-            raise web.HTTPForbidden(text=f"Хід {current['status']} → {new_status} — за менеджером")
-    else:
-        new_status = payload.get("status")
-        if new_status and new_status not in team_tasks.STATUSES:
-            raise web.HTTPBadRequest(text="Невідомий статус")
-
-    task = await asyncio.to_thread(team_tasks.update_task, task_id, person, payload)
-
-    old, new = current["status"], task["status"]
-    bot = request.app["bot"]
-    loop = asyncio.get_running_loop()
-    if old != new:
-        if new == "review":
-            loop.create_task(team_tasks.ping_review(bot, task))
-        elif new == "done":
-            loop.create_task(team_tasks.ping_done(bot, task))
-        elif old == "review" and new == "doing" and person != task["assignee"]:
-            loop.create_task(team_tasks.ping_returned(bot, task))
     return web.json_response({"task": task})
 
 
-async def api_task_events(request):
-    person, info, _ = await _authenticate(request)
-    task_id = int(request.match_info["task_id"])
-    current = await asyncio.to_thread(team_tasks.get_task, task_id)
-    if not current:
-        raise web.HTTPNotFound(text="Таска немає")
-    if not info["manager"] and current["assignee"] != person:
-        raise web.HTTPForbidden(text="Це не твій таск")
-    events = await asyncio.to_thread(team_tasks.get_task_events, task_id)
-    return web.json_response({"events": events})
+async def api_themes_create(request):
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    name = (payload.get("name") or "").strip()
+    project_id = payload.get("project_id")
+    if not name or not project_id:
+        raise web.HTTPBadRequest(text="Потрібні project_id і назва")
+    theme = await asyncio.to_thread(
+        team_tasks.add_theme, int(project_id), name, payload.get("planned")
+    )
+    return web.json_response({"theme": theme})
+
+
+async def api_themes_patch(request):
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    kwargs = {}
+    if "name" in payload:
+        name = (payload.get("name") or "").strip()
+        if not name:
+            raise web.HTTPBadRequest(text="Порожня назва")
+        kwargs["name"] = name
+    if "planned" in payload:
+        kwargs["planned"] = payload.get("planned")
+    theme = await asyncio.to_thread(
+        team_tasks.update_theme, int(request.match_info["theme_id"]), **kwargs
+    )
+    if not theme:
+        raise web.HTTPNotFound(text="Тематики немає")
+    return web.json_response({"theme": theme})
+
+
+async def api_themes_delete(request):
+    person, info, _ = await _require_manager(request)
+    deleted = await asyncio.to_thread(
+        team_tasks.delete_theme, int(request.match_info["theme_id"])
+    )
+    if not deleted:
+        raise web.HTTPNotFound(text="Тематики немає")
+    return web.json_response({"ok": True})
 
 
 # ---------- Статика ----------
@@ -259,12 +337,12 @@ async def start_webapp(application):
     app.add_routes([
         web.get("/", index),
         web.get("/health", health),
-        web.get("/api/me", api_me),
-        web.get("/api/roster", api_roster),
-        web.get("/api/tasks", api_tasks_list),
+        web.get("/api/bootstrap", api_bootstrap),
         web.post("/api/tasks", api_tasks_create),
         web.patch("/api/tasks/{task_id:\\d+}", api_tasks_patch),
-        web.get("/api/tasks/{task_id:\\d+}/events", api_task_events),
+        web.post("/api/themes", api_themes_create),
+        web.patch("/api/themes/{theme_id:\\d+}", api_themes_patch),
+        web.delete("/api/themes/{theme_id:\\d+}", api_themes_delete),
         web.static("/static", _STATIC_DIR),
     ])
     runner = web.AppRunner(app)
