@@ -556,3 +556,20 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
   height: 150px; margin-top: 20px; overflow: hidden;
 }
 .sk-bars .sk { flex: 1; border-radius: 8px 8px 2px 2px; }
+
+/* ---------- пошук у списках ---------- */
+.search-box {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--card); border: 1.5px solid var(--line);
+  border-radius: 15px; padding: 0 14px; margin-bottom: 14px;
+  box-shadow: var(--shadow);
+}
+.search-box .ic { color: var(--muted); flex-shrink: 0; width: 19px; height: 19px; }
+.search-box input {
+  border: 0; background: none; box-shadow: none;
+  padding: 13px 0; border-radius: 0;
+}
+.search-box input:focus { outline: none; }
+.search-box:focus-within { border-color: var(--blue); }
+/* Хрестик очищення в Safari/Chrome — щоб не тулився до краю */
+.search-box input::-webkit-search-cancel-button { margin-left: 6px; }
