@@ -1153,30 +1153,11 @@ def _collect_youtube(year, month, with_followers):
     return out
 
 
-_TG_SUBS_RE = re.compile(r"([\d\s ]+)\s*(?:subscribers|підписник)")
-
-
 def _tg_subscribers():
-    """Підписники каналу з веб-прев'ю t.me/{channel} («41 012 subscribers»);
-    фолбек — округлений лічильник зі стрічки /s («41K»)."""
-    try:
-        html = tg_stats._fetch_html(f"/{tg_stats.CHANNEL}")
-        soup = BeautifulSoup(html, "html.parser")
-        extra = soup.find("div", class_="tgme_page_extra")
-        if extra:
-            m = _TG_SUBS_RE.search(extra.get_text(" ", strip=True))
-            if m:
-                return int(re.sub(r"\D", "", m.group(1)))
-    except Exception as e:
-        print(f"social_sheet: прев'ю t.me/{tg_stats.CHANNEL} — {e}")
-    html = tg_stats._fetch_html(f"/s/{tg_stats.CHANNEL}")
-    soup = BeautifulSoup(html, "html.parser")
-    for counter in soup.find_all("div", class_="tgme_channel_info_counter"):
-        type_span = counter.find("span", class_="counter_type")
-        value_span = counter.find("span", class_="counter_value")
-        if type_span and value_span and "subscriber" in type_span.get_text().lower():
-            return tg_stats._parse_views_text(value_span.get_text(strip=True))
-    return None
+    """Підписники каналу. Сам парсер — у telegram_stats.channel_subscribers:
+    тим самим числом користується й аналітичний дашборд Mini App, і дві копії
+    розійшлись би при першій зміні розмітки t.me."""
+    return tg_stats.channel_subscribers()
 
 
 def _collect_telegram(year, month, with_followers):

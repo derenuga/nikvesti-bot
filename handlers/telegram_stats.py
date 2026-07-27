@@ -186,6 +186,35 @@ def _article_ids_in_hrefs(hrefs):
     return ids
 
 
+_SUBS_RE = re.compile(r"([\d\s\u00a0\u202f]+)\s*(?:subscribers|підписник)")
+
+
+def channel_subscribers():
+    """Підписники каналу: точне число з веб-прев'ю t.me/{channel}
+    («41 012 subscribers»), фолбек — округлений лічильник зі стрічки /s
+    («41K»). None, якщо не розпізнали.
+
+    Живе тут, а не в social_sheet: тим самим числом користуються і місячний
+    знімок аналітики, і аналітичний дашборд Mini App — дві копії парсера
+    розійшлись би при першій же зміні розмітки t.me."""
+    try:
+        soup = BeautifulSoup(_fetch_html(f"/{CHANNEL}"), "html.parser")
+        extra = soup.find("div", class_="tgme_page_extra")
+        if extra:
+            m = _SUBS_RE.search(extra.get_text(" ", strip=True))
+            if m:
+                return int(re.sub(r"\D", "", m.group(1)))
+    except Exception as e:
+        print(f"tg_stats: прев'ю t.me/{CHANNEL} — {e}")
+    soup = BeautifulSoup(_fetch_html(f"/s/{CHANNEL}"), "html.parser")
+    for counter in soup.find_all("div", class_="tgme_channel_info_counter"):
+        type_span = counter.find("span", class_="counter_type")
+        value_span = counter.find("span", class_="counter_value")
+        if type_span and value_span and "subscriber" in type_span.get_text().lower():
+            return _parse_views_text(value_span.get_text(strip=True))
+    return None
+
+
 def fetch_post_views(message_id):
     """Перегляди конкретного поста через embed-сторінку. None якщо не знайшли."""
     html = _fetch_html(f"/{CHANNEL}/{message_id}", params={"embed": "1"})
