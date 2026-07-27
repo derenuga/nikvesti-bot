@@ -71,7 +71,17 @@ def partner_logo_orig_url(logo):
     return f"{SITE_BASE}/images/partner_logo/{logo}" if logo else None
 
 
-def avatar_url(avatar, size="255x255"):
+# Ресайзер віддає НЕ будь-який розмір, а лише заведені (перевірено на проді
+# 27.07: для users_ava працюють 96x96 і 255x255, а 120x120 і 144x144 віддають
+# порожню відповідь із 200). Тому апці даємо обидва робочі: 96 для кружечків
+# 42–48 px — 4.4 КБ проти 23 КБ, вп'ятеро легше — і 255 для великих і для
+# екранів з високою щільністю. Лого партнерів лишаємо на 255: реального файла
+# для перевірки інших розмірів не було, навмання не міняємо.
+AVATAR_SIZE = "255x255"
+AVATAR_SIZE_SM = "96x96"
+
+
+def avatar_url(avatar, size=AVATAR_SIZE):
     return _webp_url(avatar, "img/users_ava", size)
 
 
@@ -153,5 +163,9 @@ def avatar_map(names):
     for name in names:
         file = hit.get(_norm_name(name))
         if file:
-            result[name] = {"photo": avatar_url(file), "photo_orig": avatar_orig_url(file)}
+            result[name] = {
+                "photo": avatar_url(file),
+                "photo_sm": avatar_url(file, AVATAR_SIZE_SM),
+                "photo_orig": avatar_orig_url(file),
+            }
     return result
