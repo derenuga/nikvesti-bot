@@ -165,6 +165,7 @@ def _bootstrap_blocking(person, is_manager):
         return out
 
     names = [n for n, p in team_roster.ROSTER.items() if not p["manager"]]
+    depts = team_roster.dept_overrides() if out["nora"] else {}
     photos = {}
     projects = []
     try:
@@ -193,8 +194,8 @@ def _bootstrap_blocking(person, is_manager):
     out["people"] = [
         {
             "name": n,
-            "dept": team_roster.ROSTER[n]["dept"],
-            "dept_title": team_roster.DEPT_TITLES.get(team_roster.ROSTER[n]["dept"], ""),
+            "dept": (dept := team_roster.effective_dept(n, depts)),
+            "dept_title": team_roster.DEPT_TITLES.get(dept, ""),
             "photo": (photos.get(n) or {}).get("photo"),
             "photo_orig": (photos.get(n) or {}).get("photo_orig"),
         }
@@ -320,6 +321,22 @@ async def api_themes_delete(request):
     return web.json_response({"ok": True})
 
 
+# ---------- Відділ людини (Катя переносить в апці) ----------
+
+async def api_people_dept(request):
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    who = payload.get("person")
+    dept = payload.get("dept")
+    target_info = team_roster.ROSTER.get(who)
+    if not target_info or target_info["manager"]:
+        raise web.HTTPBadRequest(text="Невідома людина")
+    if dept not in (team_roster.DEPT_NEWSROOM, team_roster.DEPT_CREATIVE):
+        raise web.HTTPBadRequest(text="dept: newsroom або creative")
+    await asyncio.to_thread(team_roster.set_dept, who, dept, person)
+    return web.json_response({"ok": True})
+
+
 # ---------- KPI ----------
 
 async def api_kpi(request):
@@ -436,6 +453,7 @@ async def start_webapp(application):
         web.post("/api/themes", api_themes_create),
         web.patch("/api/themes/{theme_id:\\d+}", api_themes_patch),
         web.delete("/api/themes/{theme_id:\\d+}", api_themes_delete),
+        web.put("/api/people/dept", api_people_dept),
         web.get("/api/kpi", api_kpi),
         web.post("/api/kpi/norms", api_kpi_norm_create),
         web.patch("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_patch),

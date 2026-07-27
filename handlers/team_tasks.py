@@ -52,6 +52,16 @@ _SCHEMA_STATEMENTS = [
         last_seen  TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
+    # Перекриття відділу людини (Катя переносить людей між Newsroom/Creative
+    # прямо в апці — відділ це дані, не код; дефолт лишається в team_roster)
+    """
+    CREATE TABLE IF NOT EXISTS team_dept (
+        person     TEXT PRIMARY KEY,
+        dept       TEXT NOT NULL,
+        updated_by TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS team_project_themes (
         id         BIGSERIAL PRIMARY KEY,

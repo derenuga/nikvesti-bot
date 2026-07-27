@@ -38,17 +38,20 @@ DEPT_TITLES = {
 ROSTER = {
     "Олег Деренюга": {"username": "derenuga", "tg_id": 56631818, "dept": DEPT_LEADERSHIP, "manager": True},
     "Катерина Середа": {"username": "sereda_ka", "tg_id": 56424866, "dept": DEPT_LEADERSHIP, "manager": True},
-    "Юлія Бойченко": {"username": "boichenko13", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
-    "Аліса Мелікадамян": {"username": "lislislisalisa", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
+    # Розклад по відділах — список Олега 27.07 (Creative — відділ власних
+    # матеріалів). Ліза/Іміра/Сергій/Кірілл/Ірина у списку не значились —
+    # дефолт поставлено за змістом ролей; Катя переносить в апці (team_dept).
+    "Юлія Бойченко": {"username": "boichenko13", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
+    "Аліса Мелікадамян": {"username": "lislislisalisa", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
     "Світлана Іванченко": {"username": "lana_prpolka", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
-    "Альона Коханчук": {"username": "aliona_banu", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
-    "Аліна Квітко": {"username": "aliniskv", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
+    "Альона Коханчук": {"username": "aliona_banu", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
+    "Аліна Квітко": {"username": "aliniskv", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
     "Марія Хаміцевич": {"username": None, "tg_id": 846178524, "dept": DEPT_NEWSROOM, "manager": False},
     "Сергій Овчаришин": {"username": None, "tg_id": 891685789, "dept": DEPT_CREATIVE, "manager": False},
     "Єлизавета Москвіна": {"username": "mskvn1", "tg_id": 386403807, "dept": DEPT_CREATIVE, "manager": False},
     "Іміра Борухова": {"username": "imira_91", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
-    "Даріна Мельничук": {"username": "dariimlk", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
-    "Юлія Лук'яненко": {"username": "yuliia_lukianenko", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
+    "Даріна Мельничук": {"username": "dariimlk", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
+    "Юлія Лук'яненко": {"username": "yuliia_lukianenko", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
     "Таміла Ксьонжик": {"username": "tamilissssa", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
     "Кристина Леонова": {"username": "skxxlw", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
     "Кірілл Витвицький": {"username": "simada24", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
@@ -62,6 +65,49 @@ _BY_KNOWN_ID = {info["tg_id"]: name for name, info in ROSTER.items() if info["tg
 def person_info(name):
     """Картка людини з ростера або None."""
     return ROSTER.get(name)
+
+
+def dept_overrides():
+    """{людина: відділ} з Нори (team_dept) — перекриття, які Катя ставить в
+    апці. Нора недоступна → порожньо, діють дефолти ростера. Блокуючий."""
+    try:
+        from handlers import team_tasks
+        team_tasks.ensure_team_schema()
+        return {
+            r["person"]: r["dept"]
+            for r in bot_db.query("SELECT person, dept FROM team_dept")
+            if r["person"] in ROSTER
+        }
+    except Exception as e:
+        print(f"team_roster: team_dept недоступна — дефолти ростера ({e})")
+        return {}
+
+
+def effective_dept(person, overrides=None):
+    """Фактичний відділ людини: перекриття з Нори або дефолт ростера.
+    overrides — вже прочитаний dept_overrides(), щоб не смикати БД у циклі."""
+    info = ROSTER.get(person)
+    if not info:
+        return None
+    if info["manager"]:
+        return info["dept"]  # менеджерів між відділами не носимо
+    o = overrides if overrides is not None else dept_overrides()
+    return o.get(person, info["dept"])
+
+
+def set_dept(person, dept, updated_by):
+    """Переносить людину у відділ (upsert перекриття). Блокуючий."""
+    from handlers import team_tasks
+    team_tasks.ensure_team_schema()
+    bot_db.execute(
+        """
+        INSERT INTO team_dept (person, dept, updated_by, updated_at)
+        VALUES (%s, %s, %s, now())
+        ON CONFLICT (person) DO UPDATE SET
+            dept = EXCLUDED.dept, updated_by = EXCLUDED.updated_by, updated_at = now()
+        """,
+        (person, dept, updated_by),
+    )
 
 
 def is_manager(name):
