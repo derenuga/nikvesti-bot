@@ -136,8 +136,16 @@ input:focus, textarea:focus { outline: none; border-color: var(--blue); }
 .task-row:first-of-type { border-top: 0; }
 .task-row .ava { width: 42px; height: 42px; font-size: 14px; }
 .task-row .tr-main { flex: 1; min-width: 0; }
-.task-row .tr-who { font-weight: 700; font-size: 14px; }
-.task-row .tr-what { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* display:block обовʼязковий: на інлайнових span text-overflow не працює,
+   і довгий рядок «2 новини · Голоси Миколаєва…» вилазив за екран */
+.task-row .tr-who {
+  display: block; font-weight: 700; font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.task-row .tr-what {
+  display: block; font-size: 13px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .status-dot.open { background: var(--blue); }
 .status-dot.done { background: var(--good); }
