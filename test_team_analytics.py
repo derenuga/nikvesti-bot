@@ -138,6 +138,8 @@ def test_newsroom():
         # перша, за вагою (2,6) — друга
         {"owner_id": 60, "type": "news", "own": 0, "cur": 1, "c": 20, "name": "Стрічка"},
         {"owner_id": 61, "type": "news", "own": 1, "cur": 1, "c": 10, "name": "Лук'яненко"},
+        # третій тип у CMS: у «новини/статті» не входить, але й зникнути не має
+        {"owner_id": 44, "type": "blog", "own": 1, "cur": 1, "c": 3, "name": "Юлія Бойченко"},
     ]
     ta.db.query = lambda sql, params=None: rows
     # owner_id → людина ростера (у проді це пін team_user_link → ПІБ)
@@ -166,6 +168,25 @@ def test_newsroom():
     check("власні автора рахуються окремо",
           by_name["Юлія Бойченко"]["own"] == 12
           and by_name["Юлія Бойченко"]["count"] == 17, by_name["Юлія Бойченко"])
+    check("список авторів НЕ обрізаний — фронт вирішує, скільки показати",
+          len(n["authors"]) == 5 and n["shown"] == ta.TOP_AUTHORS, len(n["authors"]))
+    check("третій тип видно окремо, а не тихо зникає",
+          n["by_type"] == [{"type": "blog", "count": 3}], n["by_type"])
+    check("блог не додався ні в новини, ні в статті",
+          n["news"]["value"] == 54 and n["articles"]["value"] == 2, n)
+    zero_names = [z["name"] for z in n["zero"]]
+    check("хто за період не опублікував нічого — окремим списком",
+          "Аліса Мелікадамян" in zero_names and "Таміла Ксьонжик" in zero_names,
+          zero_names[:5])
+    check("менеджерів у «без публікацій» немає — у них вихід не міряють",
+          "Катерина Середа" not in zero_names and "Олег Деренюга" not in zero_names,
+          zero_names)
+    check("хто публікував — у списку нулів не опиниться",
+          "Юлія Бойченко" not in zero_names and "Юлія Лук'яненко" not in zero_names,
+          zero_names)
+    check("непривʼязаний до users.id — це «не знаю», а не нуль",
+          all("linked" in z for z in n["zero"])
+          and any(not z["linked"] for z in n["zero"]), n["zero"][:3])
 
 
 # ---------- Топ матеріалів ----------
