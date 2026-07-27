@@ -186,10 +186,23 @@ def _bootstrap_blocking(person, is_manager):
     theme_by_project = {}
     for t in themes:
         theme_by_project.setdefault(t["project_id"], []).append(
-            {"id": t["id"], "name": t["name"], "planned": t["planned"]}
+            {"id": t["id"], "name": t["name"], "planned": t["planned"], "format": t["format"]}
         )
+    deadlines_by_project = {}
+    order = {}
+    if out["nora"]:
+        try:
+            for d in team_tasks.list_project_deadlines():
+                deadlines_by_project.setdefault(d["project_id"], []).append(d)
+            order = team_tasks.get_project_order()
+        except Exception as e:
+            print(f"webapp: порядок/дедлайни проєктів не прочитались — {e}")
     for p in projects:
         p["themes"] = theme_by_project.get(p["id"], [])
+        p["deadlines"] = deadlines_by_project.get(p["id"], [])
+    # Ручний порядок Каті; невпорядковані — після, у дефолтному порядку
+    default_pos = {p["id"]: i for i, p in enumerate(projects)}
+    projects.sort(key=lambda p: (order.get(p["id"], 10**9), default_pos[p["id"]]))
 
     out["people"] = [
         {
@@ -332,6 +345,79 @@ async def api_themes_delete(request):
     return web.json_response({"ok": True})
 
 
+# ---------- Порядок проєктів (drag-n-drop) ----------
+
+async def api_projects_order(request):
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    ids = payload.get("ids")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
+        raise web.HTTPBadRequest(text="ids: список id проєктів")
+    await asyncio.to_thread(team_tasks.set_project_order, ids)
+    return web.json_response({"ok": True})
+
+
+# ---------- Дедлайни звітності проєктів ----------
+
+def _validate_deadline(payload, require_all=True):
+    kind = payload.get("kind")
+    if require_all or kind is not None:
+        if kind not in team_tasks.DEADLINE_KINDS:
+            raise web.HTTPBadRequest(text="kind: narrative, financial або milestone")
+    stage = payload.get("stage") or None
+    if kind in ("narrative", "financial"):
+        if stage not in team_tasks.DEADLINE_STAGES:
+            raise web.HTTPBadRequest(text="stage: interim або final (для звітів)")
+    else:
+        stage = None
+    title = (payload.get("title") or "").strip()
+    if kind == "milestone" and not title:
+        raise web.HTTPBadRequest(text="Майлстоуну потрібна назва")
+    due = payload.get("due")
+    if require_all or due is not None:
+        try:
+            time.strptime(due, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            raise web.HTTPBadRequest(text="due: YYYY-MM-DD")
+    return kind, stage, title, due
+
+
+async def api_deadline_create(request):
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    project_id = payload.get("project_id")
+    if not project_id:
+        raise web.HTTPBadRequest(text="Потрібен project_id")
+    kind, stage, title, due = _validate_deadline(payload)
+    dl = await asyncio.to_thread(
+        team_tasks.add_project_deadline, person, int(project_id), kind, due, stage, title
+    )
+    return web.json_response({"deadline": dl})
+
+
+async def api_deadline_patch(request):
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    kind, stage, title, due = _validate_deadline(payload)
+    dl = await asyncio.to_thread(
+        team_tasks.update_project_deadline, int(request.match_info["dl_id"]),
+        kind, due, stage, title,
+    )
+    if not dl:
+        raise web.HTTPNotFound(text="Дедлайну немає")
+    return web.json_response({"deadline": dl})
+
+
+async def api_deadline_delete(request):
+    person, info, _ = await _require_manager(request)
+    deleted = await asyncio.to_thread(
+        team_tasks.delete_project_deadline, int(request.match_info["dl_id"])
+    )
+    if not deleted:
+        raise web.HTTPNotFound(text="Дедлайну немає")
+    return web.json_response({"ok": True})
+
+
 # ---------- Відділ людини (Катя переносить в апці) ----------
 
 async def api_people_dept(request):
@@ -465,6 +551,10 @@ async def start_webapp(application):
         web.post("/api/themes", api_themes_create),
         web.patch("/api/themes/{theme_id:\\d+}", api_themes_patch),
         web.delete("/api/themes/{theme_id:\\d+}", api_themes_delete),
+        web.put("/api/projects/order", api_projects_order),
+        web.post("/api/project_deadlines", api_deadline_create),
+        web.patch("/api/project_deadlines/{dl_id:\\d+}", api_deadline_patch),
+        web.delete("/api/project_deadlines/{dl_id:\\d+}", api_deadline_delete),
         web.put("/api/people/dept", api_people_dept),
         web.get("/api/kpi", api_kpi),
         web.post("/api/kpi/norms", api_kpi_norm_create),

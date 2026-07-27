@@ -41,6 +41,37 @@ function formatTitle(v) {
   return f && f.v ? f.label : null;
 }
 
+const DL_KINDS = [
+  { v: "narrative", label: "Наративний звіт" },
+  { v: "financial", label: "Фінансовий звіт" },
+  { v: "milestone", label: "Майлстоун" },
+];
+const DL_STAGES = [
+  { v: "interim", label: "Проміжний" },
+  { v: "final", label: "Фінальний" },
+];
+
+function dlLabel(d) {
+  const kind = (DL_KINDS.find((k) => k.v === d.kind) || {}).label || d.kind;
+  const stage = d.stage ? (DL_STAGES.find((s) => s.v === d.stage) || {}).label : null;
+  let s = d.kind === "milestone" ? d.title : kind + (stage ? ` · ${stage.toLowerCase()}` : "");
+  if (d.kind !== "milestone" && d.title) s += ` — ${d.title}`;
+  return s;
+}
+
+function dlDateHtml(d) {
+  const today = new Date().toISOString().slice(0, 10);
+  const soon = new Date(Date.now() + 7 * 86400e3).toISOString().slice(0, 10);
+  const [y, m, day] = d.due.split("-");
+  const cls = d.due < today ? "dl-over" : d.due <= soon ? "dl-soon" : "dl";
+  return `<span class="dl-date ${cls}">${day}.${m}.${y.slice(2)}</span>`;
+}
+
+function nextDeadline(p) {
+  const today = new Date().toISOString().slice(0, 10);
+  return (p.deadlines || []).find((d) => d.due >= today) || null;
+}
+
 const MONTHS_SHORT = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер", "Лип", "Сер", "Вер", "Жов", "Лис", "Гру"];
 
 /* ---------- API ---------- */
@@ -396,20 +427,100 @@ function renderProjects() {
   if (STATE.projView === "timeline") {
     const sc = $("tl-scroll");
     if (sc && sc.dataset.nowx) sc.scrollLeft = Math.max(0, +sc.dataset.nowx - sc.clientWidth * 0.45);
+  } else {
+    enableProjectDrag();
   }
 }
 
 function listHtml() {
-  return STATE.projects.map((p) => `
-    <button class="proj-row" data-project="${p.id}">
+  const rows = STATE.projects.map((p) => {
+    const nd = nextDeadline(p);
+    return `
+    <button class="proj-row" data-project="${p.id}" data-drag-id="${p.id}">
       ${logoSq(p, 46)}
       <span class="pr-txt">
         <span class="pr-donor">${esc(p.partner || p.name)}</span>
         ${p.partner ? `<span class="pr-name2">${esc(p.name)}</span>` : ""}
         <span class="pr-meta">${esc(fmtRange(p))}${p.kpi_news || p.kpi_articles ? ` · квота ${p.kpi_news || 0}+${p.kpi_articles || 0}` : ""}</span>
+        ${nd ? `<span class="pr-meta">${esc(dlLabel(nd))} ${dlDateHtml(nd)}</span>` : ""}
       </span>
       ${icon("chevron-right", "ic chev")}
-    </button>`).join("");
+    </button>`;
+  }).join("");
+  return `<div id="proj-list">${rows}</div>
+    <div class="tl-note">Зажми проєкт і потягни, щоб змінити порядок.</div>`;
+}
+
+/* Перетягування проєктів: довгий натиск (350 мс без руху) → drag.
+   Порядок зберігається в Нору і діє скрізь, де є список проєктів. */
+function enableProjectDrag() {
+  const list = $("proj-list");
+  if (!list) return;
+  const drag = { active: false, el: null, timer: null, startY: 0, moved: false };
+
+  const cleanup = () => {
+    if (drag.el) drag.el.classList.remove("drag-src");
+    clearTimeout(drag.timer);
+    drag.active = false;
+    drag.el = null;
+  };
+
+  list.addEventListener("pointerdown", (e) => {
+    const row = e.target.closest("[data-drag-id]");
+    if (!row) return;
+    drag.el = row;
+    drag.startY = e.clientY;
+    drag.moved = false;
+    drag.timer = setTimeout(() => {
+      drag.active = true;
+      row.classList.add("drag-src");
+      haptic("success");
+    }, 350);
+  });
+
+  list.addEventListener("pointermove", (e) => {
+    if (!drag.el) return;
+    if (!drag.active) {
+      // рух до активації — це скрол, не drag
+      if (Math.abs(e.clientY - drag.startY) > 10) cleanup();
+      return;
+    }
+    drag.moved = true;
+    const rows = [...list.querySelectorAll("[data-drag-id]")];
+    const over = rows.find((r) => {
+      if (r === drag.el) return false;
+      const rect = r.getBoundingClientRect();
+      return e.clientY > rect.top && e.clientY < rect.bottom;
+    });
+    if (over) {
+      const rect = over.getBoundingClientRect();
+      if (e.clientY < rect.top + rect.height / 2) list.insertBefore(drag.el, over);
+      else list.insertBefore(drag.el, over.nextSibling);
+    }
+  });
+
+  // блокуємо скрол сторінки, лише коли drag активний
+  list.addEventListener("touchmove", (e) => {
+    if (drag.active) e.preventDefault();
+  }, { passive: false });
+
+  const finish = async () => {
+    if (!drag.el) return;
+    const wasDrag = drag.active && drag.moved;
+    const el = drag.el;
+    cleanup();
+    if (!wasDrag) return;
+    el.dataset.justDragged = "1";
+    setTimeout(() => delete el.dataset.justDragged, 300);
+    const ids = [...list.querySelectorAll("[data-drag-id]")].map((r) => +r.dataset.dragId);
+    STATE.projects.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+    try {
+      await api("/api/projects/order", { method: "PUT", body: JSON.stringify({ ids }) });
+      toast("Порядок збережено");
+    } catch (e) { toast(e.message); }
+  };
+  list.addEventListener("pointerup", finish);
+  list.addEventListener("pointercancel", cleanup);
 }
 
 function timelineHtml() {
@@ -495,10 +606,96 @@ function renderProject() {
         <button class="tact" data-edit-theme="${t.id}" aria-label="Редагувати">${icon("edit")}</button>
       </div>`).join("")}
     <button class="add-theme" id="add-theme">${icon("plus")} Додати тематику</button>
-    ${quotaTotal && planned ? `<div class="left-hint">розкроєно ${planned} із ${quotaTotal}${planned < quotaTotal ? ` · <b>ще ${quotaTotal - planned} без тематики</b>` : ""}</div>` : ""}`;
+    ${quotaTotal && planned ? `<div class="left-hint">розкроєно ${planned} із ${quotaTotal}${planned < quotaTotal ? ` · <b>ще ${quotaTotal - planned} без тематики</b>` : ""}</div>` : ""}
+    <div class="f-label">Звітність і майлстоуни</div>
+    ${(p.deadlines || []).map((d) => `
+      <button class="theme-row" data-edit-dl="${d.id}">
+        <span class="tn">${esc(dlLabel(d))}</span>
+        ${dlDateHtml(d)}
+      </button>`).join("")}
+    <button class="add-theme" id="add-dl">${icon("calendar")} Додати дедлайн звіту</button>`;
   $("add-theme").onclick = () => themeSheet(p, null);
   $("content").querySelectorAll("[data-edit-theme]").forEach((b) =>
     b.onclick = () => themeSheet(p, p.themes.find((t) => t.id === +b.dataset.editTheme)));
+  $("add-dl").onclick = () => dlSheet(p, null);
+  $("content").querySelectorAll("[data-edit-dl]").forEach((b) =>
+    b.onclick = () => dlSheet(p, p.deadlines.find((d) => d.id === +b.dataset.editDl)));
+}
+
+/* Шторка дедлайну звітності: наративний/фінансовий звіт (проміжний/фінальний)
+   або майлстоун з назвою. Нагадування Лиса — майбутній шар. */
+function dlSheet(project, dl) {
+  const st = {
+    kind: dl ? dl.kind : "narrative",
+    stage: dl ? dl.stage || "interim" : "interim",
+    due: dl ? dl.due : "",
+  };
+  const paint = () => {
+    $("dl-kind").querySelectorAll(".chip").forEach((c) =>
+      c.classList.toggle("on", c.dataset.k === st.kind));
+    $("dl-stage-block").classList.toggle("hidden", st.kind === "milestone");
+    $("dl-stage").querySelectorAll(".chip").forEach((c) =>
+      c.classList.toggle("on", c.dataset.s === st.stage));
+    $("dl-title-label").textContent =
+      st.kind === "milestone" ? "Назва майлстоуна" : "Нотатка (необовʼязково)";
+  };
+  openSheet(`
+    <h2>${dl ? "Дедлайн" : "Новий дедлайн"}</h2>
+    <div class="f-label" style="margin-top:0">Тип</div>
+    <div class="chips" id="dl-kind">${DL_KINDS.map((k) => `
+      <button class="chip" data-k="${k.v}">${k.label}</button>`).join("")}</div>
+    <div id="dl-stage-block">
+      <div class="f-label">Стадія</div>
+      <div class="chips" id="dl-stage">${DL_STAGES.map((s) => `
+        <button class="chip" data-s="${s.v}">${s.label}</button>`).join("")}</div>
+    </div>
+    <div class="f-label" id="dl-title-label">Нотатка</div>
+    <input id="dl-title" maxlength="120" placeholder="напр. звіт для IMS за Q3" value="${dl ? esc(dl.title) : ""}">
+    <div class="f-label">Дата</div>
+    <input id="dl-due" type="date" value="${st.due}">
+    <div class="sheet-actions">
+      ${dl ? `<button class="sbtn danger" id="dl-delete">Видалити</button>` : ""}
+      <button class="sbtn" id="dl-cancel">Скасувати</button>
+      <button class="sbtn primary" id="dl-save">Зберегти</button>
+    </div>`);
+  paint();
+  $("dl-kind").onclick = (e) => {
+    const b = e.target.closest("[data-k]");
+    if (b) { st.kind = b.dataset.k; paint(); }
+  };
+  $("dl-stage").onclick = (e) => {
+    const b = e.target.closest("[data-s]");
+    if (b) { st.stage = b.dataset.s; paint(); }
+  };
+  $("dl-cancel").onclick = closeSheet;
+  if (dl) $("dl-delete").onclick = async () => {
+    try {
+      await api(`/api/project_deadlines/${dl.id}`, { method: "DELETE" });
+      closeSheet();
+      await reload();
+      nav("project", project.id);
+    } catch (e) { toast(e.message); }
+  };
+  $("dl-save").onclick = async () => {
+    const due = $("dl-due").value;
+    if (!due) { toast("Потрібна дата"); return; }
+    const body = {
+      project_id: project.id,
+      kind: st.kind,
+      stage: st.kind === "milestone" ? null : st.stage,
+      title: $("dl-title").value.trim(),
+      due,
+    };
+    if (st.kind === "milestone" && !body.title) { toast("Майлстоуну потрібна назва"); return; }
+    try {
+      if (dl) await api(`/api/project_deadlines/${dl.id}`, { method: "PATCH", body: JSON.stringify(body) });
+      else await api("/api/project_deadlines", { method: "POST", body: JSON.stringify(body) });
+      closeSheet();
+      haptic("success");
+      await reload();
+      nav("project", project.id);
+    } catch (e) { toast(e.message); }
+  };
 }
 
 function themeSheet(project, theme) {
@@ -946,7 +1143,11 @@ $("content").addEventListener("click", (e) => {
   const person = e.target.closest("[data-person]");
   if (person) { nav("form", person.dataset.person); return; }
   const proj = e.target.closest("[data-project]");
-  if (proj) { nav("project", +proj.dataset.project); return; }
+  if (proj) {
+    if (proj.dataset.justDragged) return; // клік одразу після перетягування — не навігація
+    nav("project", +proj.dataset.project);
+    return;
+  }
   const task = e.target.closest("[data-task]");
   if (task && STATE.me.manager) {
     const t = STATE.tasks.find((x) => x.id === +task.dataset.task);

@@ -46,6 +46,12 @@ TYPE_TITLES = {"news": "новина", "article": "стаття"}
 # «гібридний» (мікс форматів) або None — тематика без формату.
 THEME_FORMATS = ("news", "article", "post", "video", "hybrid")
 
+# Дедлайни звітності проєкту (Олег, 27.07): наративні й фінансові звіти
+# (проміжні/фінальні) або майлстоуни з датами. Поки — довідник у картці
+# проєкту; нагадування Олегу/Каті/фінменеджерці — майбутній шар (беклог).
+DEADLINE_KINDS = ("narrative", "financial", "milestone")
+DEADLINE_STAGES = ("interim", "final")
+
 _SCHEMA_STATEMENTS = [
     """
     CREATE TABLE IF NOT EXISTS team_users (
@@ -79,6 +85,28 @@ _SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_team_themes_project ON team_project_themes (project_id)",
     # Ідемпотентна міграція для таблиці, створеної до появи формату (27.07)
     "ALTER TABLE team_project_themes ADD COLUMN IF NOT EXISTS format TEXT",
+    # Ручний порядок проєктів у списку (drag-n-drop Каті). БД сайту read-only,
+    # тож порядок живе тут; проєкти поза таблицею йдуть після впорядкованих.
+    """
+    CREATE TABLE IF NOT EXISTS team_project_order (
+        project_id BIGINT PRIMARY KEY,
+        position   INTEGER NOT NULL
+    )
+    """,
+    # Дедлайни звітності/майлстоуни проєктів
+    """
+    CREATE TABLE IF NOT EXISTS team_project_deadlines (
+        id         BIGSERIAL PRIMARY KEY,
+        project_id BIGINT NOT NULL,
+        kind       TEXT NOT NULL,
+        stage      TEXT,
+        title      TEXT,
+        due        DATE NOT NULL,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_team_pdl_project ON team_project_deadlines (project_id, due)",
     """
     CREATE TABLE IF NOT EXISTS team_creative_tasks (
         id           BIGSERIAL PRIMARY KEY,
@@ -185,6 +213,91 @@ def delete_theme(theme_id):
     ensure_team_schema()
     return bot_db.execute(
         "DELETE FROM team_project_themes WHERE id = %s", (int(theme_id),)
+    )
+
+
+# ---------- Порядок проєктів ----------
+
+def get_project_order():
+    """{project_id: position} — ручний порядок списку проєктів."""
+    ensure_team_schema()
+    return {
+        r["project_id"]: r["position"]
+        for r in bot_db.query("SELECT project_id, position FROM team_project_order")
+    }
+
+
+def set_project_order(project_ids):
+    """Перезаписує порядок повністю (список у апки завжди цілий, ~десятки)."""
+    ensure_team_schema()
+    bot_db.execute("DELETE FROM team_project_order")
+    for pos, pid in enumerate(project_ids):
+        bot_db.execute(
+            "INSERT INTO team_project_order (project_id, position) VALUES (%s, %s)",
+            (int(pid), pos),
+        )
+
+
+# ---------- Дедлайни звітності проєктів ----------
+
+def _row_to_deadline(r):
+    return {"id": r["id"], "project_id": r["project_id"], "kind": r["kind"],
+            "stage": r["stage"], "title": r["title"] or "",
+            "due": r["due"].isoformat()}
+
+
+def list_project_deadlines():
+    """Усі дедлайни всіх проєктів — фронт групує сам."""
+    ensure_team_schema()
+    return [
+        _row_to_deadline(r)
+        for r in bot_db.query(
+            "SELECT id, project_id, kind, stage, title, due "
+            "FROM team_project_deadlines ORDER BY due, id"
+        )
+    ]
+
+
+def add_project_deadline(creator, project_id, kind, due, stage=None, title=None):
+    ensure_team_schema()
+    rows = bot_db.query(
+        "INSERT INTO team_project_deadlines (project_id, kind, stage, title, due, created_by) "
+        "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, project_id, kind, stage, title, due",
+        (int(project_id), kind, stage or None, (title or "").strip() or None, due, creator),
+    )
+    return _row_to_deadline(rows[0])
+
+
+def update_project_deadline(deadline_id, kind=None, due=None, stage=..., title=...):
+    ensure_team_schema()
+    sets, params = [], []
+    if kind:
+        sets.append("kind = %s")
+        params.append(kind)
+    if due:
+        sets.append("due = %s")
+        params.append(due)
+    if stage is not ...:
+        sets.append("stage = %s")
+        params.append(stage or None)
+    if title is not ...:
+        sets.append("title = %s")
+        params.append((title or "").strip() or None)
+    if not sets:
+        return None
+    params.append(int(deadline_id))
+    rows = bot_db.query(
+        f"UPDATE team_project_deadlines SET {', '.join(sets)} WHERE id = %s "
+        "RETURNING id, project_id, kind, stage, title, due",
+        params,
+    )
+    return _row_to_deadline(rows[0]) if rows else None
+
+
+def delete_project_deadline(deadline_id):
+    ensure_team_schema()
+    return bot_db.execute(
+        "DELETE FROM team_project_deadlines WHERE id = %s", (int(deadline_id),)
     )
 
 
