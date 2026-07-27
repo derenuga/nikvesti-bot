@@ -113,18 +113,38 @@ DASH = {
              "news": 40, "articles": 0, "score": 40.0},
         ],
     },
+    # Соцмережі приходять СПИСКОМ у фіксованому порядку — сервер уже вирішив,
+    # який грейн читати (тиждень/місяць) і які мережі взагалі мають дані
     "social": {
-        "facebook": {"title": "Facebook", "followers": 41500, "followers_as_of": "2026-07-26",
-                     "followers_delta": 500, "snapshots": 1,
-                     "views": {"value": 120400, "prev": 111000, "delta": 8},
-                     "engagement": {"value": 6200, "prev": 6400, "delta": -3},
-                     "posts": {"value": 84, "prev": 80, "delta": 5}},
-        "instagram": {"title": "Instagram", "followers": 20100, "followers_as_of": "2026-07-26",
-                      "followers_delta": -40, "snapshots": 0,
-                      "views": {"value": None, "prev": None, "delta": None},
-                      "engagement": {"value": None, "prev": None, "delta": None},
-                      "posts": {"value": None, "prev": None, "delta": None}},
-        "telegram": {"title": "Telegram", "subscribers": 41012},
+        "grain": "week",
+        "platforms": [
+            {"key": "facebook", "title": "Facebook", "followers": 41500,
+             "followers_as_of": "2026-07-26", "followers_delta": 500, "snapshots": 1,
+             "views": {"value": 120400, "prev": 111000, "delta": 8},
+             "engagement": {"value": 6200, "prev": 6400, "delta": -3},
+             "posts": {"value": 84, "prev": 80, "delta": 5}},
+            {"key": "instagram", "title": "Instagram", "followers": 20100,
+             "followers_as_of": "2026-07-26", "followers_delta": -40, "snapshots": 0,
+             "views": {"value": None, "prev": None, "delta": None},
+             "engagement": {"value": None, "prev": None, "delta": None},
+             "posts": {"value": None, "prev": None, "delta": None}},
+            {"key": "telegram", "title": "Telegram", "followers": 41012,
+             "followers_as_of": "2026-07-26", "followers_delta": 120, "snapshots": 1,
+             "views": {"value": 980000, "prev": 900000, "delta": 9},
+             "engagement": {"value": None, "prev": None, "delta": None},
+             "posts": {"value": 210, "prev": 200, "delta": 5}},
+            {"key": "tiktok", "title": "TikTok", "followers": 8200,
+             "followers_as_of": "2026-07-01", "followers_delta": 300, "snapshots": 1,
+             "views": {"value": 90000, "prev": 70000, "delta": 29},
+             "engagement": {"value": 3520, "prev": 3000, "delta": 17},
+             "posts": {"value": 12, "prev": 10, "delta": 20}},
+            {"key": "youtube", "title": "YouTube", "followers": 3100,
+             "followers_as_of": "2026-07-01", "followers_delta": 25, "snapshots": 1,
+             "views": {"value": 42000, "prev": 38000, "delta": 11},
+             "engagement": {"value": None, "prev": None, "delta": None},
+             "posts": {"value": None, "prev": None, "delta": None}},
+        ],
+        "missing": ["Viber"],
     },
     "grants": {
         "projects_active": 12, "tasks_open": 25, "tasks_done": 7,
@@ -296,6 +316,16 @@ async def main():
                   or "41012" in _digits(soc))
             check("платформа без зрізу за період не бреше нулем",
                   "зрізу за цей період ще немає" in soc)
+            check("TikTok на місці — не лише FB/IG", "TikTok" in soc)
+            check("картки всіх мереж із даними", await page.locator(".soc-card").count() == 5)
+            check("у кожної мережі свій знак",
+                  await page.locator(".soc-ic.facebook").count() == 1
+                  and await page.locator(".soc-ic.tiktok").count() == 1
+                  and await page.locator(".soc-ic.youtube").count() == 1)
+            check("мережа без даних не малює порожню картку, а стоїть у переліку",
+                  "Ще не знімали" in soc and "Viber" in soc)
+            check("YouTube показує перегляди й не показує «взаємодії —»",
+                  "42 000" in soc.replace(" ", " ") or "42000" in _digits(soc))
             check("гранти: проєкти, завдання, зараховане",
                   "Активних проєктів" in soc and "Зараховано" in soc)
             check("донори перелічені", "IWPR ×5" in soc)

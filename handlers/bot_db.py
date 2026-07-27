@@ -179,6 +179,41 @@ _SCHEMA_STATEMENTS = [
         """,
         True,
     ),
+    # МІСЯЧНА історія соцмереж — усі мережі, а не лише FB/IG.
+    #
+    # Навіщо окремо від social_stats: там тижневі зрізи (усе, що Meta віддає за
+    # фіксоване вікно), і вони є лише по Facebook та Instagram із моменту появи
+    # social_store. Уся решта — Telegram, YouTube, TikTok, Viber — досі жила
+    # ЛИШЕ в Google-таблиці «Аналітика МикВісті»: місячний знімок писав її туди
+    # й забував. Тобто «прогрес по соцмережах» у боті не зберігався (питання
+    # Олега 27.07). Тепер кожен місячний знімок осідає й тут, а історію з
+    # таблиці (включно з перенесеною старою ручною, з 2024-02) заливає
+    # /social_import_sheet.
+    #
+    # Грейн — (platform, month): місяць, а не тиждень, бо саме так його
+    # рахують і API (YouTube Analytics, TikTok по відео місяця), і таблиця.
+    # extra JSONB — метрики, які є лише в частини мереж: watch_hours (YT),
+    # avg_views/ERR (TG), likes/shares/comments (TikTok), активні (Viber).
+    # source — 'sheet' (імпорт) чи 'api' (живий знімок): видно, чому число
+    # таке, і чи можна його перезаписувати авторитетнішим.
+    (
+        """
+        CREATE TABLE IF NOT EXISTS social_monthly (
+            platform    TEXT NOT NULL,
+            month       DATE NOT NULL,
+            followers   INTEGER,
+            reach       INTEGER,
+            views       INTEGER,
+            engagement  INTEGER,
+            posts       INTEGER,
+            extra       JSONB,
+            source      TEXT,
+            synced_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (platform, month)
+        )
+        """,
+        True,
+    ),
     # Денний розріз трафіку Search Console по типах пошуку (web/discover/
     # googleNews/news). daily_stats тримає лише сукупний трафік без «звідки» —
     # ця таблиця дає канальний розріз, щоб NLQ дешево відповідав на «трафік без
@@ -675,6 +710,46 @@ def upsert_social_stats(rows):
             psycopg2.extras.execute_values(
                 cur, _SOCIAL_STATS_UPSERT_SQL, rows,
                 template=_SOCIAL_STATS_TEMPLATE, page_size=100,
+            )
+        return len(rows)
+    finally:
+        conn.close()
+
+
+_SOCIAL_MONTHLY_UPSERT_SQL = """
+INSERT INTO social_monthly
+    (platform, month, followers, reach, views, engagement, posts, extra, source, synced_at)
+VALUES %s
+ON CONFLICT (platform, month) DO UPDATE SET
+    -- COALESCE, як у social_stats: повторний прогін по місяцю, де API віддало
+    -- не все (TikTok не дає охоплення, Viber — лише підписників), не має
+    -- затирати те, що колись уже приїхало з таблиці або з живого знімка.
+    followers = COALESCE(EXCLUDED.followers, social_monthly.followers),
+    reach = COALESCE(EXCLUDED.reach, social_monthly.reach),
+    views = COALESCE(EXCLUDED.views, social_monthly.views),
+    engagement = COALESCE(EXCLUDED.engagement, social_monthly.engagement),
+    posts = COALESCE(EXCLUDED.posts, social_monthly.posts),
+    extra = COALESCE(social_monthly.extra, '{}'::jsonb) || COALESCE(EXCLUDED.extra, '{}'::jsonb),
+    source = EXCLUDED.source,
+    synced_at = now()
+"""
+
+_SOCIAL_MONTHLY_TEMPLATE = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, now())"
+
+
+def upsert_social_monthly(rows):
+    """Батчевий upsert місячної історії соцмереж. rows — list[(platform, month,
+    followers, reach, views, engagement, posts, extra_json, source)]; month —
+    date першого числа, extra_json — рядок JSON або None."""
+    if not rows:
+        return 0
+    ensure_schema()
+    conn = _connect()
+    try:
+        with conn, conn.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur, _SOCIAL_MONTHLY_UPSERT_SQL, rows,
+                template=_SOCIAL_MONTHLY_TEMPLATE, page_size=100,
             )
         return len(rows)
     finally:

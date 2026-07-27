@@ -215,6 +215,54 @@ def channel_subscribers():
     return None
 
 
+def collect_window(start_dt, end_dt, max_pages=80, pace_seconds=0.3):
+    """Пости каналу у вікні [start_dt, end_dt) зі стрічки t.me/s: скільки їх і
+    скільки в них переглядів. Повертає {'posts', 'views_total', 'avg_views'}
+    (нулі й None, якщо постів у вікні немає).
+
+    Старт — оцінка message_id кінця вікна по калібрувальних якорях + запас на
+    похибку інтерполяції, далі гортаємо вниз, поки не вийдемо за початок вікна.
+    Перегляди — поточні накопичені (t.me округлює: «12.3K»), тож для минулого
+    тижня/місяця це вже майже фінальні числа.
+
+    Використовують і місячний знімок таблиці аналітики, і тижневий захват у
+    Нору — тому вікно тут довільне, а не «місяць» (дві копії гортання стрічки
+    розійшлись би при першій зміні розмітки t.me)."""
+    before = estimate_message_id(end_dt) + 250
+    posts, views_sum, views_n = 0, 0, 0
+    for _ in range(max_pages):
+        html = _fetch_html(f"/s/{CHANNEL}", params={"before": before})
+        soup = BeautifulSoup(html, "html.parser")
+        blocks = soup.find_all("div", class_="tgme_widget_message")
+        if not blocks:
+            break
+        page_min_id, oldest_dt = None, None
+        for block in blocks:
+            msg_id, views, _hrefs, dt = _parse_message_block(block)
+            if msg_id is not None and (page_min_id is None or msg_id < page_min_id):
+                page_min_id = msg_id
+            if dt is None:
+                continue
+            if oldest_dt is None or dt < oldest_dt:
+                oldest_dt = dt
+            if start_dt <= dt < end_dt:
+                posts += 1
+                if views is not None:
+                    views_sum += views
+                    views_n += 1
+        if page_min_id is None or page_min_id <= 1:
+            break
+        if oldest_dt is not None and oldest_dt < start_dt:
+            break
+        before = page_min_id
+        time.sleep(pace_seconds)
+    return {
+        "posts": posts or None,
+        "views_total": views_sum if views_n else None,
+        "avg_views": round(views_sum / views_n) if views_n else None,
+    }
+
+
 def fetch_post_views(message_id):
     """Перегляди конкретного поста через embed-сторінку. None якщо не знайшли."""
     html = _fetch_html(f"/{CHANNEL}/{message_id}", params={"embed": "1"})

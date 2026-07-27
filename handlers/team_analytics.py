@@ -13,10 +13,11 @@ Google, вихід редакції, соцмережі, гранти й топ 
 | Сайт (users/sessions/pageviews по днях) | Нора `daily_stats` | analytics_store (09:00) |
 | Топ матеріалів періоду | Нора `daily_stats.top_pages` | той самий захват |
 | Пошук по типах (web/discover/googleNews) | Нора `sc_daily_stats` | analytics_store (09:00) |
-| Соцмережі (підписники/перегляди/взаємодії) | Нора `social_stats` | social_store (нд) |
+| Соцмережі за тиждень | Нора `social_stats` (тижневі зрізи) | social_store (нд) |
+| Соцмережі за місяць | Нора `social_monthly` (усі 6 мереж, з 2024-го) | social_store + /social_import_sheet |
 | Вихід редакції (новини/статті/власні/автори) | БД сайту `nodes` | CMS напряму |
 | Гранти (проєкти, завдання, зараховане) | БД сайту + Нора `team_*` | Mini App |
-| Підписники Telegram | t.me (живий знімок, кеш 1 год) | telegram_stats |
+| Підписники Telegram | Нора; живий t.me — лише поки в норі про них нічого немає | social_store / telegram_stats |
 
 ЧОМУ ПОРІВНЯННЯ «ДЕНЬ-У-ДЕНЬ», А НЕ ПЕРІОД-У-ПЕРІОД. Поточний тиждень у вівторок
 має два дні даних, а минулий — сім; пряме порівняння сум показувало б −70% і
@@ -31,8 +32,11 @@ Google, вихід редакції, соцмережі, гранти й топ 
 - топ матеріалів зібраний із ДЕННИХ топ-5, тож матеріал, який щодня був шостим,
   у період не потрапить (сумарно міг би бути вище) — це топ «за помітністю», а
   не повний рейтинг;
-- соцмережі — ТИЖНЕВІ зрізи (Meta історії не віддає): у місяць потрапляє сума
-  знімків, чиї дати всередині місяця, а підписники — останній знімок;
+- соцмережі мають ДВА грейни, і вони не змішуються: тиждень читається з
+  тижневих зрізів, місяць — із місячних рядків (сума чотирьох тижнів ≠ місяць).
+  Підписники — останнє відоме число на кінець періоду з обох грейнів;
+- мережі, про яку в норі немає жодного сліду, картки немає взагалі — вона
+  чесно перелічена під блоком як «ще не знімали»;
 - Нора й БД сайту деградують ОКРЕМО: недоступність однієї гасить свій блок, а
   не весь екран (`nora` / `site_db` у відповіді).
 
@@ -45,7 +49,8 @@ import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from handlers import bot_db, db, team_kpi, team_projects, team_roster
+from handlers import bot_db, db, social_store, team_kpi, team_projects, team_roster
+from handlers.social_store import PLATFORM_ORDER, PLATFORM_TITLES
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 
@@ -342,16 +347,33 @@ def _newsroom_block(rg):
 # ---------- Соцмережі (тижневі зрізи social_stats + живий Telegram) ----------
 
 def _followers_at(day):
-    """{платформа: (підписники, дата знімка)} — останній знімок не пізніше
-    дати. DISTINCT ON — щоб не тягти всю історію заради двох чисел."""
-    rows = bot_db.query(
+    """{платформа: (підписники, дата знімка)} — останнє відоме число не пізніше
+    дати, з ОБОХ грейнів: тижневих зрізів і місячної історії. DISTINCT ON —
+    щоб не тягти всю історію заради шести чисел.
+
+    Два джерела, бо історія в них різна: тижневі зрізи є лише по FB/IG і лише
+    відколи працює social_store, а місячна історія (імпорт таблиці) — по всіх
+    мережах із 2024-го. Беремо те, що свіжіше на потрібну дату."""
+    weekly = bot_db.query(
         "SELECT DISTINCT ON (platform) platform, followers, "
-        "to_char(week_end, 'YYYY-MM-DD') AS week_end FROM social_stats "
+        "to_char(week_end, 'YYYY-MM-DD') AS at FROM social_stats "
         "WHERE followers IS NOT NULL AND week_end <= %s "
         "ORDER BY platform, week_end DESC",
         (day,),
     )
-    return {r["platform"]: (r["followers"], r["week_end"]) for r in rows}
+    monthly = bot_db.query(
+        "SELECT DISTINCT ON (platform) platform, followers, "
+        "to_char(month, 'YYYY-MM-DD') AS at FROM social_monthly "
+        "WHERE followers IS NOT NULL AND month <= %s "
+        "ORDER BY platform, month DESC",
+        (day,),
+    )
+    out = {}
+    for r in weekly + monthly:
+        prev = out.get(r["platform"])
+        if prev is None or r["at"] > prev[1]:
+            out[r["platform"]] = (r["followers"], r["at"])
+    return out
 
 
 def _tg_subscribers():
@@ -371,32 +393,83 @@ def _tg_subscribers():
     return value
 
 
-def _social_block(rg):
-    rows = bot_db.query(
+def _social_block(rg, period):
+    """Соцмережі за період — усі шість мереж, з Нори.
+
+    ГРЕЙН ЗА ПЕРІОДОМ: для місяця беремо місячний рядок (`social_monthly` —
+    саме так їх рахують і API, і таблиця, і саме там лежить уся історія з
+    2024-го), для тижня — тижневі зрізи (`social_stats`). Змішувати не можна:
+    сума чотирьох тижневих зрізів ≠ місяць, а місячне число не поділити на дні.
+
+    Підписники — останнє відоме на кінець періоду з обох грейнів, приріст — до
+    останнього відомого перед періодом."""
+    weekly = bot_db.query(
         "SELECT platform, to_char(week_end, 'YYYY-MM-DD') AS date, "
         "followers, reach, views, engagement, posts FROM social_stats "
         "WHERE week_end BETWEEN %s AND %s ORDER BY week_end",
         (rg["prev_start"], rg["data_end"]),
     )
+    monthly = bot_db.query(
+        "SELECT platform, to_char(month, 'YYYY-MM-DD') AS date, "
+        "followers, reach, views, engagement, posts, extra FROM social_monthly "
+        "WHERE month BETWEEN %s AND %s ORDER BY month",
+        (rg["prev_start"].replace(day=1), rg["data_end"]),
+    )
+    rows = monthly if period == "month" else weekly
+    grain = "month" if period == "month" else "week"
     now_f = _followers_at(rg["data_end"])
     was_f = _followers_at(rg["start"] - timedelta(days=1))
-    out = {}
-    for platform, title in (("facebook", "Facebook"), ("instagram", "Instagram")):
+
+    platforms = []
+    for platform in PLATFORM_ORDER:
         mine = [r for r in rows if r["platform"] == platform]
-        cur = _in(mine, rg["start"], rg["data_end"])
-        prev = _in(mine, rg["prev_start"], rg["prev_end"])
+        # Місячний рядок «лежить» на 1-му числі — беремо рядок місяця періоду,
+        # а не діапазон дат: 01.07 не входить у [20.07, 26.07].
+        if grain == "month":
+            cur = [r for r in mine if r["date"] == _iso(rg["start"].replace(day=1))]
+            prev = [r for r in mine
+                    if r["date"] == _iso(rg["prev_start"].replace(day=1))]
+        else:
+            cur = _in(mine, rg["start"], rg["data_end"])
+            prev = _in(mine, rg["prev_start"], rg["prev_end"])
         followers, as_of = now_f.get(platform, (None, None))
         before = (was_f.get(platform) or (None, None))[0]
-        block = {"title": title, "followers": followers, "followers_as_of": as_of,
-                 "followers_delta": (followers - before)
-                 if (followers is not None and before is not None) else None,
-                 "snapshots": len(cur)}
+        block = {
+            "key": platform,
+            "title": PLATFORM_TITLES.get(platform, platform),
+            "followers": followers,
+            "followers_as_of": as_of,
+            "followers_delta": (followers - before)
+            if (followers is not None and before is not None) else None,
+            "snapshots": len(cur),
+            "grain": grain,
+        }
         for key in ("views", "engagement", "posts"):
             c, p = _sum(cur, key), _sum(prev, key)
             block[key] = {"value": c, "prev": p, "delta": _delta(c, p)}
-        out[platform] = block
-    out["telegram"] = {"title": "Telegram", "subscribers": _tg_subscribers()}
-    return out
+        # Мережу без жодного сліду в норі не показуємо взагалі — краще чесний
+        # перелік «ще не знімали» під блоком, ніж шість карток із прочерками.
+        if (followers is not None or block["views"]["value"] is not None
+                or block["posts"]["value"] is not None):
+            platforms.append(block)
+
+    known = {p["key"] for p in platforms}
+    missing = [PLATFORM_TITLES[p] for p in PLATFORM_ORDER if p not in known]
+    # Телеграм-підписники живим знімком — ЛИШЕ якщо в норі про них нічого нема
+    # (перший тиждень після деплою, поки не пройшов недільний захват).
+    if "telegram" not in known:
+        subs = _tg_subscribers()
+        if subs:
+            platforms.append({
+                "key": "telegram", "title": PLATFORM_TITLES["telegram"],
+                "followers": subs, "followers_as_of": None, "followers_delta": None,
+                "snapshots": 0, "grain": grain, "live": True,
+                "views": {"value": None, "prev": None, "delta": None},
+                "engagement": {"value": None, "prev": None, "delta": None},
+                "posts": {"value": None, "prev": None, "delta": None},
+            })
+            missing = [m for m in missing if m != PLATFORM_TITLES["telegram"]]
+    return {"platforms": platforms, "missing": missing, "grain": grain}
 
 
 # ---------- Гранти (проєкти + завдання + зараховане) ----------
@@ -483,7 +556,7 @@ def _build(period, offset):
         ("site", lambda: _site_block(rg)),
         ("search", lambda: _search_block(rg)),
         ("top", lambda: _top_materials(rg)),
-        ("social", lambda: _social_block(rg)),
+        ("social", lambda: _social_block(rg, period)),
         ("grants", lambda: _grants_block(rg, projects)),
         ("newsroom", lambda: _newsroom_block(rg)),
     ):

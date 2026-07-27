@@ -756,46 +756,63 @@ function anNewsroomHtml(d) {
     </div>` : ""}`;
 }
 
+/* Знак і бренд-відтінок мережі. Іконка тут — ідентичність, а не кодування
+   даних: тому їй можна брендовий колір, поки категоріальна палітра лишається
+   за частками пошуку. */
+const SOC_ICON = {
+  facebook: "facebook", instagram: "instagram", telegram: "send",
+  tiktok: "tiktok", youtube: "youtube", viber: "viber",
+};
+
+/* Метрики, які показуємо в картці: у кожної мережі свій набір, і прочерк на
+   тому, чого API не віддає (охоплення TikTok, взаємодії YouTube), — це шум. */
+const SOC_METRICS = {
+  facebook: ["views", "engagement", "posts"],
+  instagram: ["views", "engagement", "posts"],
+  telegram: ["views", "posts"],
+  tiktok: ["views", "engagement", "posts"],
+  youtube: ["views"],
+  viber: ["posts"],
+};
+const SOC_LABEL = { views: "Перегляди", engagement: "Взаємодії", posts: "Постів" };
+
 function anSocialHtml(d) {
   const s = d.social;
-  if (!s) {
+  const list = (s && s.platforms) || [];
+  if (!s || !list.length) {
     return anHead("heart", "Соцмережі") +
-      `<div class="empty-hint">Зрізів соцмереж у норі ще немає — /social_capture.</div>`;
+      `<div class="empty-hint">Зрізів соцмереж у норі ще немає.<br>
+        Засіяти зараз — <b>/social_capture</b>, залити історію з таблиці —
+        <b>/social_import_sheet</b>.</div>`;
   }
-  const card = (key, idx) => {
-    const p = s[key];
-    if (!p) return "";
+  const card = (p) => {
+    const metrics = (SOC_METRICS[p.key] || ["views", "posts"])
+      .filter((m) => p[m] && p[m].value != null)
+      .map((m) => `<span><i>${esc(SOC_LABEL[m])}</i> ${fmtNum(p[m].value)} ${deltaHtml(p[m].delta)}</span>`)
+      .join("");
     return `
     <div class="soc-card">
       <div class="soc-h">
-        <span class="lg-dot c${idx}"></span>
+        <span class="soc-ic ${esc(p.key)}">${icon(SOC_ICON[p.key] || "heart")}</span>
         <span class="soc-n">${esc(p.title)}</span>
         <span class="soc-f">${fmtNum(p.followers)}
           ${p.followers_delta == null ? "" :
             `<span class="st-d ${p.followers_delta >= 0 ? "up" : "down"}">${fmtSigned(p.followers_delta)}</span>`}</span>
       </div>
-      ${p.snapshots ? `<div class="soc-m">
-        <span><i>Перегляди</i> ${fmtNum(p.views.value)} ${deltaHtml(p.views.delta)}</span>
-        <span><i>Взаємодії</i> ${fmtNum(p.engagement.value)} ${deltaHtml(p.engagement.delta)}</span>
-        <span><i>Постів</i> ${fmtNum(p.posts.value)}</span>
-      </div>`
-      // Рядок із трьох прочерків нічого не повідомляє — краще сказати чому
-      : `<div class="sp-note">зрізу за цей період ще немає — знімок беремо щонеділі</div>`}
+      ${metrics ? `<div class="soc-m">${metrics}</div>`
+      // Рядок із прочерків нічого не повідомляє — краще сказати, чому пусто
+      : `<div class="sp-note">${p.live
+          ? "живий знімок t.me — у норі зрізів ще немає, перший буде в неділю"
+          : "зрізу за цей період ще немає — знімок беремо щонеділі"}</div>`}
     </div>`;
   };
-  const tg = s.telegram || {};
+  const grain = s.grain === "month" ? "місячні зрізи" : "тижневі зрізи";
   return `
-    ${anHead("heart", "Соцмережі", "тижневі зрізи · підписники — останній знімок")}
-    ${card("facebook", 1)}
-    ${card("instagram", 2)}
-    <div class="soc-card">
-      <div class="soc-h">
-        <span class="lg-dot c3"></span>
-        <span class="soc-n">Telegram</span>
-        <span class="soc-f">${fmtNum(tg.subscribers)}</span>
-      </div>
-      <div class="soc-m"><span><i>Підписників зараз</i> живий знімок t.me</span></div>
-    </div>`;
+    ${anHead("heart", "Соцмережі", `${grain} · підписники — останнє відоме число`)}
+    ${list.map(card).join("")}
+    ${s.missing && s.missing.length ? `<div class="sp-note">Ще не знімали:
+      ${esc(s.missing.join(", "))} — /social_capture засіє, /social_import_sheet
+      заллє історію з таблиці.</div>` : ""}`;
 }
 
 function anGrantsHtml(d) {

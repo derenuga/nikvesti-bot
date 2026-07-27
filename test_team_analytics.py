@@ -196,13 +196,21 @@ def test_top():
 # ---------- Соцмережі ----------
 
 def test_social():
+    """Тижневий грейн: FB/IG зі зрізів, підписники з обох грейнів, TikTok —
+    із місячної історії (тижневих зрізів по ньому ще немає)."""
     def query(sql, params=None):
-        if "DISTINCT ON" in sql:
+        if "DISTINCT ON" in sql and "social_stats" in sql:
             day = params[0]
-            # знімок перед періодом — 41 000, останній у періоді — 41 500
             if day < date(2026, 7, 20):
-                return [{"platform": "facebook", "followers": 41000, "week_end": "2026-07-12"}]
-            return [{"platform": "facebook", "followers": 41500, "week_end": "2026-07-26"}]
+                return [{"platform": "facebook", "followers": 41000, "at": "2026-07-12"}]
+            return [{"platform": "facebook", "followers": 41500, "at": "2026-07-26"}]
+        if "DISTINCT ON" in sql and "social_monthly" in sql:
+            # TikTok знаємо лише з таблиці (місячний рядок 1 липня)
+            return [{"platform": "tiktok", "followers": 8200, "at": "2026-07-01"}]
+        if "FROM social_monthly" in sql:
+            return [{"platform": "tiktok", "date": "2026-07-01", "followers": 8200,
+                     "reach": None, "views": 90000, "engagement": 4000,
+                     "posts": 12, "extra": {"likes": 3000}}]
         return [
             {"platform": "facebook", "date": "2026-07-19", "followers": 41000,
              "reach": None, "views": 100, "engagement": 10, "posts": 50},
@@ -215,17 +223,36 @@ def test_social():
     ta.bot_db.query = query
     ta._tg_cache.update({"at": 0.0, "value": None})
     ta._tg_subscribers = lambda: 41012
-    s = ta._social_block(WEEK_DONE)
-    fb = s["facebook"]
+    s = ta._social_block(WEEK_DONE, "week")
+    by_key = {p["key"]: p for p in s["platforms"]}
+    fb = by_key["facebook"]
+    check("тижневий грейн так і названий", s["grain"] == "week", s["grain"])
     check("підписники — останній знімок у межах періоду", fb["followers"] == 41500, fb)
     check("приріст підписників — до знімка перед періодом",
           fb["followers_delta"] == 500, fb)
     check("перегляди періоду — знімок 26.07", fb["views"]["value"] == 150, fb["views"])
     check("порівняння з відрізком попереднього тижня (19.07)",
           fb["views"]["prev"] == 100 and fb["views"]["delta"] == 50, fb["views"])
-    check("платформа без знімка підписників не падає",
-          s["instagram"]["followers"] is None, s["instagram"])
-    check("Telegram — живий знімок", s["telegram"]["subscribers"] == 41012, s["telegram"])
+    check("підписники беруться і з місячної історії (TikTok — лише там)",
+          by_key["tiktok"]["followers"] == 8200, by_key.get("tiktok"))
+    check("Telegram без жодного сліду в норі — живий знімок t.me",
+          by_key["telegram"]["followers"] == 41012 and by_key["telegram"]["live"],
+          by_key.get("telegram"))
+    check("мережі без даних у картках немає, вона в missing",
+          "YouTube" in s["missing"] and "youtube" not in by_key, s["missing"])
+    check("порядок карток фіксований",
+          [p["key"] for p in s["platforms"]][:2] == ["facebook", "instagram"],
+          [p["key"] for p in s["platforms"]])
+
+    # Місячний грейн: читаються МІСЯЧНІ рядки (рядок лежить на 1-му числі)
+    m = ta._social_block(ta._ranges("month", 0, today=TODAY), "month")
+    tt = {p["key"]: p for p in m["platforms"]}["tiktok"]
+    check("місячний грейн читає рядок місяця, а не діапазон дат",
+          tt["views"]["value"] == 90000 and m["grain"] == "month", tt["views"])
+    check("тижневі зрізи в місячний вид не підмішуються",
+          {p["key"] for p in m["platforms"]} & {"facebook"} == set()
+          or {p["key"]: p for p in m["platforms"]}["facebook"]["views"]["value"] is None,
+          [p["key"] for p in m["platforms"]])
 
 
 # ---------- Гранти ----------
