@@ -29,7 +29,7 @@ const STATE = {
   homeView: null,        // ставиться нижче: остання обрана таба Головної
   kpiTab: "norms",
   dash: { period: "week", offset: -1, data: null },
-  an: { period: "week", offset: -1, data: null },
+  an: { period: "week", offset: -1, data: null, allAuthors: false },
   form: null,
 };
 
@@ -615,11 +615,13 @@ function wireAnControls() {
   body.querySelectorAll("[data-ap]").forEach((b) => b.onclick = () => {
     STATE.an.period = b.dataset.ap;
     STATE.an.offset = -1;      // новий масштаб — знову з завершеного періоду
+    STATE.an.allAuthors = false;
     renderAnalytics();
   });
   body.querySelectorAll("[data-aoff]").forEach((b) => b.onclick = () => {
     if (b.disabled) return;
     STATE.an.offset = Math.min(0, STATE.an.offset + (+b.dataset.aoff));
+    STATE.an.allAuthors = false;   // інший період — інший склад списку
     renderAnalytics();
   });
 }
@@ -717,7 +719,13 @@ function anNewsroomHtml(d) {
   // різна робота. У цифрі праворуч лишається чесна кількість.
   const maxScore = n.authors.length
     ? Math.max(...n.authors.map((a) => a.score || a.count)) : 0;
-  const rows = n.authors.map((a) => {
+  // Сервер віддає ВСІХ; показуємо перших `shown`, решту — по тапу. Смуги
+  // рахуються від максимуму всього списку, тож «показати всіх» не перемальовує
+  // пропорції — просто дописує хвіст.
+  const limit = n.shown || 8;
+  const visible = STATE.an.allAuthors ? n.authors : n.authors.slice(0, limit);
+  const hidden = n.authors.length - visible.length;
+  const rows = visible.map((a) => {
     // Ім'я людини ростера сервер уже підставив (a.person) — по ньому і фото,
     // і трекер; a.name лишається на випадок автора поза ростером
     const who = a.person || a.name;
@@ -749,10 +757,23 @@ function anNewsroomHtml(d) {
         n.own_share == null ? "" : `${n.own_share}% усього`)}
     </div>
     ${rows ? `<div class="soft-card">
-      <div class="sc-t">Хто написав</div>
+      <div class="sc-t">Хто написав · ${n.authors.length}</div>
       ${rows}
+      ${hidden > 0 ? `<button class="more-btn" id="an-more">
+        Показати всіх · ще ${hidden}</button>` : ""}
       <div class="sp-note">порядок і смуги — за вагою: власний матеріал
         вважається за 2,6 звичайних</div>
+      ${(n.zero || []).length ? `<div class="sp-note">Без публікацій за
+        ${AN_PERIOD_WORD[d.period]}: ${esc(n.zero.filter((z) => z.linked)
+          .map((z) => z.name.split(" ")[0] + " " + (z.name.split(" ")[1] || ""))
+          .join(", ") || "нікого")}${
+        n.zero.some((z) => !z.linked)
+          ? `. Не привʼязані до акаунта сайту (шукати через /kpi_link):
+             ${esc(n.zero.filter((z) => !z.linked).map((z) => z.name).join(", "))}`
+          : ""}</div>` : ""}
+      ${(n.by_type || []).length ? `<div class="sp-note">Інші типи матеріалів у
+        CMS за цей період: ${esc(n.by_type.map((t) => `${t.type} ×${t.count}`)
+          .join(", "))} — у «новини/статті» вони не входять.</div>` : ""}
     </div>` : ""}`;
 }
 
@@ -889,6 +910,21 @@ function anDataHtml(d) {
       соцмережі — тижневі зрізи.</div>`;
 }
 
+/* «Показати всіх» — локальне розкриття списку: дані вже приїхали, запит не
+   потрібен. Перемальовуємо лише #an-data, щоб не смикати перемикачі періодів. */
+function wireAnAuthors(d) {
+  const btn = $("an-more");
+  if (!btn) return;
+  btn.onclick = () => {
+    STATE.an.allAuthors = true;
+    const box = $("an-data");
+    if (!box) return;
+    box.innerHTML = anDataHtml(d);
+    wireAnSpark(d);
+    wireAnAuthors(d);
+  };
+}
+
 function wireAnSpark(d) {
   const chart = $("an-spark");
   if (!chart || !d.site) return;
@@ -923,6 +959,7 @@ async function renderAnalytics() {
   fresh.innerHTML = anControls(data) + `<div id="an-data">${anDataHtml(data)}</div>`;
   wireAnControls();
   wireAnSpark(data);
+  wireAnAuthors(data);
 }
 
 /* Персональний трекер людини (для редактора): її рекурентні KPI зі шторкою

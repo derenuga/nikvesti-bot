@@ -271,11 +271,25 @@ def _person_by_owner_id():
 
 
 def _newsroom_block(rg):
-    """Скільки вийшло за період: новини / статті / власні + топ авторів.
+    """Скільки вийшло за період: новини / статті / власні + ВСІ автори.
 
     ОДИН запит на обидва періоди: колонка `cur` розділяє поточний і
     порівняльний відрізок (ліміти БД сайту не дозволяють ходити двічі там, де
-    можна раз). published <= now — гейт відкладених в адмінці."""
+    можна раз). published <= now — гейт відкладених в адмінці.
+
+    Три речі, яких бракувало в першій версії (питання Олега 27.07 «а де Аліса,
+    де Катя, кого ще немає?»):
+
+    1. Список авторів був обрізаний на восьми — і все, що нижче, просто
+       зникало. Тепер віддаємо ВСІХ, а «показати всіх» вирішує фронт.
+    2. Людина, яка за період не опублікувала нічого, у запиті не зʼявляється
+       взагалі — тобто найважливіший для редактора випадок був невидимий.
+       Тепер такі люди йдуть окремим списком `zero` (менеджерів там немає: у
+       Каті й Олега вихід не міряють), а якщо людину не привʼязано до жодного
+       users.id — так і сказано, бо це не «нуль», а «не знаю, де шукати».
+    3. Тип матеріалу більше НЕ фільтруємо в запиті: якщо в CMS зʼявиться третій
+       тип (блог, лонгрід), він не має тихо випадати з підрахунків. Новини й
+       статті рахуються як раніше, решта видна окремим рядком `by_type`."""
     ts_start, ts_end = _ts(rg["start"]), _ts(rg["data_end"] + timedelta(days=1))
     ts_prev_start = _ts(rg["prev_start"])
     ts_prev_end = _ts(rg["prev_end"] + timedelta(days=1))
@@ -289,20 +303,24 @@ def _newsroom_block(rg):
         "(n.published >= %s) AS cur, COUNT(*) AS c, "
         "MAX(TRIM(CONCAT(COALESCE(u.first_name,''), ' ', COALESCE(u.last_name,'')))) AS name "
         "FROM nodes n LEFT JOIN users u ON u.id = n.owner_id "
-        "WHERE n.status = 1 AND n.type IN ('news', 'article') "
+        "WHERE n.status = 1 "
         "AND ((n.published >= %s AND n.published < %s) "
         "  OR (n.published >= %s AND n.published < %s)) "
         "AND n.published <= UNIX_TIMESTAMP() "
         "GROUP BY n.owner_id, n.type, n.own_material, (n.published >= %s)",
         (ts_start, ts_start, ts_end, ts_prev_start, ts_prev_end, ts_start),
     )
+    counted_types = ("news", "article")
 
     def totals(is_cur):
-        out = {"news": 0, "articles": 0, "own": 0, "total": 0}
+        out = {"news": 0, "articles": 0, "own": 0, "total": 0, "other": {}}
         for r in rows:
             if bool(r["cur"]) != is_cur:
                 continue
             c = int(r["c"])
+            if r["type"] not in counted_types:
+                out["other"][r["type"]] = out["other"].get(r["type"], 0) + c
+                continue
             out["total"] += c
             out["news" if r["type"] == "news" else "articles"] += c
             if r["own"] == 1:
@@ -316,7 +334,7 @@ def _newsroom_block(rg):
     person_by_uid = _person_by_owner_id()
     authors = {}
     for r in rows:
-        if not r["cur"]:
+        if not r["cur"] or r["type"] not in counted_types:
             continue
         uid = r["owner_id"]
         person = person_by_uid.get(uid)
@@ -330,7 +348,23 @@ def _newsroom_block(rg):
             a["own"] += c
     for a in authors.values():
         a["score"] = round(a["own"] * OWN_WEIGHT + (a["count"] - a["own"]), 1)
-    top = sorted(authors.values(), key=lambda a: (-a["score"], a["name"]))[:TOP_AUTHORS]
+    ranked = sorted(authors.values(), key=lambda a: (-a["score"], a["name"]))
+
+    # Хто з команди за період не опублікував нічого. Це не «мовчання даних», а
+    # найважливіший рядок для редактора — і в SQL його принципово немає, бо
+    # людини без публікацій у nodes просто не існує. Менеджерів (Олег, Катя,
+    # Олена) не рахуємо: у них вихід не міряють.
+    published = {a["person"] for a in ranked if a["person"]}
+    linked_people = set(person_by_uid.values())
+    zero = [
+        {"name": person,
+         # «не привʼязано» ≠ «нуль»: людина могла публікувати під іншим
+         # акаунтом users, і тоді лікує /kpi_link, а не розмова про виробіток
+         "linked": person in linked_people}
+        for person, info in team_roster.ROSTER.items()
+        if not info["manager"] and person not in published
+    ]
+    zero.sort(key=lambda z: (not z["linked"], z["name"]))
     return {
         "news": {"value": cur["news"], "prev": prev["news"],
                  "delta": _delta(cur["news"], prev["news"])},
@@ -340,7 +374,14 @@ def _newsroom_block(rg):
                 "delta": _delta(cur["own"], prev["own"])},
         "own_share": round(cur["own"] / cur["total"] * 100) if cur["total"] else None,
         "total": cur["total"],
-        "authors": top,
+        # ВСІ автори, без обрізання: фронт показує перших TOP_AUTHORS і дає
+        # «показати всіх» — інакше «а де Аліса?» повторюватиметься щоразу
+        "authors": ranked,
+        "shown": TOP_AUTHORS,
+        "zero": zero,
+        "by_type": sorted(
+            ({"type": t, "count": c} for t, c in cur["other"].items()),
+            key=lambda x: -x["count"]),
     }
 
 

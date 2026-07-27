@@ -111,7 +111,14 @@ DASH = {
              "own": 18, "news": 21, "articles": 1, "score": 50.8},
             {"name": "Стрічка", "person": None, "count": 40, "own": 0,
              "news": 40, "articles": 0, "score": 40.0},
+            {"name": "Таміла Ксьонжик", "person": "Таміла Ксьонжик", "count": 9,
+             "own": 2, "news": 9, "articles": 0, "score": 12.2},
         ],
+        # список повний, а показуємо перших `shown` — решта по тапу
+        "shown": 3,
+        "zero": [{"name": "Аліса Мелікадамян", "linked": True},
+                 {"name": "Сергій Овчаришин", "linked": False}],
+        "by_type": [{"type": "blog", "count": 3}],
     },
     # Соцмережі приходять СПИСКОМ у фіксованому порядку — сервер уже вирішив,
     # який грейн читати (тиждень/місяць) і які мережі взагалі мають дані
@@ -296,10 +303,31 @@ async def main():
             check("автори з кількістю", await page.locator(".an-row").count() == 3)
             check("автор поза ростером не клікабельний",
                   await page.locator('.an-row[data-tracker]').count() == 2)
+            check("список авторів має лічильник усіх, а не лише показаних",
+                  "Хто написав · 4" in await page.inner_text("#an-data"))
+            check("показані перші shown, решта схована за кнопкою",
+                  await page.locator(".an-row").count() == 3
+                  and "ще 1" in await page.inner_text("#an-more"))
+            check("хто нічого не дав за період — окремим рядком",
+                  "Без публікацій за тиждень" in await page.inner_text("#an-data")
+                  and "Аліса" in await page.inner_text("#an-data"))
+            check("непривʼязаний акаунт названий окремо, з підказкою /kpi_link",
+                  "kpi_link" in await page.inner_text("#an-data")
+                  and "Сергій Овчаришин" in await page.inner_text("#an-data"))
+            check("третій тип матеріалів у CMS видно",
+                  "blog ×3" in await page.inner_text("#an-data"))
+            await page.click("#an-more")
+            await page.wait_for_timeout(200)
+            check("«показати всіх» дописує хвіст без нового запиту",
+                  await page.locator(".an-row").count() == 4
+                  and "Таміла Ксьонжик" in await page.inner_text("#an-data")
+                  and not any("dashboard" in r for r in
+                              (await page.evaluate("window.__reqs"))[3:]))
             names = await page.locator(".ar-n").all_inner_texts()
             check("порядок авторів — з сервера (за вагою власного матеріалу), "
                   "40 рерайтів нижче за 34 матеріали з 30 власними",
-                  names == ["Юлія Бойченко", "Аліна Квітко", "Стрічка"])
+                  names == ["Юлія Бойченко", "Аліна Квітко", "Стрічка",
+                            "Таміла Ксьонжик"])
             bars = await page.locator(".an-row .kbar i").all()
             w1 = await bars[0].evaluate("el => el.style.width")
             w3 = await bars[2].evaluate("el => el.style.width")

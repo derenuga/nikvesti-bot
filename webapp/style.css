@@ -970,6 +970,14 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 .soc-m span { display: inline-flex; align-items: baseline; gap: 5px; }
 .soc-m i { font-style: normal; color: var(--muted); font-size: 12px; }
 
+/* «Показати всіх» — м'яка кнопка всередині картки: дія локальна (список уже
+   приїхав), тож і виглядати має скромніше за CTA */
+.more-btn {
+  display: block; width: 100%; margin-top: 8px; padding: 10px;
+  border-radius: 12px; background: var(--blue-soft); color: var(--blue);
+  font-size: 13.5px; font-weight: 700;
+}
+
 .an-line { font-size: 13.5px; line-height: 1.5; margin-bottom: 6px; }
 .an-line:last-child { margin-bottom: 0; }
 .an-line b { font-weight: 800; }
