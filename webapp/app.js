@@ -263,6 +263,33 @@ function personEntry(name) {
   return STATE.people.find((x) => x.name === name) || null;
 }
 
+/* Прогрес зарахованого виконання: «2/3». Порожньо там, де показувати нічого:
+   на «1 новина» без жодного зарахування «0/1» був би шумом, а не інформацією. */
+function progressHtml(t) {
+  const done = t.done_count || 0;
+  if (!done && (t.qty <= 1 || t.status !== "open")) return "";
+  return `<span class="prog${done >= t.qty ? " ok" : ""}">${done}/${t.qty}</span>`;
+}
+
+function shortDate(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return `${d}.${m}`;
+}
+
+/* Зараховані публікації з лінками (вимога Олега: до «виконано» має бути
+   прикріплений конкретний матеріал, а не сама лише цифра). */
+function matchesHtml(t) {
+  const list = t.matches || [];
+  if (!list.length) return "";
+  return `<div class="mlist">${list.map((m) => `
+    <a class="mrow" href="${esc(m.url)}" data-ext="${esc(m.url)}">
+      <span class="st-mark done">${icon("check")}</span>
+      <span class="mr-t">${esc(m.title || m.url)}</span>
+      <span class="mr-d">${esc(shortDate(m.published))}</span>
+    </a>`).join("")}</div>`;
+}
+
 /* Дедлайн таска: "badge" — окремим значком праворуч у списках, інакше —
    дрібним усередині рядка (картка таска). Прострочений — червоним. */
 function deadlineHtml(t, style) {
@@ -502,6 +529,7 @@ async function renderPerson() {
       </span>
       <span class="tr-right">
         ${t.status === "open" ? deadlineHtml(t, "badge") : ""}
+        ${progressHtml(t)}
         ${statusMark(t)}
       </span>
     </button>`;
@@ -535,6 +563,7 @@ function taskSheet(t) {
     <h2>${esc(t.person)}</h2>
     <p style="color:var(--muted);margin:-8px 0 6px">${esc(taskLine(t, { donor: true }))}${deadlineHtml(t)}</p>
     ${t.note ? `<p style="margin-bottom:6px">${esc(t.note)}</p>` : ""}
+    ${t.done_count ? `<div class="sc-t" style="margin:10px 0 2px">Зараховано ${t.done_count} із ${t.qty}</div>${matchesHtml(t)}` : ""}
     <p style="color:var(--muted);font-size:12.5px">поставила ${esc(t.creator.split(" ")[0])} · ${new Date(t.created_at).toLocaleDateString("uk-UA")}</p>
     <div class="sheet-actions">
       ${t.status === "open"
@@ -2015,9 +2044,11 @@ function renderJournalist() {
           <span class="tr-who">${esc(tp.partner || tp.projName || "Позапроєктне завдання")}</span>
           <span class="tr-what">${esc(taskLine(t))}</span>
           ${t.note ? `<span class="tr-what">${esc(t.note)}</span>` : ""}
+          ${matchesHtml(t)}
         </span>
         <span class="tr-right">
           ${deadlineHtml(t, "badge")}
+          ${progressHtml(t)}
           <span class="status-dot open"></span>
         </span>
       </div>`;
@@ -2307,6 +2338,15 @@ $("content").addEventListener("click", (e) => {
     const t = STATE.tasks.find((x) => x.id === +task.dataset.task);
     if (t) taskSheet(t);
   }
+});
+
+/* Лінк на зараховану публікацію. Слухач документний, а не на #content:
+   ті самі рядки живуть і в шторці таска, яку openSheet перестворює. */
+document.addEventListener("click", (e) => {
+  const ext = e.target.closest("[data-ext]");
+  if (!ext) return;
+  e.preventDefault();
+  try { tg.openLink(ext.dataset.ext); } catch (err) { window.open(ext.dataset.ext, "_blank"); }
 });
 
 $("bottomnav").addEventListener("click", (e) => {

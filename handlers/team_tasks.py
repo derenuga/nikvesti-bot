@@ -163,6 +163,11 @@ _SCHEMA_STATEMENTS = [
     "ALTER TABLE team_creative_tasks ADD COLUMN IF NOT EXISTS partner_name TEXT",
     # Платформа для тасків типу «пост» (telegram/instagram)
     "ALTER TABLE team_creative_tasks ADD COLUMN IF NOT EXISTS platform TEXT",
+    # Хто закрив таск: Лис за зарахованими публікаціями (TRUE) чи людина
+    # (FALSE). Різниця не косметична — авто-закритий таск авто-логіка має
+    # право повернути у відкриті (підняли qty, відкликали матч), а закритий
+    # руками рішенням Каті — ніколи. Див. team_matches.apply_progress.
+    "ALTER TABLE team_creative_tasks ADD COLUMN IF NOT EXISTS auto_done BOOLEAN NOT NULL DEFAULT FALSE",
     # Папка проєкту на Google Drive (лінк; документи гранту — там)
     """
     CREATE TABLE IF NOT EXISTS team_project_drive (
@@ -452,6 +457,7 @@ def _row_to_task(r):
         "note": r["note"] or "",
         "deadline": r["deadline"].isoformat() if r["deadline"] else None,
         "status": r["status"],
+        "auto_done": bool(r.get("auto_done")),
         "created_at": r["created_at"].astimezone(KYIV_TZ).isoformat(),
         "done_at": r["done_at"].astimezone(KYIV_TZ).isoformat() if r["done_at"] else None,
     }
@@ -558,8 +564,13 @@ def update_task_fields(task_id, actor, qty=None, deadline=..., note=...,
     return _row_to_task(rows[0])
 
 
-def set_status(task_id, actor, status):
-    """open → done/dropped (і назад open, якщо закрили помилково)."""
+def set_status(task_id, actor, status, auto=False):
+    """open → done/dropped (і назад open, якщо закрили помилково).
+
+    auto=True — це зробив Лис за зарахованими публікаціями. Позначка лягає в
+    auto_done, і саме вона дозволяє потім повернути таск у відкриті, коли
+    прогрес перестав покривати qty. Дія людини завжди знімає позначку:
+    закрила Катя — Лис уже не перевідкриє."""
     ensure_team_schema()
     current = get_task(task_id)
     if not current:
@@ -567,12 +578,13 @@ def set_status(task_id, actor, status):
     done_at_sql = "now()" if status == "done" else "NULL"
     rows = bot_db.query(
         f"UPDATE team_creative_tasks SET status = %s, updated_at = now(), "
-        f"done_at = {done_at_sql} WHERE id = %s RETURNING *",
-        (status, int(task_id)),
+        f"auto_done = %s, done_at = {done_at_sql} WHERE id = %s RETURNING *",
+        (status, bool(auto) and status == "done", int(task_id)),
     )
     task = _row_to_task(rows[0])
     if status != current["status"]:
-        _add_event(task_id, actor, "status", f"{current['status']} → {status}")
+        _add_event(task_id, actor, "status",
+                   f"{current['status']} → {status}" + (" (авто)" if auto else ""))
     return task
 
 
