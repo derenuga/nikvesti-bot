@@ -63,6 +63,11 @@ _SCHEMA_STATEMENTS = [
         PRIMARY KEY (norm_id, person, period_start)
     )
     """,
+    # Міграція 27.07: відділи зведено до реальної структури Creative/Newsroom —
+    # норми, створені зі старими слагами, переносяться (ідемпотентно).
+    "UPDATE team_kpi_norms SET dept = 'newsroom' "
+    "WHERE dept IN ('журналістика', 'стрічка', 'переклад')",
+    "UPDATE team_kpi_norms SET dept = 'creative' WHERE dept IN ('соцмережі', 'відео')",
 ]
 
 _schema_done = False
