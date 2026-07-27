@@ -40,6 +40,18 @@ _fact_cache = {}  # (metric, period_start_iso) -> (expires, {person: count})
 _users_cache = {"at": 0.0, "map": {}}  # norm_name -> users.id
 
 _SCHEMA_STATEMENTS = [
+    # Пін правильного users.id за людиною — перебиває пошук за ПІБ. Потрібен,
+    # коли в users кілька записів з тим самим іменем (звільнена + нинішня):
+    # пошук за іменем брав би перший (найстаріший) id, і факт рахувався б під
+    # порожнім акаунтом. /kpi_link виправляє це без деплою.
+    """
+    CREATE TABLE IF NOT EXISTS team_user_link (
+        person       TEXT PRIMARY KEY,
+        site_user_id BIGINT NOT NULL,
+        updated_by   TEXT,
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS team_kpi_norms (
         id         BIGSERIAL PRIMARY KEY,
@@ -223,6 +235,33 @@ def _user_id_map():
     return mapping
 
 
+def get_user_links():
+    """{людина: закріплений users.id} з Нори (перебиває пошук за ПІБ)."""
+    ensure_kpi_schema()
+    return {r["person"]: r["site_user_id"]
+            for r in bot_db.query("SELECT person, site_user_id FROM team_user_link")}
+
+
+def set_user_link(person, site_user_id, updated_by=None):
+    ensure_kpi_schema()
+    bot_db.execute(
+        "INSERT INTO team_user_link (person, site_user_id, updated_by, updated_at) "
+        "VALUES (%s, %s, %s, now()) ON CONFLICT (person) DO UPDATE SET "
+        "site_user_id = EXCLUDED.site_user_id, updated_by = EXCLUDED.updated_by, updated_at = now()",
+        (person, int(site_user_id), updated_by),
+    )
+
+
+def resolve_site_user_id(person, links=None, name_map=None):
+    """users.id людини: закріплений пін (team_user_link) → пошук за ПІБ.
+    links/name_map — вже прочитані, щоб не смикати БД у циклі."""
+    links = links if links is not None else get_user_links()
+    if person in links:
+        return links[person]
+    name_map = name_map if name_map is not None else _user_id_map()
+    return name_map.get(_norm_name(person))
+
+
 def fact_counts(metric, period, own=False):
     """{person: к-сть опублікованого цього періоду} для ВСІХ людей ростера,
     або None, якщо БД сайту недоступна. own=True — лише власні матеріали
@@ -235,9 +274,10 @@ def fact_counts(metric, period, own=False):
     if hit and hit[0] > time.monotonic():
         return hit[1]
     users = _user_id_map()
+    links = get_user_links()
     person_by_uid = {}
     for person in team_roster.ROSTER:
-        uid = users.get(_norm_name(person))
+        uid = resolve_site_user_id(person, links, users)  # пін → пошук за ПІБ
         if uid:
             person_by_uid[uid] = person
     result = {p: 0 for p in team_roster.ROSTER}
@@ -258,11 +298,11 @@ def fact_counts(metric, period, own=False):
             person = person_by_uid.get(r["owner_id"])
             if person:
                 result[person] = r["c"]
-    # Люди без матчу в users лишаються з 0 — але позначаємо їх None, щоб
-    # апка показала «—», а не фейковий нуль (людина може писати під іншим ПІБ).
-    matched = {_norm_name(p) for p in team_roster.ROSTER} & set(users.keys())
+    # Люди без жодного users.id (ні піна, ні матчу за ПІБ) → None (апка малює
+    # «—», а не фейковий 0 — людина може писати під іншим ПІБ).
+    linked = set(person_by_uid.values())
     for person in team_roster.ROSTER:
-        if _norm_name(person) not in matched:
+        if person not in linked:
             result[person] = None
     _fact_cache[cache_key] = (time.monotonic() + FACT_CACHE_TTL, result)
     return result
@@ -284,10 +324,10 @@ def kpi_debug(name_query):
     # 1) кого з ростера маємо на увазі
     person = next((p for p in team_roster.ROSTER if _norm_name(q) in _norm_name(p)), None)
 
-    # 2) до якого id привʼязали за ПІБ (виробничий шлях)
-    matched_id = None
-    if person:
-        matched_id = _user_id_map().get(_norm_name(person))
+    # 2) до якого id привʼязано (пін → пошук за ПІБ) — виробничий шлях
+    links = get_user_links()
+    matched_id = resolve_site_user_id(person, links) if person else None
+    pinned = person in links if person else False
 
     # 3) усі users із таким прізвищем (ловить варіанти написання/дублі)
     last = q.split()[-1]
@@ -312,7 +352,8 @@ def kpi_debug(name_query):
         )
 
     lines = [f"🔎 <b>{person or q}</b> — діагностика факту за {period_label('month')}"]
-    lines.append(f"Привʼязано до users.id: <b>{matched_id if matched_id else '❌ не знайдено за ПІБ'}</b>")
+    pin_mark = " 📌 закріплено" if pinned else " (за ПІБ)"
+    lines.append(f"Привʼязано до users.id: <b>{matched_id if matched_id else '❌ не знайдено'}</b>{pin_mark if matched_id else ''}")
     lines.append("\n<b>Записи users із цим прізвищем:</b>")
     for r in urows:
         mark = " ← привʼязано" if r["id"] == matched_id else ""
@@ -329,11 +370,19 @@ def kpi_debug(name_query):
     else:
         lines.append("  (нічого не опубліковано цього місяця під цими id)")
 
-    lines.append(
-        "\n<i>Норма «власних новин» рахує лише type=news + own_material=1 "
-        "під привʼязаним id. Якщо вихід — під іншим owner_id, або це "
-        "article/рерайт — тому й 0.</i>"
-    )
+    # Підказка: якщо весь вихід під іншим id, ніж привʼязаний — закріпити правильний
+    other_ids = {r["owner_id"] for r in breakdown if r["owner_id"] != matched_id}
+    if person and other_ids and not any(r["owner_id"] == matched_id for r in breakdown):
+        best = max(other_ids, key=lambda i: sum(r["c"] for r in breakdown if r["owner_id"] == i))
+        lines.append(
+            f"\n⚠️ <b>Весь вихід під id={best}, а норма рахує під id={matched_id}.</b>\n"
+            f"Виправити: <code>/kpi_link {person} {best}</code>"
+        )
+    else:
+        lines.append(
+            "\n<i>Норма «власних новин» рахує лише type=news + own_material=1 "
+            "під привʼязаним id.</i>"
+        )
     return "\n".join(lines)
 
 
