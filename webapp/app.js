@@ -612,6 +612,9 @@ function projectPickerSheet() {
           <span class="pk-meta">${esc(fmtRange(p))}${p.kpi_news || p.kpi_articles ? ` · квота ${p.kpi_news || 0}+${p.kpi_articles || 0}` : ""}</span>
         </span>
       </button>`).join("")}`);
+  // Без { once: true }: воно знімало слухач від БУДЬ-ЯКОГО кліку в шторці —
+  // тап по заголовку робив пікер мертвим. Слухач тепер помирає разом із
+  // вузлом шторки при наступному openSheet (див. openSheet).
   $("sheet").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-proj]");
     if (!btn) return;
@@ -619,7 +622,7 @@ function projectPickerSheet() {
     f.theme_id = null;
     closeSheet();
     renderForm();
-  }, { once: true });
+  });
 }
 
 async function createTask() {
@@ -1636,8 +1639,21 @@ async function renderMyKpi() {
 
 /* ---------- Шторка ---------- */
 
+/* Відкриття шторки ЗАМІНЮЄ вузол #sheet новим, а не переписує innerHTML.
+   Це не косметика: шторки вішають на #sheet свої click-слухачі (taskSheet,
+   projectPickerSheet), а зняти їх не було де — closeSheet лише ховає бекдроп.
+   Через це кожна колись відкрита шторка спрацьовувала знову: відкрив картку
+   таска A, закрив, потім у картці таска B натиснув «Виконано» — і таска A
+   теж тихо ставала виконаною (по одному зайвому PATCH на кожне минуле
+   відкриття). Заміна вузла вбиває слухачі разом зі старим вузлом, тож
+   помилку не можна повторити випадково — новий код вішає слухачі вже на
+   свіжий вузол, який помре при наступному openSheet. */
 function openSheet(html) {
-  $("sheet").innerHTML = html;
+  const fresh = document.createElement("div");
+  fresh.id = "sheet";
+  fresh.className = "sheet";
+  fresh.innerHTML = html;
+  $("sheet").replaceWith(fresh);
   $("sheet-backdrop").classList.remove("hidden");
 }
 function closeSheet() {
