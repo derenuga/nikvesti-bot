@@ -532,7 +532,7 @@ def create_task(creator, person, type_, project_id=None, project_name=None,
     if notify:
         team_notifications.notify_safe(
             "task_assigned", task_summary(task), audience="person", person=person,
-            body=f"поставила {creator.split()[0]}"
+            body=f"поставив(ла) {creator.split()[0]}"
                  + (f" · до {task['deadline'][8:10]}.{task['deadline'][5:7]}"
                     if task["deadline"] else ""),
             object_type="task", object_id=task["id"],

@@ -763,6 +763,19 @@ def _task_for_theme(actor, match, theme_id, person):
 
 
 def _decide_blocking(match_id, actor, action, task_id, theme_id=None, person=None):
+    if action == "requeue":
+        match, touched = team_matches.requeue_match(match_id, actor)
+        if not match:
+            return None
+        tasks = []
+        for tid in touched:
+            task, _ = team_matches.apply_progress(tid, actor)
+            if task:
+                tasks.append(task)
+        team_matches.attach_progress(tasks)
+        return {"match": match, "tasks": tasks,
+                "pending_count": team_matches.pending_count()}
+
     """Рішення + перерахунок прогресу обох зачеплених тасків в одній сесії.
 
     Виконавицю беремо з обраного таска, а не з тіла запиту: для постів
@@ -797,14 +810,20 @@ def _decide_blocking(match_id, actor, action, task_id, theme_id=None, person=Non
 
 
 async def api_matches_decide(request):
-    """{action: confirm|reject, task_id?} — «зарахувати» (можливо в іншу
-    тематику) або «не те». Запис лишається в обох випадках: повторно ту саму
-    публікацію суддя вже не чіпатиме."""
+    """{action: confirm|reject|requeue, task_id?|theme_id?} — «зарахувати»
+    (у наявне завдання чи в тематику, під яку його заведе сервер), «не те»
+    або «повернути в чергу».
+
+    Різниця між reject і requeue принципова: reject — остаточне «це не
+    проєктне», публікація більше нікуди не повернеться; requeue знімає
+    зарахування і кладе питання назад Каті (саме це робить зняття галочки в
+    картці таска). Запис лишається в обох випадках, тож суддя ту саму
+    публікацію повторно не чіпає."""
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
     action = payload.get("action")
-    if action not in ("confirm", "reject"):
-        raise web.HTTPBadRequest(text="action: confirm або reject")
+    if action not in ("confirm", "reject", "requeue"):
+        raise web.HTTPBadRequest(text="action: confirm, reject або requeue")
     task_id = payload.get("task_id")
     theme_id = payload.get("theme_id")
     for name, value in (("task_id", task_id), ("theme_id", theme_id)):

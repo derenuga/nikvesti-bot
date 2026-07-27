@@ -288,16 +288,24 @@ function shortDate(iso) {
 }
 
 /* Зараховані публікації з лінками (вимога Олега: до «виконано» має бути
-   прикріплений конкретний матеріал, а не сама лише цифра). */
-function matchesHtml(t) {
+   прикріплений конкретний матеріал, а не сама лише цифра).
+
+   editable — режим картки таска: галочка стає кнопкою «зняти саме цю
+   публікацію». Без неї лишалось або приймати гуртом, або відкидати гуртом:
+   якщо з пʼятнадцяти зарахованих одна не підходить, знімати треба її одну,
+   а не все скопом. */
+function matchesHtml(t, { editable = false } = {}) {
   const list = t.matches || [];
   if (!list.length) return "";
   return `<div class="mlist">${list.map((m) => `
-    <a class="mrow" href="${esc(m.url)}" data-ext="${esc(m.url)}">
-      <span class="st-mark done">${icon("check")}</span>
-      <span class="mr-t">${esc(m.title || m.url)}</span>
+    <div class="mrow">
+      ${editable
+        ? `<button class="st-mark done mr-off" data-unmatch="${m.id}"
+             aria-label="Зняти з зарахованих">${icon("check")}</button>`
+        : `<span class="st-mark done">${icon("check")}</span>`}
+      <a class="mr-t" href="${esc(m.url)}" data-ext="${esc(m.url)}">${esc(m.title || m.url)}</a>
       <span class="mr-d">${esc(shortDate(m.published))}</span>
-    </a>`).join("")}</div>`;
+    </div>`).join("")}</div>`;
 }
 
 /* Дедлайн таска: "badge" — окремим значком праворуч у списках, інакше —
@@ -513,7 +521,7 @@ async function renderPerson() {
     if (!r) return "";
     if (r.excused) return `<button class="mykpi-row" data-kpn="${n.id}">
       <span class="mk-t">${esc(normTitle(n))}</span>
-      <span class="kp-excused">звільнена${r.note ? " · " + esc(r.note) : ""}</span></button>`;
+      <span class="kp-excused">звільнено${r.note ? " · " + esc(r.note) : ""}</span></button>`;
     const pct = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
     return `<button class="mykpi-row" data-kpn="${n.id}">
       <span class="mk-t">${esc(normTitle(n))}
@@ -531,12 +539,15 @@ async function renderPerson() {
   // Перший рядок — тематика (Олег, 27.07), проєкт — дрібним під нею
   const taskRow = (t) => {
     const qtyPart = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
-    const { projName } = taskProject(t);
+    // Донор першим, проєкт після нього: «IMS · Голоси Миколаєва». Сама назва
+    // проєкту мало що каже — по донору видно, кому цей матеріал у звіт.
+    const { partner, projName } = taskProject(t);
+    const where = [partner, projName].filter(Boolean).join(" · ");
     return `
     <button class="task-row ${t.status === "done" ? "is-done" : t.status === "dropped" ? "is-dropped" : ""}" data-task="${t.id}">
       <span class="tr-main">
         <span class="tr-who">${esc(qtyPart)}${t.theme_name ? ` · ${esc(t.theme_name)}` : ""}</span>
-        ${projName ? `<span class="tr-what">${esc(projName)}</span>` : ""}
+        ${where ? `<span class="tr-what">${esc(where)}</span>` : ""}
         ${t.note ? `<span class="tr-what">${esc(t.note)}</span>` : ""}
       </span>
       <span class="tr-right">
@@ -575,8 +586,10 @@ function taskSheet(t) {
     <h2>${esc(t.person)}</h2>
     <p style="color:var(--muted);margin:-8px 0 6px">${esc(taskLine(t, { donor: true }))}${deadlineHtml(t)}</p>
     ${t.note ? `<p style="margin-bottom:6px">${esc(t.note)}</p>` : ""}
-    ${t.done_count ? `<div class="sc-t" style="margin:10px 0 2px">Зараховано ${t.done_count} із ${t.qty}</div>${matchesHtml(t)}` : ""}
-    <p style="color:var(--muted);font-size:12.5px">поставила ${esc(t.creator.split(" ")[0])} · ${new Date(t.created_at).toLocaleDateString("uk-UA")}</p>
+    ${t.done_count ? `<div class="sc-t" style="margin:10px 0 2px">Зараховано ${t.done_count} із ${t.qty}</div>
+       ${matchesHtml(t, { editable: true })}
+       <div class="mr-hint">тап по галочці — зняти публікацію і повернути її в чергу</div>` : ""}
+    <p style="color:var(--muted);font-size:12.5px">поставив(ла) ${esc(t.creator.split(" ")[0])} · ${new Date(t.created_at).toLocaleDateString("uk-UA")}</p>
     <div class="sheet-actions">
       ${t.status === "open"
         ? `<button class="sbtn danger" data-status="dropped">Зняти</button>
@@ -586,6 +599,30 @@ function taskSheet(t) {
     </div>`);
   const editBtn = $("task-edit");
   if (editBtn) editBtn.onclick = () => taskEditSheet(t);
+  // Зняти ОДНУ публікацію із зарахованих: із пʼятнадцяти зарахованих одна
+  // може не підходити, і тоді відкидати гуртом — не варіант.
+  $("sheet").querySelectorAll("[data-unmatch]").forEach((b) => b.onclick = async () => {
+    const m = (t.matches || []).find((x) => x.id === +b.dataset.unmatch);
+    if (!m || !(await confirmAction(
+        `Зняти з зарахованих і повернути в чергу?\n${m.title}`))) return;
+    try {
+      // requeue, а не reject: «це не сюди» ≠ «це взагалі не проєктне».
+      // Публікація повертається у «Сповіщення» — буде куди її прилаштувати.
+      const res = await api(`/api/matches/${m.id}/decide`, {
+        method: "POST", body: JSON.stringify({ action: "requeue" }),
+      });
+      haptic("success");
+      (res.tasks || []).forEach(patchTask);
+      STATE.pendingCount = res.pending_count;
+      syncAlertsBadge();
+      render();
+      toast("Повернув у чергу — розберемо в «Сповіщеннях»");
+      STATE.pending = null;             // черга змінилась, перечитаємо при вході
+      const fresh = STATE.tasks.find((x) => x.id === t.id);
+      if (fresh) taskSheet(fresh);      // показуємо оновлений «14/15»
+      else closeSheet();
+    } catch (e) { toast(e.message); }
+  });
   $("sheet").addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-status]");
     if (!btn) return;
@@ -1464,7 +1501,7 @@ function matchCard(m) {
            ${suggested.done_count}/${suggested.qty}</div>`
       : `<div class="al-guess muted">${tg
            ? "Проєкт видно з дисклеймера — обери, кому і в яку тематику"
-           : "Тематику суддя не обрав — обери сама"}</div>`}
+           : "Тематику суддя не обрав — обери вручну"}</div>`}
     <div class="al-actions">
       <button class="sbtn danger" data-mreject="${m.id}">Не те</button>
       <button class="sbtn primary" data-mconfirm="${m.id}">Зарахувати</button>
@@ -1561,7 +1598,7 @@ function paintAlerts() {
       <div class="sc-t">Летить у чати</div>
       <div class="al-line">Звітні дедлайни грантів — у «Фінанси МикВісті»,
         за тиждень і за 2 доби до дати.</div>
-      <div class="al-line">Нове завдання і виконане завдання — виконавиці
+      <div class="al-line">Нове завдання і виконане завдання — авторові
         в приват від Лиса.</div>
     </div>`;
   box.querySelectorAll("[data-mreject]").forEach((b) => b.onclick = async () => {
@@ -1657,10 +1694,34 @@ async function decideMatch(matchId, body) {
     haptic("success");
     STATE.pending = (STATE.pending || []).filter((x) => x.id !== matchId);
     (res.tasks || []).forEach(patchTask);
+    // Прогрес у РЕШТІ карток черги теж змінився: у проєкті часто десяток
+    // спірних публікацій на одне й те саме завдання, і після зарахування
+    // сусідні картки показували стару цифру («14/15») до перезаходу в апку.
+    patchPendingOptions(res.tasks || []);
     STATE.pendingCount = res.pending_count;
     syncAlertsBadge();
     paintAlerts();
   } catch (e) { toast(e.message); }
+}
+
+/* Свіжий прогрес у картках, яких рішення не стосувалось напряму. Заразом
+   прибираємо з вибору завдання, що вже закрились: пропонувати «зарахувати» в
+   набране завдання не можна — воно більше не відкрите. */
+function patchPendingOptions(tasks) {
+  if (!STATE.pending || !tasks.length) return;
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  STATE.pending.forEach((m) => {
+    if (!m.options) return;
+    m.options.forEach((o) => {
+      const t = byId.get(o.id);
+      if (t) {
+        o.done_count = t.done_count || 0;
+        o.qty = t.qty;
+        o.status = t.status;
+      }
+    });
+    m.options = m.options.filter((o) => o.status !== "done" && o.status !== "dropped");
+  });
 }
 
 /* Лічильник на пункті меню «Сповіщення»: спірні + непрочитані події */
@@ -2092,7 +2153,7 @@ function renderKpiNorm() {
   const rows = n.rows.map((r) => {
     const pct = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
     const right = r.excused
-      ? `<span class="kp-excused">звільнена</span>`
+      ? `<span class="kp-excused">звільнено</span>`
       : r.fact === null
         ? `<span class="kp-nofact">—</span>`
         : `<span class="kp-fact ${r.done ? "ok" : ""}">${r.fact}/${r.target}${r.done ? " ✓" : ""}</span>`;
@@ -2164,7 +2225,7 @@ function overrideSheet(n, row) {
   let target = row.excused ? 0 : row.target;
   const paint = () => {
     $("o-val").textContent = target;
-    $("o-hint").textContent = target === 0 ? "0 — звільнена цього періоду" : "";
+    $("o-hint").textContent = target === 0 ? "0 — звільнено від норми цього періоду" : "";
   };
   openSheet(`
     <h2>${esc(row.person)}</h2>
@@ -2197,7 +2258,7 @@ function overrideSheet(n, row) {
     } catch (e) { toast(e.message); }
   };
   if (row.overridden) $("o-clear").onclick = () => apply({ clear: true });
-  $("o-excuse").onclick = () => apply({ target: 0, note: $("o-note").value.trim() || "звільнена" });
+  $("o-excuse").onclick = () => apply({ target: 0, note: $("o-note").value.trim() || "звільнено" });
   $("o-save").onclick = () => apply({ target, note: $("o-note").value.trim() });
 }
 
@@ -2391,7 +2452,7 @@ async function renderMyKpi() {
       if (!r) return "";
       if (r.excused) return `<div class="mykpi-row">
         <span class="mk-t">${esc(normTitle(n))}</span>
-        <span class="kp-excused">звільнена${r.note ? " · " + esc(r.note) : ""}</span></div>`;
+        <span class="kp-excused">звільнено${r.note ? " · " + esc(r.note) : ""}</span></div>`;
       const pct = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
       return `<div class="mykpi-row">
         <span class="mk-t">${esc(normTitle(n))}

@@ -9,7 +9,10 @@
 - набраний прогрес зелений, недобраний — синій;
 - «0/1» не малюється (шум на кожному односкладовому таску);
 - картка таска показує зараховані публікації з лінками;
-- тап по лінку відкриває матеріал через tg.openLink, а не всередині апки.
+- тап по лінку відкриває матеріал через tg.openLink, а не всередині апки;
+- ОДНУ зараховану публікацію можна зняти тапом по галочці (з підтвердженням),
+  не відкидаючи решту — з пʼятнадцяти зарахованих не підходити може одна;
+- у списку завдань людини донор іде перед назвою проєкту.
 
 Запуск (потрібні playwright + chromium):
     python test_webapp_progress.py
@@ -77,6 +80,7 @@ JOURNALIST = {
 
 STUB = """
 window.__opened = [];
+window.__posts = [];
 window.Telegram = { WebApp: {
   initData: "stub", colorScheme: "light",
   ready(){}, expand(){}, onEvent(){}, disableVerticalSwipes(){},
@@ -90,6 +94,17 @@ window.fetch = async (url, opts = {}) => {
   if (url === "/api/bootstrap") return json(window.BOOT);
   if (url === "/api/kpi") return json({ norms: [], week_label: "", month_label: "", site_db: true });
   if (url.startsWith("/api/kpi/person")) return json({ has_norms: false, months: [] });
+  let m;
+  if ((m = url.match(/^\\/api\\/matches\\/(\\d+)\\/decide$/))) {
+    window.__posts.push({ id: +m[1], body: JSON.parse(opts.body) });
+    // Сервер віддає оновлений таск: знята публікація зменшила прогрес
+    const t = window.BOOT.tasks.find((x) => (x.matches || [])
+      .some((y) => y.id === +m[1]));
+    const left = (t.matches || []).filter((y) => y.id !== +m[1]);
+    return json({ tasks: [{ ...t, matches: left, done_count: left.length,
+                            status: "open", auto_done: false }],
+                  pending_count: 0 });
+  }
   return json({ ok: true });
 };
 """
@@ -138,6 +153,8 @@ async def main():
             # --- трекер людини ---
             await page.click('[data-tracker="Аліна Квітко"]')
             await page.wait_for_selector(".task-row")
+            body0 = await page.inner_text("#content")
+            check("донор іде перед назвою проєкту", "IMS · Голоси Миколаєва" in body0)
             badges = await page.locator(".prog").all_inner_texts()
             check("у трекері видно «2/3» недобраного таска", "2/3" in badges)
             check("видно «2/2» закритого", "2/2" in badges)
@@ -161,13 +178,29 @@ async def main():
             check("видно дату публікації", "10.07" in sheet)
             await page.screenshot(path="/tmp/progress-sheet.png")
 
-            await page.click("#sheet .mrow")
+            await page.click("#sheet .mr-t")
             await page.wait_for_timeout(200)
             opened = await page.evaluate("window.__opened")
             check("тап по публікації відкриває її через tg.openLink",
                   opened and opened[0].endswith("321001-sesiia"))
             check("апка при цьому нікуди не пішла",
                   page.url.startswith("https://app.local/"))
+
+            # --- зняти ОДНУ публікацію із зарахованих ---
+            check("галочка в картці клікабельна",
+                  await page.locator("#sheet [data-unmatch]").count() == 2)
+            await page.click('#sheet [data-unmatch="11"]')
+            await page.wait_for_timeout(400)
+            posts = await page.evaluate("window.__posts")
+            check("зняття ПОВЕРТАЄ публікацію в чергу, а не ховає назавжди",
+                  posts and posts[-1]["id"] == 11
+                  and posts[-1]["body"] == {"action": "requeue"})
+            sheet2 = await page.inner_text("#sheet")
+            check("картка одразу показує «1 із 3», а не 2",
+                  "Зараховано 1 із 3" in sheet2)
+            check("решта зарахованих лишилась на місці",
+                  "Депутати не зібрались вдруге" in sheet2
+                  and "Сесія міськради ухвалила бюджет" not in sheet2)
         finally:
             await browser.close()
 

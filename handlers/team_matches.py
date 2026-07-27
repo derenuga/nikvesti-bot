@@ -269,7 +269,7 @@ def _notify_done(task):
     if not task:
         return
     links = [m["url"] for m in counted_by_task([task["id"]]).get(task["id"], [])]
-    body = f"зарахувала сама: {len(links)} із {task['qty']}"
+    body = f"Лис зарахував сам: {len(links)} із {task['qty']}"
     team_notifications.notify_safe(
         "task_done", team_tasks.task_summary(task), audience="person",
         person=task["person"], body=body, url=links[0] if links else None,
@@ -330,6 +330,30 @@ def pending_count():
         "SELECT COUNT(*) AS c FROM team_task_matches WHERE status = 'pending'"
     )
     return rows[0]["c"] if rows else 0
+
+
+def requeue_match(match_id, actor):
+    """Повертає публікацію в чергу (pending), знімаючи зарахування.
+
+    Саме це, а не reject, має відбуватись, коли зарахування знімають із
+    картки таска: «це не сюди» ≠ «це взагалі не проєктне». Rejected —
+    остаточне «ні», і публікація вже не поверталась би нікуди: ні в чергу
+    (там лише pending), ні до судді (rejected входить у DECIDED). Пропозицію
+    таска теж стираємо: таск міг бути помилковим і вже знятим.
+
+    Повертає (матч, [id тасків, яких торкнулись])."""
+    ensure_match_schema()
+    current = get_match(match_id)
+    if not current:
+        return None, []
+    rows = bot_db.query(
+        f"UPDATE team_task_matches SET status = 'pending', task_id = NULL, "
+        f"decided_by = %s, decided_at = now() WHERE id = %s RETURNING {_COLS}",
+        (actor, int(match_id)),
+    )
+    if not rows:
+        return None, []
+    return _row_to_match(rows[0]), ([current["task_id"]] if current["task_id"] else [])
 
 
 def decide_match(match_id, actor, action, task_id=None, person=None):

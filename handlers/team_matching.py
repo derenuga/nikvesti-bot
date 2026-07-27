@@ -513,7 +513,7 @@ async def _ping_done(bot, person, task):
         links += f"\n• {m['title']} — {m['url']}"
     await team_tasks._ping(
         bot, person,
-        f"🦊 Завдання виконано — зарахувала сама:\n{team_tasks.task_summary(task)}"
+        f"🦊 Завдання виконано — зарахував сам:\n{team_tasks.task_summary(task)}"
         f"{links}",
     )
 
@@ -821,6 +821,48 @@ async def match_scan_handler(update, context):
     if report.pending:
         lines.append(f"\n🤔 {report.pending} спірних — у «Сповіщеннях» апки.")
     await msg.edit_text("\n".join(lines), disable_web_page_preview=True)
+
+
+async def match_requeue_handler(update, context):
+    """/match_requeue <url або id> — повернути публікацію в чергу «Сповіщень».
+
+    Потрібно, коли рішення виявилось помилковим уже після того, як його
+    ухвалили: зарахували не тому, зняли, а таск потім видалили — і публікація
+    зависла зі статусом rejected, тобто ні в черзі, ні у судді (rejected
+    входить у DECIDED, тож прогін її більше не чіпає)."""
+    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Використання: /match_requeue <url матеріалу або id ноди>")
+        return
+    arg = context.args[0]
+    ref = str(extract_article_id(arg) or arg).strip()
+
+    def run():
+        from handlers import bot_db
+        with bot_db.session():
+            rows = bot_db.query(
+                "SELECT id, status, title FROM team_task_matches "
+                "WHERE ref = %s ORDER BY id DESC LIMIT 1", (ref,))
+            if not rows:
+                return None
+            match, touched = team_matches.requeue_match(rows[0]["id"], "Олег")
+            for tid in touched:
+                team_matches.apply_progress(tid)
+            return {"before": rows[0]["status"], "match": match}
+
+    result = await asyncio.to_thread(run)
+    if not result:
+        await update.message.reply_text(
+            f"Матеріал {ref} у звірці не значиться — його ще не судили. "
+            f"Прогнати: /match_scan")
+        return
+    await update.message.reply_text(
+        f"🦊 Повернув у чергу: {result['match']['title'][:80]}\n"
+        f"Було: {result['before']} → стало: pending.\n"
+        f"Розібрати — у «Сповіщеннях» апки.")
 
 
 async def match_cards_handler(update, context):

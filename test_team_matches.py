@@ -12,7 +12,9 @@
 - закритий РУКАМИ таск авто-логіка не чіпає ніколи;
 - рішення Каті: confirm у ту саму / іншу тематику і reject;
 - зарахування в тематику, на яку завдання ЩЕ НЕ ставили: завдання заводиться
-  на льоту і мовчки (без «тобі поставили завдання» за вчорашнє).
+  на льоту і мовчки (без «тобі поставили завдання» за вчорашнє);
+- зняття зарахування ПОВЕРТАЄ публікацію в чергу (а не ховає її назавжди):
+  «це не сюди» ≠ «це взагалі не проєктне».
 
 Запуск (потрібен Postgres; за замовчуванням локальний тестовий):
     BOT_DATABASE_URL=postgresql://... python test_team_matches.py
@@ -155,6 +157,31 @@ def main():
           action == "done" and upd["status"] == "done")
     check("хто вирішив — записано", team_matches.get_match(pend["id"])["decided_by"]
           == "Катерина Середа")
+
+    # ---------- 7а. Зняття зарахування повертає в чергу ----------
+    # Випадок Олега: зарахував не тому, зняв, таск видалив — і публікація
+    # зависла б у rejected: ні в черзі, ні у судді.
+    back_task = new_task(qty=1)
+    back = team_matches.record_match(
+        "site", "test-3500", "auto", task_id=back_task["id"],
+        person="Тест Тестова", project_id=999, confidence="high",
+        title="Помилково зарахована", url="https://nikvesti.com/news/3500")
+    team_matches.apply_progress(back_task["id"])
+    check("спершу зараховано і таск закрито",
+          counted(back_task["id"]) == 1
+          and team_tasks.get_task(back_task["id"])["status"] == "done")
+    requeued, touched = team_matches.requeue_match(back["id"], "Олег Деренюга")
+    for tid in touched:
+        team_matches.apply_progress(tid)
+    check("зняття повертає публікацію в чергу", requeued["status"] == "pending")
+    check("і прибирає помилкову прив'язку до таска", requeued["task_id"] is None)
+    check("вона знову видима в «Сповіщеннях»",
+          any(x["ref"] == "test-3500" for x in team_matches.pending_matches()))
+    check("прогрес таска впав, таск повернувся у відкриті",
+          counted(back_task["id"]) == 0
+          and team_tasks.get_task(back_task["id"])["status"] == "open")
+    check("а reject, навпаки, ховає назавжди",
+          "test-1003" not in {x["ref"] for x in team_matches.pending_matches()})
 
     # ---------- 8. Тематика, на яку завдання ще не ставили ----------
     # Випадок Олега: публікація закриває «критичні інформаційні потреби», а
