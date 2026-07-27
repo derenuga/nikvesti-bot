@@ -146,6 +146,12 @@ input:focus, textarea:focus { outline: none; border-color: var(--blue); }
   display: block; font-size: 13px; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.task-row .tr-donor { color: var(--ink); font-weight: 700; }
+.task-row .tr-right {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 5px;
+  flex-shrink: 0;
+}
+.task-row .logo-sq { width: 40px; height: 40px; font-size: 12px; flex-shrink: 0; align-self: flex-start; }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .status-dot.open { background: var(--blue); }
 .status-dot.done { background: var(--good); }

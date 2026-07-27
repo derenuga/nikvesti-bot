@@ -162,6 +162,16 @@ def _bootstrap_blocking(person, is_manager):
         out["tasks"] = []
 
     if not is_manager:
+        # Журналістці — мінімум про проєкти (донор + лого) для рядків тасків
+        try:
+            out["projects"] = [
+                {"id": p["id"], "name": p["name"], "partner": p["partner"],
+                 "logo": p["logo"], "logo_orig": p["logo_orig"]}
+                for p in team_projects.list_projects(False)
+            ]
+        except Exception as e:
+            print(f"webapp: проєкти для журналістки не прочитались — {e}")
+            out["projects"] = []
         return out
 
     names = [n for n, p in team_roster.ROSTER.items() if not p["manager"]]
@@ -237,7 +247,13 @@ async def api_tasks_create(request):
         raise web.HTTPBadRequest(text="Невідома людина")
     type_ = payload.get("type") or None
     if type_ is not None and type_ not in team_tasks.TASK_TYPES:
-        raise web.HTTPBadRequest(text="type: news, article або порожньо (будь-який)")
+        raise web.HTTPBadRequest(text="type: news, article, post або порожньо (будь-який)")
+    platform = payload.get("platform") or None
+    if type_ == "post":
+        if platform not in team_tasks.TASK_PLATFORMS:
+            raise web.HTTPBadRequest(text="platform: telegram або instagram (для поста)")
+    else:
+        platform = None
     qty = payload.get("qty", 1)
     try:
         qty = max(1, min(99, int(qty)))
@@ -246,12 +262,14 @@ async def api_tasks_create(request):
 
     project_id = payload.get("project_id") or None
     project_name = None
+    partner_name = None
     if project_id:
         projects = await asyncio.to_thread(team_projects.list_projects, False)
         match = next((p for p in projects if p["id"] == int(project_id)), None)
         if not match:
             raise web.HTTPBadRequest(text="Невідомий проєкт")
         project_name = match["name"]
+        partner_name = match["partner"]
 
     theme_id = payload.get("theme_id") or None
     theme_name = None
@@ -272,7 +290,8 @@ async def api_tasks_create(request):
     task = await asyncio.to_thread(
         team_tasks.create_task,
         person, assignee, type_, project_id, project_name,
-        theme_id, theme_name, qty, payload.get("note"), deadline,
+        theme_id, theme_name, qty, payload.get("note"), deadline, partner_name,
+        platform,
     )
     # Пінг після відповіді — створення таска не має висіти на Telegram API
     asyncio.get_running_loop().create_task(
