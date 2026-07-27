@@ -165,11 +165,32 @@ function imgHtml(src, orig, extra = "") {
     onerror="if(this.dataset.alt){this.src=this.dataset.alt;this.removeAttribute('data-alt')}else{this.remove()}">`;
 }
 
+/* Ресайзер сайту віддає лише заведені розміри — для аватарок робочі 96x96 і
+   255x255 (120/144 повертають порожньо). Кружечкам 42–48 px вистачає 96:
+   4.4 КБ проти 23 КБ. На екранах із високою щільністю 96 замало, тож
+   рахуємо реальні пікселі й беремо 255. */
+function avatarSrc(entry, size) {
+  if (!entry) return null;
+  const need = size * (window.devicePixelRatio || 1);
+  return (need <= 96 && entry.photo_sm) ? entry.photo_sm : entry.photo;
+}
+
 function avatar(personName, entry, size) {
   return `<span class="ava" style="width:${size}px;height:${size}px">
     <span class="init" style="font-size:${Math.round(size / 3)}px">${esc(initials(personName))}</span>
-    ${entry ? imgHtml(entry.photo, entry.photo_orig) : ""}
+    ${entry ? imgHtml(avatarSrc(entry, size), entry.photo_orig) : ""}
   </span>`;
+}
+
+/* Скелетон замість «Завантажую…»: тримає висоту майбутнього вмісту, щоб
+   екран не стрибав, коли дані приїдуть. */
+function skeleton(kind, n) {
+  if (kind === "rings")
+    return `<div class="sk-grid">${'<span class="sk sk-ring"></span>'.repeat(n)}</div>`;
+  if (kind === "bars")
+    return `<div class="sk-bars">${Array.from({ length: n }, (_, i) =>
+      `<i class="sk" style="height:${28 + ((i * 37) % 62)}%"></i>`).join("")}</div>`;
+  return `<div>${'<div class="sk sk-row"></div>'.repeat(n)}</div>`;
 }
 
 function logoSq(project, size) {
@@ -358,7 +379,7 @@ function renderHome() {
     $("content").innerHTML = `
       <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
       ${seg}
-      <div id="dash-body"><div class="empty-hint">Завантажую…</div></div>`;
+      <div id="dash-body">${skeleton("rings", 8)}</div>`;
     wire();
     renderDashboard();
     return;
@@ -1258,7 +1279,9 @@ function normById(id) {
 
 async function renderKpi() {
   if (!STATE.kpi) {
-    $("content").innerHTML = `<div class="h-big">KPI</div><div class="empty-hint">Завантажую…</div>`;
+    $("content").innerHTML = `<div class="h-big">Налаштування KPI</div>
+      <div class="h-sub">норма на відділ, облік по людині · звіт — на Головній</div>
+      ${skeleton("rows", 4)}`;
     try { await loadKpi(); } catch (e) { toast(e.message); return; }
     if (STATE.view !== "kpi") return;
   }
@@ -1377,7 +1400,7 @@ async function renderPersonHistory() {
       <div><div class="wn">${esc(person)}</div>
       <div class="wd">${esc((entry || {}).dept_title || "")}</div></div>
     </div>
-    <div id="hist-body"><div class="empty-hint">Завантажую…</div></div>`;
+    <div id="hist-body">${skeleton("bars", 12)}</div>`;
   let data;
   try {
     data = await api(`/api/kpi/person?person=${encodeURIComponent(person)}`);

@@ -535,3 +535,24 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
   border-radius: 14px; padding: 11px 18px; font-size: 14px; font-weight: 600;
   z-index: 70; box-shadow: var(--shadow); max-width: 88vw; text-align: center;
 }
+
+/* ---------- скелетони завантаження ---------- */
+/* Тримають висоту майбутнього вмісту: раніше тут стояв текст «Завантажую…»
+   і екран стрибав, коли дані приїжджали. */
+.sk {
+  display: block; background: var(--line); border-radius: 12px;
+  opacity: .6; animation: sk-pulse 1.3s ease-in-out infinite;
+}
+@keyframes sk-pulse { 50% { opacity: .28; } }
+@media (prefers-reduced-motion: reduce) { .sk { animation: none; opacity: .4; } }
+.sk-row { height: 64px; margin-bottom: 9px; border-radius: 15px; }
+.sk-ring { width: 76px; height: 76px; border-radius: 50%; margin: 0 auto; }
+.sk-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 18px 10px; margin-top: 18px;
+}
+.sk-bars {
+  display: flex; align-items: flex-end; gap: 8px;
+  height: 150px; margin-top: 20px; overflow: hidden;
+}
+.sk-bars .sk { flex: 1; border-radius: 8px 8px 2px 2px; }
