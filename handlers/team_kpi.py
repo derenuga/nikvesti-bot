@@ -20,6 +20,7 @@ BUILDER_MONITOR_MODULE.md).
 кешуються на 5 хв (ліміти БД сайту); без DB_* факт = None, апка показує «—».
 """
 
+import threading
 import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -88,16 +89,24 @@ _SCHEMA_STATEMENTS = [
     "UPDATE team_kpi_norms SET dept = 'digital' WHERE dept IN ('соцмережі', 'відео')",
 ]
 
+_schema_lock = threading.Lock()
 _schema_done = False
 
 
 def ensure_kpi_schema():
+    """Під блокуванням і в одній сесії — з тих самих причин, що
+    team_tasks.ensure_team_schema (гонка перших паралельних запитів +
+    з'єднання на кожен statement)."""
     global _schema_done
     if _schema_done:
         return
-    for sql in _SCHEMA_STATEMENTS:
-        bot_db.execute(sql)
-    _schema_done = True
+    with _schema_lock:
+        if _schema_done:
+            return
+        with bot_db.session():
+            for sql in _SCHEMA_STATEMENTS:
+                bot_db.execute(sql)
+        _schema_done = True
 
 
 # ---------- Періоди (Київ) ----------
