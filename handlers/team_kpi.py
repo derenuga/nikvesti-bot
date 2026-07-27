@@ -63,6 +63,11 @@ _SCHEMA_STATEMENTS = [
         PRIMARY KEY (norm_id, person, period_start)
     )
     """,
+    # Міграція 27.07: відділи зведено до реальної структури Creative/Newsroom —
+    # норми, створені зі старими слагами, переносяться (ідемпотентно).
+    "UPDATE team_kpi_norms SET dept = 'newsroom' "
+    "WHERE dept IN ('журналістика', 'стрічка', 'переклад')",
+    "UPDATE team_kpi_norms SET dept = 'creative' WHERE dept IN ('соцмережі', 'відео')",
 ]
 
 _schema_done = False
@@ -262,8 +267,10 @@ def kpi_payload(for_person=None):
     """Повне зведення KPI. for_person — лише норми відділу цієї людини і лише
     її рядок (журналістський вид); None — всі норми з усіма людьми (менеджер)."""
     norms = list_norms()
+    # Відділи — фактичні (перекриття з team_dept, Катя переносить в апці)
+    depts = team_roster.dept_overrides()
     if for_person:
-        dept = team_roster.ROSTER[for_person]["dept"]
+        dept = team_roster.effective_dept(for_person, depts)
         norms = [n for n in norms if n["dept"] == dept]
     out = []
     for n in norms:
@@ -271,7 +278,8 @@ def kpi_payload(for_person=None):
             people = [for_person]
         else:
             people = [p for p, i in team_roster.ROSTER.items()
-                      if i["dept"] == n["dept"] and not i["manager"]]
+                      if not i["manager"]
+                      and team_roster.effective_dept(p, depts) == n["dept"]]
         overrides = _overrides_for(n["id"], n["period"])
         facts = fact_counts(n["metric"], n["period"])
         rows = []

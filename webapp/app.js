@@ -749,14 +749,56 @@ function overrideSheet(n, row) {
 /* ---------- Команда ---------- */
 
 function renderTeam() {
+  const byDept = {};
+  STATE.people.forEach((p) => (byDept[p.dept_title] = byDept[p.dept_title] || []).push(p));
   $("content").innerHTML = `
     <div class="h-big">Команда</div>
-    <div class="h-sub">фото — з профілів на сайті</div>
-    ${STATE.people.map((p) => `
-      <div class="team-row">
-        ${avatar(p.name, p, 46)}
-        <div><div class="tn">${esc(p.name)}</div><div class="td">${esc(p.dept_title)}</div></div>
-      </div>`).join("")}`;
+    <div class="h-sub">тап по людині — перенести між відділами</div>
+    ${Object.entries(byDept).map(([dept, list]) => `
+      <div class="dept-title">${esc(dept)} · ${list.length}</div>
+      ${list.map((p) => `
+        <button class="team-row" data-move="${esc(p.name)}">
+          ${avatar(p.name, p, 46)}
+          <div style="flex:1;text-align:left"><div class="tn">${esc(p.name)}</div>
+            <div class="td">${esc(p.dept_title)}</div></div>
+          ${icon("chevron-right", "ic chev")}
+        </button>`).join("")}`).join("")}`;
+  $("content").querySelectorAll("[data-move]").forEach((b) =>
+    b.onclick = () => deptSheet(STATE.people.find((p) => p.name === b.dataset.move)));
+}
+
+function deptSheet(p) {
+  if (!p) return;
+  let dept = p.dept;
+  openSheet(`
+    <h2>${esc(p.name)}</h2>
+    <div class="f-label" style="margin-top:0">Відділ</div>
+    <div class="two" id="d-pick">
+      <button class="bigbtn slim ${dept === "newsroom" ? "on" : ""}" data-d="newsroom">Newsroom</button>
+      <button class="bigbtn slim ${dept === "creative" ? "on" : ""}" data-d="creative">Creative</button>
+    </div>
+    <p style="color:var(--muted);font-size:12.5px;margin-top:12px">Відділ визначає,
+      які KPI-норми діють на людину — з моменту перенесення.</p>
+    <div class="sheet-actions">
+      <button class="sbtn" id="d-cancel">Скасувати</button>
+      <button class="sbtn primary" id="d-save">Зберегти</button>
+    </div>`);
+  $("d-pick").onclick = (e) => {
+    const b = e.target.closest("[data-d]");
+    if (!b) return;
+    dept = b.dataset.d;
+    $("d-pick").querySelectorAll(".bigbtn").forEach((c) => c.classList.toggle("on", c === b));
+  };
+  $("d-cancel").onclick = closeSheet;
+  $("d-save").onclick = async () => {
+    try {
+      await api("/api/people/dept", { method: "PUT", body: JSON.stringify({ person: p.name, dept }) });
+      closeSheet();
+      haptic("success");
+      await reload();
+      renderTeam();
+    } catch (e) { toast(e.message); }
+  };
 }
 
 /* ---------- Журналістський режим (read-only, інтерфейс — наступний крок) ---------- */
