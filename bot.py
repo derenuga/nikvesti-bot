@@ -48,7 +48,8 @@ from handlers.news_archive import news_back_callback, news_select_callback, BACK
 from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, viber_test_handler
 from handlers.webapp import start_webapp, team_handler
 from handlers.team_matching import match_test_handler
-from handlers.team_kpi import kpi_debug
+from handlers.team_kpi import kpi_debug, set_user_link
+from handlers import team_roster
 from handlers.notifier import notify_error
 from handlers.usage_report import usage_handler, display_name
 from handlers import storage
@@ -167,6 +168,26 @@ async def kpi_debug_handler(update, context):
         return
     report = await asyncio.to_thread(kpi_debug, " ".join(context.args))
     await update.message.reply_text(report, parse_mode="HTML", disable_web_page_preview=True)
+
+async def kpi_link_handler(update, context):
+    """/kpi_link <імʼя/прізвище> <users.id> — закріпити правильний users.id за
+    людиною (перебиває пошук за ПІБ; для дублів акаунтів у users)."""
+    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if len(context.args) < 2 or not context.args[-1].isdigit():
+        await update.message.reply_text("Використання: /kpi_link <прізвище> <users.id>, напр. /kpi_link Бойченко 44")
+        return
+    site_id = int(context.args[-1])
+    name_q = " ".join(context.args[:-1])
+    from handlers.team_projects import _norm_name
+    person = next((p for p in team_roster.ROSTER if _norm_name(name_q) in _norm_name(p)), None)
+    if not person:
+        await update.message.reply_text(f"Не знайшла «{name_q}» у ростері.")
+        return
+    await asyncio.to_thread(set_user_link, person, site_id, display_name(update.effective_user))
+    await update.message.reply_text(
+        f"📌 {person} → users.id {site_id}. KPI перерахується (кеш ~5 хв).")
 
 # IP, які KEY4 додав у whitelist БД сайту (звірка для /myip).
 DB_WHITELIST_IPS = {"162.220.234.241", "162.220.234.242", "152.5.180.241"}
@@ -380,6 +401,7 @@ def main():
     app.add_handler(CommandHandler("team", team_handler))
     app.add_handler(CommandHandler("match_test", match_test_handler))
     app.add_handler(CommandHandler("kpi_debug", kpi_debug_handler))
+    app.add_handler(CommandHandler("kpi_link", kpi_link_handler))
     app.add_handler(CommandHandler("viber_setup", viber_setup_handler))
     app.add_handler(CommandHandler("viber_test", viber_test_handler))
     app.add_handler(CommandHandler("report", report))
