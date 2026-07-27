@@ -255,6 +255,46 @@ function projectColorIdx(id) {
 
 /* ---------- Навігація ---------- */
 
+/* ---------- Нативна кнопка «Назад» Telegram ----------
+   Свої кнопки «‹ Назад» лишаються (вони кажуть, КУДИ повернешся — нативна
+   цього не вміє), але апаратна кнопка Android і свайп-назад раніше просто
+   закривали апку з будь-якого екрана. Куди вести — беремо не зі стеку історії,
+   а зі статичної мапи «екран → батько»: та сама, що на самих кнопках, тож
+   нативна і намальована ніколи не розійдуться. Зі стеком розійшлися б —
+   nav("project") після збереження тематики клав би туди зайвий запис. */
+function backTarget() {
+  switch (STATE.view) {
+    case "person":
+    case "personhist":
+    case "people": return ["home"];
+    case "form": return ["people"];
+    case "project": return ["projects"];
+    case "bulk": return ["project", STATE.bulk && STATE.bulk.projectId];
+    case "kpinorm": return ["kpi"];
+    default: return null;      // корінь табів — назад нікуди
+  }
+}
+
+function sheetOpen() {
+  return !$("sheet-backdrop").classList.contains("hidden");
+}
+
+/* Кнопку показуємо і коли відкрита шторка — інакше на кореневому екрані
+   свайп-назад закрив би апку замість того, щоб закрити шторку. */
+function syncBackButton() {
+  if (!tg || !tg.BackButton) return;
+  try {
+    if (sheetOpen() || backTarget()) tg.BackButton.show();
+    else tg.BackButton.hide();
+  } catch (e) {}
+}
+
+function goBack() {
+  if (sheetOpen()) { closeSheet(); return; }
+  const target = backTarget();
+  if (target) nav(target[0], target[1]);
+}
+
 function nav(view, arg) {
   STATE.view = view;
   if (view === "project") STATE.currentProject = arg;
@@ -275,6 +315,7 @@ function nav(view, arg) {
   document.querySelectorAll("#bottomnav .bn").forEach((b) =>
     b.classList.toggle("on", b.dataset.view === navKey));
   render();
+  syncBackButton();
   window.scrollTo(0, 0);
 }
 
@@ -1697,9 +1738,11 @@ function openSheet(html) {
   fresh.innerHTML = html;
   $("sheet").replaceWith(fresh);
   $("sheet-backdrop").classList.remove("hidden");
+  syncBackButton();
 }
 function closeSheet() {
   $("sheet-backdrop").classList.add("hidden");
+  syncBackButton();
 }
 
 /* ---------- Завантаження ---------- */
@@ -1823,6 +1866,10 @@ async function boot() {
   }
   tg.ready();
   tg.expand();
+  // Без цього протягування проєкту пальцем згортає саму апку (Bot API 7.7;
+  // у старих клієнтах методу немає — там лишається як було)
+  try { tg.disableVerticalSwipes(); } catch (e) {}
+  try { tg.BackButton.onClick(goBack); } catch (e) {}
   const syncTheme = () => document.body.classList.toggle("dark", tg.colorScheme === "dark");
   syncTheme();
   try { tg.onEvent("themeChanged", syncTheme); } catch (e) {}
@@ -1838,6 +1885,7 @@ async function boot() {
     } else {
       renderJournalist();
     }
+    syncBackButton();
   } catch (e) {
     // 401/403 — це «тебе не пустили», решта (обрив мережі, 5xx, сплячий
     // сервіс) минає сама, тож там даємо кнопку замість глухого кута.
