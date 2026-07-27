@@ -13,7 +13,11 @@
 - вичерпаний таск (набрав qty) не збирає нові публікації;
 - автора немає в ростері → skipped без виклику AI;
 - skipped перерозглядається, коли таск на цю тематику з'явився пізніше;
-- збій судді нічого не пише — наступний прогін спробує ще.
+- збій судді нічого не пише — наступний прогін спробує ще;
+- спірний матч «одягається»: опис і зображення зі сторінки матеріалу (на
+  РЕАЛЬНІЙ сторінці nikvesti.com, коли є мережа);
+- рубрика критичних інформаційних потреб (CIN) підмішується в промпт лише
+  тоді, коли така тематика є серед кандидатів.
 
 Запуск:
     BOT_DATABASE_URL=postgresql://... python test_matching_scan.py
@@ -91,6 +95,19 @@ async def main():
 
     team_matching.owner_person_map = lambda: {42: PERSON}
 
+    # ---------- 0. Опис і зображення з РЕАЛЬНОЇ сторінки матеріалу ----------
+    real_url = ("https://nikvesti.com/articles/321635-instrukciya-dlya-batkiv-"
+                "scho-take-posluga-rannogo-vtruchannya-u-svoyiy-gromadi")
+    real_desc, real_img = team_matching.fetch_card_meta(real_url)
+    if real_desc or real_img:
+        check("зі справжньої сторінки взявся редакторський опис",
+              real_desc and len(real_desc) > 40)
+        check("і зображення — ресайзнутий сайтом .webp",
+              real_img and real_img.startswith("https://nikvesti.com/")
+              and real_img.endswith(".webp"))
+    else:
+        print("  (сайт недоступний — перевірку реальної сторінки пропущено)")
+
     sessions = task("Репортажі з сесій", qty=1)
     requests = task("Історії з інфозапитів", qty=2)
 
@@ -162,6 +179,35 @@ async def main():
     check("збій AI порахований як збій", rep6.errors == 1)
     check("і не залишив запису — наступний прогін спробує ще",
           not bot_db.query("SELECT 1 FROM team_task_matches WHERE ref = '905'"))
+
+    # ---------- 6а. Картка спірного «одягається» ----------
+    team_matching.fetch_card_meta = lambda url: (
+        "Опис матеріалу для картки", "https://nikvesti.com/600x315/i.webp")
+    judge6a = Judge({"Спірна картка": ("medium", "Історії з інфозапитів")})
+    await team_matching.judge_nodes([node(907, "Спірна картка")], judge=judge6a)
+    card = next(m for m in team_matches.pending_matches() if m["ref"] == "907")
+    check("у спірного матчу є опис для картки",
+          card["description"] == "Опис матеріалу для картки")
+    check("і зображення", card["image"].endswith("i.webp"))
+    stored_auto = bot_db.query(
+        "SELECT description, image FROM team_task_matches WHERE ref = '901'")
+    check("авто-зарахованим картку не тягнемо (зайвий запит)",
+          stored_auto and not stored_auto[0]["description"]
+          and not stored_auto[0]["image"])
+
+    # ---------- 6б. Рубрика CIN — лише де треба ----------
+    plain_theme = [{"id": 1, "theme_name": "Тендери", "type": "news",
+                    "qty": 1, "note": None}]
+    cin_theme = [{"id": 2, "theme_name": "Критичні інформаційні потреби",
+                  "type": None, "qty": 1, "note": None}]
+    check("звичайній тематиці рубрика CIN не додається",
+          team_matching._cin_hint(plain_theme) == "")
+    hint = team_matching._cin_hint(cin_theme)
+    check("CIN-тематиці дається перелік восьми потреб",
+          "надзвичайні ситуації" in hint and "довкілля" in hint
+          and "врядування" in hint)
+    check("і названо джерело методології",
+          "Annenberg" in hint and "News Deserts" in hint)
 
     # ---------- 7. Рішення Каті зараховує в тематику ----------
     m = next(x for x in team_matches.pending_matches() if x["ref"] == "902")

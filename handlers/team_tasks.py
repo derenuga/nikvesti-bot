@@ -505,7 +505,7 @@ def _add_event(task_id, actor, event, detail=None):
 
 def create_task(creator, person, type_, project_id=None, project_name=None,
                 theme_id=None, theme_name=None, qty=1, note=None, deadline=None,
-                partner_name=None, platform=None):
+                partner_name=None, platform=None, notify=True):
     ensure_team_schema()
     rows = bot_db.query(
         """
@@ -525,14 +525,18 @@ def create_task(creator, person, type_, project_id=None, project_name=None,
     task = _row_to_task(rows[0])
     _add_event(task["id"], creator, "created", f"→ {person}")
     # Сповіщення в апці дублює пінг у приват: пінг не дійде, доки людина хоч
-    # раз не відкрила апку, а стрічка чекає її там завжди
-    team_notifications.notify_safe(
-        "task_assigned", task_summary(task), audience="person", person=person,
-        body=f"поставила {creator.split()[0]}"
-             + (f" · до {task['deadline'][8:10]}.{task['deadline'][5:7]}"
-                if task["deadline"] else ""),
-        object_type="task", object_id=task["id"],
-        dedup_key=f"task_assigned:{task['id']}")
+    # раз не відкрила апку, а стрічка чекає її там завжди.
+    # notify=False — коли таск заводиться під уже виконану публікацію (Катя
+    # зараховує з черги звірки): «тобі поставили завдання» за зроблене вчора
+    # тільки збиває з пантелику, а «завдання виконано» вона однаково отримає.
+    if notify:
+        team_notifications.notify_safe(
+            "task_assigned", task_summary(task), audience="person", person=person,
+            body=f"поставила {creator.split()[0]}"
+                 + (f" · до {task['deadline'][8:10]}.{task['deadline'][5:7]}"
+                    if task["deadline"] else ""),
+            object_type="task", object_id=task["id"],
+            dedup_key=f"task_assigned:{task['id']}")
     return task
 
 

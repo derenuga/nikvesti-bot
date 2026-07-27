@@ -10,7 +10,9 @@
 - підняли qty авто-закритому → повертається у відкриті;
 - відкликали матч (rejected) після авто-закриття → те саме;
 - закритий РУКАМИ таск авто-логіка не чіпає ніколи;
-- рішення Каті: confirm у ту саму / іншу тематику і reject.
+- рішення Каті: confirm у ту саму / іншу тематику і reject;
+- зарахування в тематику, на яку завдання ЩЕ НЕ ставили: завдання заводиться
+  на льоту і мовчки (без «тобі поставили завдання» за вчорашнє).
 
 Запуск (потрібен Postgres; за замовчуванням локальний тестовий):
     BOT_DATABASE_URL=postgresql://... python test_team_matches.py
@@ -153,6 +155,42 @@ def main():
           action == "done" and upd["status"] == "done")
     check("хто вирішив — записано", team_matches.get_match(pend["id"])["decided_by"]
           == "Катерина Середа")
+
+    # ---------- 8. Тематика, на яку завдання ще не ставили ----------
+    # Випадок Олега: публікація закриває «критичні інформаційні потреби», а
+    # завдання на цю тематику ніхто не заводив — і зарахувати нікуди.
+    from handlers import team_notifications, webapp
+    real_person = "Аліна Квітко"          # має бути з ростера: сервер це перевіряє
+    theme = team_tasks.add_theme(999, "Критичні інформаційні потреби")
+    m2 = team_matches.record_match(
+        "site", "test-4001", "pending", person=real_person, project_id=999,
+        confidence="low", title="Публікація без відповідного завдання",
+        url="https://nikvesti.com/news/4001")
+    result = webapp._decide_blocking(m2["id"], "Катерина Середа", "confirm",
+                                     None, theme["id"], real_person)
+    check("зарахування в тематику без завдання спрацювало", bool(result))
+    created = [t for t in (result or {}).get("tasks", [])
+               if t["theme_id"] == theme["id"]]
+    check("завдання під тематику заведено", bool(created))
+    check("і публікація одразу зарахована в нього",
+          created and team_matches.counted_count(created[0]["id"]) == 1)
+    check("завдання на 1 матеріал одразу закрилось",
+          created and team_tasks.get_task(created[0]["id"])["status"] == "done")
+    assigned = [n for n in team_notifications.feed(real_person, False)
+                if n["kind"] == "task_assigned"
+                and n["object_id"] == str(created[0]["id"])]
+    check("«тобі поставили завдання» за вчорашнє НЕ надсилалось", assigned == [])
+
+    # прибирання за цим блоком
+    for t in created:
+        bot_db.execute("DELETE FROM team_task_events WHERE task_id = %s", (t["id"],))
+        bot_db.execute("DELETE FROM team_task_matches WHERE task_id = %s", (t["id"],))
+        bot_db.execute("DELETE FROM team_creative_tasks WHERE id = %s", (t["id"],))
+        bot_db.execute(
+            "DELETE FROM team_notifications WHERE object_type = 'task' AND object_id = %s",
+            (str(t["id"]),))
+    bot_db.execute("DELETE FROM team_project_themes WHERE id = %s", (theme["id"],))
+    bot_db.execute("DELETE FROM team_task_matches WHERE ref = 'test-4001'")
 
     cleanup()
 

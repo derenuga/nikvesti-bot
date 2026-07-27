@@ -739,10 +739,33 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 .al-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .al-h-txt { flex: 1; min-width: 0; }
 .al-who { display: block; font-weight: 700; font-size: 14.5px; }
-.al-proj {
-  display: block; font-size: 12.5px; color: var(--muted);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.al-head .ava { flex-shrink: 0; }
+.al-head .ava .ic { width: 18px; height: 18px; color: var(--blue); }
+
+/* Дата під заголовком і «опис + мініатюра праворуч» — картка має читатись
+   як новина: що це, коли вийшло і як виглядає. */
+.al-date { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+.al-body { display: flex; gap: 10px; align-items: flex-start; margin-top: 6px; }
+.al-desc {
+  flex: 1; min-width: 0; font-size: 13px; color: var(--muted); line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
 }
+.al-thumb {
+  width: 76px; height: 60px; border-radius: 10px; overflow: hidden;
+  flex-shrink: 0; background: var(--line); display: block;
+}
+.al-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* Рядок проєкту: лого донора + «додано до проєкту …» */
+.al-proj-row {
+  display: flex; align-items: center; gap: 8px; margin-top: 10px;
+  font-size: 12.5px; color: var(--muted); min-width: 0;
+}
+.al-proj-row span {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.al-proj-row b { color: var(--ink); }
 .al-conf {
   font-size: 11px; font-weight: 700; border-radius: 8px; padding: 2px 7px;
   background: var(--line); color: var(--muted); white-space: nowrap;
@@ -776,7 +799,8 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 /* Лічильник черги на пункті меню «Сповіщення» */
 .bn { position: relative; }
 .bn-badge {
-  position: absolute; top: 0; right: 12px; min-width: 16px; height: 16px;
+  position: absolute; top: 0; right: 8px; min-width: 16px; height: 16px;
   border-radius: 8px; padding: 0 4px; background: var(--red); color: #fff;
   font-size: 10px; font-weight: 800; line-height: 16px; text-align: center;
+  font-variant-numeric: tabular-nums;
 }

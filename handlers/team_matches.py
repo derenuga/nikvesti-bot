@@ -70,6 +70,11 @@ _SCHEMA_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_ttm_task ON team_task_matches (task_id)",
     "CREATE INDEX IF NOT EXISTS idx_ttm_status ON team_task_matches (status)",
+    # Картка в черзі має виглядати як новина, а не як рядок бази: опис і
+    # зображення (og:description / og:image сторінки або фото поста каналу).
+    # Тягнемо їх ЛИШЕ для спірних — у авто-зарахованих картки немає.
+    "ALTER TABLE team_task_matches ADD COLUMN IF NOT EXISTS description TEXT",
+    "ALTER TABLE team_task_matches ADD COLUMN IF NOT EXISTS image TEXT",
 ]
 
 _schema_lock = threading.Lock()
@@ -93,7 +98,8 @@ def ensure_match_schema():
 
 
 _COLS = ("id, source, ref, task_id, person, project_id, confidence, reasoning, "
-         "status, title, url, published, node_type, created_at, decided_by, decided_at")
+         "status, title, url, description, image, published, node_type, "
+         "created_at, decided_by, decided_at")
 
 
 def _row_to_match(r):
@@ -109,6 +115,8 @@ def _row_to_match(r):
         "status": r["status"],
         "title": r["title"] or "",
         "url": r["url"] or "",
+        "description": r["description"] or "",
+        "image": r["image"] or "",
         "node_type": r["node_type"],
         "published": r["published"].astimezone(team_tasks.KYIV_TZ).isoformat()
                      if r["published"] else None,
@@ -121,7 +129,7 @@ def _row_to_match(r):
 
 def record_match(source, ref, status, task_id=None, person=None, project_id=None,
                  confidence=None, reasoning=None, title=None, url=None,
-                 published=None, node_type=None):
+                 published=None, node_type=None, description=None, image=None):
     """Записує вердикт по публікації. Повертає матч або None, якщо питання по
     ній уже вирішене (UNIQUE (source, ref) — саме тут спрацьовує
     ідемпотентність повторних прогонів).
@@ -135,13 +143,14 @@ def record_match(source, ref, status, task_id=None, person=None, project_id=None
         f"""
         INSERT INTO team_task_matches
             (source, ref, task_id, person, project_id, confidence, reasoning,
-             status, title, url, published, node_type)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_timestamp(%s), %s)
+             status, title, url, published, node_type, description, image)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_timestamp(%s), %s, %s, %s)
         ON CONFLICT (source, ref) DO UPDATE SET
             task_id = EXCLUDED.task_id, person = EXCLUDED.person,
             project_id = EXCLUDED.project_id, confidence = EXCLUDED.confidence,
             reasoning = EXCLUDED.reasoning, status = EXCLUDED.status,
             title = EXCLUDED.title, url = EXCLUDED.url,
+            description = EXCLUDED.description, image = EXCLUDED.image,
             published = EXCLUDED.published, node_type = EXCLUDED.node_type,
             created_at = now()
         WHERE team_task_matches.status = 'skipped'
@@ -149,7 +158,8 @@ def record_match(source, ref, status, task_id=None, person=None, project_id=None
         """,
         (source, str(ref), int(task_id) if task_id else None, person,
          int(project_id) if project_id else None, confidence, reasoning,
-         status, (title or "")[:500], url, published, node_type),
+         status, (title or "")[:500], url, published, node_type,
+         (description or None), image),
     )
     return _row_to_match(rows[0]) if rows else None
 
@@ -289,6 +299,29 @@ def pending_matches(limit=100):
         (limit,),
     )
     return [_row_to_match(r) for r in rows]
+
+
+def pending_without_meta(limit=20):
+    """Спірні матчі без опису/зображення — картки, що ще не «одягнені».
+    Потрібно для самолікування: рядки, записані до появи цих колонок (або
+    коли сторінка тоді не відповіла), доганяються наступним прогоном."""
+    ensure_match_schema()
+    rows = bot_db.query(
+        f"SELECT {_COLS} FROM team_task_matches WHERE status = 'pending' "
+        f"AND (description IS NULL OR image IS NULL) ORDER BY id DESC LIMIT %s",
+        (limit,),
+    )
+    return [_row_to_match(r) for r in rows]
+
+
+def set_meta(match_id, description=None, image=None):
+    """Дописує опис/зображення до вже записаного матчу."""
+    ensure_match_schema()
+    return bot_db.execute(
+        "UPDATE team_task_matches SET description = COALESCE(%s, description), "
+        "image = COALESCE(%s, image) WHERE id = %s",
+        (description or None, image or None, int(match_id)),
+    )
 
 
 def pending_count():
