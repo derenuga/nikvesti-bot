@@ -160,8 +160,10 @@ function qtyWord(type, qty) {
 
 function taskSummary(t) {
   let line = t.qty > 1 ? `${t.qty} ${qtyWord(t.type, t.qty)}` : qtyWord(t.type, 1);
+  const partner = t.partner_name || (taskProject(t).partner || null);
+  if (partner) line += ` · ${partner}`;
   if (t.project_name) line += ` · ${t.project_name}`;
-  else line += " · позапроєктне";
+  else if (!partner) line += " · позапроєктне";
   if (t.theme_name) line += ` (${t.theme_name})`;
   return line;
 }
@@ -175,6 +177,33 @@ function deadlineHtml(t) {
   const overdue = t.status === "open" && t.deadline < new Date().toISOString().slice(0, 10);
   const [y, m, d] = t.deadline.split("-");
   return ` · <span class="${overdue ? "dl-over" : "dl"}">до ${d}.${m}${overdue ? " ⚑" : ""}</span>`;
+}
+
+/* Дедлайн праворуч у рядку таска: «до 30.07», прострочений — червоним */
+function deadlineBadge(t) {
+  if (!t.deadline) return "";
+  const overdue = t.status === "open" && t.deadline < new Date().toISOString().slice(0, 10);
+  const [y, m, d] = t.deadline.split("-");
+  return `<span class="dl-date ${overdue ? "dl-over" : "dl-soon"}">до ${d}.${m}</span>`;
+}
+
+/* Донор і лого таска: снапшот у тасці + лукап проєкту (для лого і старих тасків) */
+function taskProject(t) {
+  const proj = t.project_id ? STATE.projects.find((p) => p.id === t.project_id) : null;
+  return {
+    partner: t.partner_name || (proj && proj.partner) || null,
+    projName: t.project_name || (proj && proj.name) || null,
+    logoHtml: proj ? logoSq(proj, 40) : null,
+  };
+}
+
+/* Другий рядок таска: «2 матеріали · Назва проєкту (Тематика)» */
+function taskLine2(t) {
+  let line = t.qty > 1 ? `${t.qty} ${qtyWord(t.type, t.qty)}` : qtyWord(t.type, 1);
+  const { projName } = taskProject(t);
+  line += ` · ${projName || "позапроєктне"}`;
+  if (t.theme_name) line += ` (${t.theme_name})`;
+  return line;
 }
 
 /* Стабільний колір проєкту: слот за порядком id (колір іде за сутністю,
@@ -218,15 +247,22 @@ function render() {
 function renderHome() {
   const open = STATE.tasks.filter((t) => t.status === "open");
   const closed = STATE.tasks.filter((t) => t.status !== "open").slice(0, 10);
-  const row = (t) => `
+  const row = (t) => {
+    const tp = taskProject(t);
+    return `
     <button class="task-row" data-task="${t.id}">
       ${avatar(t.person, personEntry(t.person), 42)}
       <span class="tr-main">
-        <span class="tr-who">${esc(t.person.split(" ")[0])} ${esc(t.person.split(" ")[1] || "")}</span>
-        <span class="tr-what">${esc(taskSummary(t))}${deadlineHtml(t)}</span>
+        <span class="tr-who">${esc(t.person.split(" ")[0])} ${esc((t.person.split(" ")[1] || "")[0] || "")}.
+          ${tp.partner ? `<b class="tr-donor">· ${esc(tp.partner)}</b>` : ""}</span>
+        <span class="tr-what">${esc(taskLine2(t))}</span>
       </span>
-      <span class="status-dot ${t.status}"></span>
+      <span class="tr-right">
+        ${deadlineBadge(t)}
+        <span class="status-dot ${t.status}"></span>
+      </span>
     </button>`;
+  };
   $("content").innerHTML = `
     <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
     <div class="h-sub">${new Date().toLocaleDateString("uk-UA", { weekday: "long", day: "numeric", month: "long" })}</div>
@@ -1089,14 +1125,22 @@ function renderJournalist() {
     <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
     <div class="h-sub">твої завдання і KPI</div>
     <div id="my-kpi"></div>
-    ${open.length ? `<div class="soft-card">${open.map((t) => `
+    ${open.length ? `<div class="soft-card">${open.map((t) => {
+      const tp = taskProject(t);
+      return `
       <div class="task-row">
+        ${tp.logoHtml || ""}
         <span class="tr-main">
-          <span class="tr-who">${esc(taskSummary(t))}${deadlineHtml(t)}</span>
+          <span class="tr-who">${esc(tp.partner || tp.projName || "Позапроєктне завдання")}</span>
+          <span class="tr-what">${esc(taskLine2(t))}</span>
           ${t.note ? `<span class="tr-what">${esc(t.note)}</span>` : ""}
         </span>
-        <span class="status-dot open"></span>
-      </div>`).join("")}</div>`
+        <span class="tr-right">
+          ${deadlineBadge(t)}
+          <span class="status-dot open"></span>
+        </span>
+      </div>`;
+    }).join("")}</div>`
       : `<div class="empty-hint">Відкритих завдань немає.</div>`}
     <div class="empty-hint" style="padding-top:16px">Це попередній перегляд —
       повний твій інтерфейс уже в розробці.</div>`;
