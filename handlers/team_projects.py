@@ -138,30 +138,40 @@ def list_projects(active_only=True):
     return _remember(cache_key, projects)
 
 
-def avatar_map(names):
+def avatar_map(names, ids=None):
     """{канонічне ім'я ростера: {"photo": ресайз-URL, "photo_orig": оригінал}
     або None} з users.avatar БД сайту. Матч нормалізованого повного імені
-    (_norm_name: без регістру/апострофів/ь), прямий і зворотний порядок слів."""
+    (_norm_name: без регістру/апострофів/ь), прямий і зворотний порядок слів.
+
+    ids — {ім'я: users.id} для людей, кого за ПІБ не знайти (в users інше
+    написання або акаунт заведено пізніше). Пряме зіставлення за id надійніше
+    за здогадку по імені, тож воно має пріоритет."""
     result = {n: None for n in names}
     if not db.is_configured():
         return result
     hit = _cached("avatars")
     if hit is None:
         rows = db.query(
-            "SELECT first_name, last_name, avatar FROM users "
+            "SELECT id, first_name, last_name, avatar FROM users "
             "WHERE avatar IS NOT NULL AND avatar != ''"
         )
-        by_name = {}
+        by_name, by_id = {}, {}
         for r in rows:
+            by_id[r["id"]] = r["avatar"]
             first = (r["first_name"] or "").strip()
             last = (r["last_name"] or "").strip()
             if not (first or last):
                 continue
             by_name.setdefault(_norm_name(f"{first} {last}"), r["avatar"])
             by_name.setdefault(_norm_name(f"{last} {first}"), r["avatar"])
-        hit = _remember("avatars", by_name)
+        hit = _remember("avatars", {"by_name": by_name, "by_id": by_id})
+    ids = ids or {}
     for name in names:
-        file = hit.get(_norm_name(name))
+        file = None
+        if name in ids:
+            file = hit["by_id"].get(int(ids[name]))
+        if not file:
+            file = hit["by_name"].get(_norm_name(name))
         if file:
             result[name] = {
                 "photo": avatar_url(file),

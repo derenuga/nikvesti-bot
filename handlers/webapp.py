@@ -201,11 +201,15 @@ def _bootstrap_blocking(person, is_manager):
         return out
 
     names = [n for n, p in team_roster.ROSTER.items() if not p["manager"]]
+    manager_names = [n for n, p in team_roster.ROSTER.items() if p["manager"]]
     depts = team_roster.dept_overrides() if out["nora"] else {}
     photos = {}
     projects = []
     try:
-        photos = team_projects.avatar_map(names)
+        # Керівництво теж із фото — воно показується в табі «Команда»
+        photos = team_projects.avatar_map(
+            names + manager_names, team_roster.SITE_USER_IDS
+        )
         projects = team_projects.list_projects()
         out["site_db"] = team_projects.is_configured()
     except Exception as e:
@@ -253,6 +257,18 @@ def _bootstrap_blocking(person, is_manager):
             "photo_orig": (photos.get(n) or {}).get("photo_orig"),
         }
         for n in names
+    ]
+    # Керівництво — окремим списком: у people воно навмисно не входить (той
+    # список для постановки тасків журналісткам і для KPI-норм)
+    out["managers"] = [
+        {
+            "name": n,
+            "role": team_roster.person_role(n) or "",
+            "photo": (photos.get(n) or {}).get("photo"),
+            "photo_sm": (photos.get(n) or {}).get("photo_sm"),
+            "photo_orig": (photos.get(n) or {}).get("photo_orig"),
+        }
+        for n in manager_names
     ]
     out["projects"] = projects
     # Кандидати у відповідальні за звіти: ВЕСЬ ростер, включно з
