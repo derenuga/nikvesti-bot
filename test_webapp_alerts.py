@@ -13,7 +13,9 @@
 - «Не те» питає підтвердження (скасування нічого не шле);
 - порожня черга — спокійний стан, а не помилка;
 - стрічка подій під чергою: непрочитане з крапкою, лічильник меню = спірні +
-  непрочитані, вхід на екран позначає прочитаним.
+  непрочитані, вхід на екран позначає прочитаним;
+- пост Telegram (автор невідомий) питає КОМУ і КУДИ зараховувати — рядки з
+  людьми, а не лише з тематиками.
 
 Запуск (потрібні playwright + chromium):
     python test_webapp_alerts.py
@@ -61,12 +63,26 @@ PENDING = [
          {"id": 80, "theme_name": "Підзвітність влади", "type": None, "qty": 4,
           "done_count": 2, "person": "Аліна Квітко", "project_id": 43},
      ]},
+    {"id": 7, "source": "telegram", "ref": "82296", "task_id": None,
+     "person": None, "project_id": 43, "confidence": None,
+     "reasoning": "Пост каналу з дисклеймером цього проєкту — автора Telegram "
+                  "не показує, тож кому зарахувати, вирішує редакторка.",
+     "status": "pending",
+     "title": "Як пройшла позачергова сесія Баштанської міської ради 3 липня",
+     "url": "https://t.me/nikvesti/82296",
+     "published": "2026-07-03T16:10:00+03:00", "decided_by": None,
+     "options": [
+         {"id": 71, "theme_name": "Тендери", "type": "news", "qty": 3,
+          "done_count": 1, "person": "Юлія Бойченко", "project_id": 43},
+         {"id": 80, "theme_name": "Підзвітність влади", "type": None, "qty": 4,
+          "done_count": 2, "person": "Аліна Квітко", "project_id": 43},
+     ]},
 ]
 
 BOOTSTRAP = {
     "me": {"name": "Катерина Середа", "first_name": "Катя", "dept": "admin",
            "dept_title": "Адміністративний", "manager": True},
-    "site_db": True, "nora": True, "pending_count": 2, "unread": 2,
+    "site_db": True, "nora": True, "pending_count": 3, "unread": 2,
     "people": [
         {"name": "Юлія Бойченко", "dept": "creative", "dept_title": "Creative",
          "photo": None, "photo_sm": None, "photo_orig": None},
@@ -170,12 +186,12 @@ async def main():
         browser, page = await _open(pw)
         try:
             check("лічильник меню = спірні + непрочитані події",
-                  await page.inner_text('#bottomnav [data-view="alerts"] .bn-badge') == "4")
+                  await page.inner_text('#bottomnav [data-view="alerts"] .bn-badge') == "5")
 
             await page.click('[data-view="alerts"]')
             await page.wait_for_selector(".al-card")
-            check("обидві спірні публікації показані",
-                  await page.locator(".al-card").count() == 2)
+            check("усі спірні випадки показані",
+                  await page.locator(".al-card").count() == 3)
             body = await page.inner_text("#content")
             check("видно автора", "Юлія Бойченко" in body)
             check("видно донора і проєкт",
@@ -199,7 +215,26 @@ async def main():
             check("вхід на екран позначив події прочитаними",
                   await page.evaluate("window.__reads") == [{"all": True}])
             check("лічильник меню лишився тільки за спірними",
-                  await page.inner_text('#bottomnav [data-view="alerts"] .bn-badge') == "2")
+                  await page.inner_text('#bottomnav [data-view="alerts"] .bn-badge') == "3")
+
+            # --- пост Telegram: автора немає, питаємо кому і куди ---
+            check("пост каналу підписаний як пост, а не як автор",
+                  "Пост каналу" in await page.inner_text("#content"))
+            await page.click('[data-mconfirm="7"]')
+            await page.wait_for_selector("[data-mtask]")
+            sheet = await page.inner_text("#sheet")
+            check("шторка питає і кому, і куди", "Кому і куди" in sheet)
+            check("у рядках люди, а не самі тематики",
+                  "Юлія Бойченко" in sheet and "Аліна Квітко" in sheet)
+            check("тематика при цьому теж видно",
+                  "Підзвітність влади" in sheet and "Тендери" in sheet)
+            await page.screenshot(path="/tmp/alerts-tg-pick.png")
+            await page.click('[data-mtask="80"]')
+            await page.wait_for_timeout(300)
+            posts = await page.evaluate("window.__posts")
+            check("рішення по посту шле обраний таск (людину бере сервер)",
+                  posts[-1]["id"] == 7
+                  and posts[-1]["body"] == {"action": "confirm", "task_id": 80})
 
             # --- лінк на публікацію ---
             await page.click(".al-card .al-title")
@@ -208,7 +243,7 @@ async def main():
                   (await page.evaluate("window.__opened"))[0].endswith("321844-tendery"))
 
             # --- «Не те» зі скасуванням ---
-            await page.evaluate("window.__confirmAnswer = false")
+            await page.evaluate("window.__posts = []; window.__confirmAnswer = false")
             await page.click('[data-mreject="5"]')
             await page.wait_for_timeout(250)
             check("скасоване «Не те» нічого не шле",
