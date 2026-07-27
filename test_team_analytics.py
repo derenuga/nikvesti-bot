@@ -134,21 +134,38 @@ def test_newsroom():
         {"owner_id": 51, "type": "news", "own": 0, "cur": 1, "c": 8, "name": "Марія Хаміцевич"},
         {"owner_id": 99, "type": "news", "own": 0, "cur": 1, "c": 1, "name": "   "},
         {"owner_id": 44, "type": "news", "own": 1, "cur": 0, "c": 12, "name": "Юлія Бойченко"},
+        # рерайтерка з 20 рядками проти авторки з 10 власними: за кількістю
+        # перша, за вагою (2,6) — друга
+        {"owner_id": 60, "type": "news", "own": 0, "cur": 1, "c": 20, "name": "Стрічка"},
+        {"owner_id": 61, "type": "news", "own": 1, "cur": 1, "c": 10, "name": "Лук'яненко"},
     ]
     ta.db.query = lambda sql, params=None: rows
+    # owner_id → людина ростера (у проді це пін team_user_link → ПІБ)
+    ta._person_by_owner_id = lambda: {44: "Юлія Бойченко", 61: "Юлія Лук'яненко"}
     n = ta._newsroom_block(WEEK_DONE)
-    check("новини поточного періоду", n["news"]["value"] == 24, n["news"])
+    check("новини поточного періоду", n["news"]["value"] == 54, n["news"])
     check("статті окремо від новин", n["articles"]["value"] == 2, n["articles"])
-    check("власні лише з own_material=1", n["own"]["value"] == 12, n["own"])
-    check("частка власних", n["own_share"] == 46, n["own_share"])
+    check("власні лише з own_material=1", n["own"]["value"] == 22, n["own"])
     check("порівняльний період з того самого запиту (колонка cur)",
-          n["news"]["prev"] == 12 and n["news"]["delta"] == 100, n["news"])
-    check("автори за спаданням", [a["name"] for a in n["authors"]][:2]
-          == ["Юлія Бойченко", "Марія Хаміцевич"], n["authors"])
+          n["news"]["prev"] == 12 and n["news"]["delta"] == 350, n["news"])
+    by_name = {a["name"]: a for a in n["authors"]}
+    check("вага власного матеріалу — 2,6 звичайного",
+          by_name["Юлія Бойченко"]["score"] == 36.2, by_name["Юлія Бойченко"])
+    check("рейтинг за вагою, а не за кількістю рядків",
+          [a["name"] for a in n["authors"]][:2]
+          == ["Юлія Бойченко", "Юлія Лук'яненко"], [a["name"] for a in n["authors"]])
+    check("20 рерайтів стоять НИЖЧЕ за 10 власних",
+          [a["name"] for a in n["authors"]].index("Стрічка")
+          > [a["name"] for a in n["authors"]].index("Юлія Лук'яненко"), n["authors"])
+    check("автор зведений до канонічного ПІБ ростера (фото і трекер)",
+          by_name["Юлія Лук'яненко"]["person"] == "Юлія Лук'яненко", by_name.keys())
+    check("автор поза ростером лишається з іменем із users",
+          by_name["Стрічка"]["person"] is None, by_name["Стрічка"])
     check("автор без імені в users підписаний id",
           any(a["name"] == "id 99" for a in n["authors"]), n["authors"])
     check("власні автора рахуються окремо",
-          n["authors"][0]["own"] == 12 and n["authors"][0]["count"] == 17, n["authors"][0])
+          by_name["Юлія Бойченко"]["own"] == 12
+          and by_name["Юлія Бойченко"]["count"] == 17, by_name["Юлія Бойченко"])
 
 
 # ---------- Топ матеріалів ----------

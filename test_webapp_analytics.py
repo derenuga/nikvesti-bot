@@ -102,10 +102,15 @@ DASH = {
         "articles": {"value": 9, "prev": 11, "delta": -18},
         "own": {"value": 96, "prev": 80, "delta": 20},
         "own_share": 43, "total": 223,
+        # сервер уже впорядкував за вагою (власне × 2,6) і звів автора до
+        # канонічного ПІБ ростера — фронт лише малює
         "authors": [
-            {"name": "Юлія Бойченко", "count": 34, "own": 30, "news": 30, "articles": 4},
-            {"name": "Аліна Квітко", "count": 22, "own": 18, "news": 21, "articles": 1},
-            {"name": "id 99", "count": 4, "own": 0, "news": 4, "articles": 0},
+            {"name": "Юлія Бойченко", "person": "Юлія Бойченко", "count": 34,
+             "own": 30, "news": 30, "articles": 4, "score": 82.0},
+            {"name": "Аліна Квітко", "person": "Аліна Квітко", "count": 22,
+             "own": 18, "news": 21, "articles": 1, "score": 50.8},
+            {"name": "Стрічка", "person": None, "count": 40, "own": 0,
+             "news": 40, "articles": 0, "score": 40.0},
         ],
     },
     "social": {
@@ -271,6 +276,17 @@ async def main():
             check("автори з кількістю", await page.locator(".an-row").count() == 3)
             check("автор поза ростером не клікабельний",
                   await page.locator('.an-row[data-tracker]').count() == 2)
+            names = await page.locator(".ar-n").all_inner_texts()
+            check("порядок авторів — з сервера (за вагою власного матеріалу), "
+                  "40 рерайтів нижче за 34 матеріали з 30 власними",
+                  names == ["Юлія Бойченко", "Аліна Квітко", "Стрічка"])
+            bars = await page.locator(".an-row .kbar i").all()
+            w1 = await bars[0].evaluate("el => el.style.width")
+            w3 = await bars[2].evaluate("el => el.style.width")
+            check("смуга теж за вагою, а не за кількістю",
+                  int(w1.rstrip("%")) > int(w3.rstrip("%")))
+            check("вага підписана, щоб цифри не читались як суперечність",
+                  "2,6" in await page.inner_text("#an-data"))
 
             # --- соцмережі й гранти ---
             soc = await page.inner_text("#an-data")
