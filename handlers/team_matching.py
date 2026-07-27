@@ -131,6 +131,9 @@ def candidate_tasks(person, project_id, node_type, pool=None):
     return out
 
 
+# Обґрунтування суддя НЕ пише (Олег, 27.07): у картці й так видно заголовок,
+# опис і зображення — переказ змісту своїми словами нічого не додає, а платимо
+# ми за кожен його токен. Лишились тільки id і впевненість.
 _JUDGE_TOOL = {
     "name": "verdict",
     "description": "Вердикт: яку тематику-таску виконує ця публікація (або жодну).",
@@ -147,14 +150,49 @@ _JUDGE_TOOL = {
                 "description": "high — публікація чітко і конкретно виконує саме цю тематику; "
                                "medium — схоже, але є сумнів; low — слабкий звʼязок",
             },
-            "reasoning": {
-                "type": "string",
-                "description": "1-2 речення українською, чому саме ця тематика (або чому жодна) — для редактора",
-            },
         },
-        "required": ["matched_task_id", "confidence", "reasoning"],
+        "required": ["matched_task_id", "confidence"],
     },
 }
+
+# Критичні інформаційні потреби (CIN) — методологія Annenberg School (USC),
+# адаптована для України Media Development Foundation у «News Deserts in
+# Ukraine 2.0». Донори (Internews, IWPR, IMS) формулюють тематики саме цією
+# мовою, а суддя без переліку восьми потреб гадає, що це таке.
+#
+# Блок додається в промпт ЛИШЕ коли серед кандидатів є CIN-тематика: інакше це
+# були б зайві ~150 вхідних токенів на кожну публікацію.
+CIN_KEYWORDS = ("критичн", "інформаційн потреб", "інформаційних потреб", "cin")
+
+CIN_RUBRIC = (
+    "Довідка: «критичні інформаційні потреби» (CIN, методологія Annenberg "
+    "School USC, адаптована MDF у «News Deserts in Ukraine 2.0») — це вісім "
+    "напрямів, без яких громада не може ухвалювати рішення:\n"
+    "1) надзвичайні ситуації і безпека (обстріли, евакуація, лінія фронту, "
+    "правоохоронці, стихія, техногенні загрози);\n"
+    "2) охорона здоровʼя (доступність, якість і вартість медпослуг, епідемії, "
+    "вакцинація);\n"
+    "3) освіта (якість і управління школами, доступ до навчання, перекваліфікація);\n"
+    "4) транспорт (сполучення, вартість, стан доріг, ремонти, ДТП і безпека руху);\n"
+    "5) економічний розвиток (робота і зайнятість, підтримка бізнесу, великі "
+    "економічні ініціативи);\n"
+    "6) довкілля (якість повітря і води, екологічні загрози, відходи, відновлення);\n"
+    "7) громадські ініціативи і публічні послуги (ОСББ, ГО, соцпослуги, культура, "
+    "бібліотеки);\n"
+    "8) політика і врядування (зміни влади, рішення й тендери місцевої влади, "
+    "нові правила).\n"
+    "Публікація закриває цю тематику, якщо дає жителям практично корисну "
+    "інформацію хоча б з одного напряму (не просто згадує подію)."
+)
+
+
+def _cin_hint(candidates):
+    """Рубрика CIN — тільки якщо серед кандидатів є така тематика."""
+    for t in candidates:
+        name = (t.get("theme_name") or "").lower()
+        if any(k in name for k in CIN_KEYWORDS):
+            return "\n\n" + CIN_RUBRIC
+    return ""
 
 
 async def judge_publication(article, candidates):
@@ -162,8 +200,7 @@ async def judge_publication(article, candidates):
     article — {title, lead, category, type}; candidates — list таск-dict.
     Повертає {matched_task_id, confidence, reasoning, task} (task — обрана або None)."""
     if not candidates:
-        return {"matched_task_id": None, "confidence": "low",
-                "reasoning": "У автора немає відкритих тасків у цьому проєкті.", "task": None}
+        return {"matched_task_id": None, "confidence": "low", "task": None}
 
     lines = []
     for t in candidates:
@@ -179,7 +216,8 @@ async def judge_publication(article, candidates):
         f"Заголовок: {article['title']}\n"
         f"Початок тексту: {article['lead']}\n\n"
         f"ВІДКРИТІ ЗАВДАННЯ АВТОРА в цьому проєкті (обери ОДНЕ, яке ця публікація виконує):\n"
-        f"{tasks_block}\n\n"
+        f"{tasks_block}"
+        f"{_cin_hint(candidates)}\n\n"
         "Правила:\n"
         "• Обирай тематику, ЗМІСТ якої публікація конкретно виконує (не просто «той самий проєкт»).\n"
         "• confidence=high лише коли публікація явно і однозначно про цю тематику.\n"
@@ -201,7 +239,7 @@ async def judge_publication(article, candidates):
     except Exception:
         pass
     verdict = next((b.input for b in msg.content if b.type == "tool_use"), None) or {
-        "matched_task_id": None, "confidence": "low", "reasoning": "Суддя не повернув вердикт."}
+        "matched_task_id": None, "confidence": "low"}
     tid = verdict.get("matched_task_id")
     verdict["task"] = next((t for t in candidates if t["id"] == tid), None)
     if tid is not None and verdict["task"] is None:
@@ -282,6 +320,40 @@ def node_signal(row):
         "lead": _strip_html(row["content"]),
         "url": _news_url(row),
     }
+
+
+def fetch_card_meta(url):
+    """(опис, зображення) зі сторінки матеріалу — щоб картка в черзі виглядала
+    як новина, а не як рядок бази.
+
+    Беремо og:description і og:image: перше — редакторський лід (а не перші
+    речення тексту), друге — вже ресайзнутий сайтом .webp 600×315, тобто
+    легкий і готовий до показу. Один запит, і ТІЛЬКИ для спірних: у
+    авто-зарахованих картки немає, платити за них трафіком нема сенсу.
+    Будь-який збій — просто без картинки."""
+    if not url:
+        return None, None
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+
+        resp = requests.get(
+            url, timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; NikVesti-Bot/1.0)"})
+        if resp.status_code != 200:
+            return None, None
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        def meta(prop, attr="property"):
+            tag = soup.find("meta", attrs={attr: prop})
+            return (tag.get("content") or "").strip() if tag else ""
+
+        description = meta("og:description") or meta("description", "name")
+        image = meta("og:image")
+        return (description[:600] or None), (image or None)
+    except Exception as e:
+        print(f"team_matching: картку {url} не вдалось одягнути — {e}")
+        return None, None
 
 
 class ScanReport:
@@ -378,11 +450,14 @@ async def judge_nodes(rows, *, ping=None, report=None, judge=None):
         task = verdict.get("task")
         high = verdict.get("confidence") == "high" and task
         status = "auto" if high else "pending"
+        # Опис і зображення — лише спірним: їм малювати картку в черзі
+        if not high:
+            base["description"], base["image"] = await asyncio.to_thread(
+                fetch_card_meta, sig["url"])
         match = await asyncio.to_thread(
             team_matches.record_match, "site", sig["node_id"], status,
             task_id=task["id"] if task else None,
-            confidence=verdict.get("confidence"),
-            reasoning=verdict.get("reasoning"), **base)
+            confidence=verdict.get("confidence"), **base)
         if not match:
             return          # хтось уже вирішив цю публікацію (повторний прогін)
         if not high:
@@ -432,6 +507,22 @@ async def _ping_done(bot, person, task):
     )
 
 
+def _enrich_pending_cards(limit=10):
+    """Самолікування черги: добирає опис і зображення тим спірним, у кого їх
+    ще немає. Пости Telegram сюди не йдуть — у них картинка вже зі стрічки."""
+    from handlers import bot_db
+    with bot_db.session():
+        stale = [m for m in team_matches.pending_without_meta(limit)
+                 if m["source"] == "site" and m["url"]]
+    filled = 0
+    for m in stale:
+        description, image = fetch_card_meta(m["url"])
+        if description or image:
+            team_matches.set_meta(m["id"], description, image)
+            filled += 1
+    return filled
+
+
 async def run_matching_scan(bot, days=SCAN_DAYS, ping=True, chat_id=None):
     """Щогодинний прогін (scheduler). Тихий: у чат пише, лише коли є що
     сказати, і лише на явний виклик (/match_scan)."""
@@ -441,6 +532,12 @@ async def run_matching_scan(bot, days=SCAN_DAYS, ping=True, chat_id=None):
     rows = await asyncio.to_thread(fetch_project_nodes, since)
     ping_cb = (lambda person, task: _ping_done(bot, person, task)) if ping else None
     report = await judge_nodes(rows, ping=ping_cb)
+    # Картки, що лишились без опису/зображення (сторінка тоді не відповіла або
+    # рядок записано до появи цих колонок) — доганяємо тихо, по кілька за раз
+    try:
+        await asyncio.to_thread(_enrich_pending_cards)
+    except Exception as e:
+        print(f"team_matching: картки черги не оновились — {e}")
     # Telegram-пости за дисклеймером — той самий прогін, інше джерело і без AI.
     # Окремим try: збій t.me не має чіпати зарахування з сайту.
     try:
@@ -474,9 +571,11 @@ async def run_matching_scan(bot, days=SCAN_DAYS, ping=True, chat_id=None):
 # двох десятків тасків заднім числом людям прилетіло б двадцять привітань.
 
 # Оцінка токенів на одну публікацію: промпт судді — заголовок + ~1600 символів
-# ліда + перелік кандидатів; вихід — короткий вердикт tool use.
-EST_IN_PER_NODE = 900
-EST_OUT_PER_NODE = 130
+# ліда + перелік кандидатів (+ рубрика CIN там, де тематика про критичні
+# інформаційні потреби); вихід — сам вердикт, лише id і впевненість, бо
+# обґрунтування словами суддя більше не пише.
+EST_IN_PER_NODE = 950
+EST_OUT_PER_NODE = 50
 
 _retro_running = {"flag": False}
 

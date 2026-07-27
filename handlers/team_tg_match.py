@@ -74,6 +74,20 @@ def project_disclaimers():
     return out
 
 
+_BG_URL_RE = re.compile(r"background-image\s*:\s*url\(['\"]?(.*?)['\"]?\)")
+
+
+def _post_image(block):
+    """Картинка поста зі стрічки t.me: вона віддається не тегом <img>, а
+    style="background-image:url(...)" на обгортці прев'ю. Окремого запиту не
+    треба — HTML уже в руках."""
+    wrap = block.find("a", class_="tgme_widget_message_photo_wrap")
+    if not wrap:
+        return None
+    m = _BG_URL_RE.search(wrap.get("style", "") or "")
+    return m.group(1) if m else None
+
+
 def fetch_recent_posts(pages=SCAN_PAGES):
     """Останні пости каналу з ТЕКСТОМ: [{message_id, url, text, dt}]."""
     posts = []
@@ -95,6 +109,7 @@ def fetch_recent_posts(pages=SCAN_PAGES):
                 "message_id": msg_id,
                 "url": f"https://t.me/{CHANNEL}/{msg_id}",
                 "text": body.get_text(" ", strip=True) if body else "",
+                "image": _post_image(block),
                 "dt": dt,
             })
         if page_min is None or page_min <= 1:
@@ -123,6 +138,13 @@ def post_title(post):
     return text[:120] + ("…" if len(text) > 120 else "") or f"Пост {post['message_id']}"
 
 
+def post_description(post):
+    """Опис для картки — те, що йде після заголовкового рядка поста."""
+    text = _SPACE_RE.sub(" ", (post["text"] or "").strip())
+    tail = text[120:] if len(text) > 120 else ""
+    return (tail[:300] + ("…" if len(tail) > 300 else "")) or None
+
+
 def scan_posts(pages=SCAN_PAGES):
     """Прогін: знайти проєктні пости й покласти їх у чергу Каті.
     Повертає (скільки постів переглянули, скільки нових пішло в чергу)."""
@@ -147,6 +169,9 @@ def scan_posts(pages=SCAN_PAGES):
                       "автора Telegram не показує, тож кому зарахувати, "
                       "вирішує редакторка.",
             title=post_title(post), url=post["url"],
+            # Опис і картинка для картки — з самого поста: текст уже маємо,
+            # прев'ю лежить у тому ж HTML, тож жодного зайвого запиту
+            description=post_description(post), image=post.get("image"),
             published=int(post["dt"].timestamp()) if post["dt"] else None,
             node_type="post")
         if match:

@@ -79,6 +79,18 @@ def main():
     team_matches.ensure_match_schema()
     cleanup()
 
+    # Картинка поста береться з того самого HTML стрічки (background-image),
+    # без окремого запиту — перевіряємо на живій стрічці
+    try:
+        feed_posts = tg.fetch_recent_posts(1)
+        with_img = [p for p in feed_posts if p.get("image")]
+        check("у стрічці каналу знайшлись пости з картинкою",
+              len(feed_posts) > 5 and with_img)
+        check("картинка — придатний https-лінк",
+              with_img and with_img[0]["image"].startswith("https://"))
+    except Exception as e:
+        print(f"  (стрічка t.me недоступна — перевірку картинок пропущено: {e})")
+
     live = live_post_text()
     post_text = live or REAL_POST_TAIL
     check("реальний пост прочитано (живцем або зі знімка)", bool(post_text))

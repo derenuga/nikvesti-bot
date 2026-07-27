@@ -42,6 +42,7 @@ import hmac
 import json
 import os
 import time
+from datetime import datetime
 from urllib.parse import parse_qsl
 
 try:
@@ -699,13 +700,24 @@ def _pending_payload():
         # невідомий (пост Telegram: у каналі його немає ніде) — усі відкриті
         # таски проєкту, і Катя обирає заразом людину й тематику.
         m["options"] = [
-            {"id": t["id"], "theme_name": t["theme_name"], "type": t["type"],
-             "qty": t["qty"], "done_count": len(counted.get(t["id"], [])),
+            {"id": t["id"], "theme_id": t["theme_id"], "theme_name": t["theme_name"],
+             "type": t["type"], "qty": t["qty"],
+             "done_count": len(counted.get(t["id"], [])),
              "person": t["person"], "project_id": t["project_id"]}
             for t in pool
             if t["project_id"] == m["project_id"]
             and (m["person"] is None or t["person"] == m["person"])
         ]
+    # Тематики проєкту — щоб зарахувати можна було і в ту, на яку завдання ще
+    # не ставили. Інакше Катя впиралась у глухий кут: публікація очевидно
+    # закриває «критичні інформаційні потреби», а в списку лише те, що хтось
+    # колись завів. Завдання під таку тематику створюється на льоту.
+    themes_by_project = {}
+    for t in team_tasks.list_themes():
+        themes_by_project.setdefault(t["project_id"], []).append(
+            {"id": t["id"], "name": t["name"], "format": t["format"]})
+    for m in pending:
+        m["themes"] = themes_by_project.get(m["project_id"], [])
     return {"pending": pending}
 
 
@@ -717,12 +729,54 @@ async def api_matches_pending(request):
     return web.json_response(data)
 
 
-def _decide_blocking(match_id, actor, action, task_id):
+def _task_for_theme(actor, match, theme_id, person):
+    """Заводить завдання під тематику, на яку його ще не ставили, і повертає
+    його. Потрібне, коли публікація закриває тематику проєкту, якої немає в
+    жодному відкритому завданні людини: без цього чергу нікуди розрулити.
+
+    Завдання створюється мовчки (notify=False) — «тобі поставили завдання»
+    за вчора зроблене тільки збиває з пантелику; «виконано» вона отримає."""
+    theme = next((t for t in team_tasks.list_themes()
+                  if t["id"] == int(theme_id)), None)
+    if not theme or theme["project_id"] != match["project_id"]:
+        return None
+    # Снапшоти назв — з уже записаного матчу й проєктів CMS (як у звичайній
+    # постановці): проєкт живе в чужій БД і може зникнути з вибірки
+    project_name = partner_name = None
+    try:
+        project = next((p for p in team_projects.list_projects(False)
+                        if p["id"] == match["project_id"]), None)
+        if project:
+            project_name, partner_name = project["name"], project["partner"]
+    except Exception as e:
+        print(f"webapp: проєкт для нового завдання не прочитався — {e}")
+    today = datetime.now(team_tasks.KYIV_TZ)
+    last_day = calendar.monthrange(today.year, today.month)[1]
+    type_ = theme["format"] if theme["format"] in ("news", "article") else None
+    return team_tasks.create_task(
+        creator=actor, person=person, type_=type_,
+        project_id=match["project_id"], project_name=project_name,
+        theme_id=theme["id"], theme_name=theme["name"], qty=1,
+        note="Заведено із черги звірки",
+        deadline=f"{today.year:04d}-{today.month:02d}-{last_day:02d}",
+        partner_name=partner_name, notify=False)
+
+
+def _decide_blocking(match_id, actor, action, task_id, theme_id=None, person=None):
     """Рішення + перерахунок прогресу обох зачеплених тасків в одній сесії.
 
     Виконавицю беремо з обраного таска, а не з тіла запиту: для постів
     Telegram автор невідомий, і саме вибір Каті («кому зарахувати») робить
     його відомим — довіряти тут клієнту нема потреби."""
+    if action == "confirm" and not task_id and theme_id:
+        match = team_matches.get_match(match_id)
+        who = person or (match or {}).get("person")
+        if not match or who not in team_roster.ROSTER:
+            return None
+        task = _task_for_theme(actor, match, theme_id, who)
+        if not task:
+            return None
+        task_id = task["id"]
     person = None
     if action == "confirm" and task_id:
         task = team_tasks.get_task(task_id)
@@ -752,14 +806,21 @@ async def api_matches_decide(request):
     if action not in ("confirm", "reject"):
         raise web.HTTPBadRequest(text="action: confirm або reject")
     task_id = payload.get("task_id")
-    if action == "confirm" and task_id is not None:
-        try:
-            task_id = int(task_id)
-        except (TypeError, ValueError):
-            raise web.HTTPBadRequest(text="task_id: число")
+    theme_id = payload.get("theme_id")
+    for name, value in (("task_id", task_id), ("theme_id", theme_id)):
+        if action == "confirm" and value is not None:
+            try:
+                int(value)
+            except (TypeError, ValueError):
+                raise web.HTTPBadRequest(text=f"{name}: число")
+    who = payload.get("person")
+    if who is not None and who not in team_roster.ROSTER:
+        raise web.HTTPBadRequest(text="Невідома людина")
     result = await _in_session(
         _decide_blocking, int(request.match_info["match_id"]), person, action,
-        task_id if action == "confirm" else None,
+        int(task_id) if action == "confirm" and task_id else None,
+        int(theme_id) if action == "confirm" and theme_id else None,
+        who,
     )
     if not result:
         raise web.HTTPNotFound(text="Матчу немає (або нема куди зараховувати)")

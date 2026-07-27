@@ -7,7 +7,8 @@
 
 Що стереже:
 - лічильник непрочитаного на пункті меню «Сповіщення»;
-- картка показує автора, донора, заголовок із лінком і обґрунтування судді;
+- картка читається як новина: фото автора зверху, заголовок, дата, опис із
+  мініатюрою праворуч, рядок проєкту з лого донора і підказка тематики;
 - «Зарахувати» → вибір тематики, пропозиція Лиса зверху й позначена;
 - рішення шле правильний запит і одразу прибирає картку зі списку;
 - «Не те» питає підтвердження (скасування нічого не шле);
@@ -45,38 +46,52 @@ PENDING = [
      "reasoning": "Матеріал про тендери на укриття — схоже на «Тендери», але "
                   "є ознаки історії з інфозапиту.",
      "status": "pending", "title": "Хто виграв тендери на укриття",
+     "description": "Миколаївські школи закупили укриття на 40 мільйонів — "
+                    "з'ясовуємо, хто виграв ці тендери.",
+     "image": "https://nikvesti.com/600x315/images/imageeditor/321844.webp",
      "url": "https://nikvesti.com/news/economics/321844-tendery",
      "published": "2026-07-25T11:00:00+03:00", "decided_by": None,
      "options": [
-         {"id": 71, "theme_name": "Тендери", "type": "news", "qty": 3,
-          "done_count": 1, "person": "Юлія Бойченко", "project_id": 43},
-         {"id": 72, "theme_name": "Історії з інфозапитів", "type": None, "qty": 2,
-          "done_count": 0, "person": "Юлія Бойченко", "project_id": 43},
-     ]},
+         {"id": 71, "theme_id": 1, "theme_name": "Тендери", "type": "news",
+          "qty": 3, "done_count": 1, "person": "Юлія Бойченко", "project_id": 43},
+         {"id": 72, "theme_id": 2, "theme_name": "Історії з інфозапитів",
+          "type": None, "qty": 2, "done_count": 0, "person": "Юлія Бойченко",
+          "project_id": 43},
+     ],
+     "themes": [{"id": 1, "name": "Тендери", "format": "news"},
+                {"id": 2, "name": "Історії з інфозапитів", "format": None},
+                {"id": 3, "name": "Критичні інформаційні потреби", "format": None}]},
     {"id": 6, "source": "site", "ref": "321901", "task_id": None,
      "person": "Аліна Квітко", "project_id": 43, "confidence": "low",
      "reasoning": "Жодна тематика за змістом не підходить.",
      "status": "pending", "title": "Сесія міськради не відбулась",
+     "description": "Депутати не зібрались вдруге поспіль.", "image": "",
      "url": "https://nikvesti.com/news/politics/321901-sesiia",
      "published": "2026-07-26T09:00:00+03:00", "decided_by": None,
      "options": [
-         {"id": 80, "theme_name": "Підзвітність влади", "type": None, "qty": 4,
-          "done_count": 2, "person": "Аліна Квітко", "project_id": 43},
-     ]},
+         {"id": 80, "theme_id": 4, "theme_name": "Підзвітність влади", "type": None,
+          "qty": 4, "done_count": 2, "person": "Аліна Квітко", "project_id": 43},
+     ],
+     "themes": [{"id": 4, "name": "Підзвітність влади", "format": None},
+                {"id": 3, "name": "Критичні інформаційні потреби", "format": None}]},
     {"id": 7, "source": "telegram", "ref": "82296", "task_id": None,
      "person": None, "project_id": 43, "confidence": None,
      "reasoning": "Пост каналу з дисклеймером цього проєкту — автора Telegram "
                   "не показує, тож кому зарахувати, вирішує редакторка.",
      "status": "pending",
      "title": "Як пройшла позачергова сесія Баштанської міської ради 3 липня",
+     "description": "Депутати розглянули бюджет, водоканал, освіту.",
+     "image": "https://cdn4.telegram-cdn.org/file/preview.jpg",
      "url": "https://t.me/nikvesti/82296",
      "published": "2026-07-03T16:10:00+03:00", "decided_by": None,
      "options": [
-         {"id": 71, "theme_name": "Тендери", "type": "news", "qty": 3,
-          "done_count": 1, "person": "Юлія Бойченко", "project_id": 43},
-         {"id": 80, "theme_name": "Підзвітність влади", "type": None, "qty": 4,
-          "done_count": 2, "person": "Аліна Квітко", "project_id": 43},
-     ]},
+         {"id": 71, "theme_id": 1, "theme_name": "Тендери", "type": "news",
+          "qty": 3, "done_count": 1, "person": "Юлія Бойченко", "project_id": 43},
+         {"id": 80, "theme_id": 4, "theme_name": "Підзвітність влади", "type": None,
+          "qty": 4, "done_count": 2, "person": "Аліна Квітко", "project_id": 43},
+     ],
+     "themes": [{"id": 1, "name": "Тендери", "format": "news"},
+                {"id": 4, "name": "Підзвітність влади", "format": None}]},
 ]
 
 BOOTSTRAP = {
@@ -194,11 +209,17 @@ async def main():
                   await page.locator(".al-card").count() == 3)
             body = await page.inner_text("#content")
             check("видно автора", "Юлія Бойченко" in body)
-            check("видно донора і проєкт",
-                  "IWPR" in body and "Стійкість локального медіа" in body)
+            check("видно проєкт", "Стійкість локального медіа" in body)
             check("видно заголовок публікації", "Хто виграв тендери на укриття" in body)
-            check("видно обґрунтування судді", "історії з інфозапиту" in body)
-            check("видно пропозицію судді з прогресом", "Тендери" in body and "1/3" in body)
+            check("видно опис матеріалу, а не переказ судді",
+                  "хто виграв ці тендери" in body and "Публікація стосується" not in body)
+            check("видно дату виходу", "25 липня 2026" in body)
+            check("мініатюра новини показана",
+                  await page.locator(".al-thumb img").count() == 2)
+            check("рядок проєкту з донором",
+                  "додано до проєкту" in body and "IWPR" in body)
+            check("видно підказку тематики з прогресом",
+                  "Схоже тематика" in body and "1/3" in body)
             check("коли суддя не обрав — так і сказано", "обери сама" in body)
             # --- стрічка подій під чергою ---
             check("стрічка подій показана під чергою",
@@ -221,14 +242,16 @@ async def main():
             check("пост каналу підписаний як пост, а не як автор",
                   "Пост каналу" in await page.inner_text("#content"))
             await page.click('[data-mconfirm="7"]')
-            await page.wait_for_selector("[data-mtask]")
+            await page.wait_for_selector("[data-mperson]")
             sheet = await page.inner_text("#sheet")
-            check("шторка питає і кому, і куди", "Кому і куди" in sheet)
-            check("у рядках люди, а не самі тематики",
+            check("для поста спершу питає, кому зарахувати", "Кому зарахувати" in sheet)
+            check("у списку люди з завданнями проєкту",
                   "Юлія Бойченко" in sheet and "Аліна Квітко" in sheet)
-            check("тематика при цьому теж видно",
-                  "Підзвітність влади" in sheet and "Тендери" in sheet)
             await page.screenshot(path="/tmp/alerts-tg-pick.png")
+            await page.click('[data-mperson="Аліна Квітко"]')
+            await page.wait_for_selector("[data-mtask]")
+            check("далі — її завдання в цьому проєкті",
+                  "Підзвітність влади" in await page.inner_text("#sheet"))
             await page.click('[data-mtask="80"]')
             await page.wait_for_timeout(300)
             posts = await page.evaluate("window.__posts")
@@ -242,12 +265,32 @@ async def main():
             check("тап по заголовку відкриває матеріал через tg.openLink",
                   (await page.evaluate("window.__opened"))[0].endswith("321844-tendery"))
 
-            # --- «Не те» зі скасуванням ---
+            # --- «Не те» зі скасуванням і з підтвердженням ---
             await page.evaluate("window.__posts = []; window.__confirmAnswer = false")
             await page.click('[data-mreject="5"]')
             await page.wait_for_timeout(250)
             check("скасоване «Не те» нічого не шле",
                   await page.evaluate("window.__posts.length") == 0)
+            await page.evaluate("window.__confirmAnswer = true")
+
+            # --- тематика, на яку завдання ЩЕ НЕ ставили (випадок Олега:
+            #     «а де кнопка зарахувати в критичні інформаційні потреби?») ---
+            await page.click('[data-mconfirm="6"]')
+            await page.wait_for_selector("[data-mtheme]")
+            sheet = await page.inner_text("#sheet")
+            check("тематика без завдання теж пропонується",
+                  "Критичні інформаційні потреби" in sheet)
+            check("і чесно каже, що заведе завдання",
+                  "заведу і зарахую" in sheet)
+            check("тематика, на яку завдання вже є, у другий список не дублюється",
+                  sheet.count("Підзвітність влади") == 1)
+            await page.screenshot(path="/tmp/alerts-theme-pick.png")
+            await page.click('[data-mtheme="3"]')
+            await page.wait_for_timeout(300)
+            posts = await page.evaluate("window.__posts")
+            check("рішення шле тематику і людину, а не таск",
+                  posts[-1]["body"] == {"action": "confirm", "theme_id": 3,
+                                        "person": "Аліна Квітко"})
 
             # --- «Зарахувати» в іншу тематику ---
             await page.click('[data-mconfirm="5"]')
@@ -263,20 +306,12 @@ async def main():
                   posts and posts[-1]["id"] == 5
                   and posts[-1]["body"] == {"action": "confirm", "task_id": 72})
             check("картка одразу зникла зі списку",
-                  await page.locator(".al-card").count() == 1)
+                  await page.locator(".al-card").count() == 0)
             check("лічильник меню зменшився",
-                  await page.inner_text('#bottomnav [data-view="alerts"] .bn-badge') == "1")
+                  await page.locator('#bottomnav [data-view="alerts"] .bn-badge').count() == 0)
 
-            # --- «Не те» з підтвердженням ---
-            await page.evaluate("window.__confirmAnswer = true")
-            await page.click('[data-mreject="6"]')
-            await page.wait_for_timeout(300)
-            posts = await page.evaluate("window.__posts")
-            check("«Не те» шле reject", posts[-1]["body"] == {"action": "reject"})
             check("черга спорожніла спокійним станом",
                   "Спірних публікацій немає" in await page.inner_text("#content"))
-            check("лічильник меню зник",
-                  await page.locator('#bottomnav [data-view="alerts"] .bn-badge').count() == 0)
             await page.screenshot(path="/tmp/alerts-empty.png", full_page=True)
         finally:
             await browser.close()

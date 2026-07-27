@@ -1420,34 +1420,58 @@ function assigneeRow(d) {
    Порожня черга — спокійний стан, а не помилка. */
 const CONF_LABEL = { high: "впевнено", medium: "схоже", low: "слабкий звʼязок" };
 
+/* Картка спірної публікації читається як новина, а не як рядок бази:
+   зверху автор (його фото — обличчя картки), далі заголовок, дата, опис із
+   маленьким зображенням праворуч, потім рядок проєкту з лого донора і
+   підказка судді. Обґрунтування словами навмисно немає — заголовок і опис
+   кажуть про зміст краще, а кожен його токен ми оплачуємо. */
 function matchCard(m) {
   const proj = m.project_id ? projectById(m.project_id) : null;
   const donor = proj ? (proj.partner || proj.name) : "";
   const suggested = (m.options || []).find((o) => o.id === m.task_id);
+  const tg = m.source === "telegram";
+  const who = m.person || (tg ? "Пост каналу" : "Автор невідомий");
+  const when = m.published || m.created_at;
   return `
   <div class="al-card" data-match="${m.id}">
     <div class="al-head">
-      ${proj ? logoSq(proj, 36) : ""}
-      <span class="al-h-txt">
-        <span class="al-who">${m.person ? esc(m.person)
-          : m.source === "telegram" ? "Пост каналу" : "Автор невідомий"}</span>
-        <span class="al-proj">${esc([donor, proj && proj.name].filter(Boolean).join(" · "))}</span>
-      </span>
+      ${m.person ? avatar(m.person, personEntry(m.person), 38)
+                 : `<span class="ava" style="width:38px;height:38px">${icon(tg ? "send" : "users")}</span>`}
+      <span class="al-h-txt"><span class="al-who">${esc(who)}</span></span>
       ${m.confidence ? `<span class="al-conf ${esc(m.confidence)}">${esc(CONF_LABEL[m.confidence] || m.confidence)}</span>` : ""}
     </div>
     <a class="al-title" href="${esc(m.url)}" data-ext="${esc(m.url)}">${esc(m.title || m.url)}</a>
-    ${m.reasoning ? `<div class="al-why">${esc(m.reasoning)}</div>` : ""}
+    <div class="al-date">${esc(longDate(when))}</div>
+    <div class="al-body">
+      <div class="al-desc">${esc(m.description || "")}</div>
+      ${m.image ? `<span class="al-thumb">${imgHtml(m.image)}</span>` : ""}
+    </div>
+    <div class="al-proj-row">
+      ${proj ? logoSq(proj, 26) : ""}
+      <span>додано до проєкту <b>${esc(donor)}</b>${proj && proj.name && proj.name !== donor
+        ? ` · ${esc(proj.name)}` : ""}</span>
+    </div>
     ${suggested
-      ? `<div class="al-guess">Схоже на «${esc(suggested.theme_name || "без тематики")}» —
+      ? `<div class="al-guess">Схоже тематика: «${esc(suggested.theme_name || "без тематики")}» —
            ${suggested.done_count}/${suggested.qty}</div>`
-      : `<div class="al-guess muted">${m.source === "telegram"
+      : `<div class="al-guess muted">${tg
            ? "Проєкт видно з дисклеймера — обери, кому і в яку тематику"
-           : "Суддя не обрав тематику — обери сама"}</div>`}
+           : "Тематику суддя не обрав — обери сама"}</div>`}
     <div class="al-actions">
       <button class="sbtn danger" data-mreject="${m.id}">Не те</button>
       <button class="sbtn primary" data-mconfirm="${m.id}">Зарахувати</button>
     </div>
   </div>`;
+}
+
+/* «25 липня 2026» — дата під заголовком картки */
+const MONTHS_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня",
+  "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
+
+function longDate(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return `${+d} ${MONTHS_GEN[+m - 1] || ""} ${y}`;
 }
 
 /* Стрічка подій — другий шар «Сповіщень» (черга просить дії, стрічка просто
@@ -1544,35 +1568,77 @@ function paintAlerts() {
   });
 }
 
-/* Куди зараховуємо: список відкритих тасків цієї людини в цьому проєкті.
-   Запропоноване суддею — зверху й позначене. */
-function matchThemeSheet(m) {
-  const options = m.options || [];
-  if (!options.length) {
-    toast("У цієї людини немає відкритих завдань у проєкті");
+/* Куди зараховуємо. Два рівні:
+   1) відкриті завдання людини в цьому проєкті (з прогресом);
+   2) БУДЬ-ЯКА тематика проєкту — навіть та, на яку завдання ще не ставили.
+      Без другого пункту черга впиралась у глухий кут: публікація очевидно
+      закриває «критичні інформаційні потреби», а вибрати можна було лише те,
+      що хтось колись завів. Тепер завдання під таку тематику заводиться на
+      льоту (мовчки, без «тобі поставили завдання» за вчорашнє).
+   Для поста каналу автор невідомий, тож спершу питаємо, чия це робота. */
+function matchThemeSheet(m, forcedPerson) {
+  const who = forcedPerson || m.person;
+  if (!who) { matchPersonSheet(m); return; }
+
+  const tasks = (m.options || []).filter((o) => o.person === who)
+    .sort((a, b) => (b.id === m.task_id) - (a.id === m.task_id));
+  const taken = new Set(tasks.map((t) => t.theme_id).filter(Boolean));
+  const themes = (m.themes || []).filter((t) => !taken.has(t.id));
+  if (!tasks.length && !themes.length) {
+    toast("У проєкті немає ні завдань, ні тематик");
     return;
   }
-  const sorted = [...options].sort((a, b) =>
-    (b.id === m.task_id) - (a.id === m.task_id)
-    || a.person.localeCompare(b.person, "uk"));
-  // Автора немає (пост каналу) — рядок має сказати ще й КОМУ зараховуємо
-  const unknownAuthor = !m.person;
+  const taskRow = (o) => `
+    <button class="pick-row" data-mtask="${o.id}">
+      <span>
+        <span class="pk-name">${esc(o.theme_name || "Без тематики")}</span>
+        <span class="pk-meta">${o.done_count}/${o.qty}${o.id === m.task_id ? " · пропозиція Лиса" : ""}</span>
+      </span>
+      ${o.id === m.task_id ? icon("check", "ic chev") : ""}
+    </button>`;
+  const themeRow = (t) => `
+    <button class="pick-row" data-mtheme="${t.id}">
+      <span>
+        <span class="pk-name">${esc(t.name)}</span>
+        <span class="pk-meta">завдання ще немає — заведу і зарахую</span>
+      </span>
+    </button>`;
   openSheet(`
-    <h2>${unknownAuthor ? "Кому і куди зарахувати?" : "Куди зарахувати?"}</h2>
-    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(m.title)}</p>
-    ${sorted.map((o) => `
-      <button class="pick-row" data-mtask="${o.id}">
-        ${unknownAuthor ? avatar(o.person, personEntry(o.person), 36) : ""}
-        <span>
-          <span class="pk-name">${unknownAuthor ? esc(o.person) : esc(o.theme_name || "Без тематики")}</span>
-          <span class="pk-meta">${unknownAuthor ? esc(o.theme_name || "Без тематики") + " · " : ""}${o.done_count}/${o.qty}${o.id === m.task_id ? " · пропозиція Лиса" : ""}</span>
-        </span>
-        ${o.id === m.task_id ? icon("check", "ic chev") : ""}
-      </button>`).join("")}`);
+    <h2>Куди зарахувати?</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+      ${esc(who)} · ${esc(m.title)}</p>
+    ${tasks.length ? `<div class="f-label" style="margin-top:0">Відкриті завдання</div>
+      ${tasks.map(taskRow).join("")}` : ""}
+    ${themes.length ? `<div class="f-label">Інші тематики проєкту</div>
+      ${themes.map(themeRow).join("")}` : ""}`);
   $("sheet").querySelectorAll("[data-mtask]").forEach((b) => b.onclick = () => {
     closeSheet();
     decideMatch(m.id, { action: "confirm", task_id: +b.dataset.mtask });
   });
+  $("sheet").querySelectorAll("[data-mtheme]").forEach((b) => b.onclick = () => {
+    closeSheet();
+    decideMatch(m.id, {
+      action: "confirm", theme_id: +b.dataset.mtheme, person: who,
+    });
+  });
+}
+
+/* Пост каналу: автора Telegram не показує — питаємо, чия робота. Кандидати —
+   ті, у кого в цьому проєкті є завдання, а якщо таких немає, весь ростер. */
+function matchPersonSheet(m) {
+  const fromTasks = [...new Set((m.options || []).map((o) => o.person))];
+  const people = (fromTasks.length ? fromTasks : STATE.people.map((p) => p.name))
+    .sort((a, b) => a.localeCompare(b, "uk"));
+  openSheet(`
+    <h2>Кому зарахувати?</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(m.title)}</p>
+    ${people.map((name) => `
+      <button class="pick-row" data-mperson="${esc(name)}">
+        ${avatar(name, personEntry(name), 36)}
+        <span><span class="pk-name">${esc(name)}</span></span>
+      </button>`).join("")}`);
+  $("sheet").querySelectorAll("[data-mperson]").forEach((b) => b.onclick = () =>
+    matchThemeSheet(m, b.dataset.mperson));
 }
 
 async function decideMatch(matchId, body) {
@@ -1601,7 +1667,9 @@ function syncAlertsBadge() {
     dot.className = "bn-badge";
     btn.appendChild(dot);
   }
-  dot.textContent = n > 9 ? "9+" : n;
+  // Показуємо саме число: у черзі бувають десятки, і «9+» приховує масштаб —
+  // 40 і 10 вимагають різного настрою. Ріжемо лише за сотнею.
+  dot.textContent = n > 99 ? "99+" : n;
 }
 
 function renderReports() {
