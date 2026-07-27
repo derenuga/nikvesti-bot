@@ -12,7 +12,9 @@
 - тап по лінку відкриває матеріал через tg.openLink, а не всередині апки;
 - ОДНУ зараховану публікацію можна зняти тапом по галочці (з підтвердженням),
   не відкидаючи решту — з пʼятнадцяти зарахованих не підходити може одна;
-- у списку завдань людини донор іде перед назвою проєкту.
+- у списку завдань людини донор іде перед назвою проєкту;
+- у картці є «Зарахувати публікацію за лінком»: вставив URL — пішов запит на
+  attach (перенос із задубльованого завдання робиться цим же шляхом).
 
 Запуск (потрібні playwright + chromium):
     python test_webapp_progress.py
@@ -95,6 +97,16 @@ window.fetch = async (url, opts = {}) => {
   if (url === "/api/kpi") return json({ norms: [], week_label: "", month_label: "", site_db: true });
   if (url.startsWith("/api/kpi/person")) return json({ has_norms: false, months: [] });
   let m;
+  if ((m = url.match(/^\\/api\\/tasks\\/(\\d+)\\/attach$/))) {
+    window.__posts.push({ attach: +m[1], body: JSON.parse(opts.body) });
+    const t = window.BOOT.tasks.find((x) => x.id === +m[1]);
+    const added = { id: 99, title: "Перенесена публікація",
+                    url: "https://nikvesti.com/news/politics/5001-a",
+                    published: "2026-07-20T10:00:00+03:00", source: "site" };
+    const list = (t.matches || []).concat([added]);
+    return json({ tasks: [{ ...t, matches: list, done_count: list.length }],
+                  pending_count: 0 });
+  }
   if ((m = url.match(/^\\/api\\/matches\\/(\\d+)\\/decide$/))) {
     window.__posts.push({ id: +m[1], body: JSON.parse(opts.body) });
     // Сервер віддає оновлений таск: знята публікація зменшила прогрес
@@ -201,6 +213,19 @@ async def main():
             check("решта зарахованих лишилась на місці",
                   "Депутати не зібрались вдруге" in sheet2
                   and "Сесія міськради ухвалила бюджет" not in sheet2)
+
+            # --- зарахувати публікацію руками, за лінком ---
+            await page.click("#task-attach")
+            await page.wait_for_selector("#at-url")
+            await page.fill("#at-url", "https://nikvesti.com/news/politics/5001-a")
+            await page.click("#at-save")
+            await page.wait_for_timeout(400)
+            posts = await page.evaluate("window.__posts")
+            check("лінк пішов на attach потрібного завдання",
+                  posts[-1].get("attach") == 1
+                  and posts[-1]["body"]["url"].endswith("5001-a"))
+            check("картка одразу показує зараховану публікацію",
+                  "Перенесена публікація" in await page.inner_text("#sheet"))
         finally:
             await browser.close()
 

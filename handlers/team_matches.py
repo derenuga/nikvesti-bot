@@ -180,6 +180,17 @@ def known_refs(source, refs=None, statuses=DECIDED):
     return {r["ref"] for r in bot_db.query(sql, params)}
 
 
+def find_match(source, ref):
+    """Матч за публікацією (source, ref) — щоб не плодити другий запис, коли
+    ту саму публікацію зараховують руками поверх авто-вердикту."""
+    ensure_match_schema()
+    rows = bot_db.query(
+        f"SELECT {_COLS} FROM team_task_matches WHERE source = %s AND ref = %s",
+        (source, str(ref)),
+    )
+    return _row_to_match(rows[0]) if rows else None
+
+
 def get_match(match_id):
     ensure_match_schema()
     rows = bot_db.query(

@@ -518,6 +518,70 @@ async def _ping_done(bot, person, task):
     )
 
 
+def attach_publication(task, url, actor):
+    """Зарахувати конкретну публікацію в завдання РУКАМИ, за лінком.
+
+    Потрібно у двох життєвих випадках (Олег, 27.07): перенести зараховане з
+    помилково задубльованого завдання в правильне, і просто сказати «оце
+    сюди», не чекаючи прогону й не шукаючи публікацію в черзі.
+
+    Якщо цю публікацію вже судили — переносимо ТОЙ САМИЙ запис (UNIQUE
+    (source, ref) один на публікацію), а не заводимо другий: інакше прогрес
+    порахував би її двічі. Повертає (матч, [id зачеплених тасків]) або
+    (None, помилка-рядком)."""
+    url = (url or "").strip()
+    if not url:
+        return None, "Порожній лінк"
+
+    # Пост каналу — окреме джерело: у nodes його немає
+    if "t.me/" in url:
+        ref = url.rstrip("/").split("/")[-1].split("?")[0]
+        if not ref.isdigit():
+            return None, "З лінка не видно номер поста"
+        source, node_type = "telegram", "post"
+        title, published, project_id = f"Пост {ref}", None, task["project_id"]
+        try:
+            from handlers import team_tg_match
+            posts = team_tg_match.fetch_recent_posts(1)
+            found = next((p for p in posts if str(p["message_id"]) == ref), None)
+            if found:
+                title = team_tg_match.post_title(found)
+                published = int(found["dt"].timestamp()) if found["dt"] else None
+        except Exception as e:
+            print(f"team_matching: заголовок поста {ref} не прочитався — {e}")
+        clean_url = f"https://t.me/nikvesti/{ref}"
+    else:
+        node_id = extract_article_id(url)
+        if not node_id:
+            return None, "Це не схоже на лінк матеріалу nikvesti.com"
+        rows = db.query(
+            f"SELECT {_NODE_COLS} FROM nodes WHERE id = %s", (int(node_id),)
+        ) if db.is_configured() else []
+        if not rows:
+            return None, f"Матеріалу {node_id} немає в БД сайту"
+        row = rows[0]
+        source, ref = "site", str(node_id)
+        node_type = row["type"]
+        title = (row["title"] or "").strip()
+        published = row["published"]
+        project_id = row["partner_project"] or task["project_id"]
+        clean_url = node_url(row)
+
+    existing = team_matches.find_match(source, ref)
+    if existing:
+        if existing["task_id"] == task["id"] and existing["status"] in team_matches.COUNTED:
+            return None, "Ця публікація вже зарахована в це завдання"
+        match, touched = team_matches.decide_match(
+            existing["id"], actor, "confirm", task_id=task["id"],
+            person=task["person"])
+        return match, touched
+    match = team_matches.record_match(
+        source, ref, "confirmed", task_id=task["id"], person=task["person"],
+        project_id=project_id, title=title, url=clean_url, published=published,
+        node_type=node_type)
+    return match, [task["id"]]
+
+
 def _enrich_pending_cards(limit=50):
     """Самолікування черги: добирає опис і зображення тим спірним, у кого їх
     ще немає. Пости Telegram сюди не йдуть — у них картинка вже зі стрічки."""

@@ -14,7 +14,9 @@
 - зарахування в тематику, на яку завдання ЩЕ НЕ ставили: завдання заводиться
   на льоту і мовчки (без «тобі поставили завдання» за вчорашнє);
 - зняття зарахування ПОВЕРТАЄ публікацію в чергу (а не ховає її назавжди):
-  «це не сюди» ≠ «це взагалі не проєктне».
+  «це не сюди» ≠ «це взагалі не проєктне»;
+- зарахування руками за лінком ПЕРЕНОСИТЬ публікацію між завданнями (запис на
+  неї один, тож прогрес не подвоюється) — випадок задубльованої таски.
 
 Запуск (потрібен Postgres; за замовчуванням локальний тестовий):
     BOT_DATABASE_URL=postgresql://... python test_team_matches.py
@@ -218,6 +220,67 @@ def main():
             (str(t["id"]),))
     bot_db.execute("DELETE FROM team_project_themes WHERE id = %s", (theme["id"],))
     bot_db.execute("DELETE FROM team_task_matches WHERE ref = 'test-4001'")
+
+    # ---------- 9. Перенос публікації руками, за лінком ----------
+    # Випадок Олега: одну людину випадково нагородили двома однаковими
+    # тасками, і в дубль уже встигли зарахувати одну новину.
+    from handlers import team_matching
+    dup = new_task(qty=10)          # помилковий дубль
+    main_task = new_task(qty=10)    # правильне завдання
+    # ref = id ноди, як його запише прогін — саме цей запис має переїхати
+    team_matches.record_match(
+        "site", "5001", "auto", task_id=dup["id"], person="Тест Тестова",
+        project_id=999, confidence="high", title="Новина в дублі",
+        url="https://nikvesti.com/news/politics/5001-a")
+    check("зараховано в дубль", counted(dup["id"]) == 1)
+
+    # Підміна БД сайту: лінк має розрішитись у справжню ноду
+    class FakeDB:
+        def is_configured(self):
+            return True
+
+        def query(self, sql, params=None):
+            return [{"id": 5001, "type": "news", "category": "politics",
+                     "status": 1, "owner_id": 42, "partner_project": 999,
+                     "published": 1785000000, "slug_ua": "5001-a", "slug": None,
+                     "title": "Новина в дублі", "content": "<p>Лід.</p>"}]
+
+    orig_db = team_matching.db
+    team_matching.db = FakeDB()
+    try:
+        match, touched = team_matching.attach_publication(
+            main_task, "https://nikvesti.com/news/politics/5001-a", "Олег Деренюга")
+        for tid in touched:
+            team_matches.apply_progress(tid)
+        check("публікація переїхала в правильне завдання",
+              match and match["task_id"] == main_task["id"])
+        check("у дублі її більше немає", counted(dup["id"]) == 0)
+        check("а в правильному — рівно одна (не подвоїлась)",
+              counted(main_task["id"]) == 1)
+        check("запис на публікацію лишився ОДИН",
+              len(bot_db.query(
+                  "SELECT 1 FROM team_task_matches WHERE ref = '5001'")) == 1)
+
+        again2, err = team_matching.attach_publication(
+            main_task, "https://nikvesti.com/news/politics/5001-a", "Олег Деренюга")
+        check("повторне зарахування того самого — зрозуміла відмова",
+              again2 is None and "вже зарахована" in err)
+
+        bad, err2 = team_matching.attach_publication(
+            main_task, "https://example.com/щось", "Олег Деренюга")
+        check("чужий лінк не зараховується", bad is None and "nikvesti" in err2)
+
+        # Пост каналу теж можна зарахувати руками
+        tg_match, tg_touched = team_matching.attach_publication(
+            main_task, "https://t.me/nikvesti/82296", "Олег Деренюга")
+        for tid in tg_touched:
+            team_matches.apply_progress(tid)
+        check("пост каналу теж зараховується за лінком",
+              tg_match and tg_match["source"] == "telegram"
+              and counted(main_task["id"]) == 2)
+    finally:
+        team_matching.db = orig_db
+        bot_db.execute("DELETE FROM team_task_matches WHERE ref IN ('5001', '82296')")
 
     cleanup()
 
