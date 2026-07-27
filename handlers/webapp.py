@@ -598,6 +598,22 @@ async def api_kpi_dashboard(request):
     return web.json_response(data)
 
 
+async def api_kpi_person(request):
+    """Профіль співробітника: помісячна динаміка виконання KPI. Тільки менеджери."""
+    person, info, _ = await _require_manager(request)
+    who = request.query.get("person")
+    if who not in team_roster.ROSTER:
+        raise web.HTTPBadRequest(text="Невідома людина")
+    try:
+        months = min(24, max(3, int(request.query.get("months", "12"))))
+    except ValueError:
+        months = 12
+    data = await asyncio.to_thread(team_kpi.kpi_person_history, who, months)
+    if data is None:
+        raise web.HTTPNotFound(text="Людину не знайдено")
+    return web.json_response(data)
+
+
 async def api_kpi_norm_create(request):
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
@@ -712,6 +728,7 @@ async def start_webapp(application):
         web.put("/api/people/dept", api_people_dept),
         web.get("/api/kpi", api_kpi),
         web.get("/api/kpi/dashboard", api_kpi_dashboard),
+        web.get("/api/kpi/person", api_kpi_person),
         web.post("/api/kpi/norms", api_kpi_norm_create),
         web.patch("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_patch),
         web.delete("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_delete),

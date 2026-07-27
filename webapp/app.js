@@ -230,7 +230,7 @@ function nav(view, arg) {
   STATE.view = view;
   if (view === "project") STATE.currentProject = arg;
   if (view === "kpinorm") STATE.currentNorm = arg;
-  if (view === "person") STATE.currentPerson = arg;
+  if (view === "person" || view === "personhist") STATE.currentPerson = arg;
   if (view === "bulk") {
     const now = new Date();
     STATE.bulk = { ...arg, y: now.getFullYear(), m: now.getMonth(), qty: {} };
@@ -242,7 +242,7 @@ function nav(view, arg) {
   };
   const navKey = view === "kpinorm" ? "kpi"
     : view === "project" || view === "bulk" ? "projects"
-    : view === "person" ? "home" : view;
+    : view === "person" || view === "personhist" ? "home" : view;
   document.querySelectorAll("#bottomnav .bn").forEach((b) =>
     b.classList.toggle("on", b.dataset.view === navKey));
   render();
@@ -253,6 +253,7 @@ function render() {
   const v = STATE.view;
   if (v === "home") renderHome();
   else if (v === "person") renderPerson();
+  else if (v === "personhist") renderPersonHistory();
   else if (v === "people") renderPeople();
   else if (v === "form") renderForm();
   else if (v === "projects") renderProjects();
@@ -1278,22 +1279,59 @@ async function renderDashboard() {
     d.offset = Math.min(0, d.offset + (+b.dataset.doff)); renderDashboard();
   });
   body.querySelectorAll("[data-rperson]").forEach((b) => b.onclick = () =>
-    dashPersonSheet(data.people.find((p) => p.person === b.dataset.rperson)));
+    nav("personhist", b.dataset.rperson));
 }
 
-function dashPersonSheet(p) {
-  if (!p) return;
-  openSheet(`
-    <h2>${esc(p.person)}</h2>
-    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(STATE.dash.data.label)} · ${esc(p.dept_title)}</p>
-    ${p.norms.map((n) => `
-      <div class="mykpi-row">
-        <span class="mk-t">${esc(n.label)}</span>
-        <span class="kp-fact ${n.done ? "ok" : ""}">${n.fact == null ? "—" : `${n.fact}/${n.target}`}</span>
-        <span class="kbar wide"><i class="${n.done ? "ok" : ""}" style="width:${n.pct == null ? 0 : n.pct}%"></i></span>
-      </div>`).join("")}
-    <div class="sheet-actions"><button class="sbtn primary" id="dp-close">Закрити</button></div>`);
-  $("dp-close").onclick = closeSheet;
+/* Профіль співробітника: помісячна динаміка виконання KPI стовпчиками —
+   видно, як людина працює місяць до місяця. Дані — /api/kpi/person. */
+async function renderPersonHistory() {
+  const person = STATE.currentPerson;
+  const entry = personEntry(person);
+  $("content").innerHTML = `
+    <button class="back" data-nav="home">${icon("chevron-left")} Звіт</button>
+    <div class="who">
+      ${avatar(person, entry, 56)}
+      <div><div class="wn">${esc(person)}</div>
+      <div class="wd">${esc((entry || {}).dept_title || "")}</div></div>
+    </div>
+    <div id="hist-body"><div class="empty-hint">Завантажую…</div></div>`;
+  let data;
+  try {
+    data = await api(`/api/kpi/person?person=${encodeURIComponent(person)}`);
+  } catch (e) {
+    const b = $("hist-body"); if (b) b.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+    return;
+  }
+  if (STATE.view !== "personhist") return;
+  const body = $("hist-body");
+  if (!body) return;
+  if (!data.has_norms) {
+    body.innerHTML = `<div class="empty-hint">У відділі немає місячної норми —<br>динаміку показати нема з чого.</div>`;
+    return;
+  }
+  const maxH = 120;
+  const bars = data.months.map((m) => {
+    const pct = m.overall_pct;
+    const h = pct == null ? 0 : Math.max(4, Math.min(100, pct) / 100 * maxH);
+    const color = pctColor(pct) || "var(--line)";
+    const nn = m.norms[0];
+    const factLabel = nn ? (nn.fact == null ? "—" : `${nn.fact}/${nn.target}`) : "—";
+    return `
+    <div class="hb-col ${m.is_current ? "cur" : ""}">
+      <div class="hb-val" style="color:${color}">${pct == null ? "—" : pct + "%"}</div>
+      <div class="hb-track" style="height:${maxH}px">
+        <div class="hb-bar" style="height:${h.toFixed(0)}px;background:${color}"></div>
+      </div>
+      <div class="hb-fact">${factLabel}</div>
+      <div class="hb-month">${esc(m.label)}</div>
+    </div>`;
+  }).join("");
+  body.innerHTML = `
+    <div class="h-sub">виконання KPI по місяцях${data.months[0].norms[0] ? " · " + esc(data.months[data.months.length - 1].norms[0].label) : ""}</div>
+    <div class="hist-chart" id="hist-chart">${bars}</div>
+    ${!data.site_db ? `<div class="tl-note">БД сайту недоступна — факт не рахується.</div>` : ""}`;
+  const chart = $("hist-chart");
+  if (chart) chart.scrollLeft = chart.scrollWidth;  // до найсвіжішого місяця
 }
 
 function normCreateSheet() {

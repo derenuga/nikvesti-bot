@@ -34,6 +34,8 @@ KPI_PERIODS = ("week", "month")
 
 MONTHS_UA = ["січень", "лютий", "березень", "квітень", "травень", "червень",
              "липень", "серпень", "вересень", "жовтень", "листопад", "грудень"]
+MONTHS_UA_SHORT = ["січ", "лют", "бер", "кві", "тра", "чер",
+                   "лип", "сер", "вер", "жов", "лис", "гру"]
 
 FACT_CACHE_TTL = 300
 _fact_cache = {}  # (metric, period_start_iso) -> (expires, {person: count})
@@ -437,6 +439,76 @@ def kpi_payload(for_person=None):
         "week_label": period_label("week"),
         "month_label": period_label("month"),
         "site_db": db.is_configured(),
+    }
+
+
+def _person_month_buckets(uid, months):
+    """{(рік,місяць): {(type, own_material): к-сть}} виходу людини за останні
+    `months` місяців. ОДИН запит до nodes, бакетинг по київських місяцях."""
+    start, _ = period_bounds("month", -(months - 1))
+    ts_start = int(datetime(start.year, start.month, 1, tzinfo=KYIV_TZ).timestamp())
+    rows = db.query(
+        "SELECT published, type, own_material FROM nodes "
+        "WHERE owner_id = %s AND status = 1 "
+        "AND published >= %s AND published <= UNIX_TIMESTAMP()",
+        (int(uid), ts_start),
+    )
+    buckets = {}
+    for r in rows:
+        dt = datetime.fromtimestamp(r["published"], KYIV_TZ)
+        b = buckets.setdefault((dt.year, dt.month), {})
+        key = (r["type"], 1 if r["own_material"] == 1 else 0)
+        b[key] = b.get(key, 0) + 1
+    return buckets
+
+
+def kpi_person_history(person, months=12):
+    """Помісячна динаміка виконання KPI людини (профіль): за кожен з останніх
+    `months` місяців — факт/ціль по її місячних нормах і сукупний %.
+    Історія — з nodes (весь published); норми поточні, правки — за період."""
+    if person not in team_roster.ROSTER:
+        return None
+    dept = team_roster.effective_dept(person)
+    norms = [n for n in list_norms() if n["period"] == "month" and n["dept"] == dept]
+    uid = resolve_site_user_id(person) if db.is_configured() else None
+    buckets = _person_month_buckets(uid, months) if uid else {}
+
+    out_months = []
+    for off in range(-(months - 1), 1):
+        start, _ = period_bounds("month", off)
+        b = buckets.get((start.year, start.month), {})
+        m_norms, pcts = [], []
+        for n in norms:
+            ov = _overrides_for(n["id"], "month", off).get(person)
+            if ov and ov["target"] == 0:
+                continue  # звільнена того місяця
+            target = ov["target"] if ov else n["target"]
+            if uid is None:
+                fact = None
+            elif n["own"]:
+                fact = b.get((n["metric"], 1), 0)
+            else:
+                fact = b.get((n["metric"], 0), 0) + b.get((n["metric"], 1), 0)
+            pct = None if fact is None or target <= 0 else min(100, round(fact / target * 100))
+            if pct is not None:
+                pcts.append(pct)
+            m_norms.append({
+                "label": f"{target} {n['metric']}" + (" власних" if n["own"] else ""),
+                "fact": fact, "target": target, "pct": pct,
+                "done": fact is not None and target > 0 and fact >= target,
+            })
+        out_months.append({
+            "label": f"{MONTHS_UA_SHORT[start.month - 1]} {str(start.year)[2:]}",
+            "offset": off, "is_current": off == 0,
+            "overall_pct": round(sum(pcts) / len(pcts)) if pcts else None,
+            "norms": m_norms,
+        })
+    return {
+        "person": person,
+        "dept_title": team_roster.DEPT_TITLES.get(dept, dept),
+        "has_norms": bool(norms),
+        "site_db": db.is_configured(),
+        "months": out_months,
     }
 
 
