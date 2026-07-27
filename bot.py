@@ -9,6 +9,7 @@ from handlers.analytics_store import analytics_backfill_handler, sc_backfill_han
 from handlers.weekly_digest import weekly_handler
 from handlers.report_reminders import reports_check_handler
 from handlers.social_store import social_capture_handler, social_backfill_fb_handler
+from handlers.social_import import social_import_sheet_handler
 from handlers.social_sheet import sheet_snapshot_handler, sheet_backfill_handler, sheet_format_handler, youtube_backfill_handler, tiktok_auth_handler
 from handlers.social_sheet_legacy import sheet_migrate_legacy_handler
 from handlers.scheduler import setup_scheduler, send_daily_report, check_email
@@ -398,6 +399,7 @@ def main():
     app.add_handler(CommandHandler("reports", reports_check_handler))
     app.add_handler(CommandHandler("social_capture", social_capture_handler))
     app.add_handler(CommandHandler("social_backfill_fb", social_backfill_fb_handler))
+    app.add_handler(CommandHandler("social_import_sheet", social_import_sheet_handler))
     app.add_handler(CommandHandler("sheet_snapshot", sheet_snapshot_handler))
     app.add_handler(CommandHandler("sheet_backfill", sheet_backfill_handler))
     app.add_handler(CommandHandler("sheet_format", sheet_format_handler))

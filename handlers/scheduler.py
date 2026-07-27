@@ -27,6 +27,7 @@ from handlers.weekly_digest import send_weekly_digest
 from handlers.report_reminders import check_report_deadlines
 from handlers.team_matching import run_matching_scan
 from handlers.social_sheet import run_monthly_snapshot, check_tiktok_health
+from handlers.social_store import run_weekly_capture
 from handlers import analytics_store
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -263,6 +264,12 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # Місячний знімок аналітики в Google-таблицю — 1-го числа о 10:30
     # (після ранкових задач; Meta/SC на цей час уже мають повний минулий місяць)
     scheduler.add_job(monthly_social_sheet, "cron", day=1, hour=10, minute=30, args=[bot])
+    # Тижневий зріз решти мереж у нору (Telegram/TikTok/YouTube/Viber) —
+    # неділя 18:30, одразу після IG-звіту (18:00): FB та IG свої зрізи п'ють
+    # піггібеком на звіти, а в цих чотирьох звіту в чат немає. Тихо: це
+    # пам'ять, а не звіт — у чат нічого не летить.
+    scheduler.add_job(run_weekly_capture, "cron", day_of_week="sun", hour=18,
+                      minute=30, args=[bot])
     # Перевірка TikTok-токена — понеділок 09:45 (максимум 1 алерт/тиждень,
     # тому без окремого кулдауну); тихо, поки TikTok не налаштовано
     scheduler.add_job(weekly_tiktok_health, "cron", day_of_week="mon", hour=9, minute=45, args=[bot])

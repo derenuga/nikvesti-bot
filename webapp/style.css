@@ -937,6 +937,27 @@ body.dark { --cat1: #3987e5; --cat2: #d95926; --cat3: #199e70; }
   padding: 13px 16px; margin-bottom: 10px;
 }
 .soc-h { display: flex; align-items: center; gap: 8px; }
+/* Знак мережі: бренд-відтінок несе впізнаваність, форма — ідентичність.
+   TikTok у світлій темі майже чорний (як його лого), у темній — світлий:
+   інакше знак зникав би у власному фоні. */
+.soc-ic {
+  width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(128, 148, 170, .14);
+}
+.soc-ic .ic { width: 16px; height: 16px; }
+.soc-ic.facebook { color: #1877f2; }
+.soc-ic.instagram { color: #c13584; }
+.soc-ic.telegram { color: #229ed9; }
+.soc-ic.youtube { color: #cc0000; }
+.soc-ic.viber { color: #7360f2; }
+.soc-ic.tiktok { color: #16181c; }
+body.dark .soc-ic.tiktok { color: #e8e6e1; }
+body.dark .soc-ic.facebook { color: #5b9bf7; }
+body.dark .soc-ic.instagram { color: #e06aae; }
+body.dark .soc-ic.telegram { color: #55b9e8; }
+body.dark .soc-ic.youtube { color: #ff6b6b; }
+body.dark .soc-ic.viber { color: #9c8cff; }
 .soc-n { font-size: 14.5px; font-weight: 800; flex: 1; min-width: 0; }
 .soc-f {
   font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums;

@@ -1,15 +1,29 @@
 """
-Пам'ять тижневих зрізів соцмереж (Facebook/Instagram) у БД бота (Postgres).
+Пам'ять соцмереж у БД бота (Postgres): тижневі зрізи + місячна історія.
 
 Навіщо саме БД: Meta НЕ дає дістати метрики заднім числом — API віддає охоплення/
 взаємодії лише за недавнє фіксоване вікно (~тиждень). Тобто історію соцмереж
 неможливо бекфілити; єдиний спосіб її мати — накопичувати знімки. Якщо не знімати
 зараз — ця історія втрачається назавжди.
 
-Знімок п'ємо ПІГГІБЕКОМ на недільні звіти FB (15:00) та IG (18:00) — дані там уже
-зібрані, жодного зайвого виклику Meta. Ядро метрик — у колонках social_stats,
-решта + сирий словник — у raw JSONB (Meta регулярно перейменовує поля: напр. IG
-перейшов з reach на views — тому тримаємо reach і views обидва).
+ДВА ГРЕЙНИ, і кожен зі своєї причини:
+
+1. `social_stats` — ТИЖНЕВІ зрізи. Facebook та Instagram п'ємо піггібеком на
+   недільні звіти (15:00 / 18:00) — дані там уже зібрані, жодного зайвого
+   виклику Meta. Telegram / TikTok / YouTube / Viber — окремим тихим захватом
+   у неділю (`capture_rest`): у них немає «звіту в чат», на який можна
+   присісти, а тижневий розріз потрібен дашборду Mini App.
+
+2. `social_monthly` — МІСЯЧНА історія всіх мереж. Досі вона жила лише в
+   Google-таблиці «Аналітика МикВісті»: місячний знімок писав її туди й
+   забував (питання Олега 27.07 — «нора має зберігати весь наш прогрес»).
+   Тепер той самий знімок осідає і в Норі (`record_month`, source='api'), а
+   накопичену історію таблиці — включно з перенесеною старою ручною з 2024-02 —
+   заливає `/social_import_sheet` (handlers/social_import.py, source='sheet').
+
+Ядро метрик — у колонках, решта + сирий словник — у raw/extra JSONB (Meta
+регулярно перейменовує поля: напр. IG перейшов з reach на views — тому тримаємо
+reach і views обидва; YouTube має години перегляду, TikTok — лайки/поширення).
 
 Тихо пропускається без BOT_DATABASE_URL — як analytics_store / archive_mirror.
 """
@@ -18,13 +32,33 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import requests
 
 from handlers import bot_db
 
+KYIV_TZ = ZoneInfo("Europe/Kiev")
+
 FACEBOOK = "facebook"
 INSTAGRAM = "instagram"
+TELEGRAM = "telegram"
+TIKTOK = "tiktok"
+YOUTUBE = "youtube"
+VIBER = "viber"
+
+# Порядок і людські назви — спільні для дашборда Mini App і звітів
+PLATFORM_TITLES = {
+    FACEBOOK: "Facebook", INSTAGRAM: "Instagram", TELEGRAM: "Telegram",
+    TIKTOK: "TikTok", YOUTUBE: "YouTube", VIBER: "Viber",
+}
+PLATFORM_ORDER = [FACEBOOK, INSTAGRAM, TELEGRAM, TIKTOK, YOUTUBE, VIBER]
+
+# Ключі блоків місячного знімка (social_sheet) → платформи Нори
+SHEET_BLOCK_PLATFORM = {
+    "fb": FACEBOOK, "ig": INSTAGRAM, "tg": TELEGRAM,
+    "tt": TIKTOK, "yt": YOUTUBE, "vb": VIBER,
+}
 
 _ALLOWED_USER_IDS = {
     int(uid)
@@ -100,6 +134,223 @@ async def capture_instagram(profile, stats, follows, unfollows, total_posts, ree
         "reels": reels,
     }
     await _record(INSTAGRAM, followers, reach, views, engagement, total_posts, raw)
+
+
+# ---------- Тижневий захват решти мереж (Telegram/TikTok/YouTube/Viber) ----------
+#
+# У FB та IG знімок піггібеком на недільний звіт; у цих чотирьох звіту в чат
+# немає, тож ходимо по джерела самі — раз на тиждень це дешево (TG: ~8 сторінок
+# стрічки t.me; TikTok/YouTube: 2-3 запити API; Viber: один).
+#
+# Вікно — СІМ ДНІВ, що закінчуються сьогодні, як і в Meta-звітах: тижневий зріз
+# має означати те саме, з якої мережі його не взяти.
+
+WEEK_DAYS = 7
+
+
+def _week_window(now=None):
+    """(start, end) вікна тижневого зрізу: [сьогодні−6 днів 00:00 за Києвом,
+    зараз]. Дати — З ТАЙМЗОНОЮ: стрічка t.me віддає час із зоною, і порівняти
+    його з наївним datetime не вийде (TypeError)."""
+    now = now or datetime.now(KYIV_TZ)
+    start = (now - timedelta(days=WEEK_DAYS - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return start, now
+
+
+async def capture_telegram():
+    """Зріз Telegram: підписники (t.me) + пости й перегляди за тиждень."""
+    from handlers import telegram_stats as tg
+
+    start, end = _week_window()
+    followers = await asyncio.to_thread(tg.channel_subscribers)
+    window = await asyncio.to_thread(tg.collect_window, start, end)
+    raw = {"avg_views": window.get("avg_views"), "window_days": WEEK_DAYS}
+    await _record(TELEGRAM, followers, None, window.get("views_total"),
+                  None, window.get("posts"), raw)
+    return {"followers": followers, "views": window.get("views_total"),
+            "posts": window.get("posts")}
+
+
+async def capture_tiktok():
+    """Зріз TikTok: підписники + метрики відео, опублікованих за тиждень.
+    Охоплення TikTok API не віддає — лишається None назавжди."""
+    from handlers import tiktok_analytics as tt
+
+    if not tt.is_configured():
+        raise RuntimeError("TikTok OAuth не налаштовано (/tiktok_auth)")
+    start, end = _week_window()
+    stats = await asyncio.to_thread(tt.get_user_stats)
+    vids = await asyncio.to_thread(
+        tt.get_month_video_stats, int(start.timestamp()), int(end.timestamp()))
+    vids = vids or {}
+    engagement = None
+    parts = [vids.get(k) for k in ("likes", "comments", "shares")]
+    if any(p is not None for p in parts):
+        engagement = sum(p or 0 for p in parts)
+    raw = {"likes": vids.get("likes"), "comments": vids.get("comments"),
+           "shares": vids.get("shares"), "total_likes": stats.get("likes"),
+           "window_days": WEEK_DAYS}
+    await _record(TIKTOK, stats.get("followers"), None, vids.get("views"),
+                  engagement, vids.get("videos"), raw)
+    return {"followers": stats.get("followers"), "views": vids.get("views"),
+            "posts": vids.get("videos")}
+
+
+async def capture_youtube():
+    """Зріз YouTube: підписники (Data API) + перегляди й години перегляду за
+    тиждень (Analytics API приймає довільний діапазон дат)."""
+    from handlers import youtube_analytics as yt
+
+    if not yt.is_configured():
+        raise RuntimeError("YouTube OAuth не налаштовано (YOUTUBE_OAUTH_*)")
+    start, end = _week_window()
+    stats = await asyncio.to_thread(yt.get_channel_stats)
+    totals = await asyncio.to_thread(
+        yt.get_month_totals, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+    totals = totals or {}
+    raw = {"watch_hours": totals.get("watch_hours"),
+           "lifetime_views": stats.get("views"), "window_days": WEEK_DAYS}
+    await _record(YOUTUBE, stats.get("subscribers"), None, totals.get("views"),
+                  None, None, raw)
+    return {"followers": stats.get("subscribers"), "views": totals.get("views")}
+
+
+async def capture_viber():
+    """Зріз Viber: підписники — ЄДИНА метрика, яку віддає API. Пости беремо з
+    власного лічильника дзеркала (за місяць — тижневого Viber не має)."""
+    from handlers import viber_mirror as vb
+
+    if not vb.is_enabled():
+        raise RuntimeError("Viber не налаштовано (VIBER_AUTH_TOKEN)")
+    info = await asyncio.to_thread(vb.get_account_info)
+    followers = info.get("subscribers_count")
+    await _record(VIBER, followers, None, None, None, None,
+                  {"window_days": WEEK_DAYS})
+    return {"followers": followers}
+
+
+async def capture_rest():
+    """Тижневий зріз усіх мереж, крім FB/IG (їх п'ємо піггібеком на звіти).
+    Кожна мережа окремо: ненастроєна чи впала — свій рядок звіту, решта
+    записується. Повертає {платформа: "✅ …"/"⛔ …"} для лога і /social_capture."""
+    out = {}
+    for platform, fn in ((TELEGRAM, capture_telegram), (TIKTOK, capture_tiktok),
+                         (YOUTUBE, capture_youtube), (VIBER, capture_viber)):
+        title = PLATFORM_TITLES[platform]
+        try:
+            data = await fn()
+            bits = [f"підписників {data.get('followers')}"]
+            if data.get("views") is not None:
+                bits.append(f"переглядів {data['views']}")
+            if data.get("posts") is not None:
+                bits.append(f"постів {data['posts']}")
+            out[platform] = f"{title} ✅ " + ", ".join(bits)
+        except Exception as e:
+            out[platform] = f"{title} ⛔ {e}"
+    return out
+
+
+async def run_weekly_capture(bot=None):
+    """Планове завдання (неділя): тихий тижневий зріз решти мереж. Пише в лог,
+    у чат нічого не сипле — це пам'ять, а не звіт."""
+    if not is_ready():
+        return
+    results = await capture_rest()
+    for line in results.values():
+        print(f"social_store: {line}")
+
+
+# ---------- Місячна історія (social_monthly) ----------
+
+def _month_row(platform, month_date, followers=None, reach=None, views=None,
+               engagement=None, posts=None, extra=None, source="api"):
+    clean_extra = {k: v for k, v in (extra or {}).items() if v is not None}
+    return (platform, month_date, _to_int(followers), _to_int(reach), _to_int(views),
+            _to_int(engagement), _to_int(posts),
+            json.dumps(clean_extra, ensure_ascii=False) if clean_extra else None,
+            source)
+
+
+async def record_month(year, month, blocks, source="api"):
+    """Кладе місячний знімок соцмереж у Нору. blocks — словник результатів
+    збирачів social_sheet: {"fb": {...}, "ig": {...}, "tg": {...}, "tt": {...},
+    "yt": {...}, "vb": {...}}; None-блоки пропускаються.
+
+    Викликається з місячного знімка таблиці — щоб ті самі числа, які пішли в
+    Google-таблицю, лишались і в боті. Ковтати помилку тут не треба: виклик у
+    social_sheet обгорнутий, бо знімок таблиці не має падати через Нору."""
+    if not is_ready():
+        return 0
+    month_date = f"{year:04d}-{month:02d}-01"
+    rows = []
+    for key, data in (blocks or {}).items():
+        platform = SHEET_BLOCK_PLATFORM.get(key)
+        if not platform or not data:
+            continue
+        if platform == TELEGRAM:
+            rows.append(_month_row(
+                platform, month_date, followers=data.get("subscribers"),
+                views=data.get("views_total"), posts=data.get("posts"),
+                extra={"avg_views": data.get("avg_views")}, source=source))
+        elif platform == VIBER:
+            rows.append(_month_row(
+                platform, month_date, followers=data.get("subscribers"),
+                posts=data.get("posts"), source=source))
+        elif platform == TIKTOK:
+            parts = [data.get(k) for k in ("likes", "comments", "shares")]
+            engagement = (sum(p or 0 for p in parts)
+                          if any(p is not None for p in parts) else None)
+            rows.append(_month_row(
+                platform, month_date, followers=data.get("followers"),
+                views=data.get("views"), engagement=engagement,
+                extra={"likes": data.get("likes"), "shares": data.get("shares"),
+                       "comments": data.get("comments")}, source=source))
+        elif platform == YOUTUBE:
+            rows.append(_month_row(
+                platform, month_date, followers=data.get("followers"),
+                views=data.get("views"),
+                extra={"watch_hours": data.get("watch_hours")}, source=source))
+        elif platform == INSTAGRAM:
+            rows.append(_month_row(
+                platform, month_date, followers=data.get("followers"),
+                reach=data.get("reach"), views=data.get("views"),
+                engagement=data.get("interactions"), posts=data.get("posts"),
+                source=source))
+        else:  # facebook
+            rows.append(_month_row(
+                platform, month_date, followers=data.get("followers"),
+                views=data.get("views"), engagement=data.get("engagement"),
+                posts=data.get("posts"), source=source))
+    if not rows:
+        return 0
+    return await asyncio.to_thread(bot_db.upsert_social_monthly, rows)
+
+
+def get_month_rows(start_month, end_month):
+    """Місячні рядки соцмереж у діапазоні [start_month, end_month] (дати першого
+    числа). list[dict] platform/month/followers/reach/views/engagement/posts/
+    extra/source. [] без БД бота."""
+    if not is_ready():
+        return []
+    return bot_db.query(
+        "SELECT platform, to_char(month, 'YYYY-MM-DD') AS month, followers, reach, "
+        "views, engagement, posts, extra, source FROM social_monthly "
+        "WHERE month BETWEEN %s AND %s ORDER BY month, platform",
+        (start_month, end_month),
+    )
+
+
+def month_coverage():
+    """Що вже є в місячній історії: [{platform, months, oldest, newest}] —
+    для звіту імпорту й діагностики."""
+    if not is_ready():
+        return []
+    return bot_db.query(
+        "SELECT platform, count(*) AS months, to_char(min(month), 'YYYY-MM') AS oldest, "
+        "to_char(max(month), 'YYYY-MM') AS newest FROM social_monthly "
+        "GROUP BY platform ORDER BY platform"
+    )
 
 
 # ---------- Читання (NLQ-tool get_social_history) ----------
@@ -228,9 +479,12 @@ async def social_backfill_fb_handler(update, context):
 # ---------- Ручний засів (/social_capture) ----------
 
 async def social_capture_handler(update, context):
-    """/social_capture — зняти зріз FB+IG зараз і покласти в social_stats.
-    Знімок автоматично п'ється щонеділі зі звітів; ця команда — щоб засіяти
-    першу точку одразу, не чекаючи неділі, і для перевірки."""
+    """/social_capture — зняти зріз УСІХ мереж зараз і покласти в social_stats.
+
+    FB та IG знімаються піггібеком на недільні звіти, решта (Telegram, TikTok,
+    YouTube, Viber) — окремим захватом у неділю о 18:30. Ця команда робить те
+    саме руками: засіяти першу точку одразу, не чекаючи неділі, і перевірити,
+    що кожне джерело справді відповідає."""
     if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
         await update.message.reply_text("⛔ Тільки для редакції.")
         return
@@ -241,7 +495,9 @@ async def social_capture_handler(update, context):
         return
     from handlers import facebook as fb, instagram as ig
 
-    msg = await update.message.reply_text("🦊 Знімаю поточний зріз FB та IG…")
+    msg = await update.message.reply_text(
+        "🦊 Знімаю поточний зріз усіх мереж (FB, IG, Telegram, TikTok, YouTube, Viber)…\n"
+        "Telegram гортає стрічку — це до пів хвилини.")
     results = []
 
     try:
@@ -271,5 +527,9 @@ async def social_capture_handler(update, context):
         )
     except Exception as e:
         results.append(f"📱 IG ❌ {e}")
+
+    # Решта мереж — тим самим кодом, що й плановий недільний захват
+    rest = await capture_rest()
+    results += [rest[p] for p in PLATFORM_ORDER if p in rest]
 
     await msg.edit_text("🦊 Зріз збережено:\n" + "\n".join(results))
