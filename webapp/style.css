@@ -630,18 +630,20 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 .me-cap b { display: block; font-size: 17px; font-weight: 800; color: var(--good); }
 .me-cap span { display: block; font-size: 11.5px; color: var(--muted); }
 
-/* Порожній слот нижнього меню — тримає «+» посередині (реальних пунктів троє) */
-.bn-spacer { visibility: hidden; pointer-events: none; }
-
-/* ---------- посилання-налаштування (KPI та ролі з нижнього меню) ---------- */
-.settings-link {
-  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
-  background: var(--card); border-radius: 14px; box-shadow: var(--shadow);
-  padding: 13px 15px; margin-bottom: 18px;
-  font-size: 14px; font-weight: 600; color: var(--muted);
+/* ---------- рядок під заголовком: лічильник + текстове посилання ----------
+   KPI та ролі — рідка конфігурація, тож не картка й не пункт меню, а
+   надпис збоку від лічильника завдань: помітно, але не претендує на увагу. */
+.sub-row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; margin-bottom: 18px;
 }
-.settings-link .ic { width: 19px; height: 19px; color: var(--blue); flex-shrink: 0; }
-.settings-link .chev { margin-left: auto; }
+.sub-row .h-sub { margin-bottom: 0; }
+.text-link {
+  display: inline-flex; align-items: center; gap: 1px; flex-shrink: 0;
+  color: var(--blue); font-size: 13.5px; font-weight: 700;
+  padding: 6px 0 6px 10px;
+}
+.text-link .chev { width: 16px; height: 16px; }
 
 /* ---------- звітність ---------- */
 .rep-card {
@@ -682,3 +684,11 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 .rr-st.submitted { background: var(--blue-soft); color: var(--blue); }
 .rr-st.accepted { background: var(--good-soft); color: var(--good); }
 .rep-row.done .rr-kind, .rep-row.done .rr-who { opacity: .55; }
+
+/* Рядок керівництва в табі «Команда»: не кнопка — дій у ньому немає */
+.team-row.static { cursor: default; }
+.team-row.static:active { opacity: 1; }
+
+/* Рядок опису на екрані сповіщень */
+.al-line { font-size: 13.5px; color: var(--muted); line-height: 1.5; margin-bottom: 8px; }
+.al-line:last-child { margin-bottom: 0; }

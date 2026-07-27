@@ -44,12 +44,17 @@ DEPT_TITLES = {
 # tg_id — заповнено лише де відоме заздалегідь; решта докешується при
 # першому вході в апку (див. remember_user).
 ROSTER = {
-    "Олег Деренюга": {"username": "derenuga", "tg_id": 56631818, "dept": DEPT_ADMIN, "manager": True},
-    "Катерина Середа": {"username": "sereda_ka", "tg_id": 56424866, "dept": DEPT_ADMIN, "manager": True},
+    "Олег Деренюга": {"username": "derenuga", "tg_id": 56631818, "dept": DEPT_ADMIN, "manager": True,
+                      "role": "Медіаменеджер"},
+    "Катерина Середа": {"username": "sereda_ka", "tg_id": 56424866, "dept": DEPT_ADMIN, "manager": True,
+                        "role": "Головний редактор"},
     # Фінансова менеджерка (Олег, 27.07): відповідає за фінансові звіти
     # грантів. Менеджерка — щоб бачити «Звітність»; у KPI-нормах і виборі
     # виконавиць адміністративний відділ участі не бере.
-    "Олена Бондаренко": {"username": None, "tg_id": 191642941, "dept": DEPT_ADMIN, "manager": True},
+    # site_user_id — бо в users вона заведена так, що за ПІБ не знаходиться;
+    # id надійніший за здогадку по імені (фото підтягнеться, щойно завантажать)
+    "Олена Бондаренко": {"username": None, "tg_id": 191642941, "dept": DEPT_ADMIN, "manager": True,
+                         "role": "Фінменеджер", "site_user_id": 220},
     # Розклад по відділах — списки Олега 27.07 (Creative — власні матеріали,
     # digital — діджитал та дистрибуція). Дефолт тут, фактичний відділ —
     # team_dept у Норі (Катя переносить в апці).
@@ -77,6 +82,15 @@ _remembered = {}
 
 _BY_USERNAME = {info["username"]: name for name, info in ROSTER.items() if info["username"]}
 _BY_KNOWN_ID = {info["tg_id"]: name for name, info in ROSTER.items() if info["tg_id"]}
+
+
+# Явні users.id сайту там, де матч за ПІБ не спрацьовує (для фото в апці)
+SITE_USER_IDS = {n: i["site_user_id"] for n, i in ROSTER.items() if i.get("site_user_id")}
+
+
+def person_role(name):
+    """Посада для картки керівництва; у журналісток її роль грає відділ."""
+    return (ROSTER.get(name) or {}).get("role")
 
 
 def person_info(name):

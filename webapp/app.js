@@ -15,6 +15,7 @@ const STATE = {
   people: [],
   projects: [],
   assignees: [],
+  managers: [],
   view: "home",
   projView: "list",
   projQuery: "",
@@ -374,6 +375,7 @@ function render() {
   else if (v === "kpi") renderKpi();
   else if (v === "kpinorm") renderKpiNorm();
   else if (v === "reports") renderReports();
+  else if (v === "alerts") renderAlerts();
 }
 
 /* ---------- Головна ---------- */
@@ -440,10 +442,10 @@ function renderHome() {
   $("content").innerHTML = `
     <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
     ${seg}
-    <div class="h-sub">відкритих завдань: ${open.length}</div>
-    <button class="settings-link" data-nav="kpi">
-      ${icon("target")} Налаштувати KPI та ролі ${icon("chevron-right", "ic chev")}
-    </button>
+    <div class="sub-row">
+      <span class="h-sub">відкритих завдань: ${open.length}</span>
+      <button class="text-link" data-nav="kpi">KPI та ролі ${icon("chevron-right", "ic chev")}</button>
+    </div>
     ${rows || `<div class="empty-hint">Відкритих завдань ні в кого немає.<br>Натисни «+» або зайди в проєкт, щоб поставити.</div>`}`;
   wire();
 }
@@ -1369,6 +1371,28 @@ function assigneeRow(d) {
     </button>`;
 }
 
+/* Сповіщення — поки заглушка (Олег, 27.07): місце в меню зайняте, щоб не
+   пустувало, і видно, що саме сюди приїде. Нагадування вже працюють, але
+   летять у чати, а не в апку. */
+function renderAlerts() {
+  $("content").innerHTML = `
+    <div class="h-big">Сповіщення</div>
+    <div class="h-sub">те, про що Лис нагадує сам</div>
+    <div class="soft-card">
+      <div class="sc-t">Уже працює — у чатах</div>
+      <div class="al-line">Звітні дедлайни грантів — у «Фінанси МикВісті»,
+        за тиждень і за 2 доби до дати.</div>
+      <div class="al-line">Нове завдання — виконавиці в приват від Лиса.</div>
+    </div>
+    <div class="soft-card">
+      <div class="sc-t">Приїде сюди</div>
+      <div class="al-line">Стрічка сповіщень замість розкиданих по чатах:
+        що горить сьогодні, кого підштовхнути, які звіти без відповідального.</div>
+    </div>
+    <div class="tl-note">Екран у розробці — поки що нічого не пропустиш,
+      усе дублюється в чати.</div>`;
+}
+
 function renderReports() {
   const withDl = STATE.projects.filter((p) => (p.deadlines || []).length);
   withDl.sort((a, b) => {
@@ -1896,7 +1920,17 @@ function overrideSheet(n, row) {
 function teamHtml() {
   const byDept = {};
   STATE.people.forEach((p) => (byDept[p.dept_title] = byDept[p.dept_title] || []).push(p));
-  return Object.entries(byDept).map(([dept, list]) => `
+  // Керівництво — окремим блоком і без дій: тасків і KPI-норм у них немає,
+  // між відділами їх не носять, тож ні трекера, ні олівця тут не треба
+  const heads = STATE.managers.length ? `
+    <div class="dept-title">Керівництво · ${STATE.managers.length}</div>
+    ${STATE.managers.map((m) => `
+      <div class="team-row static">
+        ${avatar(m.name, m, 46)}
+        <div style="flex:1;text-align:left"><div class="tn">${esc(m.name)}</div>
+          <div class="td">${esc(m.role)}</div></div>
+      </div>`).join("")}` : "";
+  return heads + Object.entries(byDept).map(([dept, list]) => `
     <div class="dept-title">${esc(dept)} · ${list.length}</div>
     ${list.map((p) => `
       <button class="team-row" data-tracker="${esc(p.name)}">
@@ -2090,6 +2124,7 @@ async function reload() {
   STATE.people = data.people || [];
   STATE.projects = data.projects || [];
   STATE.assignees = data.assignees || [];
+  STATE.managers = data.managers || [];
 }
 
 /* ---------- Локальні патчі STATE ----------
