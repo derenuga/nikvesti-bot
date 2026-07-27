@@ -16,7 +16,10 @@
 - стрічка подій під чергою: непрочитане з крапкою, лічильник меню = спірні +
   непрочитані, вхід на екран позначає прочитаним;
 - пост Telegram (автор невідомий) питає КОМУ і КУДИ зараховувати — рядки з
-  людьми, а не лише з тематиками.
+  людьми, а не лише з тематиками;
+- прогрес у РЕШТІ карток черги оновлюється одразу після зарахування (у проєкті
+  часто десяток спірних публікацій на одне завдання), а набране завдання
+  зникає з вибору.
 
 Запуск (потрібні playwright + chromium):
     python test_webapp_alerts.py
@@ -148,8 +151,13 @@ window.fetch = async (url, opts = {}) => {
   let m;
   if ((m = url.match(/^\\/api\\/matches\\/(\\d+)\\/decide$/))) {
     window.__posts.push({ id: +m[1], body });
+    // Сервер віддає ОНОВЛЕНІ таски (як справжній роут після attach_progress)
+    const decided = window.PENDING.find((x) => x.id === +m[1]);
+    const opt = (decided && decided.options || []).find((o) => o.id === body.task_id);
+    const tasks = opt ? [{ id: opt.id, qty: opt.qty, status: "open",
+                           done_count: opt.done_count + 1 }] : [];
     window.PENDING = window.PENDING.filter((x) => x.id !== +m[1]);
-    return json({ match: { id: +m[1] }, tasks: [],
+    return json({ match: { id: +m[1] }, tasks,
                   pending_count: window.PENDING.length });
   }
   return json({ ok: true });
@@ -220,7 +228,7 @@ async def main():
                   "додано до проєкту" in body and "IWPR" in body)
             check("видно підказку тематики з прогресом",
                   "Схоже тематика" in body and "1/3" in body)
-            check("коли суддя не обрав — так і сказано", "обери сама" in body)
+            check("коли суддя не обрав — так і сказано", "обери вручну" in body)
             # --- стрічка подій під чергою ---
             check("стрічка подій показана під чергою",
                   await page.locator(".nt-row").count() == 2)
@@ -305,6 +313,25 @@ async def main():
             check("рішення пішло з обраною тематикою",
                   posts and posts[-1]["id"] == 5
                   and posts[-1]["body"] == {"action": "confirm", "task_id": 72})
+
+            # Прогрес у сусідніх картках: у проєкті буває десяток спірних
+            # публікацій на одне завдання, і «14/15» висіло старим до перезаходу
+            check("сусідні картки бачать новий прогрес одразу",
+                  await page.evaluate("""(() => {
+                    STATE.pending = [{ id: 91, options: [
+                      { id: 71, theme_name: 'Тендери', qty: 15, done_count: 14 }] }];
+                    patchPendingOptions([{ id: 71, qty: 15, done_count: 15,
+                                           status: 'open' }]);
+                    return STATE.pending[0].options[0].done_count;
+                  })()""") == 15)
+            check("набране й закрите завдання зникає з вибору",
+                  await page.evaluate("""(() => {
+                    STATE.pending = [{ id: 92, options: [
+                      { id: 71, theme_name: 'Тендери', qty: 3, done_count: 2 }] }];
+                    patchPendingOptions([{ id: 71, qty: 3, done_count: 3,
+                                           status: 'done' }]);
+                    return STATE.pending[0].options.length;
+                  })()""") == 0)
             check("картка одразу зникла зі списку",
                   await page.locator(".al-card").count() == 0)
             check("лічильник меню зменшився",
