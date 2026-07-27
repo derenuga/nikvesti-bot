@@ -18,17 +18,23 @@ TEAM — лише @хендли (numeric id відомі тільки для д�
 
 from handlers import bot_db
 
-# Відділи (KPI-групи). Реальна структура редакції (Олег, 27.07): два відділи —
-# Newsroom (журналістки, стрічка, переклад) і Creative (соцмережі, відео/фото);
-# «керівництво» — службова група менеджерів, у KPI і виборі виконавиць не бере участі.
-DEPT_LEADERSHIP = "керівництво"
+# Відділи (KPI-групи). Реальна структура редакції (Олег, 27.07):
+# Creative — власні матеріали, Newsroom — стрічка, Діджитал та дистрибуція —
+# SMM/відео/переклад; Адміністративний — Олег і Катя (менеджери; їхні KPI —
+# «може колись», у виборі виконавиць і нормах відділ не бере участі).
+DEPT_ADMIN = "admin"
 DEPT_NEWSROOM = "newsroom"
 DEPT_CREATIVE = "creative"
+DEPT_DIGITAL = "digital"
+
+# Відділи, доступні для перенесення людей і KPI-норм (без адміністративного)
+MOVABLE_DEPTS = (DEPT_NEWSROOM, DEPT_CREATIVE, DEPT_DIGITAL)
 
 DEPT_TITLES = {
-    DEPT_LEADERSHIP: "Керівництво",
+    DEPT_ADMIN: "Адміністративний",
     DEPT_NEWSROOM: "Newsroom",
     DEPT_CREATIVE: "Creative",
+    DEPT_DIGITAL: "Діджитал та дистрибуція",
 }
 
 # Ключі — канонічні імена, ті самі, що в TEAM (ai_messages.py). Тримати синхронно.
@@ -36,26 +42,26 @@ DEPT_TITLES = {
 # tg_id — заповнено лише де відоме заздалегідь; решта докешується при
 # першому вході в апку (див. remember_user).
 ROSTER = {
-    "Олег Деренюга": {"username": "derenuga", "tg_id": 56631818, "dept": DEPT_LEADERSHIP, "manager": True},
-    "Катерина Середа": {"username": "sereda_ka", "tg_id": 56424866, "dept": DEPT_LEADERSHIP, "manager": True},
-    # Розклад по відділах — список Олега 27.07 (Creative — відділ власних
-    # матеріалів). Ліза/Іміра/Сергій/Кірілл/Ірина у списку не значились —
-    # дефолт поставлено за змістом ролей; Катя переносить в апці (team_dept).
+    "Олег Деренюга": {"username": "derenuga", "tg_id": 56631818, "dept": DEPT_ADMIN, "manager": True},
+    "Катерина Середа": {"username": "sereda_ka", "tg_id": 56424866, "dept": DEPT_ADMIN, "manager": True},
+    # Розклад по відділах — списки Олега 27.07 (Creative — власні матеріали,
+    # digital — діджитал та дистрибуція). Дефолт тут, фактичний відділ —
+    # team_dept у Норі (Катя переносить в апці).
     "Юлія Бойченко": {"username": "boichenko13", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
     "Аліса Мелікадамян": {"username": "lislislisalisa", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
     "Світлана Іванченко": {"username": "lana_prpolka", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
     "Альона Коханчук": {"username": "aliona_banu", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
     "Аліна Квітко": {"username": "aliniskv", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
     "Марія Хаміцевич": {"username": None, "tg_id": 846178524, "dept": DEPT_NEWSROOM, "manager": False},
-    "Сергій Овчаришин": {"username": None, "tg_id": 891685789, "dept": DEPT_CREATIVE, "manager": False},
-    "Єлизавета Москвіна": {"username": "mskvn1", "tg_id": 386403807, "dept": DEPT_CREATIVE, "manager": False},
-    "Іміра Борухова": {"username": "imira_91", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
+    "Сергій Овчаришин": {"username": None, "tg_id": 891685789, "dept": DEPT_DIGITAL, "manager": False},
+    "Єлизавета Москвіна": {"username": "mskvn1", "tg_id": 386403807, "dept": DEPT_DIGITAL, "manager": False},
+    "Іміра Борухова": {"username": "imira_91", "tg_id": None, "dept": DEPT_DIGITAL, "manager": False},
     "Даріна Мельничук": {"username": "dariimlk", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
     "Юлія Лук'яненко": {"username": "yuliia_lukianenko", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
     "Таміла Ксьонжик": {"username": "tamilissssa", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
     "Кристина Леонова": {"username": "skxxlw", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
-    "Кірілл Витвицький": {"username": "simada24", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
-    "Ірина Федорович": {"username": "diiessa", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
+    "Кірілл Витвицький": {"username": "simada24", "tg_id": None, "dept": DEPT_DIGITAL, "manager": False},
+    "Ірина Федорович": {"username": "diiessa", "tg_id": None, "dept": DEPT_DIGITAL, "manager": False},
 }
 
 _BY_USERNAME = {info["username"]: name for name, info in ROSTER.items() if info["username"]}

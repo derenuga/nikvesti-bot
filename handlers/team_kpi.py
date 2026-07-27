@@ -47,10 +47,14 @@ _SCHEMA_STATEMENTS = [
         metric     TEXT NOT NULL,
         period     TEXT NOT NULL,
         target     SMALLINT NOT NULL,
+        own        BOOLEAN NOT NULL DEFAULT FALSE,
         created_by TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
+    # Ідемпотентна міграція: прапорець «лише власні» (own_material) — 27.07,
+    # Creative рахує власні матеріали, Newsroom — усі
+    "ALTER TABLE team_kpi_norms ADD COLUMN IF NOT EXISTS own BOOLEAN NOT NULL DEFAULT FALSE",
     """
     CREATE TABLE IF NOT EXISTS team_kpi_overrides (
         norm_id      BIGINT NOT NULL,
@@ -63,11 +67,11 @@ _SCHEMA_STATEMENTS = [
         PRIMARY KEY (norm_id, person, period_start)
     )
     """,
-    # Міграція 27.07: відділи зведено до реальної структури Creative/Newsroom —
-    # норми, створені зі старими слагами, переносяться (ідемпотентно).
+    # Міграція 27.07: відділи зведено до реальної структури (Creative /
+    # Newsroom / digital) — норми зі старими слагами переносяться (ідемпотентно).
     "UPDATE team_kpi_norms SET dept = 'newsroom' "
     "WHERE dept IN ('журналістика', 'стрічка', 'переклад')",
-    "UPDATE team_kpi_norms SET dept = 'creative' WHERE dept IN ('соцмережі', 'відео')",
+    "UPDATE team_kpi_norms SET dept = 'digital' WHERE dept IN ('соцмережі', 'відео')",
 ]
 
 _schema_done = False
@@ -113,7 +117,7 @@ def _period_ts_range(period):
 
 def _row_to_norm(r):
     return {"id": r["id"], "dept": r["dept"], "metric": r["metric"],
-            "period": r["period"], "target": r["target"]}
+            "period": r["period"], "target": r["target"], "own": r["own"]}
 
 
 def list_norms():
@@ -122,12 +126,12 @@ def list_norms():
         "SELECT * FROM team_kpi_norms ORDER BY dept, period, metric")]
 
 
-def add_norm(creator, dept, metric, period, target):
+def add_norm(creator, dept, metric, period, target, own=False):
     ensure_kpi_schema()
     rows = bot_db.query(
-        "INSERT INTO team_kpi_norms (dept, metric, period, target, created_by) "
-        "VALUES (%s, %s, %s, %s, %s) RETURNING *",
-        (dept, metric, period, int(target), creator),
+        "INSERT INTO team_kpi_norms (dept, metric, period, target, own, created_by) "
+        "VALUES (%s, %s, %s, %s, %s, %s) RETURNING *",
+        (dept, metric, period, int(target), bool(own), creator),
     )
     return _row_to_norm(rows[0])
 
@@ -219,13 +223,14 @@ def _user_id_map():
     return mapping
 
 
-def fact_counts(metric, period):
+def fact_counts(metric, period, own=False):
     """{person: к-сть опублікованого цього періоду} для ВСІХ людей ростера,
-    або None, якщо БД сайту недоступна. Кеш 5 хв на (metric, period_start)."""
+    або None, якщо БД сайту недоступна. own=True — лише власні матеріали
+    (nodes.own_material=1). Кеш 5 хв на (metric, period, own)."""
     if not db.is_configured():
         return None
     start, _ = period_bounds(period)
-    cache_key = (metric, period, start.isoformat())
+    cache_key = (metric, period, bool(own), start.isoformat())
     hit = _fact_cache.get(cache_key)
     if hit and hit[0] > time.monotonic():
         return hit[1]
@@ -238,9 +243,11 @@ def fact_counts(metric, period):
     result = {p: 0 for p in team_roster.ROSTER}
     if person_by_uid:
         ts_start, ts_end = _period_ts_range(period)
+        own_cond = "AND own_material = 1 " if own else ""
         rows = db.query(
             "SELECT owner_id, COUNT(*) AS c FROM nodes "
             "WHERE type = %s AND status = 1 "
+            f"{own_cond}"
             "AND published >= %s AND published < %s AND published <= UNIX_TIMESTAMP() "
             "AND owner_id IN ({}) GROUP BY owner_id".format(
                 ",".join(["%s"] * len(person_by_uid))
@@ -281,7 +288,7 @@ def kpi_payload(for_person=None):
                       if not i["manager"]
                       and team_roster.effective_dept(p, depts) == n["dept"]]
         overrides = _overrides_for(n["id"], n["period"])
-        facts = fact_counts(n["metric"], n["period"])
+        facts = fact_counts(n["metric"], n["period"], n["own"])
         rows = []
         for person in people:
             ov = overrides.get(person)
