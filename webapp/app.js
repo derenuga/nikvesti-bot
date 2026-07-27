@@ -279,11 +279,14 @@ function renderHome() {
     const donor = donorOf(t);
     bucket[donor] = (bucket[donor] || 0) + 1;
   });
-  const people = [...STATE.people].sort((a, b) => {
-    const ca = Object.values(perPerson[a.name] || {}).reduce((s, x) => s + x, 0);
-    const cb = Object.values(perPerson[b.name] || {}).reduce((s, x) => s + x, 0);
-    return cb - ca || a.name.localeCompare(b.name, "uk");
-  });
+  // Без відкритих завдань — не показуємо (шум); їхні трекери — у табі «Команда»
+  const people = STATE.people
+    .filter((p) => perPerson[p.name])
+    .sort((a, b) => {
+      const ca = Object.values(perPerson[a.name]).reduce((s, x) => s + x, 0);
+      const cb = Object.values(perPerson[b.name]).reduce((s, x) => s + x, 0);
+      return cb - ca || a.name.localeCompare(b.name, "uk");
+    });
   const rows = people.map((p) => {
     const donors = Object.entries(perPerson[p.name] || {});
     const total = donors.reduce((s, [, c]) => s + c, 0);
@@ -305,7 +308,7 @@ function renderHome() {
   $("content").innerHTML = `
     <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
     <div class="h-sub">${new Date().toLocaleDateString("uk-UA", { weekday: "long", day: "numeric", month: "long" })} · відкритих завдань: ${open.length}</div>
-    ${rows}`;
+    ${rows || `<div class="empty-hint">Відкритих завдань ні в кого немає.<br>Натисни «+» або зайди в проєкт, щоб поставити.</div>`}`;
 }
 
 /* Персональний трекер людини (для редактора): її рекурентні KPI зі шторкою
@@ -667,15 +670,26 @@ function listHtml() {
     <div class="tl-note">Зажми проєкт і потягни, щоб змінити порядок.</div>`;
 }
 
-/* Перетягування проєктів: довгий натиск (350 мс без руху) → drag.
-   Порядок зберігається в Нору і діє скрізь, де є список проєктів. */
+/* Перетягування проєктів: довгий натиск (350 мс без руху) → картка
+   «підіймається» і їде за пальцем, сусіди плавно роз'їжджаються (transform,
+   без перевставлянь у DOM до моменту відпускання). Порядок — у Нору. */
 function enableProjectDrag() {
   const list = $("proj-list");
   if (!list) return;
-  const drag = { active: false, el: null, timer: null, startY: 0, moved: false };
+  const drag = {
+    active: false, el: null, timer: null, moved: false,
+    startPageY: 0, origIndex: 0, others: [], slot: 0,
+  };
+
+  const clearVisuals = () => {
+    list.querySelectorAll("[data-drag-id]").forEach((r) => {
+      r.classList.remove("drag-src", "drag-anim");
+      r.style.transform = "";
+    });
+  };
 
   const cleanup = () => {
-    if (drag.el) drag.el.classList.remove("drag-src");
+    clearVisuals();
     clearTimeout(drag.timer);
     drag.active = false;
     drag.el = null;
@@ -685,34 +699,58 @@ function enableProjectDrag() {
     const row = e.target.closest("[data-drag-id]");
     if (!row) return;
     drag.el = row;
-    drag.startY = e.clientY;
+    drag.startPageY = e.clientY + window.scrollY;
     drag.moved = false;
     drag.timer = setTimeout(() => {
       drag.active = true;
+      const rows = [...list.querySelectorAll("[data-drag-id]")];
+      drag.origIndex = rows.indexOf(row);
+      // Крок зсуву = висота картки + відступ між картками
+      const step = rows.length > 1
+        ? rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top
+        : row.offsetHeight + 10;
+      drag.others = rows.filter((r) => r !== row).map((r) => {
+        const rect = r.getBoundingClientRect();
+        return { el: r, center: rect.top + rect.height / 2 + window.scrollY };
+      });
+      drag.step = step;
+      drag.center = row.getBoundingClientRect().top + row.offsetHeight / 2 + window.scrollY;
+      drag.slot = drag.origIndex;
       row.classList.add("drag-src");
+      drag.others.forEach((o) => o.el.classList.add("drag-anim"));
       haptic("success");
     }, 350);
   });
 
   list.addEventListener("pointermove", (e) => {
     if (!drag.el) return;
+    const pageY = e.clientY + window.scrollY;
     if (!drag.active) {
-      // рух до активації — це скрол, не drag
-      if (Math.abs(e.clientY - drag.startY) > 10) cleanup();
+      if (Math.abs(pageY - drag.startPageY) > 10) cleanup(); // це скрол, не drag
       return;
     }
     drag.moved = true;
-    const rows = [...list.querySelectorAll("[data-drag-id]")];
-    const over = rows.find((r) => {
-      if (r === drag.el) return false;
-      const rect = r.getBoundingClientRect();
-      return e.clientY > rect.top && e.clientY < rect.bottom;
-    });
-    if (over) {
-      const rect = over.getBoundingClientRect();
-      if (e.clientY < rect.top + rect.height / 2) list.insertBefore(drag.el, over);
-      else list.insertBefore(drag.el, over.nextSibling);
+    const dy = pageY - drag.startPageY;
+    drag.el.style.transform = `translateY(${dy}px) scale(1.03)`;
+    const current = drag.center + dy;
+    // Куди «впаде» картка: скільки сусідів лишилось вище за її центр
+    let slot = 0;
+    drag.others.forEach((o) => { if (o.center < current) slot++; });
+    if (slot !== drag.slot) {
+      drag.slot = slot;
+      haptic("success");
     }
+    // Сусіди звільняють місце: хто опинився «по інший бік» — з'їжджає
+    drag.others.forEach((o, i) => {
+      const origSlot = i < drag.origIndex ? i : i + 1; // позиція сусіда без картки
+      let shift = 0;
+      if (origSlot < drag.origIndex && origSlot >= slot) shift = drag.step;
+      else if (origSlot > drag.origIndex && origSlot <= slot) shift = -drag.step;
+      o.el.style.transform = shift ? `translateY(${shift}px)` : "";
+    });
+    // Автоскрол біля країв екрана
+    if (e.clientY < 90) window.scrollBy(0, -10);
+    else if (e.clientY > window.innerHeight - 110) window.scrollBy(0, 10);
   });
 
   // блокуємо скрол сторінки, лише коли drag активний
@@ -724,11 +762,17 @@ function enableProjectDrag() {
     if (!drag.el) return;
     const wasDrag = drag.active && drag.moved;
     const el = drag.el;
+    const slot = drag.slot;
+    const others = drag.others.map((o) => o.el);
     cleanup();
     if (!wasDrag) return;
     el.dataset.justDragged = "1";
     setTimeout(() => delete el.dataset.justDragged, 300);
-    const ids = [...list.querySelectorAll("[data-drag-id]")].map((r) => +r.dataset.dragId);
+    // Фінальний порядок: сусіди як були, картка — у свій слот
+    const ordered = [...others];
+    ordered.splice(slot, 0, el);
+    ordered.forEach((r) => list.appendChild(r));
+    const ids = ordered.map((r) => +r.dataset.dragId);
     STATE.projects.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
     try {
       await api("/api/projects/order", { method: "PUT", body: JSON.stringify({ ids }) });
@@ -1333,18 +1377,21 @@ function renderTeam() {
   STATE.people.forEach((p) => (byDept[p.dept_title] = byDept[p.dept_title] || []).push(p));
   $("content").innerHTML = `
     <div class="h-big">Команда</div>
-    <div class="h-sub">тап по людині — перенести між відділами</div>
+    <div class="h-sub">тап — трекер людини, олівець — перенести між відділами</div>
     ${Object.entries(byDept).map(([dept, list]) => `
       <div class="dept-title">${esc(dept)} · ${list.length}</div>
       ${list.map((p) => `
-        <button class="team-row" data-move="${esc(p.name)}">
+        <button class="team-row" data-tracker="${esc(p.name)}">
           ${avatar(p.name, p, 46)}
           <div style="flex:1;text-align:left"><div class="tn">${esc(p.name)}</div>
             <div class="td">${esc(p.dept_title)}</div></div>
-          ${icon("chevron-right", "ic chev")}
+          <span class="tact" data-move="${esc(p.name)}">${icon("edit")}</span>
         </button>`).join("")}`).join("")}`;
   $("content").querySelectorAll("[data-move]").forEach((b) =>
-    b.onclick = () => deptSheet(STATE.people.find((p) => p.name === b.dataset.move)));
+    b.onclick = (e) => {
+      e.stopPropagation();
+      deptSheet(STATE.people.find((p) => p.name === b.dataset.move));
+    });
 }
 
 function deptSheet(p) {

@@ -374,9 +374,14 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 .dl-date.dl-over { color: var(--red); }
 
 .proj-row.drag-src {
-  opacity: .92; transform: scale(1.02);
-  box-shadow: 0 10px 26px rgba(22, 50, 90, .22);
+  opacity: .95;
+  box-shadow: 0 14px 32px rgba(22, 50, 90, .3);
   position: relative; z-index: 10;
+  transition: none; /* картка їде строго за пальцем, без інерції */
+}
+.proj-row.drag-anim { transition: transform .16s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .proj-row.drag-anim { transition: none; }
 }
 
 .kbar {
