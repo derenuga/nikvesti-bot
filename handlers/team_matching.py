@@ -33,8 +33,11 @@ import asyncio
 import os
 import re
 import time
+from datetime import datetime
 
-from handlers import db, team_kpi, team_matches, team_projects, team_roster, team_tasks
+from handlers import (
+    ai_usage, db, team_kpi, team_matches, team_projects, team_roster, team_tasks,
+)
 from handlers.ai_messages import async_client, _record_usage
 from handlers.helpers import extract_article_id
 from handlers.news_archive import _news_url
@@ -439,6 +442,232 @@ async def run_matching_scan(bot, days=SCAN_DAYS, ping=True, chat_id=None):
     if chat_id:
         await bot.send_message(chat_id=chat_id, text=f"🦊 Звірка: {report.as_text()}")
     return report
+
+
+# ---------- Ретроспектива: догнати те, що вже вийшло ----------
+#
+# Вимога Олега: НЕ робити baseline («позначити старе побаченим і почати з
+# нуля»). Таски вже поставлені, публікації по них уже вийшли — бот має пройти
+# базу і позакривати їх заднім числом.
+#
+# Вікно привʼязане до ТАСКІВ, а не до календаря: для кожного відкритого таска
+# беремо публікації його автора в його проєкті від початку періоду таска.
+# Практично — min(created_at таска, перше число місяця його дедлайну): масова
+# постановка ставить таск на місяць із дедлайном у кінці, і публікації з
+# початку того місяця мають зарахуватись, навіть якщо таск створили 27-го.
+#
+# Спершу оцінка (безкоштовно), потім прогін — патерн /entity_estimate +
+# /entity_backfill. Пінги на час ретроспективи ПРИГЛУШЕНІ: інакше при закритті
+# двох десятків тасків заднім числом людям прилетіло б двадцять привітань.
+
+# Оцінка токенів на одну публікацію: промпт судді — заголовок + ~1600 символів
+# ліда + перелік кандидатів; вихід — короткий вердикт tool use.
+EST_IN_PER_NODE = 900
+EST_OUT_PER_NODE = 130
+
+_retro_running = {"flag": False}
+
+
+def _month_start(date_iso):
+    return f"{date_iso[:7]}-01"
+
+
+def _day_ts(date_iso):
+    return int(datetime.strptime(date_iso, "%Y-%m-%d")
+               .replace(tzinfo=team_tasks.KYIV_TZ).timestamp())
+
+
+def current_month_start():
+    """Перше число поточного місяця за Києвом — дефолтна межа ретроспективи
+    (Олег, 27.07: «достатньо за липень прогнати»). Глибше — тільки явно."""
+    return datetime.now(team_tasks.KYIV_TZ).strftime("%Y-%m-01")
+
+
+def retro_windows(pool, since=None):
+    """{(users.id автора, project_id): найраніший unix-час вікна} — з чого
+    починати ретроспективу для кожної пари «людина × проєкт».
+
+    since ('YYYY-MM-DD') — жорстка межа: глибше не заглядаємо, навіть якщо
+    таск старіший. Так «прогнати за липень» коштує рівно липень."""
+    person_by_uid = owner_person_map()
+    uid_by_person = {p: uid for uid, p in person_by_uid.items()}
+    floor = _day_ts(since) if since else None
+    windows = {}
+    for t in pool:
+        uid = uid_by_person.get(t["person"])
+        if not uid or not t["project_id"]:
+            continue
+        start = t["created_at"][:10]
+        if t["deadline"]:
+            start = min(start, _month_start(t["deadline"]))
+        ts = _day_ts(start)
+        if floor is not None:
+            ts = max(ts, floor)
+        key = (uid, int(t["project_id"]))
+        windows[key] = min(windows.get(key, ts), ts)
+    return windows
+
+
+def retro_nodes(windows, limit=SCAN_LIMIT * 4):
+    """Публікації, що підпадають під вікна — ОДНИМ запитом (широка вибірка за
+    найранішим вікном) із доводкою в памʼяті по кожній парі окремо."""
+    if not windows or not db.is_configured():
+        return []
+    uids = sorted({uid for uid, _ in windows})
+    projects = sorted({pid for _, pid in windows})
+    rows = db.query(
+        f"SELECT {_NODE_COLS} FROM nodes "
+        "WHERE status = 1 AND type IN ('news', 'article') "
+        "AND published >= %s AND published <= UNIX_TIMESTAMP() "
+        "AND owner_id IN ({}) AND partner_project IN ({}) "
+        "ORDER BY published".format(
+            ",".join(["%s"] * len(uids)), ",".join(["%s"] * len(projects)))
+        + " LIMIT %s",
+        [min(windows.values()), *uids, *projects, int(limit)],
+    )
+    out = []
+    for r in rows:
+        start = windows.get((r["owner_id"], r["partner_project"]))
+        if start is not None and r["published"] >= start:
+            out.append(r)
+    return out
+
+
+def retro_plan(since=None):
+    """Що саме підпадає під ретроспективу: (ноди на суд, усього знайдено,
+    к-сть пар, найраніша дата). Read-only і безкоштовно.
+
+    since=None — поточний місяць; 'all' — уся глибина тасків."""
+    since = None if since == "all" else (since or current_month_start())
+    from handlers import bot_db
+    with bot_db.session():
+        pool = team_tasks.list_open_tasks()
+        windows = retro_windows([t for t in pool if t["project_id"]], since)
+    rows = retro_nodes(windows)
+    with bot_db.session():
+        seen = team_matches.known_refs("site", [r["id"] for r in rows])
+    fresh = [r for r in rows if str(r["id"]) not in seen]
+    earliest = min(windows.values()) if windows else None
+    return fresh, len(rows), len(windows), earliest
+
+
+def estimate_cost(n):
+    """($ за прогін, скільки токенів) за прайсом судді."""
+    price_in, price_out = ai_usage.PRICING.get(JUDGE_MODEL, ai_usage.DEFAULT_PRICE)
+    tin, tout = n * EST_IN_PER_NODE, n * EST_OUT_PER_NODE
+    return tin / 1e6 * price_in + tout / 1e6 * price_out, tin, tout
+
+
+def parse_since(args):
+    """Аргумент межі: YYYY-MM (місяць) / YYYY-MM-DD (день) / all (уся глибина).
+    Порожньо — поточний місяць. Повертає (since, людський підпис)."""
+    raw = (args[0] if args else "").strip().lower()
+    if raw in ("all", "усе", "все"):
+        return "all", "уся глибина тасків"
+    if len(raw) == 7 and raw[4] == "-":
+        return f"{raw}-01", f"з {raw}"
+    if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+        return raw, f"з {raw}"
+    month = current_month_start()
+    return month, f"поточний місяць (з {month})"
+
+
+async def match_estimate_handler(update, context):
+    """/match_estimate [YYYY-MM|all] — скільки публікацій підпаде під
+    ретроспективу і скільки це коштуватиме. Нічого не витрачає і не пише.
+    Без аргументу — поточний місяць."""
+    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    since, label = parse_since(context.args)
+    msg = await update.message.reply_text(
+        f"🦊 Рахую ретроспективу ({label}, безкоштовно)…")
+    try:
+        fresh, total, pairs, earliest = await asyncio.to_thread(retro_plan, since)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалося порахувати: {e}")
+        return
+    if not pairs:
+        await msg.edit_text("Відкритих проєктних тасків немає — доганяти нічого.")
+        return
+    cost, tin, tout = estimate_cost(len(fresh))
+    since_label = (datetime.fromtimestamp(earliest, team_tasks.KYIV_TZ)
+                   .strftime("%d.%m.%Y") if earliest else "—")
+    # Місячний прогноз: скільки б коштував той самий обсяг щомісяця
+    days = max(1, (int(time.time()) - earliest) // 86400) if earliest else 30
+    monthly = cost / days * 30
+    await msg.edit_text(
+        f"🦊 Ретроспектива звірки виконання — {label}\n\n"
+        f"Пар «людина × проєкт»: {pairs}\n"
+        f"Найраніше вікно: з {since_label}\n"
+        f"Публікацій у вікнах: {total}\n"
+        f"З них ще не суджених: <b>{len(fresh)}</b>\n\n"
+        f"Токени: ~{tin/1000:.0f}k вх + ~{tout/1000:.0f}k вих ({JUDGE_MODEL})\n"
+        f"Вартість прогону: <b>≈ ${cost:.2f}</b>\n"
+        f"Для орієнтиру, той самий обсяг щомісяця: ≈ ${monthly:.2f}/міс\n\n"
+        f"Запуск (платно): /match_backfill yes"
+        + (f" {context.args[0]}" if context.args else "") + "\n"
+        f"<i>Пінги виконавицям на час ретроспективи приглушені — інакше "
+        f"прилетіло б двадцять привітань разом.</i>",
+        parse_mode="HTML",
+    )
+
+
+async def match_backfill_handler(update, context):
+    """/match_backfill yes [YYYY-MM|all] — ретроспективний прогін бази. Пінги
+    приглушені, зведення — в кінці. Без межі — поточний місяць.
+    Ідемпотентно: ганяти можна скільки завгодно."""
+    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if _retro_running["flag"]:
+        await update.message.reply_text("Ретроспектива вже йде — зачекай зведення.")
+        return
+    if not context.args or context.args[0].lower() not in ("yes", "так", "-y"):
+        await update.message.reply_text(
+            "Спершу оцінка (безкоштовно): /match_estimate\n"
+            "Далі запуск: /match_backfill yes [YYYY-MM|all]\n"
+            "Без межі — поточний місяць."
+        )
+        return
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        await update.message.reply_text("ANTHROPIC_API_KEY не заданий.")
+        return
+    since, label = parse_since(context.args[1:])
+
+    msg = await update.message.reply_text(f"🦊 Збираю, що доганяти ({label})…")
+    _retro_running["flag"] = True
+    try:
+        fresh, total, pairs, earliest = await asyncio.to_thread(retro_plan, since)
+        if not fresh:
+            await msg.edit_text(
+                f"Доганяти нема чого: у вікнах {total} публікацій, і всі вже "
+                f"розібрані.")
+            return
+        cost, _, _ = estimate_cost(len(fresh))
+        await msg.edit_text(
+            f"🦊 Доганяю {len(fresh)} публікацій, {label} (≈ ${cost:.2f}). Пінги "
+            f"приглушені, зведення пришлю в кінці.")
+        report = await judge_nodes(fresh, ping=None)   # ← пінги вимкнені навмисно
+        lines = [f"🦊 Ретроспектива ({label}) готова: {report.as_text()}"]
+        if report.closed:
+            lines.append("\nЗакрились самі:")
+            for person, task in report.closed:
+                lines.append(f"✅ {person} — {team_tasks.task_summary(task)}")
+        if report.pending:
+            lines.append(f"\n🤔 {report.pending} спірних чекають у «Сповіщеннях» апки.")
+        if report.errors:
+            lines.append(f"\n⚠️ {report.errors} публікацій не додивились "
+                         f"(збій AI) — повтори /match_backfill yes, воно "
+                         f"безпечне: вже зараховане не подвоїться.")
+        lines.append("\nЛюдям нічого не прилетіло — побачать в апці.")
+        await msg.edit_text("\n".join(lines), disable_web_page_preview=True)
+    except Exception as e:
+        await msg.edit_text(f"❌ Ретроспектива впала: {e}\n"
+                            f"Уже зараховане збереглось — повторний запуск "
+                            f"продовжить з того ж місця.")
+    finally:
+        _retro_running["flag"] = False
 
 
 # ---------- Тестова команда (нічого не зараховує) ----------
