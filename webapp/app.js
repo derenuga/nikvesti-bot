@@ -88,16 +88,30 @@ const MONTHS_SHORT = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер"
 
 /* ---------- API ---------- */
 
+/* Помилки розрізняємо: обрив мережі (найчастіше в мобільному Telegram) — це
+   err.offline, відмова сервера — err.status. Від цього залежить, чи є сенс
+   пропонувати «спробувати ще». */
 async function api(path, options = {}) {
-  const res = await fetch(path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "tma " + (tg ? tg.initData : ""),
-      ...(options.headers || {}),
-    },
-  });
-  if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+  let res;
+  try {
+    res = await fetch(path, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "tma " + (tg ? tg.initData : ""),
+        ...(options.headers || {}),
+      },
+    });
+  } catch (e) {
+    const err = new Error("Немає зв'язку з сервером");
+    err.offline = true;
+    throw err;
+  }
+  if (!res.ok) {
+    const err = new Error((await res.text()) || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 
@@ -111,6 +125,21 @@ function esc(s) {
 
 function haptic(kind) {
   try { tg && tg.HapticFeedback.notificationOccurred(kind); } catch (e) {}
+}
+
+/* Підтвердження деструктивної дії. Нативний діалог Telegram (showConfirm є з
+   Bot API 6.2), у старих клієнтах і поза Telegram — window.confirm. Undo в нас
+   немає, тож знята таска чи видалена норма не повертаються — питаємо. */
+function confirmAction(message) {
+  return new Promise((resolve) => {
+    try {
+      if (tg && typeof tg.showConfirm === "function") {
+        tg.showConfirm(message, (ok) => resolve(!!ok));
+        return;
+      }
+    } catch (e) {}
+    resolve(window.confirm(message));
+  });
 }
 
 function toast(msg) {
@@ -425,6 +454,8 @@ function taskSheet(t) {
   $("sheet").addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-status]");
     if (!btn) return;
+    if (btn.dataset.status === "dropped" &&
+        !(await confirmAction(`Зняти завдання з ${t.person.split(" ")[0]}?\n${taskSummary(t)}`))) return;
     try {
       await api(`/api/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify({ status: btn.dataset.status }) });
       closeSheet();
@@ -952,7 +983,10 @@ function driveSheet(p) {
       nav("project", p.id);
     } catch (e) { toast(e.message); }
   };
-  if (p.drive_url) $("dr-remove").onclick = () => save("");
+  if (p.drive_url) $("dr-remove").onclick = async () => {
+    if (!(await confirmAction("Відкріпити папку Google Drive від проєкту?"))) return;
+    save("");
+  };
   $("dr-save").onclick = () => {
     const url = $("dr-url").value.trim();
     if (!url) { toast("Встав лінк на папку"); return; }
@@ -1086,6 +1120,7 @@ function dlSheet(project, dl) {
   };
   $("dl-cancel").onclick = closeSheet;
   if (dl) $("dl-delete").onclick = async () => {
+    if (!(await confirmAction(`Видалити дедлайн «${dlLabel(dl)}»?`))) return;
     try {
       await api(`/api/project_deadlines/${dl.id}`, { method: "DELETE" });
       closeSheet();
@@ -1139,6 +1174,8 @@ function themeSheet(project, theme) {
   };
   $("t-cancel").onclick = closeSheet;
   if (theme) $("t-delete").onclick = async () => {
+    if (!(await confirmAction(
+      `Видалити тематику «${theme.name}»?\nВже поставлені за нею завдання лишаться.`))) return;
     try {
       await api(`/api/themes/${theme.id}`, { method: "DELETE" });
       closeSheet();
@@ -1444,6 +1481,9 @@ function renderKpiNorm() {
       <button class="sbtn" id="norm-edit">Змінити ціль</button>
     </div>`;
   $("norm-delete").onclick = async () => {
+    if (!(await confirmAction(
+      `Видалити норму «${normTitle(n)}» для відділу ${n.dept_title}?\n` +
+      `Разом з нею зникнуть персональні правки.`))) return;
     try {
       await api(`/api/kpi/norms/${n.id}`, { method: "DELETE" });
       haptic("success");
@@ -1670,12 +1710,23 @@ async function reload() {
   STATE.projects = data.projects || [];
 }
 
-function fail(title, text) {
+/* Екран помилки. canRetry — чи є сенс пробувати ще: мережа моргнула або
+   сервер віддав 5xx. Відмова доступу (401/403) кнопки не отримує — від
+   повторного тику вона не мине. */
+function fail(title, text, canRetry) {
   $("screen-loading").classList.add("hidden");
   $("screen-main").classList.add("hidden");
   $("screen-error").classList.remove("hidden");
   $("error-title").textContent = title;
   $("error-text").textContent = text;
+  const retry = $("error-retry");
+  retry.classList.toggle("hidden", !canRetry);
+  retry.onclick = () => {
+    retry.disabled = true;
+    $("screen-error").classList.add("hidden");
+    $("screen-loading").classList.remove("hidden");
+    boot().finally(() => { retry.disabled = false; });
+  };
 }
 
 async function boot() {
@@ -1690,6 +1741,7 @@ async function boot() {
   try { tg.onEvent("themeChanged", syncTheme); } catch (e) {}
   try {
     await reload();
+    $("screen-error").classList.add("hidden");
     $("screen-loading").classList.add("hidden");
     $("screen-main").classList.remove("hidden");
     if (STATE.me.manager) {
@@ -1699,7 +1751,21 @@ async function boot() {
       renderJournalist();
     }
   } catch (e) {
-    fail("Не пустили", e.message);
+    // 401/403 — це «тебе не пустили», решта (обрив мережі, 5xx, сплячий
+    // сервіс) минає сама, тож там даємо кнопку замість глухого кута.
+    if (e.status === 403) {
+      fail("Апка для команди", e.message, false);
+    } else if (e.status === 401) {
+      fail("Не пустили", e.message, false);
+    } else {
+      fail(
+        e.offline ? "Немає зв'язку" : "Не вдалося завантажити",
+        e.offline
+          ? "Схоже, пропав інтернет. Перевір зв'язок і спробуй ще раз."
+          : e.message,
+        true,
+      );
+    }
   }
 }
 
