@@ -17,6 +17,8 @@ const STATE = {
   view: "home",
   projView: "list",
   currentProject: null,
+  currentNorm: null,
+  kpi: null,
   form: null,
 };
 
@@ -122,6 +124,13 @@ function personEntry(name) {
   return STATE.people.find((x) => x.name === name) || null;
 }
 
+function deadlineHtml(t) {
+  if (!t.deadline) return "";
+  const overdue = t.status === "open" && t.deadline < new Date().toISOString().slice(0, 10);
+  const [y, m, d] = t.deadline.split("-");
+  return ` · <span class="${overdue ? "dl-over" : "dl"}">до ${d}.${m}${overdue ? " ⚑" : ""}</span>`;
+}
+
 /* Стабільний колір проєкту: слот за порядком id (колір іде за сутністю,
    сортування/фільтри його не міняють) */
 function projectColorIdx(id) {
@@ -134,11 +143,14 @@ function projectColorIdx(id) {
 function nav(view, arg) {
   STATE.view = view;
   if (view === "project") STATE.currentProject = arg;
+  if (view === "kpinorm") STATE.currentNorm = arg;
+  if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
   if (view === "form") STATE.form = {
-    person: arg, project: undefined, type: "news", theme_id: null, qty: 1, note: "",
+    person: arg, project: undefined, type: "news", theme_id: null, qty: 1, note: "", deadline: "",
   };
+  const navKey = view === "kpinorm" ? "kpi" : view === "project" ? "projects" : view;
   document.querySelectorAll("#bottomnav .bn").forEach((b) =>
-    b.classList.toggle("on", b.dataset.view === view));
+    b.classList.toggle("on", b.dataset.view === navKey));
   render();
   window.scrollTo(0, 0);
 }
@@ -151,6 +163,7 @@ function render() {
   else if (v === "projects") renderProjects();
   else if (v === "project") renderProject();
   else if (v === "kpi") renderKpi();
+  else if (v === "kpinorm") renderKpiNorm();
   else if (v === "team") renderTeam();
 }
 
@@ -164,7 +177,7 @@ function renderHome() {
       ${avatar(t.person, personEntry(t.person), 42)}
       <span class="tr-main">
         <span class="tr-who">${esc(t.person.split(" ")[0])} ${esc(t.person.split(" ")[1] || "")}</span>
-        <span class="tr-what">${esc(taskSummary(t))}</span>
+        <span class="tr-what">${esc(taskSummary(t))}${deadlineHtml(t)}</span>
       </span>
       <span class="status-dot ${t.status}"></span>
     </button>`;
@@ -180,7 +193,7 @@ function renderHome() {
 function taskSheet(t) {
   openSheet(`
     <h2>${esc(t.person)}</h2>
-    <p style="color:var(--muted);margin:-8px 0 6px">${esc(taskSummary(t))}</p>
+    <p style="color:var(--muted);margin:-8px 0 6px">${esc(taskSummary(t))}${deadlineHtml(t)}</p>
     ${t.note ? `<p style="margin-bottom:6px">${esc(t.note)}</p>` : ""}
     <p style="color:var(--muted);font-size:12.5px">поставила ${esc(t.creator.split(" ")[0])} · ${new Date(t.created_at).toLocaleDateString("uk-UA")}</p>
     <div class="sheet-actions">
@@ -268,21 +281,25 @@ function renderForm() {
              їх можна завести на вкладці «Проєкти».</div>`}
     ` : ""}
 
-    <div class="f-label">Кількість і нотатка</div>
+    <div class="f-label">Кількість і дедлайн</div>
     <div class="count-row">
       <div class="stepper">
         <button id="qty-minus">${icon("minus")}</button>
         <b id="qty-val">${f.qty}</b>
         <button id="qty-plus">${icon("plus")}</button>
       </div>
-      <textarea id="f-note" maxlength="1000" placeholder="нотатка, тема, деталі…">${esc(f.note)}</textarea>
+      <input id="f-deadline" type="date" value="${esc(f.deadline)}" style="flex:1">
     </div>
+
+    <div class="f-label">Нотатка</div>
+    <textarea id="f-note" maxlength="1000" placeholder="нотатка, тема, деталі…">${esc(f.note)}</textarea>
 
     <button class="cta" id="f-create" ${f.project === undefined ? "disabled" : ""}>Поставити завдання</button>`;
 
   $("f-project").onclick = projectPickerSheet;
   $("qty-minus").onclick = () => { f.qty = Math.max(1, f.qty - 1); $("qty-val").textContent = f.qty; };
   $("qty-plus").onclick = () => { f.qty = Math.min(99, f.qty + 1); $("qty-val").textContent = f.qty; };
+  $("f-deadline").oninput = (e) => { f.deadline = e.target.value; };
   $("f-note").oninput = (e) => { f.note = e.target.value; };
   $("content").querySelectorAll("[data-type]").forEach((b) => b.onclick = () => { f.type = b.dataset.type; renderForm(); });
   $("content").querySelectorAll("[data-theme]").forEach((b) => b.onclick = () => {
@@ -332,6 +349,7 @@ async function createTask() {
         theme_id: f.theme_id,
         qty: f.qty,
         note: f.note.trim(),
+        deadline: f.deadline || null,
       }),
     });
     haptic("success");
@@ -504,19 +522,231 @@ function themeSheet(project, theme) {
   };
 }
 
-/* ---------- KPI (заглушка) і Команда ---------- */
+/* ---------- KPI: норми по відділах, правки по людині ---------- */
 
-function renderKpi() {
+async function loadKpi() {
+  STATE.kpi = await api("/api/kpi");
+}
+
+function normTitle(n) {
+  return `${n.target} ${qtyWord(n.metric, n.target)} · ${n.period === "week" ? "щотижня" : "щомісяця"}`;
+}
+
+function normById(id) {
+  return (STATE.kpi ? STATE.kpi.norms : []).find((n) => n.id === id) || null;
+}
+
+async function renderKpi() {
+  if (!STATE.kpi) {
+    $("content").innerHTML = `<div class="h-big">KPI</div><div class="empty-hint">Завантажую…</div>`;
+    try { await loadKpi(); } catch (e) { toast(e.message); return; }
+    if (STATE.view !== "kpi") return;
+  }
+  const k = STATE.kpi;
+  const byDept = {};
+  k.norms.forEach((n) => (byDept[n.dept_title] = byDept[n.dept_title] || []).push(n));
+  const sections = Object.entries(byDept).map(([dept, norms]) => `
+    <div class="dept-title">${esc(dept)}</div>
+    ${norms.map((n) => {
+      const active = n.rows.filter((r) => !r.excused);
+      const done = active.filter((r) => r.done).length;
+      return `<button class="norm-row" data-norm="${n.id}">
+        <span class="nr-txt">
+          <span class="nr-title">${esc(normTitle(n))}</span>
+          <span class="nr-meta">${n.period === "week" ? esc(k.week_label) : esc(k.month_label)} · на людину</span>
+        </span>
+        <span class="nr-done">${k.site_db ? `${done}/${active.length} ✓` : ""}</span>
+        ${icon("chevron-right", "ic chev")}
+      </button>`;
+    }).join("")}`).join("");
   $("content").innerHTML = `
     <div class="h-big">KPI</div>
-    <div class="h-sub">рекурентні норми на тиждень і місяць</div>
-    <div class="soft-card">
-      <div class="sc-t">Скоро</div>
-      <p style="color:var(--muted)">Норми задаватимуться на відділ,
-      обліковуватимуться по людині, з точковими правками
-      (відпустка, відрядження) — вже в розробці.</p>
-    </div>`;
+    <div class="h-sub">тиждень ${esc(k.week_label)} · ${esc(k.month_label)} · норма на відділ, облік по людині</div>
+    ${sections || `<div class="empty-hint">Норм ще немає.<br>Додай першу — і прогрес рахуватиметься сам із сайту.</div>`}
+    <button class="add-theme" id="add-norm">${icon("plus")} Додати норму</button>
+    ${!k.site_db ? `<div class="tl-note">БД сайту недоступна — факт тимчасово не рахується.</div>` : ""}`;
+  $("add-norm").onclick = normCreateSheet;
+  $("content").querySelectorAll("[data-norm]").forEach((b) =>
+    b.onclick = () => nav("kpinorm", +b.dataset.norm));
 }
+
+function normCreateSheet() {
+  const depts = STATE.people.reduce((acc, p) => {
+    if (!acc.find((d) => d.dept === p.dept)) acc.push({ dept: p.dept, title: p.dept_title });
+    return acc;
+  }, []);
+  const st = { dept: depts[0] ? depts[0].dept : null, metric: "news", period: "week", target: 5 };
+  openSheet(`
+    <h2>Нова норма</h2>
+    <div class="f-label" style="margin-top:0">Відділ</div>
+    <div class="chips" id="n-dept">${depts.map((d) => `
+      <button class="chip ${st.dept === d.dept ? "on" : ""}" data-dept="${esc(d.dept)}">${esc(d.title)}</button>`).join("")}</div>
+    <div class="f-label">Метрика</div>
+    <div class="two" id="n-metric">
+      <button class="bigbtn slim on" data-m="news">Новини</button>
+      <button class="bigbtn slim" data-m="article">Статті</button>
+    </div>
+    <div class="f-label">Період</div>
+    <div class="two" id="n-period">
+      <button class="bigbtn slim on" data-p="week">Тиждень</button>
+      <button class="bigbtn slim" data-p="month">Місяць</button>
+    </div>
+    <div class="f-label">Ціль на людину</div>
+    <div class="stepper">
+      <button id="n-minus">${icon("minus")}</button>
+      <b id="n-val">${st.target}</b>
+      <button id="n-plus">${icon("plus")}</button>
+    </div>
+    <div class="sheet-actions">
+      <button class="sbtn" id="n-cancel">Скасувати</button>
+      <button class="sbtn primary" id="n-save">Створити</button>
+    </div>`);
+  $("n-dept").onclick = (e) => {
+    const b = e.target.closest("[data-dept]");
+    if (!b) return;
+    st.dept = b.dataset.dept;
+    $("n-dept").querySelectorAll(".chip").forEach((c) => c.classList.toggle("on", c === b));
+  };
+  $("n-metric").onclick = (e) => {
+    const b = e.target.closest("[data-m]");
+    if (!b) return;
+    st.metric = b.dataset.m;
+    $("n-metric").querySelectorAll(".bigbtn").forEach((c) => c.classList.toggle("on", c === b));
+  };
+  $("n-period").onclick = (e) => {
+    const b = e.target.closest("[data-p]");
+    if (!b) return;
+    st.period = b.dataset.p;
+    $("n-period").querySelectorAll(".bigbtn").forEach((c) => c.classList.toggle("on", c === b));
+  };
+  $("n-minus").onclick = () => { st.target = Math.max(1, st.target - 1); $("n-val").textContent = st.target; };
+  $("n-plus").onclick = () => { st.target = Math.min(500, st.target + 1); $("n-val").textContent = st.target; };
+  $("n-cancel").onclick = closeSheet;
+  $("n-save").onclick = async () => {
+    try {
+      await api("/api/kpi/norms", { method: "POST", body: JSON.stringify(st) });
+      closeSheet();
+      haptic("success");
+      await loadKpi();
+      renderKpi();
+    } catch (e) { toast(e.message); }
+  };
+}
+
+function renderKpiNorm() {
+  const n = normById(STATE.currentNorm);
+  if (!n) { nav("kpi"); return; }
+  const k = STATE.kpi;
+  const rows = n.rows.map((r) => {
+    const pct = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
+    const right = r.excused
+      ? `<span class="kp-excused">звільнена</span>`
+      : r.fact === null
+        ? `<span class="kp-nofact">—</span>`
+        : `<span class="kp-fact ${r.done ? "ok" : ""}">${r.fact}/${r.target}${r.done ? " ✓" : ""}</span>`;
+    return `<button class="kpi-person" data-kp="${esc(r.person)}">
+      ${avatar(r.person, personEntry(r.person), 42)}
+      <span class="kp-main">
+        <span class="kp-name">${esc(r.person)}
+          ${r.overridden ? `<span class="kp-badge">${esc(r.note || "правка")}</span>` : ""}</span>
+        ${!r.excused ? `<span class="kbar"><i class="${r.done ? "ok" : ""}" style="width:${pct}%"></i></span>` : ""}
+      </span>
+      ${right}
+    </button>`;
+  }).join("");
+  $("content").innerHTML = `
+    <button class="back" data-nav="kpi">${icon("chevron-left")} KPI</button>
+    <div class="h-big">${esc(n.dept_title)}</div>
+    <div class="h-sub">${esc(normTitle(n))} · ${esc(n.period === "week" ? k.week_label : k.month_label)}</div>
+    ${rows}
+    <div class="tl-note">Тап по людині — правка цього періоду: інша ціль,
+      звільнення (відпустка/відрядження) або повернення до норми відділу.</div>
+    <div class="sheet-actions" style="margin-top:14px">
+      <button class="sbtn danger" id="norm-delete">Видалити норму</button>
+      <button class="sbtn" id="norm-edit">Змінити ціль</button>
+    </div>`;
+  $("norm-delete").onclick = async () => {
+    try {
+      await api(`/api/kpi/norms/${n.id}`, { method: "DELETE" });
+      haptic("success");
+      await loadKpi();
+      nav("kpi");
+    } catch (e) { toast(e.message); }
+  };
+  $("norm-edit").onclick = () => normTargetSheet(n);
+  $("content").querySelectorAll("[data-kp]").forEach((b) =>
+    b.onclick = () => overrideSheet(n, n.rows.find((r) => r.person === b.dataset.kp)));
+}
+
+function normTargetSheet(n) {
+  let target = n.target;
+  openSheet(`
+    <h2>Ціль відділу</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">Зміниться для всіх без персональних правок.</p>
+    <div class="stepper">
+      <button id="e-minus">${icon("minus")}</button>
+      <b id="e-val">${target}</b>
+      <button id="e-plus">${icon("plus")}</button>
+    </div>
+    <div class="sheet-actions">
+      <button class="sbtn" id="e-cancel">Скасувати</button>
+      <button class="sbtn primary" id="e-save">Зберегти</button>
+    </div>`);
+  $("e-minus").onclick = () => { target = Math.max(1, target - 1); $("e-val").textContent = target; };
+  $("e-plus").onclick = () => { target = Math.min(500, target + 1); $("e-val").textContent = target; };
+  $("e-cancel").onclick = closeSheet;
+  $("e-save").onclick = async () => {
+    try {
+      await api(`/api/kpi/norms/${n.id}`, { method: "PATCH", body: JSON.stringify({ target }) });
+      closeSheet();
+      await loadKpi();
+      renderKpiNorm();
+    } catch (e) { toast(e.message); }
+  };
+}
+
+function overrideSheet(n, row) {
+  let target = row.excused ? 0 : row.target;
+  const paint = () => {
+    $("o-val").textContent = target;
+    $("o-hint").textContent = target === 0 ? "0 — звільнена цього періоду" : "";
+  };
+  openSheet(`
+    <h2>${esc(row.person)}</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+      ${esc(normTitle(n))} · норма відділу: ${n.base_target || n.target}</p>
+    <div class="f-label" style="margin-top:0">Ціль на цей ${n.period === "week" ? "тиждень" : "місяць"}</div>
+    <div class="stepper">
+      <button id="o-minus">${icon("minus")}</button>
+      <b id="o-val">${target}</b>
+      <button id="o-plus">${icon("plus")}</button>
+    </div>
+    <div id="o-hint" style="color:var(--muted);font-size:12px;margin-top:6px"></div>
+    <div class="f-label">Причина (необовʼязково)</div>
+    <input id="o-note" maxlength="120" placeholder="відпустка, відрядження…" value="${esc(row.note || "")}">
+    <div class="sheet-actions">
+      ${row.overridden ? `<button class="sbtn" id="o-clear">До норми відділу</button>` : ""}
+      <button class="sbtn danger" id="o-excuse">Звільнити</button>
+      <button class="sbtn primary" id="o-save">Зберегти</button>
+    </div>`);
+  paint();
+  $("o-minus").onclick = () => { target = Math.max(0, target - 1); paint(); };
+  $("o-plus").onclick = () => { target = Math.min(500, target + 1); paint(); };
+  const apply = async (body) => {
+    try {
+      await api("/api/kpi/override", { method: "PUT", body: JSON.stringify({ norm_id: n.id, person: row.person, ...body }) });
+      closeSheet();
+      haptic("success");
+      await loadKpi();
+      renderKpiNorm();
+    } catch (e) { toast(e.message); }
+  };
+  if (row.overridden) $("o-clear").onclick = () => apply({ clear: true });
+  $("o-excuse").onclick = () => apply({ target: 0, note: $("o-note").value.trim() || "звільнена" });
+  $("o-save").onclick = () => apply({ target, note: $("o-note").value.trim() });
+}
+
+/* ---------- Команда ---------- */
 
 function renderTeam() {
   $("content").innerHTML = `
@@ -535,11 +765,12 @@ function renderJournalist() {
   const open = STATE.tasks.filter((t) => t.status === "open");
   $("content").innerHTML = `
     <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
-    <div class="h-sub">твої завдання</div>
+    <div class="h-sub">твої завдання і KPI</div>
+    <div id="my-kpi"></div>
     ${open.length ? `<div class="soft-card">${open.map((t) => `
       <div class="task-row">
         <span class="tr-main">
-          <span class="tr-who">${esc(taskSummary(t))}</span>
+          <span class="tr-who">${esc(taskSummary(t))}${deadlineHtml(t)}</span>
           ${t.note ? `<span class="tr-what">${esc(t.note)}</span>` : ""}
         </span>
         <span class="status-dot open"></span>
@@ -547,6 +778,31 @@ function renderJournalist() {
       : `<div class="empty-hint">Відкритих завдань немає.</div>`}
     <div class="empty-hint" style="padding-top:16px">Це попередній перегляд —
       повний твій інтерфейс уже в розробці.</div>`;
+  renderMyKpi();
+}
+
+/* «Мої KPI» журналістки: норми її відділу зі своїм фактом тижня/місяця.
+   Вантажиться після основного екрана — щоб таски не чекали на MySQL сайту. */
+async function renderMyKpi() {
+  let k;
+  try { k = await api("/api/kpi"); } catch (e) { return; }
+  const box = $("my-kpi");
+  if (!box || !k.norms.length) return;
+  box.innerHTML = `<div class="soft-card"><div class="sc-t">Мої KPI</div>
+    ${k.norms.map((n) => {
+      const r = n.rows[0];
+      if (!r) return "";
+      if (r.excused) return `<div class="mykpi-row">
+        <span class="mk-t">${esc(normTitle(n))}</span>
+        <span class="kp-excused">звільнена${r.note ? " · " + esc(r.note) : ""}</span></div>`;
+      const pct = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
+      return `<div class="mykpi-row">
+        <span class="mk-t">${esc(normTitle(n))}
+          <span class="mk-p">· ${esc(n.period === "week" ? k.week_label : k.month_label)}</span></span>
+        <span class="kp-fact ${r.done ? "ok" : ""}">${r.fact === null ? "—" : `${r.fact}/${r.target}${r.done ? " ✓" : ""}`}</span>
+        <span class="kbar wide"><i class="${r.done ? "ok" : ""}" style="width:${pct}%"></i></span>
+      </div>`;
+    }).join("")}</div>`;
 }
 
 /* ---------- Шторка ---------- */
