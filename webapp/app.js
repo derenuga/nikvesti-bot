@@ -590,6 +590,7 @@ function taskSheet(t) {
        ${matchesHtml(t, { editable: true })}
        <div class="mr-hint">тап по галочці — зняти публікацію і повернути її в чергу</div>` : ""}
     <p style="color:var(--muted);font-size:12.5px">поставив(ла) ${esc(t.creator.split(" ")[0])} · ${new Date(t.created_at).toLocaleDateString("uk-UA")}</p>
+    <button class="link-btn" id="task-attach">${icon("plus")} Зарахувати публікацію за лінком</button>
     <div class="sheet-actions">
       ${t.status === "open"
         ? `<button class="sbtn danger" data-status="dropped">Зняти</button>
@@ -597,6 +598,7 @@ function taskSheet(t) {
            <button class="sbtn primary" data-status="done">Виконано</button>`
         : `<button class="sbtn" data-status="open">Повернути у відкриті</button>`}
     </div>`);
+  $("task-attach").onclick = () => attachSheet(t);
   const editBtn = $("task-edit");
   if (editBtn) editBtn.onclick = () => taskEditSheet(t);
   // Зняти ОДНУ публікацію із зарахованих: із пʼятнадцяти зарахованих одна
@@ -636,6 +638,48 @@ function taskSheet(t) {
       render();
     } catch (err) { toast(err.message); }
   });
+}
+
+/* Зарахувати публікацію руками, за лінком. Закриває два життєві випадки:
+   перенести зараховане з помилково задубльованого завдання (та сама
+   публікація просто переїде — запис на неї один) і сказати «оце сюди», не
+   чекаючи прогону. Приймає і лінк матеріалу, і лінк поста каналу. */
+function attachSheet(t) {
+  openSheet(`
+    <h2>Зарахувати публікацію</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+      ${esc(taskLine(t, { donor: true }))}</p>
+    <input id="at-url" type="url" inputmode="url" placeholder="https://nikvesti.com/…">
+    <div class="mr-hint">Можна і лінк поста каналу (t.me/nikvesti/…). Якщо
+      публікацію вже зараховано деінде — вона переїде сюди, а не подвоїться.</div>
+    <div class="sheet-actions">
+      <button class="sbtn" id="at-cancel">Скасувати</button>
+      <button class="sbtn primary" id="at-save">Зарахувати</button>
+    </div>`);
+  $("at-cancel").onclick = closeSheet;
+  $("at-save").onclick = async () => {
+    const url = $("at-url").value.trim();
+    if (!url) { toast("Встав лінк публікації"); return; }
+    $("at-save").disabled = true;
+    try {
+      const res = await api(`/api/tasks/${t.id}/attach`, {
+        method: "POST", body: JSON.stringify({ url }),
+      });
+      haptic("success");
+      (res.tasks || []).forEach(patchTask);
+      STATE.pendingCount = res.pending_count;
+      STATE.pending = null;
+      syncAlertsBadge();
+      render();
+      const fresh = STATE.tasks.find((x) => x.id === t.id);
+      if (fresh) taskSheet(fresh);
+      else closeSheet();
+      toast("Зараховано");
+    } catch (e) {
+      $("at-save").disabled = false;
+      toast(e.message);
+    }
+  };
 }
 
 /* Редагування таска: кількість, тематика (з проєкту таска), дедлайн, нотатка */

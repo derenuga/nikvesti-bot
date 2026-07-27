@@ -846,6 +846,40 @@ async def api_matches_decide(request):
     return web.json_response(result)
 
 
+async def api_task_attach(request):
+    """POST /api/tasks/{id}/attach {url} — зарахувати публікацію в завдання
+    руками. Перенос із задубльованого завдання і «оце сюди» без чекання
+    прогону — одна й та сама операція."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    task_id = int(request.match_info["task_id"])
+    result = await _in_session(_attach_blocking, task_id, payload.get("url"), person)
+    if isinstance(result, str):
+        raise web.HTTPBadRequest(text=result)
+    if not result:
+        raise web.HTTPNotFound(text="Завдання не знайдено")
+    return web.json_response(result)
+
+
+def _attach_blocking(task_id, url, actor):
+    from handlers import team_matching
+
+    task = team_tasks.get_task(task_id)
+    if not task:
+        return None
+    match, touched = team_matching.attach_publication(task, url, actor)
+    if not match:
+        return touched if isinstance(touched, str) else "Не вдалося зарахувати"
+    tasks = []
+    for tid in touched:
+        updated, _ = team_matches.apply_progress(tid, actor)
+        if updated:
+            tasks.append(updated)
+    team_matches.attach_progress(tasks)
+    return {"match": match, "tasks": tasks,
+            "pending_count": team_matches.pending_count()}
+
+
 # ---------- Стрічка сповіщень ----------
 
 async def api_notifications(request):
@@ -1167,6 +1201,7 @@ async def start_webapp(application):
         web.get("/api/notifications", api_notifications),
         web.post("/api/notifications/read", api_notifications_read),
         web.post("/api/matches/{match_id:\\d+}/decide", api_matches_decide),
+        web.post("/api/tasks/{task_id:\\d+}/attach", api_task_attach),
         web.get("/api/kpi", api_kpi),
         web.get("/api/kpi/dashboard", api_kpi_dashboard),
         web.get("/api/kpi/person", api_kpi_person),
