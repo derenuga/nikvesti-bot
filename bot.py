@@ -47,6 +47,7 @@ from handlers.fb_missing import fbmissing_handler, fbmissing_test_handler
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
 from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, viber_test_handler
 from handlers.webapp import start_webapp, team_handler
+from handlers.team_matching import match_test_handler
 from handlers.notifier import notify_error
 from handlers.usage_report import usage_handler, display_name
 from handlers import storage
@@ -364,6 +365,7 @@ def main():
     app.add_handler(CommandHandler("youtube_backfill", youtube_backfill_handler))
     app.add_handler(CommandHandler("tiktok_auth", tiktok_auth_handler))
     app.add_handler(CommandHandler("team", team_handler))
+    app.add_handler(CommandHandler("match_test", match_test_handler))
     app.add_handler(CommandHandler("viber_setup", viber_setup_handler))
     app.add_handler(CommandHandler("viber_test", viber_test_handler))
     app.add_handler(CommandHandler("report", report))
