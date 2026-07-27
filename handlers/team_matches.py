@@ -37,6 +37,13 @@ MATCH_STATUSES = ("auto", "pending", "confirmed", "rejected", "skipped")
 # Які статуси йдуть у прогрес таска
 COUNTED = ("auto", "confirmed")
 
+# «Питання закрите»: цю публікацію повторно не судимо НІКОЛИ. skipped сюди
+# навмисно не входить — тоді кандидатів не було, а таск на цю тематику могли
+# поставити пізніше (Катя часто ставить заднім числом). Пере-розгляд skipped
+# дешевий: пре-фільтр без AI, і суддя вмикається, лише якщо кандидати таки
+# з'явились.
+DECIDED = ("auto", "pending", "confirmed", "rejected")
+
 SOURCES = ("site", "telegram")
 
 _SCHEMA_STATEMENTS = [
@@ -115,9 +122,14 @@ def _row_to_match(r):
 def record_match(source, ref, status, task_id=None, person=None, project_id=None,
                  confidence=None, reasoning=None, title=None, url=None,
                  published=None, node_type=None):
-    """Записує вердикт по публікації. Повертає матч або None, якщо цю
-    публікацію вже судили (UNIQUE (source, ref) — саме тут спрацьовує
-    ідемпотентність повторних прогонів)."""
+    """Записує вердикт по публікації. Повертає матч або None, якщо питання по
+    ній уже вирішене (UNIQUE (source, ref) — саме тут спрацьовує
+    ідемпотентність повторних прогонів).
+
+    Виняток — рядок зі статусом skipped: тоді кандидатів не було, і якщо таск
+    на цю тематику з'явився пізніше, вердикт перезаписується (DO UPDATE …
+    WHERE status = 'skipped'). Уже вирішені (auto/pending/confirmed/rejected)
+    не чіпаються ніколи."""
     ensure_match_schema()
     rows = bot_db.query(
         f"""
@@ -125,7 +137,14 @@ def record_match(source, ref, status, task_id=None, person=None, project_id=None
             (source, ref, task_id, person, project_id, confidence, reasoning,
              status, title, url, published, node_type)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_timestamp(%s), %s)
-        ON CONFLICT (source, ref) DO NOTHING
+        ON CONFLICT (source, ref) DO UPDATE SET
+            task_id = EXCLUDED.task_id, person = EXCLUDED.person,
+            project_id = EXCLUDED.project_id, confidence = EXCLUDED.confidence,
+            reasoning = EXCLUDED.reasoning, status = EXCLUDED.status,
+            title = EXCLUDED.title, url = EXCLUDED.url,
+            published = EXCLUDED.published, node_type = EXCLUDED.node_type,
+            created_at = now()
+        WHERE team_task_matches.status = 'skipped'
         RETURNING {_COLS}
         """,
         (source, str(ref), int(task_id) if task_id else None, person,
@@ -135,23 +154,20 @@ def record_match(source, ref, status, task_id=None, person=None, project_id=None
     return _row_to_match(rows[0]) if rows else None
 
 
-def known_refs(source, refs=None):
-    """Множина ref, які вже судились — пре-фільтр перед скануванням, щоб не
-    ганяти суддю (і БД сайту) по тому самому вдруге."""
+def known_refs(source, refs=None, statuses=DECIDED):
+    """Множина ref із вирішеним питанням — пре-фільтр перед скануванням, щоб
+    не ганяти суддю (і БД сайту) по тому самому вдруге. За замовчуванням
+    skipped не рахується вирішеним (див. DECIDED)."""
     ensure_match_schema()
+    params = [source, list(statuses)]
+    sql = "SELECT ref FROM team_task_matches WHERE source = %s AND status = ANY(%s)"
     if refs is not None:
         refs = [str(r) for r in refs]
         if not refs:
             return set()
-        rows = bot_db.query(
-            "SELECT ref FROM team_task_matches WHERE source = %s AND ref = ANY(%s)",
-            (source, refs),
-        )
-    else:
-        rows = bot_db.query(
-            "SELECT ref FROM team_task_matches WHERE source = %s", (source,)
-        )
-    return {r["ref"] for r in rows}
+        sql += " AND ref = ANY(%s)"
+        params.append(refs)
+    return {r["ref"] for r in bot_db.query(sql, params)}
 
 
 def get_match(match_id):

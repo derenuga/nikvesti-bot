@@ -25,6 +25,7 @@ from handlers.ai_usage import send_monthly_ai_cost
 from handlers.usage_report import send_daily_usage_report
 from handlers.weekly_digest import send_weekly_digest
 from handlers.report_reminders import check_report_deadlines
+from handlers.team_matching import run_matching_scan
 from handlers.social_sheet import run_monthly_snapshot, check_tiktok_health
 from handlers import analytics_store
 from datetime import datetime, timedelta
@@ -281,5 +282,9 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # години (9–21 Києвом, гейт усередині функції). Вільна хвилина в розкладі;
     # тихо пропускається без БД сайту. Перший запуск — тихий baseline.
     scheduler.add_job(run_check_fb_missing, "cron", hour="9-21", minute=20, args=[bot])
+    # Звірка виконання creative tasks — щогодини на :45 (вільна хвилина).
+    # Тиха: пише в лог, у чат — лише на явний /match_scan. Без БД сайту або
+    # без відкритих тасків не коштує нічого (AI вмикається лише при кандидатах).
+    scheduler.add_job(run_matching_scan, "cron", minute=45, args=[bot])
     scheduler.start()
     return scheduler
