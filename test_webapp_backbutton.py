@@ -168,17 +168,26 @@ async def main():
                   await page.evaluate('$("sheet-backdrop").classList.contains("hidden")'))
             check("але з екрана не пішов", await _view(page) == "project")
 
-            # Шторка на КОРЕНЕВОМУ екрані теж має давати кнопку
-            await page.click('[data-view="kpi"]')
-            await page.wait_for_timeout(250)
-            check("у корені KPI кнопки немає", not await _visible(page))
+            # KPI більше не корінь меню — заходять із Головної, тож назад є куди
+            await page.click('[data-view="home"]')
+            await page.wait_for_selector('[data-nav="kpi"]')
+            check("на Головній кнопки немає", not await _visible(page))
+            await page.click('[data-nav="kpi"]')
+            await page.wait_for_timeout(300)
+            check("у налаштуваннях KPI кнопка є", await _visible(page))
             await page.click("#add-norm")
             await page.wait_for_selector("#n-save")
-            check("шторка на кореневому екрані показує кнопку", await _visible(page))
             await _press_back(page)
-            check("back закрив шторку і на корені",
+            check("back закрив шторку поверх KPI",
                   await page.evaluate('$("sheet-backdrop").classList.contains("hidden")'))
-            check("кнопку знову сховано", not await _visible(page))
+            check("з KPI ще є куди назад — кнопка лишилась", await _visible(page))
+            await _press_back(page)
+            check("назад із KPI → Головна", await _view(page) == "home")
+
+            # Звітність — корінь меню, кнопки бути не має
+            await page.click('[data-view="reports"]')
+            await page.wait_for_timeout(250)
+            check("у корені «Звітність» кнопки немає", not await _visible(page))
 
             # Форма таска: «+» → людина → форма → назад до вибору людини
             await page.click(".bn-plus")

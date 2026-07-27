@@ -24,6 +24,7 @@ from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
 from handlers.usage_report import send_daily_usage_report
 from handlers.weekly_digest import send_weekly_digest
+from handlers.report_reminders import check_report_deadlines
 from handlers.social_sheet import run_monthly_snapshot, check_tiktok_health
 from handlers import analytics_store
 from datetime import datetime, timedelta
@@ -238,6 +239,9 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # шлють одразу, а складають у буфер до 07:15.
     scheduler.add_job(run_check_competitors, "cron", hour="1,4,7,10,13,16,19,22", minute=15, args=[bot])
     # Правоохоронці — три рази на день: 10:00, 13:00, 16:00
+    # Нагадування про звітні дедлайни грантів у чат «Фінанси МикВісті»:
+    # за тиждень і за 2 доби. Ідемпотентно — двічі те саме не пришле.
+    scheduler.add_job(check_report_deadlines, "cron", hour=9, minute=40, args=[bot])
     scheduler.add_job(run_check_law_enforcement, "cron", hour=10, minute=0, args=[bot])
     scheduler.add_job(run_check_law_enforcement, "cron", hour=13, minute=0, args=[bot])
     scheduler.add_job(run_check_law_enforcement, "cron", hour=16, minute=0, args=[bot])

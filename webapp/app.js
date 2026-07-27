@@ -14,6 +14,7 @@ const STATE = {
   tasks: [],
   people: [],
   projects: [],
+  assignees: [],
   view: "home",
   projView: "list",
   projQuery: "",
@@ -21,6 +22,7 @@ const STATE = {
   currentNorm: null,
   kpi: null,
   homeView: "tasks",
+  kpiTab: "norms",
   dash: { period: "week", offset: -1, data: null },
   form: null,
 };
@@ -307,6 +309,7 @@ function backTarget() {
     case "form": return ["people"];
     case "project": return ["projects"];
     case "bulk": return ["project", STATE.bulk && STATE.bulk.projectId];
+    case "kpi": return ["home"];
     case "kpinorm": return ["kpi"];
     default: return null;      // корінь табів — назад нікуди
   }
@@ -346,7 +349,9 @@ function nav(view, arg) {
     person: arg, project: undefined, type: null, platform: "telegram",
     theme_id: null, qty: 1, note: "", deadline: "",
   };
-  const navKey = view === "kpinorm" ? "kpi"
+  // KPI і його підекрани більше не пункт нижнього меню — заходять із
+  // Головної, тож і підсвічуємо Головну
+  const navKey = view === "kpi" || view === "kpinorm" ? "home"
     : view === "project" || view === "bulk" ? "projects"
     : view === "person" || view === "personhist" ? "home" : view;
   document.querySelectorAll("#bottomnav .bn").forEach((b) =>
@@ -368,7 +373,7 @@ function render() {
   else if (v === "bulk") renderBulk();
   else if (v === "kpi") renderKpi();
   else if (v === "kpinorm") renderKpiNorm();
-  else if (v === "team") renderTeam();
+  else if (v === "reports") renderReports();
 }
 
 /* ---------- Головна ---------- */
@@ -436,6 +441,9 @@ function renderHome() {
     <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
     ${seg}
     <div class="h-sub">відкритих завдань: ${open.length}</div>
+    <button class="settings-link" data-nav="kpi">
+      ${icon("target")} Налаштувати KPI та ролі ${icon("chevron-right", "ic chev")}
+    </button>
     ${rows || `<div class="empty-hint">Відкритих завдань ні в кого немає.<br>Натисни «+» або зайди в проєкт, щоб поставити.</div>`}`;
   wire();
 }
@@ -1327,6 +1335,156 @@ function themeSheet(project, theme) {
   };
 }
 
+/* ---------- Звітність ----------
+   Один екран на питання «що і кому здавати найближчим часом»: донор, строк
+   проєкту, дати звітів і хто їх пише. Дані вже є в bootstrap (проєкти з CMS
+   + дедлайни з Нори), окремого запиту не треба. */
+
+/* Найближчий за датою дедлайн проєкту — за ним сортуємо картки, щоб зверху
+   було те, що горить. Проєкти без дедлайнів ідуть окремим блоком у кінці. */
+function soonestDue(p) {
+  const today = todayISO();
+  const list = (p.deadlines || []);
+  const next = list.find((d) => d.due >= today);
+  return next ? next.due : (list.length ? list[list.length - 1].due : null);
+}
+
+const DL_STATUS_LABEL = { submitted: "подано", accepted: "прийнято" };
+
+function assigneeRow(d) {
+  const entry = personEntry(d.assignee);   // фото є лише в журналісток
+  const st = DL_STATUS_LABEL[d.status];
+  return `
+    <button class="rep-row ${d.status === "accepted" ? "done" : ""}" data-dl-assign="${d.id}">
+      ${avatar(d.assignee || "?", entry, 30)}
+      <span class="rr-txt">
+        <span class="rr-kind">${esc(dlLabel(d))}</span>
+        <span class="rr-who">${d.assignee ? esc(d.assignee) : "не призначено"}</span>
+      </span>
+      <span class="rr-right">
+        ${d.status === "accepted" ? "" : dlDateHtml(d)}
+        ${st ? `<span class="rr-st ${d.status}">${st}</span>` : ""}
+      </span>
+      ${icon("chevron-right", "ic chev")}
+    </button>`;
+}
+
+function renderReports() {
+  const withDl = STATE.projects.filter((p) => (p.deadlines || []).length);
+  withDl.sort((a, b) => {
+    const x = soonestDue(a), y = soonestDue(b);
+    if (!x) return 1;
+    if (!y) return -1;
+    return x < y ? -1 : x > y ? 1 : 0;
+  });
+  const withoutDl = STATE.projects.filter((p) => !(p.deadlines || []).length);
+
+  const cards = withDl.map((p) => `
+    <div class="rep-card">
+      <div class="rep-head">
+        ${logoSq(p, 44)}
+        <span class="rh-txt">
+          <span class="rh-donor">${esc(p.partner || p.name)}</span>
+          ${p.partner ? `<span class="rh-name">${esc(p.name)}</span>` : ""}
+        </span>
+      </div>
+      <div class="rep-end">${p.end_date
+        ? `проєкт до ${esc(fmtUnixDate(p.end_date))}`
+        : "строк проєкту не вказано в CMS"}</div>
+      ${p.deadlines.map(assigneeRow).join("")}
+    </div>`).join("");
+
+  $("content").innerHTML = `
+    <div class="h-big">Звітність</div>
+    <div class="h-sub">строки звітів по грантах і хто їх пише</div>
+    ${cards || `<div class="empty-hint">Дедлайнів звітності ще немає.<br>
+      Додай їх у картці проєкту на вкладці «Проєкти».</div>`}
+    ${withoutDl.length ? `<div class="tl-note">Без заведених дедлайнів:
+      ${withoutDl.map((p) => esc(p.partner || p.name)).join(", ")}</div>` : ""}`;
+
+  $("content").querySelectorAll("[data-dl-assign]").forEach((b) => b.onclick = () => {
+    for (const p of STATE.projects) {
+      const dl = (p.deadlines || []).find((d) => d.id === +b.dataset.dlAssign);
+      if (dl) { assigneeSheet(p, dl); return; }
+    }
+  });
+}
+
+/* Хто пише цей звіт. Дефолт (фінанси — Олена, наративка — Катя) не
+   зберігається в БД, тож «Повернути за замовчуванням» реально прибирає
+   призначення, а не проставляє поточного дефолтного вручну. */
+function assigneeSheet(project, dl) {
+  const admins = STATE.assignees.filter((a) => a.admin);
+  const rest = STATE.assignees.filter((a) => !a.admin);
+  const row = (a) => `
+    <button class="pick-row" data-who="${esc(a.name)}">
+      ${avatar(a.name, personEntry(a.name), 36)}
+      <span>
+        <span class="pk-name">${esc(a.name)}</span>
+        <span class="pk-meta">${esc(a.dept_title)}</span>
+      </span>
+      ${a.name === dl.assignee ? icon("check", "ic chev") : ""}
+    </button>`;
+  const mark = (value, label, cls) => `
+    <button class="sbtn ${cls}" data-st="${value}">${label}</button>`;
+  openSheet(`
+    <h2>${esc(dlLabel(dl))}</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 4px">
+      ${esc(project.partner || project.name)} · до ${esc(dl.due.split("-").reverse().join("."))}</p>
+    ${dl.status ? `<p style="font-size:12.5px;margin-bottom:12px;color:var(--good)">
+      ${esc(DL_STATUS_LABEL[dl.status])}${dl.status_by ? " · " + esc(dl.status_by.split(" ")[0]) : ""}
+      ${dl.status_at ? esc(dl.status_at.split("-").reverse().join(".")) : ""}</p>`
+      : `<p style="font-size:12.5px;margin-bottom:12px;color:var(--muted)">ще очікується</p>`}
+    <div class="sheet-actions" style="margin-top:10px">
+      ${dl.status === "submitted" || dl.status === "accepted"
+        ? mark("", "Скасувати позначку", "")
+        : mark("submitted", "Звіт подано", "")}
+      ${dl.status === "accepted"
+        ? mark("submitted", "Лише подано", "")
+        : mark("accepted", "Звіт прийнято", "primary")}
+    </div>
+    <div class="f-label">Хто пише звіт</div>
+    ${admins.map(row).join("")}
+    ${rest.length ? `<div class="dept-title" style="margin:16px 0 10px">Решта команди</div>` : ""}
+    ${rest.map(row).join("")}
+    <div class="sheet-actions">
+      ${dl.assignee_custom
+        ? `<button class="sbtn" id="as-clear">За замовчуванням</button>` : ""}
+      <button class="sbtn" id="as-cancel">Скасувати</button>
+    </div>`);
+  $("as-cancel").onclick = closeSheet;
+  const apply = async (body) => {
+    try {
+      const res = await api(`/api/project_deadlines/${dl.id}/assignee`,
+        { method: "PUT", body: JSON.stringify(body) });
+      closeSheet();
+      haptic("success");
+      patchDeadline(project.id, res.deadline);
+      renderReports();
+    } catch (e) { toast(e.message); }
+  };
+  const clear = $("as-clear");
+  if (clear) clear.onclick = () => apply({ clear: true });
+  const applyStatus = async (status) => {
+    try {
+      const res = await api(`/api/project_deadlines/${dl.id}/status`, {
+        method: "PUT",
+        body: JSON.stringify(status ? { status } : { clear: true }),
+      });
+      closeSheet();
+      haptic("success");
+      patchDeadline(project.id, res.deadline);
+      renderReports();
+    } catch (e) { toast(e.message); }
+  };
+  $("sheet").addEventListener("click", (e) => {
+    const who = e.target.closest("[data-who]");
+    if (who) { apply({ person: who.dataset.who }); return; }
+    const st = e.target.closest("[data-st]");
+    if (st) applyStatus(st.dataset.st);
+  });
+}
+
 /* ---------- KPI: норми по відділах, правки по людині ---------- */
 
 async function loadKpi() {
@@ -1367,15 +1525,31 @@ async function renderKpi() {
         ${icon("chevron-right", "ic chev")}
       </button>`;
     }).join("")}`).join("");
-  $("content").innerHTML = `
-    <div class="h-big">Налаштування KPI</div>
-    <div class="h-sub">норма на відділ, облік по людині · звіт — на Головній</div>
+  // Один екран налаштувань: норми відділів і склад самих відділів. Раніше це
+  // були два пункти нижнього меню, хоча по суті це одна рідко вживана
+  // конфігурація: змінив норму — тут же перевірив, на кого вона діє.
+  const seg = segment("data-kt",
+    [["norms", "Норми"], ["team", "Команда"]], STATE.kpiTab);
+  const body = STATE.kpiTab === "team" ? teamHtml() : `
     ${sections || `<div class="empty-hint">Норм ще немає.<br>Додай першу — і прогрес рахуватиметься сам із сайту.</div>`}
     <button class="add-theme" id="add-norm">${icon("plus")} Додати норму</button>
     ${!k.site_db ? `<div class="tl-note">БД сайту недоступна — факт тимчасово не рахується.</div>` : ""}`;
-  $("add-norm").onclick = normCreateSheet;
+  $("content").innerHTML = `
+    <div class="h-big">KPI та ролі</div>
+    <div class="h-sub">${STATE.kpiTab === "team"
+      ? "тап — трекер людини, олівець — перенести між відділами"
+      : "норма на відділ, облік по людині · звіт — на Головній"}</div>
+    ${seg}
+    ${body}`;
+  $("content").querySelectorAll("[data-kt]").forEach((b) => b.onclick = () => {
+    STATE.kpiTab = b.dataset.kt;
+    renderKpi();
+  });
+  const addNorm = $("add-norm");
+  if (addNorm) addNorm.onclick = normCreateSheet;
   $("content").querySelectorAll("[data-norm]").forEach((b) =>
     b.onclick = () => nav("kpinorm", +b.dataset.norm));
+  wireTeamRows();
 }
 
 /* Звіт відкриваємо на МИНУЛОМУ тижні: у понеділок-четвер поточний ще
@@ -1718,21 +1892,22 @@ function overrideSheet(n, row) {
 
 /* ---------- Команда ---------- */
 
-function renderTeam() {
+/* Склад відділів — таб усередині «KPI та ролі» (раніше окремий пункт меню) */
+function teamHtml() {
   const byDept = {};
   STATE.people.forEach((p) => (byDept[p.dept_title] = byDept[p.dept_title] || []).push(p));
-  $("content").innerHTML = `
-    <div class="h-big">Команда</div>
-    <div class="h-sub">тап — трекер людини, олівець — перенести між відділами</div>
-    ${Object.entries(byDept).map(([dept, list]) => `
-      <div class="dept-title">${esc(dept)} · ${list.length}</div>
-      ${list.map((p) => `
-        <button class="team-row" data-tracker="${esc(p.name)}">
-          ${avatar(p.name, p, 46)}
-          <div style="flex:1;text-align:left"><div class="tn">${esc(p.name)}</div>
-            <div class="td">${esc(p.dept_title)}</div></div>
-          <span class="tact" data-move="${esc(p.name)}">${icon("edit")}</span>
-        </button>`).join("")}`).join("")}`;
+  return Object.entries(byDept).map(([dept, list]) => `
+    <div class="dept-title">${esc(dept)} · ${list.length}</div>
+    ${list.map((p) => `
+      <button class="team-row" data-tracker="${esc(p.name)}">
+        ${avatar(p.name, p, 46)}
+        <div style="flex:1;text-align:left"><div class="tn">${esc(p.name)}</div>
+          <div class="td">${esc(p.dept_title)}</div></div>
+        <span class="tact" data-move="${esc(p.name)}">${icon("edit")}</span>
+      </button>`).join("")}`).join("");
+}
+
+function wireTeamRows() {
   $("content").querySelectorAll("[data-move]").forEach((b) =>
     b.onclick = (e) => {
       e.stopPropagation();
@@ -1770,7 +1945,7 @@ function deptSheet(p) {
       closeSheet();
       haptic("success");
       patchDept(p.name, dept, (depts.find(([v]) => v === dept) || [])[1] || "");
-      renderTeam();
+      renderKpi();
     } catch (e) { toast(e.message); }
   };
 }
@@ -1914,6 +2089,7 @@ async function reload() {
   STATE.tasks = data.tasks || [];
   STATE.people = data.people || [];
   STATE.projects = data.projects || [];
+  STATE.assignees = data.assignees || [];
 }
 
 /* ---------- Локальні патчі STATE ----------
