@@ -71,16 +71,25 @@ function dlLabel(d) {
   return s;
 }
 
+/* «Сьогодні» ЛОКАЛЬНОЮ датою пристрою, не UTC. toISOString() віддає UTC, і
+   в Києві (+3) до третьої ночі він показував учорашній день — прострочені
+   дедлайни ще три години виглядали не простроченими. */
+function todayISO(offsetDays = 0) {
+  const d = new Date();
+  if (offsetDays) d.setDate(d.getDate() + offsetDays);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function dlDateHtml(d) {
-  const today = new Date().toISOString().slice(0, 10);
-  const soon = new Date(Date.now() + 7 * 86400e3).toISOString().slice(0, 10);
+  const today = todayISO();
+  const soon = todayISO(7);
   const [y, m, day] = d.due.split("-");
   const cls = d.due < today ? "dl-over" : d.due <= soon ? "dl-soon" : "dl";
   return `<span class="dl-date ${cls}">${day}.${m}.${y.slice(2)}</span>`;
 }
 
 function nextDeadline(p) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
   return (p.deadlines || []).find((d) => d.due >= today) || null;
 }
 
@@ -219,33 +228,33 @@ function qtyWord(type, qty) {
   return qty < 5 ? w.few : w.many;
 }
 
-function taskSummary(t) {
-  let line = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
-  const partner = t.partner_name || (taskProject(t).partner || null);
-  if (partner) line += ` · ${partner}`;
-  if (t.project_name) line += ` · ${t.project_name}`;
-  else if (!partner) line += " · позапроєктне";
-  if (t.theme_name) line += ` (${t.theme_name})`;
-  return line;
+/* Один рядок таска: «2 новини · IMS · Голоси Миколаєва (Репортажі з сесій)».
+   donor — чи згадувати донора: у картці таска потрібен, а в списку
+   журналістки він уже стоїть заголовком, і повторювати його ні до чого. */
+function taskLine(t, { donor = false } = {}) {
+  const { partner, projName } = taskProject(t);
+  const parts = [t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1)];
+  const withDonor = donor && partner;
+  if (withDonor) parts.push(partner);
+  if (projName) parts.push(projName);
+  else if (!withDonor) parts.push("позапроєктне");
+  const line = parts.join(" · ");
+  return t.theme_name ? `${line} (${t.theme_name})` : line;
 }
 
 function personEntry(name) {
   return STATE.people.find((x) => x.name === name) || null;
 }
 
-function deadlineHtml(t) {
+/* Дедлайн таска: "badge" — окремим значком праворуч у списках, інакше —
+   дрібним усередині рядка (картка таска). Прострочений — червоним. */
+function deadlineHtml(t, style) {
   if (!t.deadline) return "";
-  const overdue = t.status === "open" && t.deadline < new Date().toISOString().slice(0, 10);
-  const [y, m, d] = t.deadline.split("-");
+  const overdue = t.status === "open" && t.deadline < todayISO();
+  const [, m, d] = t.deadline.split("-");
+  if (style === "badge")
+    return `<span class="dl-date ${overdue ? "dl-over" : "dl-soon"}">до ${d}.${m}</span>`;
   return ` · <span class="${overdue ? "dl-over" : "dl"}">до ${d}.${m}${overdue ? " ⚑" : ""}</span>`;
-}
-
-/* Дедлайн праворуч у рядку таска: «до 30.07», прострочений — червоним */
-function deadlineBadge(t) {
-  if (!t.deadline) return "";
-  const overdue = t.status === "open" && t.deadline < new Date().toISOString().slice(0, 10);
-  const [y, m, d] = t.deadline.split("-");
-  return `<span class="dl-date ${overdue ? "dl-over" : "dl-soon"}">до ${d}.${m}</span>`;
 }
 
 /* Донор і лого таска: снапшот у тасці + лукап проєкту (для лого і старих тасків) */
@@ -258,14 +267,7 @@ function taskProject(t) {
   };
 }
 
-/* Другий рядок таска: «2 матеріали · Назва проєкту (Тематика)» */
-function taskLine2(t) {
-  let line = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
-  const { projName } = taskProject(t);
-  line += ` · ${projName || "позапроєктне"}`;
-  if (t.theme_name) line += ` (${t.theme_name})`;
-  return line;
-}
+
 
 /* Стабільний колір проєкту: слот за порядком id (колір іде за сутністю,
    сортування/фільтри його не міняють) */
@@ -469,7 +471,7 @@ async function renderPerson() {
         ${t.note ? `<span class="tr-what">${esc(t.note)}</span>` : ""}
       </span>
       <span class="tr-right">
-        ${deadlineBadge(t)}
+        ${deadlineHtml(t, "badge")}
         <span class="status-dot ${t.status}"></span>
       </span>
     </button>`;
@@ -501,7 +503,7 @@ async function renderPerson() {
 function taskSheet(t) {
   openSheet(`
     <h2>${esc(t.person)}</h2>
-    <p style="color:var(--muted);margin:-8px 0 6px">${esc(taskSummary(t))}${deadlineHtml(t)}</p>
+    <p style="color:var(--muted);margin:-8px 0 6px">${esc(taskLine(t, { donor: true }))}${deadlineHtml(t)}</p>
     ${t.note ? `<p style="margin-bottom:6px">${esc(t.note)}</p>` : ""}
     <p style="color:var(--muted);font-size:12.5px">поставила ${esc(t.creator.split(" ")[0])} · ${new Date(t.created_at).toLocaleDateString("uk-UA")}</p>
     <div class="sheet-actions">
@@ -517,7 +519,7 @@ function taskSheet(t) {
     const btn = e.target.closest("[data-status]");
     if (!btn) return;
     if (btn.dataset.status === "dropped" &&
-        !(await confirmAction(`Зняти завдання з ${t.person.split(" ")[0]}?\n${taskSummary(t)}`))) return;
+        !(await confirmAction(`Зняти завдання з ${t.person.split(" ")[0]}?\n${taskLine(t, { donor: true })}`))) return;
     try {
       const res = await api(`/api/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify({ status: btn.dataset.status }) });
       closeSheet();
@@ -1704,11 +1706,11 @@ function renderJournalist() {
         ${tp.logoHtml || ""}
         <span class="tr-main">
           <span class="tr-who">${esc(tp.partner || tp.projName || "Позапроєктне завдання")}</span>
-          <span class="tr-what">${esc(taskLine2(t))}</span>
+          <span class="tr-what">${esc(taskLine(t))}</span>
           ${t.note ? `<span class="tr-what">${esc(t.note)}</span>` : ""}
         </span>
         <span class="tr-right">
-          ${deadlineBadge(t)}
+          ${deadlineHtml(t, "badge")}
           <span class="status-dot open"></span>
         </span>
       </div>`;
