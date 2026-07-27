@@ -472,16 +472,24 @@ async def api_tasks_bulk(request):
     if type_ == "post":
         type_ = None  # платформа в масовій постановці не задається
 
+    specs = [
+        {
+            "creator": person, "person": item["person"], "type_": type_,
+            "project_id": project["id"], "project_name": project["name"],
+            "theme_id": theme["id"] if theme else None,
+            "theme_name": theme["name"] if theme else None,
+            "qty": int(item["qty"]), "deadline": deadline,
+            "partner_name": project["partner"],
+        }
+        for item in items
+    ]
+    # Уся пачка однією транзакцією й одним з'єднанням: це один намір Каті,
+    # тож половина поставлених тасків гірша за жодного.
+    created = await asyncio.to_thread(team_tasks.create_tasks_bulk, specs)
+    # Пінги — тільки після коміту: інакше людина могла отримати «маєш завдання»
+    # від Лиса за таску, яку відкотило.
     loop = asyncio.get_running_loop()
-    created = []
-    for item in items:
-        task = await asyncio.to_thread(
-            team_tasks.create_task,
-            person, item["person"], type_, project["id"], project["name"],
-            theme["id"] if theme else None, theme["name"] if theme else None,
-            int(item["qty"]), None, deadline, project["partner"],
-        )
-        created.append(task)
+    for task in created:
         loop.create_task(team_tasks.ping_assigned(request.app["bot"], task))
     # Віддаємо самі таски, а не лише лічильник: апка домальовує їх у себе
     # локально, замість перечитувати весь /api/bootstrap.

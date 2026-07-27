@@ -455,6 +455,19 @@ def create_task(creator, person, type_, project_id=None, project_name=None,
     return task
 
 
+def create_tasks_bulk(specs):
+    """Створює пачку тасків ОДНІЄЮ транзакцією: масова постановка з проєкту —
+    це один намір Каті («поставити тему п'ятьом»), тож або лягають усі, або
+    жодного. Раніше кожен create_task ішов окремим з'єднанням і окремою
+    транзакцією, і збій на третій людині з п'яти лишав дві поставлені й три ні,
+    без жодного сліду про те, що сталось.
+
+    specs — список kwargs для create_task. Повертає створені таски."""
+    ensure_team_schema()
+    with bot_db.transaction():
+        return [create_task(**spec) for spec in specs]
+
+
 def update_task_fields(task_id, actor, qty=None, deadline=..., note=...,
                        theme_id=..., theme_name=...):
     """Редагування таска (кількість, дедлайн, нотатка, тематика).
