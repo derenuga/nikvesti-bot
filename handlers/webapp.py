@@ -48,12 +48,13 @@ except ImportError:  # локальний dev без aiohttp — модуль п
     web = None
 
 from handlers import team_projects, team_roster, team_tasks
+from handlers.helpers import normalize_https_url
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 PORT = os.environ.get("PORT") or os.environ.get("WEBAPP_PORT")
-WEBAPP_URL = os.environ.get("WEBAPP_URL", "").rstrip("/")
+WEBAPP_URL = normalize_https_url(os.environ.get("WEBAPP_URL"))
 # Прямий лінк апки з BotFather (t.me/mykvisti_bot/team) — для запуску з груп.
-WEBAPP_DIRECT_LINK = os.environ.get("WEBAPP_DIRECT_LINK", "")
+WEBAPP_DIRECT_LINK = normalize_https_url(os.environ.get("WEBAPP_DIRECT_LINK"))
 
 INIT_DATA_MAX_AGE = 24 * 3600
 
