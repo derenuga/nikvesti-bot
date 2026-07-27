@@ -26,6 +26,7 @@ team_creative_tasks, team_project_themes, team_task_events (журнал).
 
 import asyncio
 import os
+import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -164,17 +165,27 @@ _SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_team_task_events_task ON team_task_events (task_id, at)",
 ]
 
+_schema_lock = threading.Lock()
 _schema_done = False
 
 
 def ensure_team_schema():
-    """Ідемпотентно створює таблиці team_* (раз на процес)."""
+    """Ідемпотентно створює таблиці team_* (раз на процес).
+
+    Під блокуванням і в одній сесії: прапорця мало, бо перші паралельні
+    запити входили сюди одночасно і ганяли CREATE/ALTER навперейми. А сесія
+    робить із 18 окремих з'єднань одне — саме ці міграції були найдовшою
+    частиною першого відкриття апки після деплою."""
     global _schema_done
     if _schema_done:
         return
-    for sql in _SCHEMA_STATEMENTS:
-        bot_db.execute(sql)
-    _schema_done = True
+    with _schema_lock:
+        if _schema_done:
+            return
+        with bot_db.session():
+            for sql in _SCHEMA_STATEMENTS:
+                bot_db.execute(sql)
+        _schema_done = True
 
 
 # ---------- Тематики проєктів ----------

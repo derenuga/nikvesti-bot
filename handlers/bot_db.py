@@ -25,6 +25,7 @@ import asyncio
 import os
 import threading
 import time
+from contextlib import contextmanager
 
 try:
     import psycopg2
@@ -314,16 +315,91 @@ def ensure_schema():
         _schema_ready = True
 
 
+# ---------- Сесія: одне з'єднання на одиницю роботи ----------
+#
+# Модель «з'єднання на запит» проста і thread-safe, але коштує непропорційно
+# дорого: на localhost без TLS конект займає 9.2 мс із 9.27 мс, а сам SELECT —
+# 0.08 мс. Тобто 99% часу — це TCP + TLS + auth, а не робота з даними. На
+# Railway (Postgres окремим сервісом, з TLS) розрив ще більший: з'єднання —
+# 5-7 round-trip, запит — один.
+#
+# Для бота з його одиничними запитами це неважливо. Але Mini App робить
+# ДЕСЯТКИ запитів на один екран: /api/kpi — 17 з'єднань, профіль людини — 27,
+# ліниві міграції на першому запиті після деплою — 25. Саме тут «N+1» болить
+# не кількістю SELECT-ів, а кількістю конектів.
+#
+# session() відкриває ОДНЕ з'єднання на весь блок, і всі query/execute
+# всередині користуються ним. Пулу навмисно немає: сесія живе десятки
+# мілісекунд у межах одного запиту й одного потоку, тож зайвої машинерії
+# (перевірки живості, ліміти, прогрів) не треба. Поза сесією все працює
+# точно як раніше — жодне місце в боті міняти не довелось.
+#
+# autocommit=True всередині сесії дає ту саму семантику, що «with conn» поза
+# нею: кожен statement фіксується сам, довгих транзакцій ми не тримаємо.
+
+_local = threading.local()
+
+
+def _session_conn():
+    return getattr(_local, "conn", None)
+
+
+def _drop_session_conn():
+    """Знімає з'єднання сесії (після помилки воно могло стати непридатним —
+    наступний запит просто відкриє своє)."""
+    conn = getattr(_local, "conn", None)
+    _local.conn = None
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@contextmanager
+def session():
+    """Одне з'єднання на весь блок. Вкладені виклики безпечні (переиспользують
+    зовнішнє). Без BOT_DATABASE_URL — no-op: виклики всередині впадуть так
+    само, як падали б, і модулі деградують як раніше."""
+    if not is_configured() or _session_conn() is not None:
+        yield
+        return
+    ensure_schema()
+    conn = _connect()
+    conn.autocommit = True
+    _local.conn = conn
+    try:
+        yield
+    finally:
+        _drop_session_conn()
+
+
+def _run(sql, params, cursor_factory):
+    """Виконує statement у з'єднанні сесії або у власному. Повертає
+    (рядки, rowcount)."""
+    conn = _session_conn()
+    if conn is not None:
+        try:
+            with conn.cursor(cursor_factory=cursor_factory) as cur:
+                cur.execute(sql, params)
+                return (cur.fetchall() if cur.description else []), cur.rowcount
+        except Exception:
+            _drop_session_conn()
+            raise
+    conn = _connect()
+    try:
+        with conn, conn.cursor(cursor_factory=cursor_factory) as cur:
+            cur.execute(sql, params)
+            return (cur.fetchall() if cur.description else []), cur.rowcount
+    finally:
+        conn.close()
+
+
 def query(sql, params=None):
     """SELECT з БД бота. Повертає list[dict] (RealDictCursor)."""
     ensure_schema()
-    conn = _connect()
-    try:
-        with conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            return cur.fetchall() if cur.description else []
-    finally:
-        conn.close()
+    rows, _ = _run(sql, params, psycopg2.extras.RealDictCursor)
+    return rows
 
 
 async def aquery(sql, params=None):
@@ -334,13 +410,8 @@ async def aquery(sql, params=None):
 def execute(sql, params=None):
     """INSERT/UPDATE/DELETE у БД бота (це наша база — писати можна)."""
     ensure_schema()
-    conn = _connect()
-    try:
-        with conn, conn.cursor() as cur:
-            cur.execute(sql, params)
-            return cur.rowcount
-    finally:
-        conn.close()
+    _, rowcount = _run(sql, params, None)
+    return rowcount
 
 
 # ---------- Upsert дзеркала архіву ----------

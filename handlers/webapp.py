@@ -49,7 +49,7 @@ try:
 except ImportError:  # локальний dev без aiohttp — модуль просто "не налаштований"
     web = None
 
-from handlers import team_kpi, team_projects, team_roster, team_tasks
+from handlers import bot_db, team_kpi, team_projects, team_roster, team_tasks
 from handlers.helpers import normalize_https_url
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -99,6 +99,29 @@ def _verify_init_data(init_data):
     return user
 
 
+async def _in_session(fn, *args):
+    """Виконує блокуючу роботу в потоці, тримаючи ОДНЕ з'єднання з Норою на
+    весь виклик (bot_db.session). Без цього кожен query/execute відкривав своє:
+    /api/kpi — 17 з'єднань, профіль людини — 27, при тому що сам SELECT коштує
+    менше відсотка часу конекту."""
+    def run():
+        with bot_db.session():
+            return fn(*args)
+
+    return await asyncio.to_thread(run)
+
+
+def _resolve_and_remember(tg_id, username):
+    """Резолв людини + кеш tg_id — в одному потоці й одному з'єднанні."""
+    person = team_roster.resolve_person(tg_id, username)
+    if person:
+        try:
+            team_roster.remember_user(tg_id, username, person)
+        except Exception as e:
+            print(f"webapp: не вдалось закешувати tg_id для «{person}» — {e}")
+    return person
+
+
 async def _authenticate(request):
     """Розбирає Authorization: tma <initData>, резолвить людину з ростера.
     Повертає (person, info, tg_user) або кидає web.HTTPException."""
@@ -109,19 +132,13 @@ async def _authenticate(request):
         tg_user = _verify_init_data(auth[4:].strip())
     except ValueError as e:
         raise web.HTTPUnauthorized(text=f"Невалідний initData: {e}")
-    person = await asyncio.to_thread(
-        team_roster.resolve_person, tg_user["id"], tg_user.get("username")
+    person = await _in_session(
+        _resolve_and_remember, tg_user["id"], tg_user.get("username")
     )
     if not person:
         raise web.HTTPForbidden(
             text="Ця апка — для команди МикВісті. Якщо ти з редакції — напиши Олегу."
         )
-    try:
-        await asyncio.to_thread(
-            team_roster.remember_user, tg_user["id"], tg_user.get("username"), person
-        )
-    except Exception as e:
-        print(f"webapp: не вдалось закешувати tg_id для «{person}» — {e}")
     return person, team_roster.person_info(person), tg_user
 
 
@@ -235,7 +252,7 @@ def _bootstrap_blocking(person, is_manager):
 
 async def api_bootstrap(request):
     person, info, tg_user = await _authenticate(request)
-    data = await asyncio.to_thread(_bootstrap_blocking, person, info["manager"])
+    data = await _in_session(_bootstrap_blocking, person, info["manager"])
     data["me"] = _me_payload(person, info, tg_user)
     return web.json_response(data)
 
@@ -577,7 +594,7 @@ async def api_kpi(request):
     """Зведення KPI: менеджер — всі норми з людьми і прогресом; журналістка —
     норми свого відділу зі своїм рядком (для «Мої KPI»)."""
     person, info, _ = await _authenticate(request)
-    payload = await asyncio.to_thread(
+    payload = await _in_session(
         team_kpi.kpi_payload, None if info["manager"] else person
     )
     return web.json_response(payload)
@@ -595,7 +612,7 @@ async def api_kpi_dashboard(request):
         offset = max(-60, offset)  # розумна межа углиб історії
     except ValueError:
         offset = 0
-    data = await asyncio.to_thread(team_kpi.kpi_dashboard, period, offset)
+    data = await _in_session(team_kpi.kpi_dashboard, period, offset)
     return web.json_response(data)
 
 
@@ -609,7 +626,7 @@ async def api_kpi_person(request):
         months = min(24, max(3, int(request.query.get("months", "12"))))
     except ValueError:
         months = 12
-    data = await asyncio.to_thread(team_kpi.kpi_person_history, who, months)
+    data = await _in_session(team_kpi.kpi_person_history, who, months)
     if data is None:
         raise web.HTTPNotFound(text="Людину не знайдено")
     return web.json_response(data)
