@@ -279,11 +279,14 @@ function renderHome() {
     const donor = donorOf(t);
     bucket[donor] = (bucket[donor] || 0) + 1;
   });
-  const people = [...STATE.people].sort((a, b) => {
-    const ca = Object.values(perPerson[a.name] || {}).reduce((s, x) => s + x, 0);
-    const cb = Object.values(perPerson[b.name] || {}).reduce((s, x) => s + x, 0);
-    return cb - ca || a.name.localeCompare(b.name, "uk");
-  });
+  // Без відкритих завдань — не показуємо (шум); їхні трекери — у табі «Команда»
+  const people = STATE.people
+    .filter((p) => perPerson[p.name])
+    .sort((a, b) => {
+      const ca = Object.values(perPerson[a.name]).reduce((s, x) => s + x, 0);
+      const cb = Object.values(perPerson[b.name]).reduce((s, x) => s + x, 0);
+      return cb - ca || a.name.localeCompare(b.name, "uk");
+    });
   const rows = people.map((p) => {
     const donors = Object.entries(perPerson[p.name] || {});
     const total = donors.reduce((s, [, c]) => s + c, 0);
@@ -305,7 +308,7 @@ function renderHome() {
   $("content").innerHTML = `
     <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
     <div class="h-sub">${new Date().toLocaleDateString("uk-UA", { weekday: "long", day: "numeric", month: "long" })} · відкритих завдань: ${open.length}</div>
-    ${rows}`;
+    ${rows || `<div class="empty-hint">Відкритих завдань ні в кого немає.<br>Натисни «+» або зайди в проєкт, щоб поставити.</div>`}`;
 }
 
 /* Персональний трекер людини (для редактора): її рекурентні KPI зі шторкою
@@ -1374,18 +1377,21 @@ function renderTeam() {
   STATE.people.forEach((p) => (byDept[p.dept_title] = byDept[p.dept_title] || []).push(p));
   $("content").innerHTML = `
     <div class="h-big">Команда</div>
-    <div class="h-sub">тап по людині — перенести між відділами</div>
+    <div class="h-sub">тап — трекер людини, олівець — перенести між відділами</div>
     ${Object.entries(byDept).map(([dept, list]) => `
       <div class="dept-title">${esc(dept)} · ${list.length}</div>
       ${list.map((p) => `
-        <button class="team-row" data-move="${esc(p.name)}">
+        <button class="team-row" data-tracker="${esc(p.name)}">
           ${avatar(p.name, p, 46)}
           <div style="flex:1;text-align:left"><div class="tn">${esc(p.name)}</div>
             <div class="td">${esc(p.dept_title)}</div></div>
-          ${icon("chevron-right", "ic chev")}
+          <span class="tact" data-move="${esc(p.name)}">${icon("edit")}</span>
         </button>`).join("")}`).join("")}`;
   $("content").querySelectorAll("[data-move]").forEach((b) =>
-    b.onclick = () => deptSheet(STATE.people.find((p) => p.name === b.dataset.move)));
+    b.onclick = (e) => {
+      e.stopPropagation();
+      deptSheet(STATE.people.find((p) => p.name === b.dataset.move));
+    });
 }
 
 function deptSheet(p) {
