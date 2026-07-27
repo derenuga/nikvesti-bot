@@ -54,6 +54,9 @@ input:focus, textarea:focus { outline: none; border-color: var(--blue); }
 }
 .center-screen h2 { color: var(--ink); font-size: 20px; }
 .center-screen p { max-width: 300px; }
+/* Кнопка «Спробувати ще» на екрані помилки: не на всю ширину, як у формах —
+   тут вона стоїть у центрованій колонці (відступ дає gap самого .center-screen) */
+.center-screen .cta { max-width: 300px; margin-top: 6px; }
 .pulse-dot {
   width: 16px; height: 16px; border-radius: 50%; background: var(--blue);
   animation: pulse 1s ease-in-out infinite;
