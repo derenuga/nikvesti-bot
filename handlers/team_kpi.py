@@ -38,6 +38,34 @@ MONTHS_UA = ["січень", "лютий", "березень", "квітень",
 MONTHS_UA_SHORT = ["січ", "лют", "бер", "кві", "тра", "чер",
                    "лип", "сер", "вер", "жов", "лис", "гру"]
 
+# Підпис норми людською мовою. Раніше збиралось як f"{target} {metric}" і
+# давало «60 news власних» — англійське слово в українському інтерфейсі, яке
+# тепер бачать і журналістки у своїй помісячній динаміці.
+_METRIC_WORDS = {
+    "news": ("новина", "новини", "новин"),
+    "article": ("стаття", "статті", "статей"),
+}
+_OWN_WORDS = ("власна", "власні", "власних")
+
+
+def _plural_index(n):
+    """0 — одна, 1 — дві-чотири, 2 — п'ять і більше (українські форми)."""
+    n = abs(int(n))
+    if n % 100 in range(11, 15):
+        return 2
+    if n % 10 == 1:
+        return 0
+    if n % 10 in (2, 3, 4):
+        return 1
+    return 2
+
+
+def norm_label(metric, target, own):
+    """«60 власних новин», «1 стаття», «3 новини»."""
+    i = _plural_index(target)
+    word = _METRIC_WORDS.get(metric, ("матеріал", "матеріали", "матеріалів"))[i]
+    return f"{target} {_OWN_WORDS[i] + ' ' if own else ''}{word}"
+
 FACT_CACHE_TTL = 300
 _fact_cache = {}  # (metric, period_start_iso) -> (expires, {person: count})
 _users_cache = {"at": 0.0, "map": {}}  # norm_name -> users.id
@@ -502,7 +530,7 @@ def kpi_person_history(person, months=12):
             if pct is not None:
                 pcts.append(pct)
             m_norms.append({
-                "label": f"{target} {n['metric']}" + (" власних" if n["own"] else ""),
+                "label": norm_label(n["metric"], target, n["own"]),
                 "fact": fact, "target": target, "pct": pct,
                 "done": fact is not None and target > 0 and fact >= target,
             })
@@ -554,7 +582,7 @@ def kpi_dashboard(period, offset=0):
             target = ov["target"] if ov else n["target"]
             fact = None if facts is None else facts.get(person)
             per_person.setdefault(person, {"dept": n["dept"], "norms": []})["norms"].append({
-                "label": f"{target} {n['metric']}" + (" власних" if n["own"] else ""),
+                "label": norm_label(n["metric"], target, n["own"]),
                 "metric": n["metric"], "own": n["own"],
                 "fact": fact, "target": target,
                 "pct": None if fact is None or target <= 0 else min(100, round(fact / target * 100)),
