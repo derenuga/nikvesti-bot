@@ -229,13 +229,17 @@ function nav(view, arg) {
   if (view === "project") STATE.currentProject = arg;
   if (view === "kpinorm") STATE.currentNorm = arg;
   if (view === "person") STATE.currentPerson = arg;
+  if (view === "bulk") {
+    const now = new Date();
+    STATE.bulk = { ...arg, y: now.getFullYear(), m: now.getMonth(), qty: {} };
+  }
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
   if (view === "form") STATE.form = {
     person: arg, project: undefined, type: null, platform: "telegram",
     theme_id: null, qty: 1, note: "", deadline: "",
   };
   const navKey = view === "kpinorm" ? "kpi"
-    : view === "project" ? "projects"
+    : view === "project" || view === "bulk" ? "projects"
     : view === "person" ? "home" : view;
   document.querySelectorAll("#bottomnav .bn").forEach((b) =>
     b.classList.toggle("on", b.dataset.view === navKey));
@@ -251,6 +255,7 @@ function render() {
   else if (v === "form") renderForm();
   else if (v === "projects") renderProjects();
   else if (v === "project") renderProject();
+  else if (v === "bulk") renderBulk();
   else if (v === "kpi") renderKpi();
   else if (v === "kpinorm") renderKpiNorm();
   else if (v === "team") renderTeam();
@@ -334,10 +339,15 @@ async function renderPerson() {
   const closed = mine.filter((t) => t.status !== "open").slice(0, 8);
   const byDonor = {};
   openTasks.forEach((t) => (byDonor[donorOf(t)] = byDonor[donorOf(t)] || []).push(t));
-  const taskRow = (t) => `
+  // Перший рядок — тематика (Олег, 27.07), проєкт — дрібним під нею
+  const taskRow = (t) => {
+    const qtyPart = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
+    const { projName } = taskProject(t);
+    return `
     <button class="task-row" data-task="${t.id}">
       <span class="tr-main">
-        <span class="tr-who">${esc(taskLine2(t))}</span>
+        <span class="tr-who">${esc(qtyPart)}${t.theme_name ? ` · ${esc(t.theme_name)}` : ""}</span>
+        ${projName ? `<span class="tr-what">${esc(projName)}</span>` : ""}
         ${t.note ? `<span class="tr-what">${esc(t.note)}</span>` : ""}
       </span>
       <span class="tr-right">
@@ -345,6 +355,7 @@ async function renderPerson() {
         <span class="status-dot ${t.status}"></span>
       </span>
     </button>`;
+  };
   const donorSections = Object.entries(byDonor).map(([donor, list]) => `
     <div class="dept-title">${esc(donor)} · ${list.length}</div>
     <div class="soft-card">${list.map(taskRow).join("")}</div>`).join("");
@@ -377,9 +388,12 @@ function taskSheet(t) {
     <div class="sheet-actions">
       ${t.status === "open"
         ? `<button class="sbtn danger" data-status="dropped">Зняти</button>
+           <button class="sbtn" id="task-edit">Редагувати</button>
            <button class="sbtn primary" data-status="done">Виконано</button>`
         : `<button class="sbtn" data-status="open">Повернути у відкриті</button>`}
     </div>`);
+  const editBtn = $("task-edit");
+  if (editBtn) editBtn.onclick = () => taskEditSheet(t);
   $("sheet").addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-status]");
     if (!btn) return;
@@ -390,7 +404,64 @@ function taskSheet(t) {
       await reload();
       render();
     } catch (err) { toast(err.message); }
-  }, { once: true });
+  });
+}
+
+/* Редагування таска: кількість, тематика (з проєкту таска), дедлайн, нотатка */
+function taskEditSheet(t) {
+  const proj = t.project_id ? STATE.projects.find((p) => p.id === t.project_id) : null;
+  const themes = (proj && proj.themes) || [];
+  const st = { qty: t.qty, theme_id: t.theme_id };
+  openSheet(`
+    <h2>Редагувати завдання</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(t.person)}</p>
+    <div class="f-label" style="margin-top:0">Кількість</div>
+    <div class="stepper">
+      <button id="te-minus">${icon("minus")}</button>
+      <b id="te-val">${st.qty}</b>
+      <button id="te-plus">${icon("plus")}</button>
+    </div>
+    ${themes.length ? `
+      <div class="f-label">Тематика</div>
+      <div class="chips" id="te-themes">${themes.map((th) => `
+        <button class="chip ${st.theme_id === th.id ? "on" : ""}" data-th="${th.id}">${esc(th.name)}</button>`).join("")}</div>` : ""}
+    <div class="f-label">Дедлайн</div>
+    <input id="te-deadline" type="date" value="${t.deadline || ""}">
+    <div class="f-label">Нотатка</div>
+    <input id="te-note" maxlength="1000" value="${esc(t.note)}">
+    <div class="sheet-actions">
+      <button class="sbtn" id="te-cancel">Скасувати</button>
+      <button class="sbtn primary" id="te-save">Зберегти</button>
+    </div>`);
+  $("te-minus").onclick = () => { st.qty = Math.max(1, st.qty - 1); $("te-val").textContent = st.qty; };
+  $("te-plus").onclick = () => { st.qty = Math.min(99, st.qty + 1); $("te-val").textContent = st.qty; };
+  const themesEl = $("te-themes");
+  if (themesEl) themesEl.onclick = (e) => {
+    const b = e.target.closest("[data-th]");
+    if (!b) return;
+    const id = +b.dataset.th;
+    st.theme_id = st.theme_id === id ? null : id;
+    themesEl.querySelectorAll(".chip").forEach((c) =>
+      c.classList.toggle("on", +c.dataset.th === st.theme_id));
+  };
+  $("te-cancel").onclick = closeSheet;
+  $("te-save").onclick = async () => {
+    try {
+      await api(`/api/tasks/${t.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          qty: st.qty,
+          theme_id: st.theme_id,
+          deadline: $("te-deadline").value || null,
+          note: $("te-note").value.trim(),
+        }),
+      });
+      closeSheet();
+      haptic("success");
+      await reload();
+      render();
+    } catch (e) { toast(e.message); }
+  };
 }
 
 /* ---------- Вибір людини ---------- */
@@ -747,14 +818,15 @@ function renderProject() {
         <span class="chev" id="drive-edit" style="margin-left:auto">${icon("edit", "ic chev")}</span>
       </button>`
       : `<button class="add-theme" id="drive-attach" style="margin-top:10px">${icon("folder")} Прикріпити папку Google Drive</button>`}
-    <div class="f-label">Тематики</div>
+    <div class="f-label">Тематики — тап, щоб поставити таски</div>
     ${p.themes.map((t) => `
-      <div class="theme-row">
+      <div class="theme-row tappable" data-bulk-theme="${t.id}">
         <span class="tn">${esc(t.name)}
           ${formatTitle(t.format) ? `<span class="fmt-badge">${esc(formatTitle(t.format))}</span>` : ""}</span>
         <span class="tc">${t.planned || ""}</span>
         <button class="tact" data-edit-theme="${t.id}" aria-label="Редагувати">${icon("edit")}</button>
       </div>`).join("")}
+    ${!p.themes.length ? `<button class="add-theme" id="bulk-nothing">${icon("users")} Поставити проєктні таски</button>` : ""}
     <button class="add-theme" id="add-theme">${icon("plus")} Додати тематику</button>
     ${quotaTotal && planned ? `<div class="left-hint">розкроєно ${planned} із ${quotaTotal}${planned < quotaTotal ? ` · <b>ще ${quotaTotal - planned} без тематики</b>` : ""}</div>` : ""}
     <div class="f-label">Звітність і майлстоуни</div>
@@ -766,7 +838,14 @@ function renderProject() {
     <button class="add-theme" id="add-dl">${icon("calendar")} Додати дедлайн звіту</button>`;
   $("add-theme").onclick = () => themeSheet(p, null);
   $("content").querySelectorAll("[data-edit-theme]").forEach((b) =>
-    b.onclick = () => themeSheet(p, p.themes.find((t) => t.id === +b.dataset.editTheme)));
+    b.onclick = (e) => {
+      e.stopPropagation(); // олівець — редагування, а не масова постановка
+      themeSheet(p, p.themes.find((t) => t.id === +b.dataset.editTheme));
+    });
+  $("content").querySelectorAll("[data-bulk-theme]").forEach((row) =>
+    row.onclick = () => nav("bulk", { projectId: p.id, themeId: +row.dataset.bulkTheme }));
+  const bulkNothing = $("bulk-nothing");
+  if (bulkNothing) bulkNothing.onclick = () => nav("bulk", { projectId: p.id, themeId: null });
   $("add-dl").onclick = () => dlSheet(p, null);
   $("content").querySelectorAll("[data-edit-dl]").forEach((b) =>
     b.onclick = () => dlSheet(p, p.deadlines.find((d) => d.id === +b.dataset.editDl)));
@@ -806,6 +885,85 @@ function driveSheet(p) {
     const url = $("dr-url").value.trim();
     if (!url) { toast("Встав лінк на папку"); return; }
     save(url);
+  };
+}
+
+/* ---------- Масова постановка тасків з проєкту ----------
+   Тап по тематиці → місяць + люди зі степерами → сейв: кожній таска
+   (тип із формату тематики, дедлайн — кінець місяця) і пінг від Лиса. */
+
+function renderBulk() {
+  const b = STATE.bulk;
+  const p = STATE.projects.find((x) => x.id === b.projectId);
+  if (!p) { nav("projects"); return; }
+  const theme = b.themeId ? (p.themes || []).find((t) => t.id === b.themeId) : null;
+  const monthLabel = new Date(b.y, b.m, 1)
+    .toLocaleDateString("uk-UA", { month: "long", year: "numeric" }).replace(" р.", "");
+  const total = Object.values(b.qty).filter((q) => q > 0).length;
+  const typeHint = theme && formatTitle(theme.format) ? ` · ${formatTitle(theme.format).toLowerCase()}` : "";
+
+  const personRow = (pp) => {
+    const q = b.qty[pp.name] || 0;
+    return `
+    <div class="bulk-row ${q ? "picked" : ""}">
+      ${avatar(pp.name, pp, 44)}
+      <span class="bk-name">${esc(pp.name)}</span>
+      <span class="stepper slim">
+        <button data-bq="${esc(pp.name)}" data-d="-1">${icon("minus")}</button>
+        <b>${q || "·"}</b>
+        <button data-bq="${esc(pp.name)}" data-d="1">${icon("plus")}</button>
+      </span>
+    </div>`;
+  };
+  const byDept = {};
+  STATE.people.forEach((pp) => (byDept[pp.dept_title] = byDept[pp.dept_title] || []).push(pp));
+
+  $("content").innerHTML = `
+    <button class="back" data-nav-project="${p.id}">${icon("chevron-left")} ${esc(p.partner || p.name)}</button>
+    <div class="h-big">${esc(theme ? theme.name : "Проєктні таски")}</div>
+    <div class="h-sub">${esc(p.partner ? p.partner + " · " : "")}${esc(p.name)}${esc(typeHint)}</div>
+
+    <div class="month-nav">
+      <button class="arr" id="bulk-prev">${icon("chevron-left")}</button>
+      <b>${esc(monthLabel)}</b>
+      <button class="arr" id="bulk-next">${icon("chevron-right")}</button>
+    </div>
+
+    ${Object.entries(byDept).map(([dept, list]) => `
+      <div class="dept-title">${esc(dept)}</div>
+      ${list.map(personRow).join("")}`).join("")}
+
+    <button class="cta" id="bulk-save" ${total ? "" : "disabled"}>
+      Поставити завдання${total ? ` · ${total} людям` : ""}</button>
+    <div class="tl-note">Кожна отримає пінг від Лиса; дедлайн — кінець місяця.</div>`;
+
+  $("bulk-prev").onclick = () => { b.m--; if (b.m < 0) { b.m = 11; b.y--; } renderBulk(); };
+  $("bulk-next").onclick = () => { b.m++; if (b.m > 11) { b.m = 0; b.y++; } renderBulk(); };
+  $("content").querySelectorAll("[data-bq]").forEach((btn) => btn.onclick = () => {
+    const name = btn.dataset.bq;
+    b.qty[name] = Math.max(0, Math.min(99, (b.qty[name] || 0) + +btn.dataset.d));
+    renderBulk();
+  });
+  $("bulk-save").onclick = async () => {
+    const items = Object.entries(b.qty)
+      .filter(([, q]) => q > 0)
+      .map(([person, qty]) => ({ person, qty }));
+    if (!items.length) return;
+    $("bulk-save").disabled = true;
+    try {
+      const month = `${b.y}-${String(b.m + 1).padStart(2, "0")}`;
+      const res = await api("/api/tasks/bulk", {
+        method: "POST",
+        body: JSON.stringify({ project_id: p.id, theme_id: b.themeId, month, items }),
+      });
+      haptic("success");
+      toast(`Полетіло ${res.created} людям`);
+      await reload();
+      nav("project", p.id);
+    } catch (e) {
+      $("bulk-save").disabled = false;
+      toast(e.message);
+    }
   };
 }
 
@@ -1335,6 +1493,8 @@ async function boot() {
 $("content").addEventListener("click", (e) => {
   const navBtn = e.target.closest("[data-nav]");
   if (navBtn) { nav(navBtn.dataset.nav); return; }
+  const navProj = e.target.closest("[data-nav-project]");
+  if (navProj) { nav("project", +navProj.dataset.navProject); return; }
   const tracker = e.target.closest("[data-tracker]");
   if (tracker) { nav("person", tracker.dataset.tracker); return; }
   const person = e.target.closest("[data-person]");

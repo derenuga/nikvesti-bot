@@ -428,6 +428,40 @@ def create_task(creator, person, type_, project_id=None, project_name=None,
     return task
 
 
+def update_task_fields(task_id, actor, qty=None, deadline=..., note=...,
+                       theme_id=..., theme_name=...):
+    """Редагування таска (кількість, дедлайн, нотатка, тематика).
+    Сентинел ... — «не чіпати»; None/порожнє — явно стерти."""
+    ensure_team_schema()
+    sets, params = [], []
+    if qty is not None:
+        sets.append("qty = %s")
+        params.append(max(1, min(99, int(qty))))
+    if deadline is not ...:
+        sets.append("deadline = %s")
+        params.append(deadline or None)
+    if note is not ...:
+        sets.append("note = %s")
+        params.append((note or "").strip() or None)
+    if theme_id is not ...:
+        sets.append("theme_id = %s")
+        params.append(int(theme_id) if theme_id else None)
+        sets.append("theme_name = %s")
+        params.append(theme_name if theme_id else None)
+    if not sets:
+        return get_task(task_id)
+    sets.append("updated_at = now()")
+    params.append(int(task_id))
+    rows = bot_db.query(
+        f"UPDATE team_creative_tasks SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        params,
+    )
+    if not rows:
+        return None
+    _add_event(task_id, actor, "edited", None)
+    return _row_to_task(rows[0])
+
+
 def set_status(task_id, actor, status):
     """open → done/dropped (і назад open, якщо закрили помилково)."""
     ensure_team_schema()
