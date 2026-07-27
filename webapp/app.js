@@ -1444,7 +1444,9 @@ function matchCard(m) {
       ${m.person ? avatar(m.person, personEntry(m.person), 38)
                  : `<span class="ava" style="width:38px;height:38px">${icon(tg ? "send" : "users")}</span>`}
       <span class="al-h-txt"><span class="al-who">${esc(who)}</span></span>
-      ${m.confidence ? `<span class="al-conf ${esc(m.confidence)}">${esc(CONF_LABEL[m.confidence] || m.confidence)}</span>` : ""}
+      ${m.confidence && suggested
+        ? `<span class="al-conf ${esc(m.confidence)}">${esc(CONF_LABEL[m.confidence] || m.confidence)}</span>`
+        : ""}
     </div>
     <a class="al-title" href="${esc(m.url)}" data-ext="${esc(m.url)}">${esc(m.title || m.url)}</a>
     <div class="al-date">${esc(longDate(when))}</div>

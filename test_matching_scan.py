@@ -130,6 +130,14 @@ async def main():
     check("до спірного матчу прикріплений лінк на матеріал",
           next(m for m in team_matches.pending_matches()
                if m["ref"] == "902")["url"].endswith("902-test"))
+    # Статті живуть за /articles/{slug}, новини — за /news/{рубрика}/{slug}:
+    # лінк у черзі має бути канонічним, а не редиректом
+    check("лінк статті — канонічний /articles/",
+          team_matching.node_url(node(902, "x", type_="article"))
+          == "https://nikvesti.com/articles/902-test")
+    check("лінк новини — з рубрикою",
+          team_matching.node_url(node(902, "x", type_="news"))
+          == "https://nikvesti.com/news/politics/902-test")
 
     # ---------- 2. Повторний прогін нічого не подвоює ----------
     judge2 = Judge({"Сесія ухвалила бюджет": ("high", "Репортажі з сесій")})

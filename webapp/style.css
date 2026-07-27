@@ -766,9 +766,12 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .al-proj-row b { color: var(--ink); }
+/* Бейдж впевненості. Фон — напівпрозорий сірий, а НЕ --line: та змінна
+   світло-блакитна намертво, і в темній темі виходила бліда пігулка зі світлим
+   текстом — «впевнено» не читалось. Напівпрозорий тон працює в обох темах. */
 .al-conf {
   font-size: 11px; font-weight: 700; border-radius: 8px; padding: 2px 7px;
-  background: var(--line); color: var(--muted); white-space: nowrap;
+  background: rgba(127, 143, 166, .2); color: var(--ink); white-space: nowrap;
 }
 .al-conf.medium { background: var(--blue-soft); color: var(--blue); }
 .al-title {
