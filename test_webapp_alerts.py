@@ -17,6 +17,7 @@
   непрочитані, вхід на екран позначає прочитаним;
 - пост Telegram (автор невідомий) питає КОМУ і КУДИ зараховувати — рядки з
   людьми, а не лише з тематиками;
+- кнопка в шапці додає публікацію в чергу за лінком (прогін бачить не все);
 - прогрес у РЕШТІ карток черги оновлюється одразу після зарахування (у проєкті
   часто десяток спірних публікацій на одне завдання), а набране завдання
   зникає з вибору.
@@ -143,6 +144,11 @@ window.fetch = async (url, opts = {}) => {
   if (url === "/api/bootstrap") return json(window.BOOT);
   if (url === "/api/matches/pending") return json({ pending: window.PENDING });
   if (url === "/api/notifications") return json({ items: window.NOTIFS, unread: 2 });
+  if (url === "/api/matches/queue") {
+    window.__posts.push({ queue: true, body });
+    return json({ match: { id: 99, status: "pending" }, tasks: [],
+                  pending_count: window.PENDING.length + 1 });
+  }
   if (url === "/api/notifications/read") {
     window.__reads.push(body);
     window.NOTIFS = window.NOTIFS.map((n) => ({ ...n, unread: false }));
@@ -266,6 +272,18 @@ async def main():
             check("рішення по посту шле обраний таск (людину бере сервер)",
                   posts[-1]["id"] == 7
                   and posts[-1]["body"] == {"action": "confirm", "task_id": 80})
+
+            # --- додати публікацію в чергу за лінком ---
+            await page.click("#queue-add")
+            await page.wait_for_selector("#q-url")
+            await page.fill("#q-url", "https://nikvesti.com/news/politics/5001-a")
+            await page.click("#q-save")
+            await page.wait_for_timeout(400)
+            queued = [p for p in await page.evaluate("window.__posts") if p.get("queue")]
+            check("кнопка в шапці шле лінк у чергу",
+                  queued and queued[-1]["body"]["url"].endswith("5001-a"))
+            await page.evaluate("window.__posts = []")
+            body = await page.inner_text("#content")
 
             # --- лінк на публікацію ---
             await page.click(".al-card .al-title")

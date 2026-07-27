@@ -518,6 +518,79 @@ async def _ping_done(bot, person, task):
     )
 
 
+def resolve_publication(url, fallback_project=None):
+    """Лінк → сигнатура публікації для ручних операцій: (dict, None) або
+    (None, помилка-рядком). Приймає і матеріал сайту, і пост каналу."""
+    url = (url or "").strip()
+    if not url:
+        return None, "Порожній лінк"
+
+    # Пост каналу — окреме джерело: у nodes його немає
+    if "t.me/" in url:
+        ref = url.rstrip("/").split("/")[-1].split("?")[0]
+        if not ref.isdigit():
+            return None, "З лінка не видно номер поста"
+        info = {"source": "telegram", "ref": ref, "node_type": "post",
+                "title": f"Пост {ref}", "published": None, "person": None,
+                "project_id": fallback_project, "description": None, "image": None,
+                "url": f"https://t.me/nikvesti/{ref}"}
+        try:
+            from handlers import team_tg_match
+            posts = team_tg_match.fetch_recent_posts(1)
+            found = next((p for p in posts if str(p["message_id"]) == ref), None)
+            if found:
+                info["title"] = team_tg_match.post_title(found)
+                info["description"] = team_tg_match.post_description(found)
+                info["image"] = found.get("image")
+                info["published"] = int(found["dt"].timestamp()) if found["dt"] else None
+        except Exception as e:
+            print(f"team_matching: заголовок поста {ref} не прочитався — {e}")
+        return info, None
+
+    node_id = extract_article_id(url)
+    if not node_id:
+        return None, "Це не схоже на лінк матеріалу nikvesti.com"
+    rows = db.query(
+        f"SELECT {_NODE_COLS} FROM nodes WHERE id = %s", (int(node_id),)
+    ) if db.is_configured() else []
+    if not rows:
+        return None, f"Матеріалу {node_id} немає в БД сайту"
+    row = rows[0]
+    return {
+        "source": "site", "ref": str(node_id), "node_type": row["type"],
+        "title": (row["title"] or "").strip(), "published": row["published"],
+        "person": owner_person_map().get(row["owner_id"]),
+        "project_id": row["partner_project"] or fallback_project,
+        "url": node_url(row), "description": None, "image": None,
+    }, None
+
+
+def queue_publication(url, actor):
+    """Покласти публікацію в чергу «Сповіщень» РУКАМИ, за лінком.
+
+    Потрібно, коли редактор сам натрапив на матеріал, якого прогін не побачив
+    (не той автор у CMS, публікація поза проєктом, старіша за вікно), і хоче
+    вирішити по ньому окремо. Уже зараховане повертається в чергу тим самим
+    записом — див. requeue_match. Повертає (матч, [зачеплені таски]) або
+    (None, помилка)."""
+    info, error = resolve_publication(url)
+    if error:
+        return None, error
+    existing = team_matches.find_match(info["source"], info["ref"])
+    if existing:
+        if existing["status"] == "pending":
+            return None, "Ця публікація вже в черзі"
+        return team_matches.requeue_match(existing["id"], actor)
+    if info["source"] == "site":
+        info["description"], info["image"] = fetch_card_meta(info["url"])
+    match = team_matches.record_match(
+        info["source"], info["ref"], "pending", person=info["person"],
+        project_id=info["project_id"], title=info["title"], url=info["url"],
+        published=info["published"], node_type=info["node_type"],
+        description=info["description"], image=info["image"])
+    return match, []
+
+
 def attach_publication(task, url, actor):
     """Зарахувати конкретну публікацію в завдання РУКАМИ, за лінком.
 
@@ -529,43 +602,12 @@ def attach_publication(task, url, actor):
     (source, ref) один на публікацію), а не заводимо другий: інакше прогрес
     порахував би її двічі. Повертає (матч, [id зачеплених тасків]) або
     (None, помилка-рядком)."""
-    url = (url or "").strip()
-    if not url:
-        return None, "Порожній лінк"
-
-    # Пост каналу — окреме джерело: у nodes його немає
-    if "t.me/" in url:
-        ref = url.rstrip("/").split("/")[-1].split("?")[0]
-        if not ref.isdigit():
-            return None, "З лінка не видно номер поста"
-        source, node_type = "telegram", "post"
-        title, published, project_id = f"Пост {ref}", None, task["project_id"]
-        try:
-            from handlers import team_tg_match
-            posts = team_tg_match.fetch_recent_posts(1)
-            found = next((p for p in posts if str(p["message_id"]) == ref), None)
-            if found:
-                title = team_tg_match.post_title(found)
-                published = int(found["dt"].timestamp()) if found["dt"] else None
-        except Exception as e:
-            print(f"team_matching: заголовок поста {ref} не прочитався — {e}")
-        clean_url = f"https://t.me/nikvesti/{ref}"
-    else:
-        node_id = extract_article_id(url)
-        if not node_id:
-            return None, "Це не схоже на лінк матеріалу nikvesti.com"
-        rows = db.query(
-            f"SELECT {_NODE_COLS} FROM nodes WHERE id = %s", (int(node_id),)
-        ) if db.is_configured() else []
-        if not rows:
-            return None, f"Матеріалу {node_id} немає в БД сайту"
-        row = rows[0]
-        source, ref = "site", str(node_id)
-        node_type = row["type"]
-        title = (row["title"] or "").strip()
-        published = row["published"]
-        project_id = row["partner_project"] or task["project_id"]
-        clean_url = node_url(row)
+    info, error = resolve_publication(url, fallback_project=task["project_id"])
+    if error:
+        return None, error
+    source, ref = info["source"], info["ref"]
+    title, published, project_id = info["title"], info["published"], info["project_id"]
+    node_type, clean_url = info["node_type"], info["url"]
 
     existing = team_matches.find_match(source, ref)
     if existing:

@@ -194,15 +194,19 @@ def main():
     m2 = team_matches.record_match(
         "site", "test-4001", "pending", person=real_person, project_id=999,
         confidence="low", title="Публікація без відповідного завдання",
-        url="https://nikvesti.com/news/4001")
+        url="https://nikvesti.com/news/4001", node_type="news")
     result = webapp._decide_blocking(m2["id"], "Катерина Середа", "confirm",
                                      None, theme["id"], real_person)
+    # Тип завдання має братись із самої публікації, коли формат тематики не
+    # заданий: інакше воно зветься безликим «матеріал»
     check("зарахування в тематику без завдання спрацювало", bool(result))
     created = [t for t in (result or {}).get("tasks", [])
                if t["theme_id"] == theme["id"]]
     check("завдання під тематику заведено", bool(created))
     check("і публікація одразу зарахована в нього",
           created and team_matches.counted_count(created[0]["id"]) == 1)
+    check("тип завдання взявся з публікації, а не «будь-який»",
+          created and created[0]["type"] == "news")
     check("завдання на 1 матеріал одразу закрилось",
           created and team_tasks.get_task(created[0]["id"])["status"] == "done")
     assigned = [n for n in team_notifications.feed(real_person, False)
