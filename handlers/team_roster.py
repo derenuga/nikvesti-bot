@@ -16,6 +16,8 @@ TEAM — лише @хендли (numeric id відомі тільки для д�
 прийнято роботу) шлються за numeric id, якого до першого входу немає.
 """
 
+import time
+
 from handlers import bot_db
 
 # Відділи (KPI-групи). Реальна структура редакції (Олег, 27.07):
@@ -63,6 +65,11 @@ ROSTER = {
     "Кірілл Витвицький": {"username": "simada24", "tg_id": None, "dept": DEPT_DIGITAL, "manager": False},
     "Ірина Федорович": {"username": "diiessa", "tg_id": None, "dept": DEPT_DIGITAL, "manager": False},
 }
+
+# Троттл запису team_users: (tg_id, людина) -> monotonic останнього запису.
+# Росте максимум до розміру ростера, чиститись нема чого.
+REMEMBER_TTL = 3600
+_remembered = {}
 
 _BY_USERNAME = {info["username"]: name for name, info in ROSTER.items() if info["username"]}
 _BY_KNOWN_ID = {info["tg_id"]: name for name, info in ROSTER.items() if info["tg_id"]}
@@ -140,9 +147,19 @@ def resolve_person(tg_id, username):
     return None
 
 
-def remember_user(tg_id, username, person):
+def remember_user(tg_id, username, person, force=False):
     """Кешує tg_id ↔ людина при вході в апку — далі пінги від Лиса
-    знаходять її без повторного матчингу по username."""
+    знаходять її без повторного матчингу по username.
+
+    Викликається з авторизації, тобто на КОЖЕН запит апки — а один екран це
+    кілька запитів. Писати щоразу нема сенсу: рядок той самий, міняється
+    хіба last_seen. Тому не частіше ніж раз на REMEMBER_TTL на людину;
+    кеш у пам'яті процесу, після рестарту перший запит знову пише."""
+    key = (int(tg_id), person)
+    now = time.monotonic()
+    if not force and now - _remembered.get(key, float("-inf")) < REMEMBER_TTL:
+        return
+
     from handlers import team_tasks  # ensure схеми team_* живе там
 
     team_tasks.ensure_team_schema()
@@ -157,6 +174,7 @@ def remember_user(tg_id, username, person):
         """,
         (int(tg_id), (username or "").lower() or None, person),
     )
+    _remembered[key] = now
 
 
 def tg_id_for(person):
