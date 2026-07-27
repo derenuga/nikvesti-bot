@@ -36,6 +36,7 @@ GET /health віддає 200 — придатний і як VIBER_WEBHOOK_URL (V
 
 import asyncio
 import calendar
+import gzip
 import hashlib
 import hmac
 import json
@@ -688,12 +689,123 @@ async def api_kpi_override(request):
 
 
 # ---------- Статика ----------
+#
+# Дві речі, яких бракувало (ревізія 27.07):
+#
+# 1. СТИСНЕННЯ. aiohttp сам НЕ гзіпить відповіді, але web.static віддає
+#    ГОТОВИЙ файл-сусід «<ім'я>.gz», якщо той лежить поруч і клієнт прислав
+#    Accept-Encoding: gzip. app.js + style.css — це ~101 КБ сирими і ~26 КБ
+#    стиснутими, тобто вчетверо менше на кожен холодний старт апки в мобільній
+#    мережі. Тому .gz генеруємо на старті процесу, без жодної нової залежності.
+#
+#    Пастка: aiohttp віддає .gz, НЕ звіряючи його свіжість з оригіналом. Стале
+#    .gz гірше за його відсутність — користувач дістане старий JS проти нового
+#    API. Тому спершу зносимо попередній .gz і лишаємо новий ТІЛЬКИ якщо запис
+#    удався; не вдалось (ФС лише на читання) — працюємо без стиснення.
+#
+# 2. ВЕРСІОНУВАННЯ. index.html віддається з no-cache (перевалідовується
+#    завжди), а на /static/ не було Cache-Control узагалі — тобто app.js і
+#    style.css жили за евристичним кешем браузера і WebView Telegram, а
+#    примусово оновитись у редакції способу не було. Тепер index.html посилає
+#    на /static/app.js?v=<хеш вмісту>: змінився файл — змінився URL, і старий
+#    JS проти нового API стає неможливим. Заразом версійований URL можна
+#    кешувати вічно (immutable), тож повторні відкриття апки не тягнуть нічого.
+
+_STATIC_ASSETS = ("app.js", "style.css")
+
+_asset_versions = {}   # "app.js" -> "3f2a1c0b9d" (хеш вмісту, короткий)
+_index_html = None     # відрендерений index.html із ?v=… (None — віддамо файл як є)
+
+
+def _gz_matches(gz_path, raw):
+    """Чи .gz поруч справді відповідає поточному файлу. Відсутній — теж «так»
+    (просто віддамо сирим). Саме цю перевірку aiohttp не робить сам."""
+    if not os.path.exists(gz_path):
+        return True
+    try:
+        with open(gz_path, "rb") as f:
+            return gzip.decompress(f.read()) == raw
+    except (OSError, EOFError, gzip.BadGzipFile):
+        return False
+
+
+def _prepare_static():
+    """Рахує версії ассетів, генерує .gz-сусідів і рендерить index.html.
+    Викликається раз на старті процесу. Будь-який збій — не фатальний:
+    апка просто працює як раніше (без стиснення / без версій)."""
+    global _index_html
+
+    for name in _STATIC_ASSETS:
+        path = os.path.join(_STATIC_DIR, name)
+        gz_path = path + ".gz"
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+        except OSError as e:
+            print(f"webapp: не прочитав {name} — {e}")
+            continue
+
+        # Спершу знести старий .gz (стале стиснення небезпечніше за його брак)
+        try:
+            if os.path.exists(gz_path):
+                os.remove(gz_path)
+            with open(gz_path, "wb") as f:
+                f.write(gzip.compress(raw, 9))
+        except OSError as e:
+            print(f"webapp: {name}.gz не оновився — {e}")
+
+        # Версію (а з нею й вічний кеш) даємо ЛИШЕ якщо впевнені в тому, що
+        # реально поїде до браузера. Інакше — без ?v=, тобто max-age=300:
+        # тоді навіть у найгіршому разі розбіжність живе 5 хв, а не вічно.
+        if _gz_matches(gz_path, raw):
+            _asset_versions[name] = hashlib.sha256(raw).hexdigest()[:10]
+            size = os.path.getsize(gz_path) if os.path.exists(gz_path) else len(raw)
+            print(f"webapp: {name} {len(raw) // 1024} КБ → {size // 1024} КБ, "
+                  f"версія {_asset_versions[name]}")
+        else:
+            print(f"webapp: ⚠️ {name}.gz не відповідає {name} і не оновлюється — "
+                  f"віддаю без версії (короткий кеш), перевір права на теку webapp/")
+
+    try:
+        with open(os.path.join(_STATIC_DIR, "index.html"), encoding="utf-8") as f:
+            html = f.read()
+        for name, version in _asset_versions.items():
+            html = html.replace(f"/static/{name}", f"/static/{name}?v={version}")
+        _index_html = html
+    except OSError as e:
+        print(f"webapp: index.html не відрендерився — {e}; віддаю файл як є")
+
+
+async def cache_headers_middleware(request, handler):
+    """Cache-Control для статики. Версійований URL (?v=<хеш>) можна тримати
+    вічно: зміна файла змінює URL. Без версії — коротко, щоб випадковий
+    прямий запит не залипав."""
+    response = await handler(request)
+    if request.path.startswith("/static/"):
+        response.headers.setdefault(
+            "Cache-Control",
+            "public, max-age=31536000, immutable" if request.query.get("v")
+            else "public, max-age=300",
+        )
+    return response
+
+
+if web:  # без aiohttp модуль просто спить — декорувати нічого
+    cache_headers_middleware = web.middleware(cache_headers_middleware)
+
 
 async def index(request):
-    return web.FileResponse(
-        os.path.join(_STATIC_DIR, "index.html"),
+    if _index_html is None:  # не відрендерився — стара поведінка
+        return web.FileResponse(
+            os.path.join(_STATIC_DIR, "index.html"),
+            headers={"Cache-Control": "no-cache"},
+        )
+    response = web.Response(
+        text=_index_html, content_type="text/html",
         headers={"Cache-Control": "no-cache"},
     )
+    response.enable_compression()
+    return response
 
 
 async def health(request):
@@ -708,7 +820,8 @@ async def start_webapp(application):
     if not is_configured():
         print("webapp: PORT/aiohttp не налаштовано — Mini App спить")
         return
-    app = web.Application()
+    _prepare_static()
+    app = web.Application(middlewares=[cache_headers_middleware])
     app["bot"] = application.bot
     app.add_routes([
         web.get("/", index),
