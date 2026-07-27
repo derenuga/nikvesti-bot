@@ -65,8 +65,27 @@ def partner_logo_url(logo, size="255x255"):
     return _webp_url(logo, "images/partner_logo", size)
 
 
+def partner_logo_orig_url(logo):
+    """Оригінал без ресайзера — фолбек, коли ресайзер не зміг сконвертувати
+    файл (svg, битий оригінал тощо)."""
+    return f"{SITE_BASE}/images/partner_logo/{logo}" if logo else None
+
+
 def avatar_url(avatar, size="255x255"):
     return _webp_url(avatar, "img/users_ava", size)
+
+
+def avatar_orig_url(avatar):
+    return f"{SITE_BASE}/img/users_ava/{avatar}" if avatar else None
+
+
+def _norm_name(name):
+    """Нормалізація ПІБ для матчу ростер ↔ users: регістр, варіанти апострофа
+    і м'який знак (Лук'яненко / Лукьяненко / Лук`яненко — одна людина)."""
+    s = (name or "").strip().lower()
+    for ch in ("'", "’", "`", "ʼ", "´", "ь"):
+        s = s.replace(ch, "")
+    return " ".join(s.split())
 
 
 def list_projects(active_only=True):
@@ -102,6 +121,7 @@ def list_projects(active_only=True):
             "kpi_articles": r["kpi_articles"] or 0,
             "partner": (r["partner"] or "").strip() or None,
             "logo": partner_logo_url(r["partner_logo"]),
+            "logo_orig": partner_logo_orig_url(r["partner_logo"]),
         }
         for r in rows
     ]
@@ -109,8 +129,9 @@ def list_projects(active_only=True):
 
 
 def avatar_map(names):
-    """{канонічне ім'я ростера: URL фото або None} з users.avatar БД сайту.
-    Матч повного імені без регістру, прямий і зворотний порядок слів."""
+    """{канонічне ім'я ростера: {"photo": ресайз-URL, "photo_orig": оригінал}
+    або None} з users.avatar БД сайту. Матч нормалізованого повного імені
+    (_norm_name: без регістру/апострофів/ь), прямий і зворотний порядок слів."""
     result = {n: None for n in names}
     if not db.is_configured():
         return result
@@ -126,11 +147,11 @@ def avatar_map(names):
             last = (r["last_name"] or "").strip()
             if not (first or last):
                 continue
-            by_name.setdefault(f"{first} {last}".strip().lower(), r["avatar"])
-            by_name.setdefault(f"{last} {first}".strip().lower(), r["avatar"])
+            by_name.setdefault(_norm_name(f"{first} {last}"), r["avatar"])
+            by_name.setdefault(_norm_name(f"{last} {first}"), r["avatar"])
         hit = _remember("avatars", by_name)
     for name in names:
-        file = hit.get(name.lower())
+        file = hit.get(_norm_name(name))
         if file:
-            result[name] = avatar_url(file)
+            result[name] = {"photo": avatar_url(file), "photo_orig": avatar_orig_url(file)}
     return result

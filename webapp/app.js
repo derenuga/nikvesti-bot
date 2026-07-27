@@ -1,6 +1,9 @@
 /* Mini App «Команда» — прототип редакторського інтерфейсу (концепція v2).
    Флоу Каті: «+» → людина → creative task (проєкт/позапроєкт, тип, тематика,
    кількість, нотатка). Проєкти і фото — з БД сайту, тематики й таски — з Нори.
+   Таб «Проєкти»: список (донор великим + строки) або таймлайн (ґант зі
+   смугами-проєктами, точка «сьогодні», горизонтальний скрол на телефоні).
+   Картинки: ресайзер сайту (.webp) → фолбек на оригінал → ініціали.
    Журналіст поки бачить свої завдання read-only — його інтерфейс наступний. */
 
 const tg = window.Telegram ? window.Telegram.WebApp : null;
@@ -12,6 +15,7 @@ const STATE = {
   people: [],
   projects: [],
   view: "home",
+  projView: "list",
   currentProject: null,
   form: null,
 };
@@ -20,6 +24,8 @@ const TYPE_WORDS = {
   news: { one: "новина", few: "новини", many: "новин" },
   article: { one: "стаття", few: "статті", many: "статей" },
 };
+
+const MONTHS_SHORT = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер", "Лип", "Сер", "Вер", "Жов", "Лис", "Гру"];
 
 /* ---------- API ---------- */
 
@@ -64,23 +70,38 @@ function initials(name) {
   return name.split(" ").slice(0, 2).map((w) => w[0] || "").join("").toUpperCase();
 }
 
-function avatar(person, photo, size) {
+/* Ланцюжок фолбеків: ресайз .webp → оригінал (data-alt) → зник (видно ініціали) */
+function imgHtml(src, orig, extra = "") {
+  if (!src) return "";
+  return `<img src="${esc(src)}"${orig ? ` data-alt="${esc(orig)}"` : ""} alt="" loading="lazy" ${extra}
+    onerror="if(this.dataset.alt){this.src=this.dataset.alt;this.removeAttribute('data-alt')}else{this.remove()}">`;
+}
+
+function avatar(personName, entry, size) {
   return `<span class="ava" style="width:${size}px;height:${size}px">
-    <span class="init" style="font-size:${Math.round(size / 3)}px">${esc(initials(person))}</span>
-    ${photo ? `<img src="${esc(photo)}" alt="" loading="lazy" onerror="this.remove()">` : ""}
+    <span class="init" style="font-size:${Math.round(size / 3)}px">${esc(initials(personName))}</span>
+    ${entry ? imgHtml(entry.photo, entry.photo_orig) : ""}
   </span>`;
 }
 
-function logoSq(name, logo, size) {
+function logoSq(project, size) {
   return `<span class="logo-sq" style="width:${size}px;height:${size}px">
-    <span class="init" style="font-size:${Math.round(size / 3.4)}px">${esc(initials(name))}</span>
-    ${logo ? `<img src="${esc(logo)}" alt="" loading="lazy" onerror="this.remove()">` : ""}
+    <span class="init" style="font-size:${Math.round(size / 3.4)}px">${esc(initials(project.partner || project.name))}</span>
+    ${imgHtml(project.logo, project.logo_orig)}
   </span>`;
 }
 
 function fmtUnixDate(ts) {
   if (!ts) return null;
   return new Date(ts * 1000).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function fmtRange(p) {
+  const a = fmtUnixDate(p.start_date), b = fmtUnixDate(p.end_date);
+  if (a && b) return `${a} — ${b}`;
+  if (b) return `до ${b}`;
+  if (a) return `з ${a}`;
+  return "без строку";
 }
 
 function qtyWord(type, qty) {
@@ -97,9 +118,15 @@ function taskSummary(t) {
   return line;
 }
 
-function personPhoto(name) {
-  const p = STATE.people.find((x) => x.name === name);
-  return p ? p.photo : null;
+function personEntry(name) {
+  return STATE.people.find((x) => x.name === name) || null;
+}
+
+/* Стабільний колір проєкту: слот за порядком id (колір іде за сутністю,
+   сортування/фільтри його не міняють) */
+function projectColorIdx(id) {
+  const ordered = [...STATE.projects].sort((a, b) => a.id - b.id);
+  return (ordered.findIndex((p) => p.id === id) % 8) + 1;
 }
 
 /* ---------- Навігація ---------- */
@@ -134,7 +161,7 @@ function renderHome() {
   const closed = STATE.tasks.filter((t) => t.status !== "open").slice(0, 10);
   const row = (t) => `
     <button class="task-row" data-task="${t.id}">
-      ${avatar(t.person, personPhoto(t.person), 42)}
+      ${avatar(t.person, personEntry(t.person), 42)}
       <span class="tr-main">
         <span class="tr-who">${esc(t.person.split(" ")[0])} ${esc(t.person.split(" ")[1] || "")}</span>
         <span class="tr-what">${esc(taskSummary(t))}</span>
@@ -170,6 +197,7 @@ function taskSheet(t) {
       closeSheet();
       haptic("success");
       await reload();
+      render();
     } catch (err) { toast(err.message); }
   }, { once: true });
 }
@@ -184,7 +212,7 @@ function renderPeople() {
     <div class="people-grid">
       ${list.map((p) => `
         <button class="pv" data-person="${esc(p.name)}">
-          ${avatar(p.name, p.photo, 76)}
+          ${avatar(p.name, p, 76)}
           <span class="nm">${esc(p.name.split(" ")[0])}</span>
           <span class="dp">${esc(p.name.split(" ")[1] || "")}</span>
         </button>`).join("")}
@@ -212,13 +240,13 @@ function renderForm() {
     ? `<span class="ph">Обрати проєкт…</span>`
     : f.project === null
       ? `Позапроєктне завдання`
-      : `${logoSq(proj.name, proj.logo, 32)} ${esc(proj.name)}`;
+      : `${logoSq(proj, 32)} ${esc(proj.name)}`;
   $("content").innerHTML = `
     <button class="back" data-nav="people">${icon("chevron-left")} Назад</button>
     <div class="who">
-      ${avatar(f.person, personPhoto(f.person), 48)}
+      ${avatar(f.person, personEntry(f.person), 48)}
       <div><div class="wn">${esc(f.person)}</div>
-      <div class="wd">${esc((STATE.people.find((p) => p.name === f.person) || {}).dept_title || "")}</div></div>
+      <div class="wd">${esc((personEntry(f.person) || {}).dept_title || "")}</div></div>
     </div>
 
     <div class="f-label">Проєкт</div>
@@ -274,10 +302,10 @@ function projectPickerSheet() {
     </button>
     ${STATE.projects.map((p) => `
       <button class="pick-row" data-proj="${p.id}">
-        ${logoSq(p.name, p.logo, 40)}
+        ${logoSq(p, 40)}
         <span>
-          <span class="pk-name">${esc(p.name)}</span>
-          <span class="pk-meta">${p.end_date ? "до " + fmtUnixDate(p.end_date) : ""}${p.kpi_news || p.kpi_articles ? ` · квота ${p.kpi_news || 0}+${p.kpi_articles || 0}` : ""}</span>
+          <span class="pk-name">${esc(p.partner ? p.partner + " · " : "")}${esc(p.name)}</span>
+          <span class="pk-meta">${esc(fmtRange(p))}${p.kpi_news || p.kpi_articles ? ` · квота ${p.kpi_news || 0}+${p.kpi_articles || 0}` : ""}</span>
         </span>
       </button>`).join("")}`);
   $("sheet").addEventListener("click", (e) => {
@@ -316,24 +344,99 @@ async function createTask() {
   }
 }
 
-/* ---------- Проєкти ---------- */
+/* ---------- Проєкти: список і таймлайн ---------- */
 
 function renderProjects() {
+  const seg = `
+    <div class="two seg-slim">
+      <button class="bigbtn slim ${STATE.projView === "list" ? "on" : ""}" data-pv="list">Список</button>
+      <button class="bigbtn slim ${STATE.projView === "timeline" ? "on" : ""}" data-pv="timeline">Таймлайн</button>
+    </div>`;
+  const body = STATE.projView === "timeline" ? timelineHtml() : listHtml();
   $("content").innerHTML = `
     <div class="h-big">Проєкти</div>
-    <div class="h-sub">квоти — з CMS сайту, тематики — тут</div>
-    ${STATE.projects.length ? STATE.projects.map((p) => `
-      <button class="proj-row" data-project="${p.id}">
-        ${logoSq(p.name, p.logo, 46)}
-        <span>
-          <span class="pr-name">${esc(p.name)}</span>
-          <span class="pr-meta">${p.end_date ? "до " + fmtUnixDate(p.end_date) : "без строку"}
-            ${p.kpi_news || p.kpi_articles ? ` · квота ${p.kpi_news || 0} новин + ${p.kpi_articles || 0} статей` : ""}
-            · тематик: ${p.themes.length}</span>
+    <div class="h-sub">квоти й строки — з CMS сайту, тематики — тут</div>
+    ${STATE.projects.length ? seg + body : `<div class="empty-hint">Не бачу проєктів — БД сайту недоступна.</div>`}`;
+  $("content").querySelectorAll("[data-pv]").forEach((b) => b.onclick = () => {
+    STATE.projView = b.dataset.pv;
+    renderProjects();
+  });
+  if (STATE.projView === "timeline") {
+    const sc = $("tl-scroll");
+    if (sc && sc.dataset.nowx) sc.scrollLeft = Math.max(0, +sc.dataset.nowx - sc.clientWidth * 0.45);
+  }
+}
+
+function listHtml() {
+  return STATE.projects.map((p) => `
+    <button class="proj-row" data-project="${p.id}">
+      ${logoSq(p, 46)}
+      <span class="pr-txt">
+        <span class="pr-donor">${esc(p.partner || p.name)}</span>
+        ${p.partner ? `<span class="pr-name2">${esc(p.name)}</span>` : ""}
+        <span class="pr-meta">${esc(fmtRange(p))}${p.kpi_news || p.kpi_articles ? ` · квота ${p.kpi_news || 0}+${p.kpi_articles || 0}` : ""}</span>
+      </span>
+      ${icon("chevron-right", "ic chev")}
+    </button>`).join("");
+}
+
+function timelineHtml() {
+  const dated = STATE.projects
+    .filter((p) => p.start_date && p.end_date)
+    .sort((a, b) => a.start_date - b.start_date);
+  const undated = STATE.projects.filter((p) => !(p.start_date && p.end_date));
+  if (!dated.length) return `<div class="empty-hint">У проєктів немає дат — таймлайн порожній.</div>`;
+
+  const now = Date.now() / 1000;
+  let min = Math.min(...dated.map((p) => p.start_date), now);
+  let max = Math.max(...dated.map((p) => p.end_date), now);
+  const pad = (max - min) * 0.04;
+  min -= pad; max += pad;
+  const days = (max - min) / 86400;
+  const width = Math.max(720, Math.min(2600, Math.round(days * 2.6)));
+  const x = (ts) => ((ts - min) / (max - min)) * width;
+
+  // Місячні поділки; лейбл ставимо не частіше ніж раз на ~56px
+  let ticks = "";
+  const d = new Date(min * 1000);
+  d.setDate(1); d.setHours(0, 0, 0, 0);
+  d.setMonth(d.getMonth() + 1);
+  const monthPx = width / (days / 30.4);
+  const step = Math.max(1, Math.ceil(64 / monthPx));
+  let mi = 0;
+  for (; d.getTime() / 1000 < max; d.setMonth(d.getMonth() + 1), mi++) {
+    const ts = d.getTime() / 1000;
+    const label = (mi % step === 0)
+      ? `<span>${MONTHS_SHORT[d.getMonth()]} ${String(d.getFullYear()).slice(2)}</span>`
+      : "";
+    ticks += `<div class="tl-tick" style="left:${x(ts).toFixed(1)}px">${label}</div>`;
+  }
+
+  const rows = dated.map((p, i) => {
+    const left = x(p.start_date), w = Math.max(48, x(p.end_date) - left);
+    const c = projectColorIdx(p.id);
+    return `<div class="tl-row">
+      <button class="tl-bar c${c}" data-project="${p.id}"
+        style="left:${left.toFixed(1)}px;width:${w.toFixed(1)}px">
+        <span class="tl-inner">
+          ${p.logo ? `<span class="tl-logo">${imgHtml(p.logo, p.logo_orig)}</span>` : ""}
+          <span class="tl-lbl">${esc(p.partner || p.name)}</span>
         </span>
-        ${icon("chevron-right", "ic chev")}
-      </button>`).join("")
-      : `<div class="empty-hint">Не бачу проєктів — БД сайту недоступна.</div>`}`;
+      </button>
+    </div>`;
+  }).join("");
+
+  const nowX = x(now);
+  return `
+    <div class="tl-scroll" id="tl-scroll" data-nowx="${nowX.toFixed(0)}">
+      <div class="tl-canvas" style="width:${width}px;height:${dated.length * 46 + 44}px">
+        ${ticks}
+        <div class="tl-now" style="left:${nowX.toFixed(1)}px"><span>сьогодні</span></div>
+        <div class="tl-rows">${rows}</div>
+      </div>
+    </div>
+    <div class="tl-note">Смуга — строк проєкту, тап відкриває його. Скрольте вбік.</div>
+    ${undated.length ? `<div class="tl-note">Без дат у CMS: ${undated.map((p) => esc(p.partner || p.name)).join(", ")}</div>` : ""}`;
 }
 
 function renderProject() {
@@ -344,10 +447,10 @@ function renderProject() {
   $("content").innerHTML = `
     <button class="back" data-nav="projects">${icon("chevron-left")} Проєкти</button>
     <div class="proj-head">
-      ${logoSq(p.name, p.logo, 56)}
+      ${logoSq(p, 56)}
       <div>
-        <div class="pn">${esc(p.name)}</div>
-        <div class="pd">${p.partner ? esc(p.partner) + " · " : ""}${p.end_date ? "до " + fmtUnixDate(p.end_date) : "без строку"}</div>
+        <div class="pn">${esc(p.partner || p.name)}</div>
+        <div class="pd">${p.partner ? esc(p.name) + "<br>" : ""}${esc(fmtRange(p))}</div>
       </div>
     </div>
     ${quotaTotal ? `<div class="quota-pill">Квота з сайту: <b>${p.kpi_news || 0} новин + ${p.kpi_articles || 0} статей</b></div>` : ""}
@@ -409,9 +512,9 @@ function renderKpi() {
     <div class="h-sub">рекурентні норми на тиждень і місяць</div>
     <div class="soft-card">
       <div class="sc-t">Скоро</div>
-      <p style="color:var(--muted)">Налаштування зʼявляться після рішення,
-      як задаються норми: на відділ чи персонально. Правки по людині
-      (відпустка, відрядження) будуть у будь-якому разі.</p>
+      <p style="color:var(--muted)">Норми задаватимуться на відділ,
+      обліковуватимуться по людині, з точковими правками
+      (відпустка, відрядження) — вже в розробці.</p>
     </div>`;
 }
 
@@ -421,7 +524,7 @@ function renderTeam() {
     <div class="h-sub">фото — з профілів на сайті</div>
     ${STATE.people.map((p) => `
       <div class="team-row">
-        ${avatar(p.name, p.photo, 46)}
+        ${avatar(p.name, p, 46)}
         <div><div class="tn">${esc(p.name)}</div><div class="td">${esc(p.dept_title)}</div></div>
       </div>`).join("")}`;
 }
@@ -481,6 +584,9 @@ async function boot() {
   }
   tg.ready();
   tg.expand();
+  const syncTheme = () => document.body.classList.toggle("dark", tg.colorScheme === "dark");
+  syncTheme();
+  try { tg.onEvent("themeChanged", syncTheme); } catch (e) {}
   try {
     await reload();
     $("screen-loading").classList.add("hidden");

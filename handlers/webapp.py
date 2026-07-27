@@ -195,7 +195,8 @@ def _bootstrap_blocking(person, is_manager):
             "name": n,
             "dept": team_roster.ROSTER[n]["dept"],
             "dept_title": team_roster.DEPT_TITLES.get(team_roster.ROSTER[n]["dept"], ""),
-            "photo": photos.get(n),
+            "photo": (photos.get(n) or {}).get("photo"),
+            "photo_orig": (photos.get(n) or {}).get("photo_orig"),
         }
         for n in names
     ]
