@@ -48,6 +48,16 @@ def extract_article_id(url):
     return match.group(1) if match else None
 
 
+def normalize_https_url(url):
+    """Нормалізує URL з env: обрізає пробіли і хвостовий слеш, додає https://
+    якщо схему не вказали (реальний кейс 27.07: WEBAPP_URL без схеми →
+    Telegram відхиляє web_app кнопку «only https links are allowed»)."""
+    url = (url or "").strip().rstrip("/")
+    if url and not url.lower().startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
 def escape_html(text):
     """Екранування для Telegram parse_mode=HTML. Єдина копія для всіх модулів."""
     return (

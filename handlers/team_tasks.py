@@ -32,10 +32,11 @@ from zoneinfo import ZoneInfo
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from handlers import bot_db, team_roster
+from handlers.helpers import normalize_https_url
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 
-WEBAPP_URL = os.environ.get("WEBAPP_URL", "").rstrip("/")
+WEBAPP_URL = normalize_https_url(os.environ.get("WEBAPP_URL"))
 
 TASK_TYPES = ("news", "article")
 TASK_STATUSES = ("open", "done", "dropped")
