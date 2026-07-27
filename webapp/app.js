@@ -366,8 +366,9 @@ async function renderPerson() {
       ${avatar(person, entry, 56)}
       <div><div class="wn">${esc(person)}</div><div class="wd">${esc(entry.dept_title)}</div></div>
     </div>
-    ${kpiRows ? `<div class="soft-card" style="margin-top:16px"><div class="sc-t">Рекурентні KPI</div>${kpiRows}</div>` : ""}
-    ${donorSections || `<div class="empty-hint">Відкритих завдань немає.</div>`}
+    ${kpiRows ? `<div class="soft-card" style="margin-top:16px"><div class="sc-t">Загальні задачі</div>${kpiRows}</div>` : ""}
+    <div class="f-label" style="margin-top:20px;font-size:14px;color:var(--ink)">Проєктні задачі</div>
+    ${donorSections || `<div class="empty-hint">Відкритих проєктних задач немає.</div>`}
     ${closed.length ? `<div class="dept-title">Закриті недавно · ${closed.length}</div>
       <div class="soft-card">${closed.map(taskRow).join("")}</div>` : ""}`;
 
