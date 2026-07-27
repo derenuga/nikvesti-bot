@@ -228,12 +228,15 @@ function nav(view, arg) {
   STATE.view = view;
   if (view === "project") STATE.currentProject = arg;
   if (view === "kpinorm") STATE.currentNorm = arg;
+  if (view === "person") STATE.currentPerson = arg;
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
   if (view === "form") STATE.form = {
     person: arg, project: undefined, type: null, platform: "telegram",
     theme_id: null, qty: 1, note: "", deadline: "",
   };
-  const navKey = view === "kpinorm" ? "kpi" : view === "project" ? "projects" : view;
+  const navKey = view === "kpinorm" ? "kpi"
+    : view === "project" ? "projects"
+    : view === "person" ? "home" : view;
   document.querySelectorAll("#bottomnav .bn").forEach((b) =>
     b.classList.toggle("on", b.dataset.view === navKey));
   render();
@@ -243,6 +246,7 @@ function nav(view, arg) {
 function render() {
   const v = STATE.view;
   if (v === "home") renderHome();
+  else if (v === "person") renderPerson();
   else if (v === "people") renderPeople();
   else if (v === "form") renderForm();
   else if (v === "projects") renderProjects();
@@ -254,32 +258,114 @@ function render() {
 
 /* ---------- Головна ---------- */
 
+/* Донор таска для групування: партнер → назва проєкту → «позапроєктні» */
+function donorOf(t) {
+  const tp = taskProject(t);
+  return tp.partner || tp.projName || "Позапроєктні";
+}
+
+/* Головна редактора: команда кружечками, у кожної — скільки завдань і по
+   яких донорах. Тап по людині → її персональний трекер (KPI + таски). */
 function renderHome() {
   const open = STATE.tasks.filter((t) => t.status === "open");
-  const closed = STATE.tasks.filter((t) => t.status !== "open").slice(0, 10);
-  const row = (t) => {
-    const tp = taskProject(t);
+  const perPerson = {};
+  open.forEach((t) => {
+    const bucket = (perPerson[t.person] = perPerson[t.person] || {});
+    const donor = donorOf(t);
+    bucket[donor] = (bucket[donor] || 0) + 1;
+  });
+  const people = [...STATE.people].sort((a, b) => {
+    const ca = Object.values(perPerson[a.name] || {}).reduce((s, x) => s + x, 0);
+    const cb = Object.values(perPerson[b.name] || {}).reduce((s, x) => s + x, 0);
+    return cb - ca || a.name.localeCompare(b.name, "uk");
+  });
+  const rows = people.map((p) => {
+    const donors = Object.entries(perPerson[p.name] || {});
+    const total = donors.reduce((s, [, c]) => s + c, 0);
+    const shown = donors.slice(0, 3).map(([d, c]) => `${d} ×${c}`).join(" · ");
+    const more = donors.length > 3 ? ` · +${donors.length - 3}` : "";
     return `
-    <button class="task-row" data-task="${t.id}">
-      ${avatar(t.person, personEntry(t.person), 42)}
+    <button class="team-row" data-tracker="${esc(p.name)}">
+      ${avatar(p.name, p, 48)}
       <span class="tr-main">
-        <span class="tr-who">${esc(t.person.split(" ")[0])} ${esc((t.person.split(" ")[1] || "")[0] || "")}.
-          ${tp.partner ? `<b class="tr-donor">· ${esc(tp.partner)}</b>` : ""}</span>
-        <span class="tr-what">${esc(taskLine2(t))}</span>
+        <span class="tr-who">${esc(p.name)}</span>
+        <span class="tr-what">${total ? esc(shown + more) : "без відкритих завдань"}</span>
+      </span>
+      <span class="tr-right">
+        ${total ? `<span class="pcount">${total}</span>` : ""}
+        ${icon("chevron-right", "ic chev")}
+      </span>
+    </button>`;
+  }).join("");
+  $("content").innerHTML = `
+    <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
+    <div class="h-sub">${new Date().toLocaleDateString("uk-UA", { weekday: "long", day: "numeric", month: "long" })} · відкритих завдань: ${open.length}</div>
+    ${rows}`;
+}
+
+/* Персональний трекер людини (для редактора): її рекурентні KPI зі шторкою
+   правки + її таски, згруповані по донорах. */
+async function renderPerson() {
+  const person = STATE.currentPerson;
+  const entry = personEntry(person);
+  if (!entry) { nav("home"); return; }
+  if (!STATE.kpi) {
+    try { await loadKpi(); } catch (e) { /* KPI-блок просто не покажеться */ }
+    if (STATE.view !== "person") return;
+  }
+  const norms = (STATE.kpi ? STATE.kpi.norms : []).filter((n) => n.dept === entry.dept);
+  const kpiRows = norms.map((n) => {
+    const r = n.rows.find((x) => x.person === person);
+    if (!r) return "";
+    if (r.excused) return `<button class="mykpi-row" data-kpn="${n.id}">
+      <span class="mk-t">${esc(normTitle(n))}</span>
+      <span class="kp-excused">звільнена${r.note ? " · " + esc(r.note) : ""}</span></button>`;
+    const pct = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
+    return `<button class="mykpi-row" data-kpn="${n.id}">
+      <span class="mk-t">${esc(normTitle(n))}
+        <span class="mk-p">· ${esc(n.period === "week" ? STATE.kpi.week_label : STATE.kpi.month_label)}</span></span>
+      <span class="kp-fact ${r.done ? "ok" : ""}">${r.fact === null ? "—" : `${r.fact}/${r.target}${r.done ? " ✓" : ""}`}</span>
+      <span class="kbar wide"><i class="${r.done ? "ok" : ""}" style="width:${pct}%"></i></span>
+    </button>`;
+  }).join("");
+
+  const mine = STATE.tasks.filter((t) => t.person === person);
+  const openTasks = mine.filter((t) => t.status === "open");
+  const closed = mine.filter((t) => t.status !== "open").slice(0, 8);
+  const byDonor = {};
+  openTasks.forEach((t) => (byDonor[donorOf(t)] = byDonor[donorOf(t)] || []).push(t));
+  const taskRow = (t) => `
+    <button class="task-row" data-task="${t.id}">
+      <span class="tr-main">
+        <span class="tr-who">${esc(taskLine2(t))}</span>
+        ${t.note ? `<span class="tr-what">${esc(t.note)}</span>` : ""}
       </span>
       <span class="tr-right">
         ${deadlineBadge(t)}
         <span class="status-dot ${t.status}"></span>
       </span>
     </button>`;
-  };
+  const donorSections = Object.entries(byDonor).map(([donor, list]) => `
+    <div class="dept-title">${esc(donor)} · ${list.length}</div>
+    <div class="soft-card">${list.map(taskRow).join("")}</div>`).join("");
+
   $("content").innerHTML = `
-    <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
-    <div class="h-sub">${new Date().toLocaleDateString("uk-UA", { weekday: "long", day: "numeric", month: "long" })}</div>
-    ${open.length ? `<div class="soft-card"><div class="sc-t">Відкриті завдання · ${open.length}</div>${open.map(row).join("")}</div>` : ""}
-    ${closed.length ? `<div class="soft-card"><div class="sc-t">Нещодавно закриті</div>${closed.map(row).join("")}</div>` : ""}
-    ${!open.length && !closed.length ? `<div class="empty-hint">Завдань поки немає.<br>Натисни «+» унизу, щоб поставити перше.</div>` : ""}
-  `;
+    <button class="back" data-nav="home">${icon("chevron-left")} Команда</button>
+    <div class="who">
+      ${avatar(person, entry, 56)}
+      <div><div class="wn">${esc(person)}</div><div class="wd">${esc(entry.dept_title)}</div></div>
+    </div>
+    ${kpiRows ? `<div class="soft-card" style="margin-top:16px"><div class="sc-t">Рекурентні KPI</div>${kpiRows}</div>` : ""}
+    ${donorSections || `<div class="empty-hint">Відкритих завдань немає.</div>`}
+    ${closed.length ? `<div class="dept-title">Закриті недавно · ${closed.length}</div>
+      <div class="soft-card">${closed.map(taskRow).join("")}</div>` : ""}`;
+
+  // тап по KPI-рядку — одразу шторка правки цієї людини
+  $("content").querySelectorAll("[data-kpn]").forEach((b) => b.onclick = () => {
+    const n = normById(+b.dataset.kpn);
+    const r = n && n.rows.find((x) => x.person === person);
+    if (n && r) overrideSheet(n, r);
+  });
 }
 
 function taskSheet(t) {
@@ -1073,7 +1159,7 @@ function overrideSheet(n, row) {
       closeSheet();
       haptic("success");
       await loadKpi();
-      renderKpiNorm();
+      render();
     } catch (e) { toast(e.message); }
   };
   if (row.overridden) $("o-clear").onclick = () => apply({ clear: true });
@@ -1249,6 +1335,8 @@ async function boot() {
 $("content").addEventListener("click", (e) => {
   const navBtn = e.target.closest("[data-nav]");
   if (navBtn) { nav(navBtn.dataset.nav); return; }
+  const tracker = e.target.closest("[data-tracker]");
+  if (tracker) { nav("person", tracker.dataset.tracker); return; }
   const person = e.target.closest("[data-person]");
   if (person) { nav("form", person.dataset.person); return; }
   const proj = e.target.closest("[data-project]");
