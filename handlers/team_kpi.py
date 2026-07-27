@@ -268,6 +268,75 @@ def fact_counts(metric, period, own=False):
     return result
 
 
+# ---------- Діагностика факту (/kpi_debug) ----------
+
+def kpi_debug(name_query):
+    """Чому у людини такий факт: показує, до якого users.id її привʼязано за
+    ПІБ, які ще є записи з таким прізвищем, і РОЗКЛАДКУ виходу за поточний
+    місяць (тип × власний × owner_id). Одразу видно причину «0»: не той тип,
+    не власні, або матеріали під іншим owner_id, ніж записано в users."""
+    if not db.is_configured():
+        return "БД сайту не налаштована."
+    q = (name_query or "").strip()
+    if not q:
+        return "Вкажіть імʼя або прізвище."
+
+    # 1) кого з ростера маємо на увазі
+    person = next((p for p in team_roster.ROSTER if _norm_name(q) in _norm_name(p)), None)
+
+    # 2) до якого id привʼязали за ПІБ (виробничий шлях)
+    matched_id = None
+    if person:
+        matched_id = _user_id_map().get(_norm_name(person))
+
+    # 3) усі users із таким прізвищем (ловить варіанти написання/дублі)
+    last = q.split()[-1]
+    urows = db.query(
+        "SELECT id, first_name, last_name FROM users "
+        "WHERE last_name LIKE %s OR first_name LIKE %s ORDER BY id",
+        (f"%{last}%", f"%{last}%"),
+    )
+
+    # 4) розкладка виходу за поточний місяць по цих id
+    ts_start, ts_end = _period_ts_range("month")
+    ids = [r["id"] for r in urows]
+    breakdown = []
+    if ids:
+        placeholders = ",".join(["%s"] * len(ids))
+        breakdown = db.query(
+            f"SELECT owner_id, type, own_material, COUNT(*) AS c FROM nodes "
+            f"WHERE owner_id IN ({placeholders}) AND status = 1 "
+            f"AND published >= %s AND published < %s AND published <= UNIX_TIMESTAMP() "
+            f"GROUP BY owner_id, type, own_material ORDER BY owner_id, type, own_material",
+            [*ids, ts_start, ts_end],
+        )
+
+    lines = [f"🔎 <b>{person or q}</b> — діагностика факту за {period_label('month')}"]
+    lines.append(f"Привʼязано до users.id: <b>{matched_id if matched_id else '❌ не знайдено за ПІБ'}</b>")
+    lines.append("\n<b>Записи users із цим прізвищем:</b>")
+    for r in urows:
+        mark = " ← привʼязано" if r["id"] == matched_id else ""
+        lines.append(f"  id={r['id']}: {r['first_name']} {r['last_name']}{mark}")
+    if not urows:
+        lines.append("  (жодного — саме тому факт «—»)")
+
+    lines.append("\n<b>Вихід за місяць (тип × власний × owner_id):</b>")
+    if breakdown:
+        for r in breakdown:
+            own = "власне" if r["own_material"] == 1 else "рерайт"
+            here = " ← рахує норма" if r["owner_id"] == matched_id else " ⚠️ інший id!"
+            lines.append(f"  owner_id={r['owner_id']} · {r['type']} · {own}: <b>{r['c']}</b>{here}")
+    else:
+        lines.append("  (нічого не опубліковано цього місяця під цими id)")
+
+    lines.append(
+        "\n<i>Норма «власних новин» рахує лише type=news + own_material=1 "
+        "під привʼязаним id. Якщо вихід — під іншим owner_id, або це "
+        "article/рерайт — тому й 0.</i>"
+    )
+    return "\n".join(lines)
+
+
 # ---------- Зведення для API ----------
 
 def kpi_payload(for_person=None):

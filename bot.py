@@ -48,6 +48,7 @@ from handlers.news_archive import news_back_callback, news_select_callback, BACK
 from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, viber_test_handler
 from handlers.webapp import start_webapp, team_handler
 from handlers.team_matching import match_test_handler
+from handlers.team_kpi import kpi_debug
 from handlers.notifier import notify_error
 from handlers.usage_report import usage_handler, display_name
 from handlers import storage
@@ -154,6 +155,18 @@ async def start(update, context):
 
 async def status(update, context):
     await update.message.reply_text("Бот працює. Все під контролем.")
+
+async def kpi_debug_handler(update, context):
+    """/kpi_debug <імʼя/прізвище> — чому у людини такий факт KPI: привʼязка до
+    users.id + розкладка виходу за місяць (тип × власний × owner_id)."""
+    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not context.args:
+        await update.message.reply_text("Використання: /kpi_debug <прізвище>, напр. /kpi_debug Бойченко")
+        return
+    report = await asyncio.to_thread(kpi_debug, " ".join(context.args))
+    await update.message.reply_text(report, parse_mode="HTML", disable_web_page_preview=True)
 
 # IP, які KEY4 додав у whitelist БД сайту (звірка для /myip).
 DB_WHITELIST_IPS = {"162.220.234.241", "162.220.234.242", "152.5.180.241"}
@@ -366,6 +379,7 @@ def main():
     app.add_handler(CommandHandler("tiktok_auth", tiktok_auth_handler))
     app.add_handler(CommandHandler("team", team_handler))
     app.add_handler(CommandHandler("match_test", match_test_handler))
+    app.add_handler(CommandHandler("kpi_debug", kpi_debug_handler))
     app.add_handler(CommandHandler("viber_setup", viber_setup_handler))
     app.add_handler(CommandHandler("viber_test", viber_test_handler))
     app.add_handler(CommandHandler("report", report))
