@@ -26,11 +26,31 @@ const STATE = {
   pendingCount: 0,      // для лічильника на пункті меню
   notifs: null,         // стрічка подій
   unread: 0,
-  homeView: "tasks",
+  homeView: null,        // ставиться нижче: остання обрана таба Головної
   kpiTab: "norms",
   dash: { period: "week", offset: -1, data: null },
+  an: { period: "week", offset: -1, data: null },
   form: null,
 };
+
+/* Яку табу Головної відкривати. Олег живе в «Аналітиці», Катя — у
+   «Завданнях», і сперечатись за дефолт їм ні до чого: пам'ятаємо останній
+   вибір на пристрої. localStorage у WebView Telegram є, але доступ до нього
+   буває заборонений (приватний режим, старі клієнти) — тому під try. */
+const HOME_VIEWS = ["analytics", "tasks", "report"];
+const HOME_VIEW_KEY = "team.homeView";
+
+function setHomeView(view) {
+  STATE.homeView = HOME_VIEWS.includes(view) ? view : "tasks";
+  try { localStorage.setItem(HOME_VIEW_KEY, STATE.homeView); } catch (e) {}
+}
+
+try {
+  const saved = localStorage.getItem(HOME_VIEW_KEY);
+  STATE.homeView = HOME_VIEWS.includes(saved) ? saved : "tasks";
+} catch (e) {
+  STATE.homeView = "tasks";
+}
 
 const TYPE_WORDS = {
   news: { one: "новина", few: "новини", many: "новин" },
@@ -446,10 +466,20 @@ function donorOf(t) {
    Звіт — дашборд виконання KPI з кільцями і гортанням по періодах. */
 function renderHome() {
   const seg = segment("data-hv",
-    [["tasks", "Завдання"], ["report", "Звіт"]],
-    STATE.homeView === "report" ? "report" : "tasks");
+    [["analytics", "Аналітика"], ["tasks", "Завдання"], ["report", "Звіт"]],
+    STATE.homeView);
   const wire = () => $("content").querySelectorAll("[data-hv]").forEach((b) =>
-    b.onclick = () => { STATE.homeView = b.dataset.hv === "report" ? "report" : "tasks"; renderHome(); });
+    b.onclick = () => { setHomeView(b.dataset.hv); renderHome(); });
+
+  if (STATE.homeView === "analytics") {
+    $("content").innerHTML = `
+      <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
+      ${seg}
+      <div id="an-body">${skeleton("rows", 4)}</div>`;
+    wire();
+    renderAnalytics();
+    return;
+  }
 
   if (STATE.homeView === "report") {
     $("content").innerHTML = `
@@ -503,6 +533,366 @@ function renderHome() {
     </div>
     ${rows || `<div class="empty-hint">Відкритих завдань ні в кого немає.<br>Натисни «+» або зайди в проєкт, щоб поставити.</div>`}`;
   wire();
+}
+
+/* ---------- Аналітика: дашборд редакції ----------
+   Один екран на питання «як ідуть справи»: сайт, пошук Google, вихід
+   редакції, соцмережі, гранти й топ матеріалів за тиждень або місяць — усе з
+   того, що вже накопичено в норі (див. handlers/team_analytics.py).
+
+   Форми обрані за роботою даних, а не за красою (skill dataviz):
+   - читачі періоду — ГЕРОЙСЬКЕ число (одне на екран), а не графік з однією точкою;
+   - решта підсумків — стат-плитки з дельтою до попереднього періоду;
+   - динаміка по днях — стовпчики одного синього (магнітуда, не ідентичність),
+     підписаний лише максимум, значення читаються тапом;
+   - частки типів пошуку — одна складена смуга з 2px розривами + легенда з
+     цифрами (три сутності = категоріальна палітра, перевірена валідатором
+     у світлій і темній темі);
+   - автори — горизонтальні бари одного хʼю; топ матеріалів — список.
+   Дельта фарбується напрямком (це стат-плитка), решта тексту — чорнилом. */
+
+const AN_PERIOD_WORD = { week: "тиждень", month: "місяць" };
+
+function fmtNum(n) {
+  if (n == null) return "—";
+  return Number(n).toLocaleString("uk-UA");
+}
+
+/* Абсолютна зміна: «+120» / «−80». Мінус — саме типографський, не дефіс. */
+function fmtSigned(n) {
+  if (n == null) return "";
+  if (n === 0) return "±0";
+  return (n > 0 ? "+" : "−") + fmtNum(Math.abs(n));
+}
+
+/* Дельта у %. invert — для метрик, де зростання погане (у нас таких поки
+   немає, але «відписки» колись будуть). Нуль показуємо сірим «=»: різниця між
+   «не змінилось» і «немає з чим порівняти» важлива. */
+function deltaHtml(pct, { invert = false, abs = false } = {}) {
+  if (pct == null) return "";
+  const flat = pct === 0;
+  const up = pct > 0;
+  const cls = flat ? "flat" : (invert ? !up : up) ? "up" : "down";
+  const arrow = flat ? "=" : up ? "▲" : "▼";
+  const value = abs ? fmtNum(Math.abs(pct)) : Math.abs(pct) + "%";
+  return `<span class="st-d ${cls}">${arrow} ${flat ? "" : value}</span>`;
+}
+
+function anTile(label, value, delta, meta) {
+  return `<div class="stat">
+    <span class="st-l">${esc(label)}</span>
+    <b class="st-v">${typeof value === "number" ? fmtNum(value) : esc(value)}</b>
+    <span class="st-b">${delta || ""}${meta ? `<span class="st-m">${esc(meta)}</span>` : ""}</span>
+  </div>`;
+}
+
+function anHead(iconName, title, sub) {
+  return `<div class="an-head">
+    ${icon(iconName, "ic an-i")}
+    <span class="an-t">${esc(title)}</span>
+    ${sub ? `<span class="an-s">${esc(sub)}</span>` : ""}
+  </div>`;
+}
+
+/* Перемикач періоду + гортання назад. У майбутнє не листаємо (даних там
+   немає), тож стрілка «вперед» на поточному періоді вимкнена. */
+function anControls(data) {
+  const a = STATE.an;
+  const label = data ? data.label : "…";
+  const tail = !data ? "" : data.is_current ? " · триває" : a.offset === -1 ? " · минулий" : "";
+  return `
+    ${segment("data-ap", [["week", "Тиждень"], ["month", "Місяць"]], a.period, { sub: true })}
+    <div class="month-nav">
+      <button class="arr" data-aoff="-1">${icon("chevron-left")}</button>
+      <b>${esc(label)}${tail}</b>
+      <button class="arr" data-aoff="1" ${data && data.is_current ? "disabled" : ""}>${icon("chevron-right")}</button>
+    </div>`;
+}
+
+function wireAnControls() {
+  const body = $("an-body");
+  if (!body) return;
+  body.querySelectorAll("[data-ap]").forEach((b) => b.onclick = () => {
+    STATE.an.period = b.dataset.ap;
+    STATE.an.offset = -1;      // новий масштаб — знову з завершеного періоду
+    renderAnalytics();
+  });
+  body.querySelectorAll("[data-aoff]").forEach((b) => b.onclick = () => {
+    if (b.disabled) return;
+    STATE.an.offset = Math.min(0, STATE.an.offset + (+b.dataset.aoff));
+    renderAnalytics();
+  });
+}
+
+/* Стовпчики читачів по днях. Один хʼю (магнітуда), підписаний лише максимум —
+   число на кожному стовпчику ніхто не читає. Тап по стовпчику дає його
+   значення: на телефоні тап — це і є hover. */
+function anSpark(series) {
+  if (!series || !series.length) return "";
+  const max = Math.max(...series.map((d) => d.users));
+  const top = series.find((d) => d.users === max);
+  const sparse = series.length > 14;
+  const cols = series.map((d, i) => {
+    const h = max ? Math.max(3, Math.round((d.users / max) * 100)) : 3;
+    const day = +d.date.slice(8, 10);
+    const label = sparse ? (day % 5 === 0 ? day : "") : day;
+    return `<button class="sp-col${d.users === max ? " max" : ""}" data-sp="${i}"
+      title="${esc(shortDate(d.date))} · ${fmtNum(d.users)}">
+      <span class="sp-track"><i style="height:${h}%"></i></span>
+      <span class="sp-x">${label}</span>
+    </button>`;
+  }).join("");
+  return `
+    <div class="sp-cap">максимум ${fmtNum(max)} · ${esc(shortDate(top.date))}</div>
+    <div class="spark" id="an-spark">${cols}</div>
+    <div class="sp-note">читачі по днях · тап по стовпчику — цифра дня</div>`;
+}
+
+function anSiteHtml(d) {
+  const s = d.site;
+  if (!s) {
+    return anHead("globe", "Сайт") +
+      `<div class="empty-hint">Пам'ять аналітики (daily_stats) порожня або недоступна.</div>`;
+  }
+  const perSession = s.sessions.value && s.pageviews.value
+    ? (s.pageviews.value / s.sessions.value).toFixed(1).replace(".", ",")
+    : "—";
+  return `
+    ${anHead("globe", "Сайт", `GA4 · порівняння з ${d.prev_label}`)}
+    <div class="hero">
+      <span class="hero-l">читачів за ${esc(d.label)}</span>
+      <b class="hero-v">${fmtNum(s.users.value)}</b>
+      <span class="hero-d">${deltaHtml(s.users.delta)}
+        <span class="st-m">${s.users.prev == null ? "" : `було ${fmtNum(s.users.prev)}`}</span></span>
+      ${anSpark(s.series)}
+    </div>
+    <div class="stat-grid">
+      ${anTile("Сесії", s.sessions.value, deltaHtml(s.sessions.delta))}
+      ${anTile("Перегляди", s.pageviews.value, deltaHtml(s.pageviews.delta))}
+      ${anTile("Сторінок на сесію", perSession, "")}
+    </div>`;
+}
+
+function anSearchHtml(d) {
+  const s = d.search;
+  if (!s || !s.has_data) {
+    return anHead("search", "Пошук Google") +
+      `<div class="empty-hint">Розрізу Search Console за цей період немає.<br>
+        Залити історію — /sc_backfill.</div>`;
+  }
+  const total = s.types.reduce((acc, t) => acc + t.clicks, 0);
+  const bar = s.types.map((t, i) => t.clicks
+    ? `<i class="c${i + 1}" style="width:${total ? (t.clicks / total) * 100 : 0}%"></i>` : "").join("");
+  const legend = s.types.map((t, i) => `
+    <div class="lg-row">
+      <span class="lg-dot c${i + 1}"></span>
+      <span class="lg-l">${esc(t.label)}</span>
+      <b class="lg-v">${fmtNum(t.clicks)}</b>
+      <span class="lg-s">${t.share}%</span>
+      ${deltaHtml(t.delta)}
+    </div>`).join("");
+  return `
+    ${anHead("search", "Пошук Google", "кліки з видачі, Discover і Новин")}
+    <div class="soft-card">
+      <div class="an-two">
+        <span><span class="st-l">Кліків</span>
+          <b class="st-v big">${fmtNum(s.clicks.value)}</b></span>
+        <span class="an-two-r">${deltaHtml(s.clicks.delta)}
+          <span class="st-m">показів ${fmtNum(s.impressions.value)}</span></span>
+      </div>
+      <div class="shr">${bar}</div>
+      <div class="legend">${legend}</div>
+      <div class="sp-note">Search Console дозріває 2–3 дні — свіжі дні ще підростуть</div>
+    </div>`;
+}
+
+function anNewsroomHtml(d) {
+  const n = d.newsroom;
+  if (!n) {
+    return anHead("file-text", "Вихід редакції") +
+      `<div class="empty-hint">БД сайту недоступна — вихід не порахувати.</div>`;
+  }
+  const maxCount = n.authors.length ? n.authors[0].count : 0;
+  const rows = n.authors.map((a) => {
+    const entry = personEntry(a.name);
+    const w = maxCount ? Math.max(4, Math.round((a.count / maxCount) * 100)) : 0;
+    const inner = `
+      ${avatar(a.name, entry, 36)}
+      <span class="ar-main">
+        <span class="ar-n">${esc(a.name)}</span>
+        <span class="kbar"><i style="width:${w}%"></i></span>
+      </span>
+      <span class="ar-r">
+        <b>${fmtNum(a.count)}</b>
+        <span class="st-m">${a.own ? `${a.own} власних` : "рерайти"}</span>
+      </span>`;
+    // Тап по автору з ростера веде в його трекер — аналітика і завдання
+    // однієї людини не мають бути двома різними подорожами
+    return entry
+      ? `<button class="an-row" data-tracker="${esc(a.name)}">${inner}</button>`
+      : `<div class="an-row">${inner}</div>`;
+  }).join("");
+  return `
+    ${anHead("file-text", "Вихід редакції", `опубліковано за ${AN_PERIOD_WORD[d.period]}`)}
+    <div class="stat-grid">
+      ${anTile("Новин", n.news.value, deltaHtml(n.news.delta))}
+      ${anTile("Статей", n.articles.value, deltaHtml(n.articles.delta))}
+      ${anTile("Власних", n.own.value, deltaHtml(n.own.delta),
+        n.own_share == null ? "" : `${n.own_share}% усього`)}
+    </div>
+    ${rows ? `<div class="soft-card"><div class="sc-t">Хто написав</div>${rows}</div>` : ""}`;
+}
+
+function anSocialHtml(d) {
+  const s = d.social;
+  if (!s) {
+    return anHead("heart", "Соцмережі") +
+      `<div class="empty-hint">Зрізів соцмереж у норі ще немає — /social_capture.</div>`;
+  }
+  const card = (key, idx) => {
+    const p = s[key];
+    if (!p) return "";
+    return `
+    <div class="soc-card">
+      <div class="soc-h">
+        <span class="lg-dot c${idx}"></span>
+        <span class="soc-n">${esc(p.title)}</span>
+        <span class="soc-f">${fmtNum(p.followers)}
+          ${p.followers_delta == null ? "" :
+            `<span class="st-d ${p.followers_delta >= 0 ? "up" : "down"}">${fmtSigned(p.followers_delta)}</span>`}</span>
+      </div>
+      ${p.snapshots ? `<div class="soc-m">
+        <span><i>Перегляди</i> ${fmtNum(p.views.value)} ${deltaHtml(p.views.delta)}</span>
+        <span><i>Взаємодії</i> ${fmtNum(p.engagement.value)} ${deltaHtml(p.engagement.delta)}</span>
+        <span><i>Постів</i> ${fmtNum(p.posts.value)}</span>
+      </div>`
+      // Рядок із трьох прочерків нічого не повідомляє — краще сказати чому
+      : `<div class="sp-note">зрізу за цей період ще немає — знімок беремо щонеділі</div>`}
+    </div>`;
+  };
+  const tg = s.telegram || {};
+  return `
+    ${anHead("heart", "Соцмережі", "тижневі зрізи · підписники — останній знімок")}
+    ${card("facebook", 1)}
+    ${card("instagram", 2)}
+    <div class="soc-card">
+      <div class="soc-h">
+        <span class="lg-dot c3"></span>
+        <span class="soc-n">Telegram</span>
+        <span class="soc-f">${fmtNum(tg.subscribers)}</span>
+      </div>
+      <div class="soc-m"><span><i>Підписників зараз</i> живий знімок t.me</span></div>
+    </div>`;
+}
+
+function anGrantsHtml(d) {
+  const g = d.grants;
+  if (!g) {
+    return anHead("award", "Гранти") +
+      `<div class="empty-hint">Нора недоступна — грантові цифри сплять.</div>`;
+  }
+  const donors = g.donors.map((x) => `${esc(x.name)} ×${x.count}`).join(" · ");
+  // Найближчий звітний дедлайн уже лежить у STATE (bootstrap), окремий
+  // запит по нього не потрібен
+  let soonest = null;
+  STATE.projects.forEach((p) => {
+    const nd = nextDeadline(p);
+    if (nd && (!soonest || nd.due < soonest.dl.due)) soonest = { p, dl: nd };
+  });
+  return `
+    ${anHead("award", "Гранти", "проєкти, завдання і зараховане виконання")}
+    <div class="stat-grid">
+      ${anTile("Активних проєктів", g.projects_active, "")}
+      ${anTile("Відкритих завдань", g.tasks_open, "")}
+      ${anTile("Зараховано", g.counted, "", `за ${AN_PERIOD_WORD[d.period]}`)}
+    </div>
+    <div class="soft-card">
+      ${donors ? `<div class="an-line"><b>По донорах:</b> ${donors}</div>` : ""}
+      <div class="an-line">Завдань закрито за ${AN_PERIOD_WORD[d.period]}: <b>${g.tasks_done}</b>${
+        g.pending ? ` · у черзі звірки <b>${g.pending}</b>` : ""}</div>
+      ${soonest ? `<div class="an-line">Найближчий звіт:
+        <b>${esc(soonest.p.partner || soonest.p.name)}</b> —
+        ${esc(dlLabel(soonest.dl))} ${dlDateHtml(soonest.dl)}</div>` : ""}
+    </div>`;
+}
+
+function anTopHtml(d) {
+  const top = d.top || [];
+  if (!top.length) {
+    return anHead("trending-up", "Топ матеріалів") +
+      `<div class="empty-hint">Денних топів за цей період у норі немає.</div>`;
+  }
+  const rows = top.map((t, i) => `
+    <a class="top-row" href="${esc(t.url)}" data-ext="${esc(t.url)}">
+      <span class="tp-n">${i + 1}</span>
+      <span class="tp-main">
+        <span class="tp-t">${esc(t.title)}</span>
+        <span class="tp-m">${esc([t.author, t.days > 1 ? `${t.days} дні в топі` : null]
+          .filter(Boolean).join(" · "))}</span>
+      </span>
+      <span class="tp-v">${fmtNum(t.views)}</span>
+    </a>`).join("");
+  return `
+    ${anHead("trending-up", "Топ матеріалів", `за ${AN_PERIOD_WORD[d.period]}, перегляди GA4`)}
+    <div class="soft-card">${rows}</div>`;
+}
+
+function anDataHtml(d) {
+  if (!d.nora) {
+    return `<div class="empty-hint">Нора (Postgres) недоступна —
+      аналітика живе саме в ній.</div>`;
+  }
+  if (!d.site && !d.search && !d.newsroom) {
+    return `<div class="empty-hint">За цей період даних ще немає.<br>
+      Захват аналітики працює о 09:00 і пише вчорашній день.</div>`;
+  }
+  return `
+    ${anSiteHtml(d)}
+    ${anSearchHtml(d)}
+    ${anNewsroomHtml(d)}
+    ${anSocialHtml(d)}
+    ${anGrantsHtml(d)}
+    ${anTopHtml(d)}
+    <div class="tl-note">Дані до ${esc(shortDate(d.range.data_end))}${
+      d.is_current ? ` · період триває, порівнюю перші ${d.days} дн. з тими самими днями ${esc(d.prev_label)}` : ""}.
+      Сайт і пошук — з пам'яті нори (захват о 09:00), вихід редакції — з БД сайту,
+      соцмережі — тижневі зрізи.</div>`;
+}
+
+function wireAnSpark(d) {
+  const chart = $("an-spark");
+  if (!chart || !d.site) return;
+  chart.querySelectorAll("[data-sp]").forEach((b) => b.onclick = () => {
+    const day = d.site.series[+b.dataset.sp];
+    if (day) toast(`${shortDate(day.date)} · ${fmtNum(day.users)} читачів`);
+  });
+}
+
+async function renderAnalytics() {
+  const a = STATE.an;
+  const body = $("an-body");
+  if (!body) return;
+  // Поки їде відповідь — лишаємо підписи попереднього перегляду (якщо це той
+  // самий період), щоб перемикач не блимав порожнім заголовком
+  const stale = a.data && a.data.period === a.period && a.data.offset === a.offset
+    ? a.data : null;
+  body.innerHTML = anControls(stale) + `<div id="an-data">${skeleton("rows", 4)}</div>`;
+  wireAnControls();
+  let data;
+  try {
+    data = await api(`/api/dashboard?period=${a.period}&offset=${a.offset}`);
+  } catch (e) {
+    const box = $("an-data");
+    if (box) box.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+    return;
+  }
+  if (STATE.view !== "home" || STATE.homeView !== "analytics") return;
+  a.data = data;
+  const fresh = $("an-body");
+  if (!fresh) return;
+  fresh.innerHTML = anControls(data) + `<div id="an-data">${anDataHtml(data)}</div>`;
+  wireAnControls();
+  wireAnSpark(data);
 }
 
 /* Персональний трекер людини (для редактора): її рекурентні KPI зі шторкою
