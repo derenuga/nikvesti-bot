@@ -500,15 +500,17 @@ function renderHome() {
 }
 
 /* Персональний трекер людини (для редактора): її рекурентні KPI зі шторкою
-   правки + її таски, згруповані по донорах. */
-async function renderPerson() {
+   правки + її таски, згруповані по донорах.
+
+   Малюємо ОДРАЗУ, а KPI довантажуємо в готовий екран. Раніше весь екран чекав
+   на /api/kpi (той іде в MySQL сайту, ~2 с), і тап по людині виглядав як
+   зависання — по ньому тикали ще і ще, думаючи, що не спрацювало. Таски вже
+   лежать у STATE, тож показати їх можна миттєво. */
+function renderPerson() {
   const person = STATE.currentPerson;
   const entry = personEntry(person);
   if (!entry) { nav("home"); return; }
-  if (!STATE.kpi) {
-    try { await loadKpi(); } catch (e) { /* KPI-блок просто не покажеться */ }
-    if (STATE.view !== "person") return;
-  }
+  const kpiReady = !!STATE.kpi;
   const norms = (STATE.kpi ? STATE.kpi.norms : []).filter((n) => n.dept === entry.dept);
   const kpiRows = norms.map((n) => {
     const r = n.rows.find((x) => x.person === person);
@@ -561,12 +563,33 @@ async function renderPerson() {
       ${avatar(person, entry, 56)}
       <div><div class="wn">${esc(person)}</div><div class="wd">${esc(entry.dept_title)}</div></div>
     </div>
-    ${kpiRows ? `<div class="soft-card" style="margin-top:16px"><div class="sc-t">Загальні задачі</div>${kpiRows}</div>` : ""}
+    <div id="person-kpi">${kpiReady
+      ? (kpiRows ? `<div class="soft-card" style="margin-top:16px"><div class="sc-t">Загальні задачі</div>${kpiRows}</div>` : "")
+      : `<div class="soft-card" style="margin-top:16px"><div class="sc-t">Загальні задачі</div>${skeleton("rows", 2)}</div>`}</div>
     <div class="f-label" style="margin-top:20px;font-size:14px;color:var(--ink)">Проєктні задачі</div>
     ${donorSections || `<div class="empty-hint">Відкритих проєктних задач немає.</div>`}
     ${closed.length ? `<div class="dept-title">Закриті недавно · ${closed.length}</div>
       <div class="soft-card">${closed.map(taskRow).join("")}</div>` : ""}`;
 
+  wirePersonKpi(person);
+  if (!kpiReady) loadPersonKpi(person);
+}
+
+/* KPI людини приїжджають окремо: збій або повільна БД сайту не мають тримати
+   екран із її завданнями. */
+async function loadPersonKpi(person) {
+  try {
+    await loadKpi();
+  } catch (e) {
+    const box = $("person-kpi");
+    if (box && STATE.view === "person") box.innerHTML = "";
+    return;
+  }
+  if (STATE.view !== "person" || STATE.currentPerson !== person) return;
+  renderPerson();
+}
+
+function wirePersonKpi(person) {
   // тап по KPI-рядку — одразу шторка правки цієї людини
   $("content").querySelectorAll("[data-kpn]").forEach((b) => b.onclick = () => {
     const n = normById(+b.dataset.kpn);
@@ -1630,9 +1653,22 @@ function queueAddSheet() {
     if (!url) { toast("Встав лінк публікації"); return; }
     $("q-save").disabled = true;
     try {
-      const res = await api("/api/matches/queue", {
+      let res = await api("/api/matches/queue", {
         method: "POST", body: JSON.stringify({ url }),
       });
+      // Публікацію вже комусь зараховано: мовчки знімати не можна — у людини
+      // впав би прогрес без пояснення. Кажемо, де вона, і питаємо.
+      if (res.conflict === "counted") {
+        const where = [res.partner_name, res.project_name, res.theme_name]
+          .filter(Boolean).join(" · ");
+        const ok = await confirmAction(
+          `Цю публікацію вже зараховано:\n${res.person || "—"}${where ? " · " + where : ""}\n\n` +
+          `Зняти звідти і повернути в чергу?`);
+        if (!ok) { $("q-save").disabled = false; return; }
+        res = await api("/api/matches/queue", {
+          method: "POST", body: JSON.stringify({ url, force: true }),
+        });
+      }
       haptic("success");
       (res.tasks || []).forEach(patchTask);
       STATE.pendingCount = res.pending_count;
@@ -1640,7 +1676,7 @@ function queueAddSheet() {
       closeSheet();
       syncAlertsBadge();
       renderAlerts();
-      toast("Додав у чергу");
+      toast(res.tasks && res.tasks.length ? "Зняв і повернув у чергу" : "Додав у чергу");
     } catch (e) {
       $("q-save").disabled = false;
       toast(e.message);

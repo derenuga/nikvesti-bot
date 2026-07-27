@@ -14,7 +14,9 @@
   не відкидаючи решту — з пʼятнадцяти зарахованих не підходити може одна;
 - у списку завдань людини донор іде перед назвою проєкту;
 - у картці є «Зарахувати публікацію за лінком»: вставив URL — пішов запит на
-  attach (перенос із задубльованого завдання робиться цим же шляхом).
+  attach (перенос із задубльованого завдання робиться цим же шляхом);
+- екран людини малюється ОДРАЗУ, не чекаючи на KPI (той іде в MySQL сайту і
+  думає секунди — раніше тап виглядав як зависання).
 
 Запуск (потрібні playwright + chromium):
     python test_webapp_progress.py
@@ -94,7 +96,11 @@ window.fetch = async (url, opts = {}) => {
   const json = (o) => new Response(JSON.stringify(o),
     { headers: { "Content-Type": "application/json" } });
   if (url === "/api/bootstrap") return json(window.BOOT);
-  if (url === "/api/kpi") return json({ norms: [], week_label: "", month_label: "", site_db: true });
+  if (url === "/api/kpi") {
+    // KPI навмисно повільні — як реальна БД сайту
+    await new Promise((r) => setTimeout(r, window.__kpiDelay || 0));
+    return json({ norms: [], week_label: "", month_label: "", site_db: true });
+  }
   if (url.startsWith("/api/kpi/person")) return json({ has_norms: false, months: [] });
   let m;
   if ((m = url.match(/^\\/api\\/tasks\\/(\\d+)\\/attach$/))) {
@@ -162,9 +168,19 @@ async def main():
     async with async_playwright() as pw:
         browser, page = await _open(pw, BOOTSTRAP)
         try:
-            # --- трекер людини ---
+            # --- трекер людини: малюється до відповіді KPI ---
+            await page.evaluate("window.__kpiDelay = 1500")
             await page.click('[data-tracker="Аліна Квітко"]')
-            await page.wait_for_selector(".task-row")
+            # 600 мс — свідомо менше, ніж «думає» KPI: завдання мають бути вже тут
+            await page.wait_for_selector(".task-row", timeout=600)
+            check("завдання видно, поки KPI ще вантажаться",
+                  await page.locator(".task-row").count() > 0)
+            check("на місці KPI — скелетон, а не порожнеча",
+                  await page.locator("#person-kpi .sk").count() > 0)
+            await page.wait_for_timeout(1600)
+            check("KPI приїхали і скелетон зник",
+                  await page.locator("#person-kpi .sk").count() == 0)
+            await page.evaluate("window.__kpiDelay = 0")
             body0 = await page.inner_text("#content")
             check("донор іде перед назвою проєкту", "IMS · Голоси Миколаєва" in body0)
             badges = await page.locator(".prog").all_inner_texts()

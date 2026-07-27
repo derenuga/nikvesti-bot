@@ -821,17 +821,21 @@ async def api_matches_queue(request):
     само, де й по решті."""
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
-    result = await _in_session(_queue_blocking, payload.get("url"), person)
+    result = await _in_session(
+        _queue_blocking, payload.get("url"), person, bool(payload.get("force")))
     if isinstance(result, str):
         raise web.HTTPBadRequest(text=result)
     return web.json_response(result)
 
 
-def _queue_blocking(url, actor):
+def _queue_blocking(url, actor, force=False):
     from handlers import team_matching
 
-    match, touched = team_matching.queue_publication(url, actor)
+    match, touched = team_matching.queue_publication(url, actor, force)
     if not match:
+        # dict — не помилка, а «вже зараховано, підтвердь зняття»
+        if isinstance(touched, dict):
+            return touched
         return touched if isinstance(touched, str) else "Не вдалося додати"
     tasks = []
     for tid in touched:

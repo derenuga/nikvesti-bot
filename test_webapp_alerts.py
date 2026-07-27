@@ -146,7 +146,17 @@ window.fetch = async (url, opts = {}) => {
   if (url === "/api/notifications") return json({ items: window.NOTIFS, unread: 2 });
   if (url === "/api/matches/queue") {
     window.__posts.push({ queue: true, body });
-    return json({ match: { id: 99, status: "pending" }, tasks: [],
+    // Лінк, який уже комусь зараховано: сервер каже про конфлікт, а не мовчки
+    // знімає — зняття лише з force
+    if (body.url.includes("321844") && !body.force) {
+      return json({ conflict: "counted", title: "Хто виграв тендери на укриття",
+                    person: "Юлія Бойченко", theme_name: "Тендери",
+                    project_name: "Стійкість локального медіа",
+                    partner_name: "IWPR" });
+    }
+    return json({ match: { id: 99, status: "pending" },
+                  tasks: body.force ? [{ id: 71, done_count: 0, qty: 3,
+                                         status: "open", matches: [] }] : [],
                   pending_count: window.PENDING.length + 1 });
   }
   if (url === "/api/notifications/read") {
@@ -282,6 +292,25 @@ async def main():
             queued = [p for p in await page.evaluate("window.__posts") if p.get("queue")]
             check("кнопка в шапці шле лінк у чергу",
                   queued and queued[-1]["body"]["url"].endswith("5001-a"))
+
+            # --- лінк, який уже зараховано: питаємо, а не знімаємо мовчки ---
+            await page.evaluate("window.__posts = []; window.__confirmAnswer = false")
+            await page.click("#queue-add")
+            await page.wait_for_selector("#q-url")
+            await page.fill("#q-url", "https://nikvesti.com/news/economics/321844-tendery")
+            await page.click("#q-save")
+            await page.wait_for_timeout(400)
+            posts = await page.evaluate("window.__posts")
+            check("на вже зараховану публікацію сервер віддає конфлікт",
+                  len(posts) == 1 and not posts[0]["body"].get("force"))
+            check("скасування діалогу нічого не змінює — force не пішов",
+                  all(not p["body"].get("force") for p in posts))
+            await page.evaluate("window.__confirmAnswer = true")
+            await page.click("#q-save")
+            await page.wait_for_timeout(400)
+            posts = await page.evaluate("window.__posts")
+            check("після підтвердження летить force — знімаємо і в чергу",
+                  posts[-1]["body"].get("force") is True)
             await page.evaluate("window.__posts = []")
             body = await page.inner_text("#content")
 
