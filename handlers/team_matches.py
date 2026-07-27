@@ -30,7 +30,7 @@
 
 import threading
 
-from handlers import bot_db, team_tasks
+from handlers import bot_db, team_notifications, team_tasks
 
 MATCH_STATUSES = ("auto", "pending", "confirmed", "rejected", "skipped")
 
@@ -242,12 +242,34 @@ def apply_progress(task_id, actor="🦊 Лис"):
         return None, None
     count = counted_count(task_id)
     if task["status"] == "open" and count >= task["qty"]:
-        return team_tasks.set_status(task_id, actor, "done", auto=True), "done"
+        closed = team_tasks.set_status(task_id, actor, "done", auto=True)
+        _notify_done(closed)
+        return closed, "done"
     # Авто-закритий таск вертаємо у відкриті, коли прогрес перестав покривати
     # qty: підняли кількість або відкликали матч. Закритий РУКАМИ не чіпаємо.
     if task["status"] == "done" and task.get("auto_done") and count < task["qty"]:
         return team_tasks.set_status(task_id, actor, "open", auto=True), "reopen"
     return task, None
+
+
+def _notify_done(task):
+    """Подія «завдання виконано» — і виконавиці, і керівництву. Обидві
+    сповіщення дедуплікуються по id таска: повторний прогін чи перевідкриття
+    й нове закриття не сиплють дублями."""
+    if not task:
+        return
+    links = [m["url"] for m in counted_by_task([task["id"]]).get(task["id"], [])]
+    body = f"зарахувала сама: {len(links)} із {task['qty']}"
+    team_notifications.notify_safe(
+        "task_done", team_tasks.task_summary(task), audience="person",
+        person=task["person"], body=body, url=links[0] if links else None,
+        object_type="task", object_id=task["id"],
+        dedup_key=f"task_done:{task['id']}")
+    team_notifications.notify_safe(
+        "task_done", f"{task['person']}: {team_tasks.task_summary(task)}",
+        audience="managers", body=body, url=links[0] if links else None,
+        object_type="task", object_id=task["id"],
+        dedup_key=f"task_done_mgr:{task['id']}")
 
 
 def recount_after_qty_change(task_id, actor="🦊 Лис"):

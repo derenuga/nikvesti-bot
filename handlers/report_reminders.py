@@ -192,6 +192,20 @@ def format_reminder(dl, project, days_left):
     return "\n".join(lines)
 
 
+def _notify_app(dl, project, threshold, days_left):
+    """Дублює нагадування у стрічку сповіщень апки (керівництву). Дедуп по
+    парі «дедлайн × поріг» — тим самим ключем, що й позначка надсилання."""
+    from handlers import team_notifications
+
+    donor = (project or {}).get("partner") or (project or {}).get("name") or "проєкт"
+    team_notifications.notify_safe(
+        "report_deadline", deadline_title(dl), audience="managers",
+        body=f"{donor} · {_when_human(days_left)} · пише "
+             f"{dl.get('assignee') or 'ніхто (не призначено)'}",
+        object_type="deadline", object_id=dl["id"],
+        dedup_key=f"report_deadline:{dl['id']}:{threshold}")
+
+
 async def check_report_deadlines(bot, chat_id=None, force=False):
     """Щоденний прогін: нагадує про звіти за 7 і за 2 доби. Повертає
     кількість надісланих нагадувань."""
@@ -219,6 +233,9 @@ async def check_report_deadlines(bot, chat_id=None, force=False):
             )
             if not force:
                 await asyncio.to_thread(_mark_sent, dl["id"], threshold)
+                # Те саме нагадування — у стрічку «Сповіщень» апки: у чаті
+                # фінансів воно тоне, а тут лежить, доки не прочитають.
+                await asyncio.to_thread(_notify_app, dl, project, threshold, days_left)
             sent += 1
         except Exception as e:
             print(f"report_reminders: нагадування по дедлайну {dl['id']} не пішло — {e}")

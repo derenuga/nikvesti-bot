@@ -763,6 +763,16 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 .al-actions .sbtn.primary { background: var(--blue); color: var(--blue-fg); }
 .al-actions .sbtn.danger { background: var(--red-soft); color: var(--red); }
 
+/* Рядок стрічки подій. Непрочитане — синя крапка збоку: помітно, але без
+   кричущих кольорів, бо це не тривога, а хроніка. */
+.nt-row { text-decoration: none; color: inherit; position: relative; }
+.nt-row.unread { padding-left: 12px; }
+.nt-row.unread::before {
+  content: ""; position: absolute; left: 0; top: 50%; margin-top: -3px;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--blue);
+}
+.nt-row .st-mark { width: 26px; height: 26px; }
+
 /* Лічильник черги на пункті меню «Сповіщення» */
 .bn { position: relative; }
 .bn-badge {
