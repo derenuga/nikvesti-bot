@@ -57,6 +57,18 @@ THEME_FORMATS = ("news", "article", "post", "video", "hybrid")
 DEADLINE_KINDS = ("narrative", "financial", "milestone")
 DEADLINE_STAGES = ("interim", "final")
 
+# Хто за замовчуванням пише звіт (Олег, 27.07): фінанси — фінменеджерка,
+# наративку — головредакторка. Майлстоуни дефолту не мають: це не звіт, а
+# подія проєкту, відповідальний у кожного свій. Дефолт НЕ записується в БД —
+# застосовується при читанні, тож правка тут діє на всі непризначені руками.
+DEADLINE_DEFAULT_ASSIGNEE = {
+    "financial": "Олена Бондаренко",
+    "narrative": "Катерина Середа",
+}
+
+# Рух звіту: подали донору → донор прийняв. NULL — ще очікується.
+DEADLINE_STATUSES = ("submitted", "accepted")
+
 _SCHEMA_STATEMENTS = [
     """
     CREATE TABLE IF NOT EXISTS team_users (
@@ -112,6 +124,16 @@ _SCHEMA_STATEMENTS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_team_pdl_project ON team_project_deadlines (project_id, due)",
+    # Хто пише цей звіт (Олег, 27.07). NULL — діє дефолт за типом звіту
+    # (див. DEADLINE_DEFAULT_ASSIGNEE): так зміна дефолту застосується заднім
+    # числом до всіх, кому нікого не призначали руками.
+    "ALTER TABLE team_project_deadlines ADD COLUMN IF NOT EXISTS assignee TEXT",
+    # Рух звіту: NULL — ще очікується, submitted — подано донору,
+    # accepted — донор прийняв. Хто і коли позначив — щоб було видно, чиє це
+    # слово (Олег, Катя й Олена працюють з тими самими звітами).
+    "ALTER TABLE team_project_deadlines ADD COLUMN IF NOT EXISTS status TEXT",
+    "ALTER TABLE team_project_deadlines ADD COLUMN IF NOT EXISTS status_by TEXT",
+    "ALTER TABLE team_project_deadlines ADD COLUMN IF NOT EXISTS status_at TIMESTAMPTZ",
     """
     CREATE TABLE IF NOT EXISTS team_creative_tasks (
         id           BIGSERIAL PRIMARY KEY,
@@ -318,9 +340,18 @@ def set_drive_link(project_id, url, updated_by):
 # ---------- Дедлайни звітності проєктів ----------
 
 def _row_to_deadline(r):
+    assignee = r.get("assignee")
     return {"id": r["id"], "project_id": r["project_id"], "kind": r["kind"],
             "stage": r["stage"], "title": r["title"] or "",
-            "due": r["due"].isoformat()}
+            "due": r["due"].isoformat(),
+            # assignee — ефективний (з дефолтом), assignee_custom — чи його
+            # призначали руками (щоб UI показав «за замовчуванням»)
+            "assignee": assignee or DEADLINE_DEFAULT_ASSIGNEE.get(r["kind"]),
+            "assignee_custom": bool(assignee),
+            "status": r.get("status"),
+            "status_by": r.get("status_by"),
+            "status_at": r["status_at"].astimezone(KYIV_TZ).date().isoformat()
+                         if r.get("status_at") else None}
 
 
 def list_project_deadlines():
@@ -329,7 +360,7 @@ def list_project_deadlines():
     return [
         _row_to_deadline(r)
         for r in bot_db.query(
-            "SELECT id, project_id, kind, stage, title, due "
+            "SELECT id, project_id, kind, stage, title, due, assignee, status, status_by, status_at "
             "FROM team_project_deadlines ORDER BY due, id"
         )
     ]
@@ -339,7 +370,7 @@ def add_project_deadline(creator, project_id, kind, due, stage=None, title=None)
     ensure_team_schema()
     rows = bot_db.query(
         "INSERT INTO team_project_deadlines (project_id, kind, stage, title, due, created_by) "
-        "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, project_id, kind, stage, title, due",
+        "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, project_id, kind, stage, title, due, assignee, status, status_by, status_at",
         (int(project_id), kind, stage or None, (title or "").strip() or None, due, creator),
     )
     return _row_to_deadline(rows[0])
@@ -365,8 +396,33 @@ def update_project_deadline(deadline_id, kind=None, due=None, stage=..., title=.
     params.append(int(deadline_id))
     rows = bot_db.query(
         f"UPDATE team_project_deadlines SET {', '.join(sets)} WHERE id = %s "
-        "RETURNING id, project_id, kind, stage, title, due",
+        "RETURNING id, project_id, kind, stage, title, due, assignee, status, status_by, status_at",
         params,
+    )
+    return _row_to_deadline(rows[0]) if rows else None
+
+
+def set_deadline_assignee(deadline_id, person):
+    """Призначає відповідального за звіт. person=None — повернути дефолт
+    за типом звіту."""
+    ensure_team_schema()
+    rows = bot_db.query(
+        "UPDATE team_project_deadlines SET assignee = %s WHERE id = %s "
+        "RETURNING id, project_id, kind, stage, title, due, assignee, status, status_by, status_at",
+        (person or None, int(deadline_id)),
+    )
+    return _row_to_deadline(rows[0]) if rows else None
+
+
+def set_deadline_status(deadline_id, status, actor):
+    """Позначає рух звіту: submitted / accepted, або None — повернути в
+    «очікується» (помилились кнопкою)."""
+    ensure_team_schema()
+    rows = bot_db.query(
+        "UPDATE team_project_deadlines SET status = %s, status_by = %s, "
+        "status_at = CASE WHEN %s IS NULL THEN NULL ELSE now() END WHERE id = %s "
+        "RETURNING id, project_id, kind, stage, title, due, assignee, status, status_by, status_at",
+        (status, actor if status else None, status, int(deadline_id)),
     )
     return _row_to_deadline(rows[0]) if rows else None
 

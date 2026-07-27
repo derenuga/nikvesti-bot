@@ -629,3 +629,56 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 .me-cap { text-align: center; line-height: 1.2; }
 .me-cap b { display: block; font-size: 17px; font-weight: 800; color: var(--good); }
 .me-cap span { display: block; font-size: 11.5px; color: var(--muted); }
+
+/* Порожній слот нижнього меню — тримає «+» посередині (реальних пунктів троє) */
+.bn-spacer { visibility: hidden; pointer-events: none; }
+
+/* ---------- посилання-налаштування (KPI та ролі з нижнього меню) ---------- */
+.settings-link {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: var(--card); border-radius: 14px; box-shadow: var(--shadow);
+  padding: 13px 15px; margin-bottom: 18px;
+  font-size: 14px; font-weight: 600; color: var(--muted);
+}
+.settings-link .ic { width: 19px; height: 19px; color: var(--blue); flex-shrink: 0; }
+.settings-link .chev { margin-left: auto; }
+
+/* ---------- звітність ---------- */
+.rep-card {
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 14px 16px; margin-bottom: 12px;
+}
+.rep-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.rep-head .logo-sq { width: 44px; height: 44px; font-size: 13px; }
+.rep-head .rh-txt { flex: 1; min-width: 0; }
+.rep-head .rh-donor { display: block; font-weight: 800; font-size: 15.5px; }
+.rep-head .rh-name {
+  display: block; font-size: 12.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rep-end { font-size: 11.5px; color: var(--muted); margin-bottom: 10px; }
+.rep-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 10px 0; border-top: 1px solid var(--line);
+}
+.rep-row .ava { width: 30px; height: 30px; font-size: 10px; }
+.rep-row .rr-txt { flex: 1; min-width: 0; }
+/* Назва звіту переноситься, а не обрізається: «Наративний звіт · проміжний»
+   не влазить у рядок, а обрізання ховало найважливіше — стадію звіту */
+.rep-row .rr-kind { display: block; font-weight: 700; font-size: 13.5px; }
+.rep-row .rr-who { display: block; font-size: 12px; color: var(--muted); }
+.rep-row .rr-right {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+  flex-shrink: 0; margin-left: auto;
+}
+.rep-row .chev { flex-shrink: 0; margin-left: 6px; }
+
+/* Статус звіту: подано / прийнято */
+.rr-st {
+  display: inline-block; margin-left: 6px; padding: 1px 7px;
+  border-radius: 8px; font-size: 10.5px; font-weight: 700;
+  vertical-align: middle;
+}
+.rr-st.submitted { background: var(--blue-soft); color: var(--blue); }
+.rr-st.accepted { background: var(--good-soft); color: var(--good); }
+.rep-row.done .rr-kind, .rep-row.done .rr-who { opacity: .55; }

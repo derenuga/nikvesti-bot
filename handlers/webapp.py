@@ -255,6 +255,16 @@ def _bootstrap_blocking(person, is_manager):
         for n in names
     ]
     out["projects"] = projects
+    # Кандидати у відповідальні за звіти: ВЕСЬ ростер, включно з
+    # адміністративними — Олена (фінанси), Катя (наративка), Олег. У people
+    # їх немає навмисно: той список для постановки тасків журналісткам.
+    out["assignees"] = [
+        {"name": n,
+         "dept_title": team_roster.DEPT_TITLES.get(
+             team_roster.effective_dept(n, depts) or i["dept"], ""),
+         "admin": bool(i["manager"])}
+        for n, i in team_roster.ROSTER.items()
+    ]
     return out
 
 
@@ -582,6 +592,38 @@ async def api_deadline_patch(request):
     return web.json_response({"deadline": dl})
 
 
+async def api_deadline_assignee(request):
+    """Хто пише цей звіт. {person: "ПІБ"} або {clear: true} — повернути дефолт
+    за типом звіту (фінансовий — фінменеджерка, наративний — головредакторка)."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    who = None if payload.get("clear") else payload.get("person")
+    if who is not None and who not in team_roster.ROSTER:
+        raise web.HTTPBadRequest(text="Невідома людина")
+    dl = await _in_session(
+        team_tasks.set_deadline_assignee, int(request.match_info["dl_id"]), who
+    )
+    if not dl:
+        raise web.HTTPNotFound(text="Дедлайну немає")
+    return web.json_response({"deadline": dl})
+
+
+async def api_deadline_status(request):
+    """Рух звіту: {status: "submitted"|"accepted"} або {clear: true} —
+    повернути в «очікується». Доступно менеджерам (Олег, Катя, Олена)."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    status = None if payload.get("clear") else payload.get("status")
+    if status is not None and status not in team_tasks.DEADLINE_STATUSES:
+        raise web.HTTPBadRequest(text="status: submitted, accepted або clear")
+    dl = await _in_session(
+        team_tasks.set_deadline_status, int(request.match_info["dl_id"]), status, person
+    )
+    if not dl:
+        raise web.HTTPNotFound(text="Дедлайну немає")
+    return web.json_response({"deadline": dl})
+
+
 async def api_deadline_delete(request):
     person, info, _ = await _require_manager(request)
     deleted = await asyncio.to_thread(
@@ -876,6 +918,8 @@ async def start_webapp(application):
         web.put("/api/projects/{project_id:\\d+}/drive", api_project_drive),
         web.post("/api/project_deadlines", api_deadline_create),
         web.patch("/api/project_deadlines/{dl_id:\\d+}", api_deadline_patch),
+        web.put("/api/project_deadlines/{dl_id:\\d+}/assignee", api_deadline_assignee),
+        web.put("/api/project_deadlines/{dl_id:\\d+}/status", api_deadline_status),
         web.delete("/api/project_deadlines/{dl_id:\\d+}", api_deadline_delete),
         web.put("/api/people/dept", api_people_dept),
         web.get("/api/kpi", api_kpi),

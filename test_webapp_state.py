@@ -281,8 +281,12 @@ async def main():
             await page.click("#bulk-save")
             await page.wait_for_timeout(400)
 
-            # 8. перенести людину між відділами
-            await page.click('[data-view="team"]')
+            # 8. перенести людину між відділами (Команда — таб усередині KPI)
+            await page.click('[data-view="home"]')
+            await page.wait_for_selector('[data-nav="kpi"]')
+            await page.click('[data-nav="kpi"]')
+            await page.wait_for_selector('[data-kt="team"]')
+            await page.click('[data-kt="team"]')
             await page.wait_for_selector("[data-move]")
             await page.click("[data-move]")
             await page.click('[data-d="digital"]')
