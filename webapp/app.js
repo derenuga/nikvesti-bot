@@ -263,8 +263,14 @@ function taskLine(t, { donor = false } = {}) {
   return t.theme_name ? `${line} (${t.theme_name})` : line;
 }
 
+/* Фото людини за іменем. Шукаємо і серед журналісток, і серед керівництва:
+   у people менеджерів навмисно немає (той список іде на постановку тасків і
+   KPI-норми), тож без другої гілки Катя й Олена показувались ініціалами —
+   зокрема у «Звітності», де вони і є основні відповідальні. */
 function personEntry(name) {
-  return STATE.people.find((x) => x.name === name) || null;
+  return STATE.people.find((x) => x.name === name)
+    || STATE.managers.find((x) => x.name === name)
+    || null;
 }
 
 /* Прогрес зарахованого виконання: «2/3». Порожньо там, де показувати нічого:
