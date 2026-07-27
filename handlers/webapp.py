@@ -247,7 +247,13 @@ async def api_tasks_create(request):
         raise web.HTTPBadRequest(text="Невідома людина")
     type_ = payload.get("type") or None
     if type_ is not None and type_ not in team_tasks.TASK_TYPES:
-        raise web.HTTPBadRequest(text="type: news, article або порожньо (будь-який)")
+        raise web.HTTPBadRequest(text="type: news, article, post або порожньо (будь-який)")
+    platform = payload.get("platform") or None
+    if type_ == "post":
+        if platform not in team_tasks.TASK_PLATFORMS:
+            raise web.HTTPBadRequest(text="platform: telegram або instagram (для поста)")
+    else:
+        platform = None
     qty = payload.get("qty", 1)
     try:
         qty = max(1, min(99, int(qty)))
@@ -285,6 +291,7 @@ async def api_tasks_create(request):
         team_tasks.create_task,
         person, assignee, type_, project_id, project_name,
         theme_id, theme_name, qty, payload.get("note"), deadline, partner_name,
+        platform,
     )
     # Пінг після відповіді — створення таска не має висіти на Telegram API
     asyncio.get_running_loop().create_task(

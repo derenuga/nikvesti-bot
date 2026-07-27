@@ -38,9 +38,13 @@ KYIV_TZ = ZoneInfo("Europe/Kiev")
 
 WEBAPP_URL = normalize_https_url(os.environ.get("WEBAPP_URL"))
 
-TASK_TYPES = ("news", "article")
+TASK_TYPES = ("news", "article", "post")
 TASK_STATUSES = ("open", "done", "dropped")
-TYPE_TITLES = {"news": "новина", "article": "стаття"}
+TYPE_TITLES = {"news": "новина", "article": "стаття", "post": "пост"}
+
+# Платформи для типу «пост» (Олег, 27.07): поки Telegram та Instagram
+TASK_PLATFORMS = ("telegram", "instagram")
+PLATFORM_PHRASES = {"telegram": "у Telegram", "instagram": "в Instagram"}
 
 # Формат тематики проєкту (рішення Олега 27.07): конкретний формат,
 # «гібридний» (мікс форматів) або None — тематика без формату.
@@ -134,6 +138,8 @@ _SCHEMA_STATEMENTS = [
     # Снапшот донора (партнера) проєкту: у рядку таска донор іде першим,
     # і пінг каже «2 матеріали · IMS · Голоси Миколаєва» без походу в БД сайту
     "ALTER TABLE team_creative_tasks ADD COLUMN IF NOT EXISTS partner_name TEXT",
+    # Платформа для тасків типу «пост» (telegram/instagram)
+    "ALTER TABLE team_creative_tasks ADD COLUMN IF NOT EXISTS platform TEXT",
     # Папка проєкту на Google Drive (лінк; документи гранту — там)
     """
     CREATE TABLE IF NOT EXISTS team_project_drive (
@@ -355,6 +361,7 @@ def _row_to_task(r):
         "project_id": r["project_id"],
         "project_name": r["project_name"],
         "partner_name": r["partner_name"],
+        "platform": r["platform"],
         "type": r["type"],
         "theme_id": r["theme_id"],
         "theme_name": r["theme_name"],
@@ -399,14 +406,14 @@ def _add_event(task_id, actor, event, detail=None):
 
 def create_task(creator, person, type_, project_id=None, project_name=None,
                 theme_id=None, theme_name=None, qty=1, note=None, deadline=None,
-                partner_name=None):
+                partner_name=None, platform=None):
     ensure_team_schema()
     rows = bot_db.query(
         """
         INSERT INTO team_creative_tasks
             (person, creator, project_id, project_name, type, theme_id, theme_name,
-             qty, note, deadline, partner_name)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             qty, note, deadline, partner_name, platform)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING *
         """,
         (person, creator,
@@ -414,7 +421,7 @@ def create_task(creator, person, type_, project_id=None, project_name=None,
          type_ or None,
          int(theme_id) if theme_id else None, theme_name or None,
          max(1, int(qty)), (note or "").strip() or None, deadline or None,
-         partner_name or None),
+         partner_name or None, platform or None),
     )
     task = _row_to_task(rows[0])
     _add_event(task["id"], creator, "created", f"→ {person}")
@@ -470,16 +477,19 @@ async def _ping(bot, person, text):
 _QTY_WORDS = {
     "news": ("новина", "новини", "новин"),
     "article": ("стаття", "статті", "статей"),
+    "post": ("пост", "пости", "постів"),
     None: ("матеріал", "матеріали", "матеріалів"),
 }
 
 
 def task_summary(task):
     """Людський рядок таска, донор першим: «3 новини · IMS · Голоси Миколаєва
-    (Критичні потреби)»; без типу — «2 матеріали · …»."""
+    (Критичні потреби)»; пост — «2 пости у Telegram · …»."""
     qty = task["qty"]
     one, few, many = _QTY_WORDS.get(task["type"], _QTY_WORDS[None])
     type_word = one if qty == 1 else (few if qty < 5 else many)
+    if task["type"] == "post" and task.get("platform") in PLATFORM_PHRASES:
+        type_word += f" {PLATFORM_PHRASES[task['platform']]}"
     parts = [f"{qty} {type_word}" if qty > 1 else type_word]
     if task.get("partner_name"):
         parts.append(task["partner_name"])

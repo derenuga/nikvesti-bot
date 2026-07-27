@@ -25,8 +25,17 @@ const STATE = {
 const TYPE_WORDS = {
   news: { one: "новина", few: "новини", many: "новин" },
   article: { one: "стаття", few: "статті", many: "статей" },
+  post: { one: "пост", few: "пости", many: "постів" },
   any: { one: "матеріал", few: "матеріали", many: "матеріалів" },
 };
+
+const PLATFORM_PHRASES = { telegram: "у Telegram", instagram: "в Instagram" };
+
+function typePhrase(t, qty) {
+  let w = qtyWord(t.type, qty);
+  if (t.type === "post" && PLATFORM_PHRASES[t.platform]) w += ` ${PLATFORM_PHRASES[t.platform]}`;
+  return w;
+}
 
 const THEME_FORMATS = [
   { v: null, label: "Без формату" },
@@ -159,7 +168,7 @@ function qtyWord(type, qty) {
 }
 
 function taskSummary(t) {
-  let line = t.qty > 1 ? `${t.qty} ${qtyWord(t.type, t.qty)}` : qtyWord(t.type, 1);
+  let line = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
   const partner = t.partner_name || (taskProject(t).partner || null);
   if (partner) line += ` · ${partner}`;
   if (t.project_name) line += ` · ${t.project_name}`;
@@ -199,7 +208,7 @@ function taskProject(t) {
 
 /* Другий рядок таска: «2 матеріали · Назва проєкту (Тематика)» */
 function taskLine2(t) {
-  let line = t.qty > 1 ? `${t.qty} ${qtyWord(t.type, t.qty)}` : qtyWord(t.type, 1);
+  let line = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
   const { projName } = taskProject(t);
   line += ` · ${projName || "позапроєктне"}`;
   if (t.theme_name) line += ` (${t.theme_name})`;
@@ -221,7 +230,8 @@ function nav(view, arg) {
   if (view === "kpinorm") STATE.currentNorm = arg;
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
   if (view === "form") STATE.form = {
-    person: arg, project: undefined, type: null, theme_id: null, qty: 1, note: "", deadline: "",
+    person: arg, project: undefined, type: null, platform: "telegram",
+    theme_id: null, qty: 1, note: "", deadline: "",
   };
   const navKey = view === "kpinorm" ? "kpi" : view === "project" ? "projects" : view;
   document.querySelectorAll("#bottomnav .bn").forEach((b) =>
@@ -348,11 +358,19 @@ function renderForm() {
     <button class="bigpick" id="f-project">${projLabel}${icon("chevron-right", "ic chev")}</button>
 
     <div class="f-label">Тип матеріалу</div>
-    <div class="two">
-      <button class="bigbtn slim ${f.type === null ? "on" : ""}" data-type="">Будь-який</button>
-      <button class="bigbtn slim ${f.type === "news" ? "on" : ""}" data-type="news">Новина</button>
-      <button class="bigbtn slim ${f.type === "article" ? "on" : ""}" data-type="article">Стаття</button>
+    <div class="chips">
+      <button class="chip ${f.type === null ? "on" : ""}" data-type="">Будь-який</button>
+      <button class="chip ${f.type === "news" ? "on" : ""}" data-type="news">Новина</button>
+      <button class="chip ${f.type === "article" ? "on" : ""}" data-type="article">Стаття</button>
+      <button class="chip ${f.type === "post" ? "on" : ""}" data-type="post">Пост</button>
     </div>
+
+    ${f.type === "post" ? `
+      <div class="f-label">Платформа</div>
+      <div class="two">
+        <button class="bigbtn slim ${f.platform === "telegram" ? "on" : ""}" data-platform="telegram">Telegram</button>
+        <button class="bigbtn slim ${f.platform === "instagram" ? "on" : ""}" data-platform="instagram">Instagram</button>
+      </div>` : ""}
 
     ${proj ? `
       <div class="f-label">Тематика проєкту</div>
@@ -385,6 +403,7 @@ function renderForm() {
   $("f-deadline").oninput = (e) => { f.deadline = e.target.value; };
   $("f-note").oninput = (e) => { f.note = e.target.value; };
   $("content").querySelectorAll("[data-type]").forEach((b) => b.onclick = () => { f.type = b.dataset.type || null; renderForm(); });
+  $("content").querySelectorAll("[data-platform]").forEach((b) => b.onclick = () => { f.platform = b.dataset.platform; renderForm(); });
   $("content").querySelectorAll("[data-theme]").forEach((b) => b.onclick = () => {
     const id = +b.dataset.theme;
     f.theme_id = f.theme_id === id ? null : id;
@@ -429,6 +448,7 @@ async function createTask() {
         person: f.person,
         project_id: f.project || null,
         type: f.type,
+        platform: f.type === "post" ? f.platform : null,
         theme_id: f.theme_id,
         qty: f.qty,
         note: f.note.trim(),
