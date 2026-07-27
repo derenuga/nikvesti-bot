@@ -16,6 +16,7 @@ const STATE = {
   projects: [],
   view: "home",
   projView: "list",
+  projQuery: "",
   currentProject: null,
   currentNorm: null,
   kpi: null,
@@ -694,19 +695,30 @@ function renderForm() {
 
 function projectPickerSheet() {
   const f = STATE.form;
-  openSheet(`
-    <h2>Проєкт</h2>
-    <button class="pick-row plain" data-proj="none">
-      <span class="pk-name">Позапроєктне завдання</span>
-    </button>
-    ${STATE.projects.map((p) => `
+  let query = "";
+  const rowsHtml = () => {
+    const list = filteredProjects(query);
+    if (!list.length)
+      return `<div class="empty-hint" style="padding:24px">Нічого не знайшлось.</div>`;
+    return list.map((p) => `
       <button class="pick-row" data-proj="${p.id}">
         ${logoSq(p, 40)}
         <span>
           <span class="pk-name">${esc(p.partner ? p.partner + " · " : "")}${esc(p.name)}</span>
           <span class="pk-meta">${esc(fmtRange(p))}${p.kpi_news || p.kpi_articles ? ` · квота ${p.kpi_news || 0}+${p.kpi_articles || 0}` : ""}</span>
         </span>
-      </button>`).join("")}`);
+      </button>`).join("");
+  };
+  openSheet(`
+    <h2>Проєкт</h2>
+    ${STATE.projects.length > 8 ? searchBox("pick-q", "", "Пошук за донором чи назвою") : ""}
+    <button class="pick-row plain" data-proj="none">
+      <span class="pk-name">Позапроєктне завдання</span>
+    </button>
+    <div id="pick-list">${rowsHtml()}</div>`);
+  const pq = $("pick-q");
+  // Знову ж: перемальовуємо лише список, щоб не втратити фокус на кожній літері
+  if (pq) pq.oninput = () => { query = pq.value; $("pick-list").innerHTML = rowsHtml(); };
   // Без { once: true }: воно знімало слухач від БУДЬ-ЯКОГО кліку в шторці —
   // тап по заголовку робив пікер мертвим. Слухач тепер помирає разом із
   // вузлом шторки при наступному openSheet (див. openSheet).
@@ -750,31 +762,72 @@ async function createTask() {
 
 /* ---------- Проєкти: список і таймлайн ---------- */
 
+/* Пошук по проєктах: списки ростуть (уже ~40), і гортати їх, щоб знайти
+   потрібний донор, — найдовша дія в апці. Матчимо і донора, і назву. */
+function projectMatches(p, query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return `${p.partner || ""} ${p.name || ""}`.toLowerCase().includes(q);
+}
+
+function filteredProjects(query) {
+  return STATE.projects.filter((p) => projectMatches(p, query));
+}
+
+function searchBox(id, value, placeholder) {
+  return `<div class="search-box">
+    ${icon("search", "ic")}
+    <input id="${id}" type="search" inputmode="search" autocomplete="off"
+      placeholder="${esc(placeholder)}" value="${esc(value)}">
+  </div>`;
+}
+
 function renderProjects() {
   const seg = `
     <div class="two seg-slim">
       <button class="bigbtn slim ${STATE.projView === "list" ? "on" : ""}" data-pv="list">Список</button>
       <button class="bigbtn slim ${STATE.projView === "timeline" ? "on" : ""}" data-pv="timeline">Таймлайн</button>
     </div>`;
-  const body = STATE.projView === "timeline" ? timelineHtml() : listHtml();
+  // Поле пошуку — лише в списку і лише коли є що шукати
+  const withSearch = STATE.projView === "list" && STATE.projects.length > 8;
+  if (!withSearch) STATE.projQuery = "";
   $("content").innerHTML = `
     <div class="h-big">Проєкти</div>
     <div class="h-sub">квоти й строки — з CMS сайту, тематики — тут</div>
-    ${STATE.projects.length ? seg + body : `<div class="empty-hint">Не бачу проєктів — БД сайту недоступна.</div>`}`;
+    ${STATE.projects.length
+      ? seg + (withSearch ? searchBox("proj-q", STATE.projQuery, "Пошук за донором чи назвою") : "")
+        + `<div id="proj-body"></div>`
+      : `<div class="empty-hint">Не бачу проєктів — БД сайту недоступна.</div>`}`;
   $("content").querySelectorAll("[data-pv]").forEach((b) => b.onclick = () => {
     STATE.projView = b.dataset.pv;
     renderProjects();
   });
-  if (STATE.projView === "timeline") {
-    const sc = $("tl-scroll");
-    if (sc && sc.dataset.nowx) sc.scrollLeft = Math.max(0, +sc.dataset.nowx - sc.clientWidth * 0.45);
-  } else {
-    enableProjectDrag();
-  }
+  // Перемальовуємо ТІЛЬКИ список, поле пошуку лишається тим самим вузлом —
+  // інакше на кожній літері губився б фокус і клавіатура закривалась
+  const paintBody = () => {
+    const box = $("proj-body");
+    if (!box) return;
+    box.innerHTML = STATE.projView === "timeline" ? timelineHtml() : listHtml();
+    if (STATE.projView === "timeline") {
+      const sc = $("tl-scroll");
+      if (sc && sc.dataset.nowx) sc.scrollLeft = Math.max(0, +sc.dataset.nowx - sc.clientWidth * 0.45);
+    } else if (!STATE.projQuery.trim()) {
+      // Порядок перетягуванням — тільки на ПОВНОМУ списку: перетягнути щось
+      // у відфільтрованому означало б записати в Нору порядок із десятка
+      // проєктів замість сорока, тобто знищити решту.
+      enableProjectDrag();
+    }
+  };
+  paintBody();
+  const q = $("proj-q");
+  if (q) q.oninput = () => { STATE.projQuery = q.value; paintBody(); };
 }
 
 function listHtml() {
-  const rows = STATE.projects.map((p) => {
+  const list = filteredProjects(STATE.projQuery);
+  if (!list.length)
+    return `<div class="empty-hint">Нічого не знайшлось за «${esc(STATE.projQuery.trim())}».</div>`;
+  const rows = list.map((p) => {
     const nd = nextDeadline(p);
     return `
     <button class="proj-row" data-project="${p.id}" data-drag-id="${p.id}">
@@ -789,7 +842,9 @@ function listHtml() {
     </button>`;
   }).join("");
   return `<div id="proj-list">${rows}</div>
-    <div class="tl-note">Зажми проєкт і потягни, щоб змінити порядок.</div>`;
+    <div class="tl-note">${STATE.projQuery.trim()
+      ? `Знайдено ${list.length} із ${STATE.projects.length}. Порядок міняється на повному списку — очисти пошук.`
+      : "Зажми проєкт і потягни, щоб змінити порядок."}</div>`;
 }
 
 /* Перетягування проєктів: довгий натиск (350 мс без руху) → картка
