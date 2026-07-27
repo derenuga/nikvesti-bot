@@ -380,6 +380,14 @@ function render() {
 
 /* ---------- Головна ---------- */
 
+/* Позначка статусу таска: виконаний — зелена галочка (щоб виконане було
+   помітно, а не крапкою), знятий — приглушений хрестик, відкритий — крапка. */
+function statusMark(t) {
+  if (t.status === "done") return `<span class="st-mark done">${icon("check")}</span>`;
+  if (t.status === "dropped") return `<span class="st-mark dropped">${icon("x")}</span>`;
+  return `<span class="status-dot open"></span>`;
+}
+
 /* Донор таска для групування: партнер → назва проєкту → «позапроєктні» */
 function donorOf(t) {
   const tp = taskProject(t);
@@ -486,15 +494,15 @@ async function renderPerson() {
     const qtyPart = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
     const { projName } = taskProject(t);
     return `
-    <button class="task-row" data-task="${t.id}">
+    <button class="task-row ${t.status === "done" ? "is-done" : t.status === "dropped" ? "is-dropped" : ""}" data-task="${t.id}">
       <span class="tr-main">
         <span class="tr-who">${esc(qtyPart)}${t.theme_name ? ` · ${esc(t.theme_name)}` : ""}</span>
         ${projName ? `<span class="tr-what">${esc(projName)}</span>` : ""}
         ${t.note ? `<span class="tr-what">${esc(t.note)}</span>` : ""}
       </span>
       <span class="tr-right">
-        ${deadlineHtml(t, "badge")}
-        <span class="status-dot ${t.status}"></span>
+        ${t.status === "open" ? deadlineHtml(t, "badge") : ""}
+        ${statusMark(t)}
       </span>
     </button>`;
   };
