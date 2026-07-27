@@ -10,13 +10,14 @@
 менеджери відмічають в апці, і смикати їх після цього немає сенсу.
 
 Ідемпотентність: кожне нагадування фіксується в team_deadline_reminders
-(deadline_id × скільки днів лишалось). Тому перезапуск процесу, повторний
-прогін чи ручний виклик /reports не задублюють повідомлення. Якщо бот лежав
-і день пропустили — нагадування за цю позначку просто не піде (дата вже
-пройшла), але наступна (за 2 доби) спрацює.
+(deadline_id × поріг). Тому перезапуск процесу, повторний прогін чи ручний
+виклик /reports не задублюють повідомлення. Позначка ставиться ЛИШЕ після
+успішної відправки — якщо бот ще не має прав у чаті, наступного дня спроба
+повториться.
 
-Чат задається env FINANCE_CHAT_ID; приймає і «сирий» id групи без префікса
-(4738653227), і канонічний (-1004738653227) — див. _normalize_chat_id.
+Чат задається env FINANCE_CHAT_ID — без неї модуль тихо спить. Приймає і
+«сирий» id групи без префікса (4738653227), і канонічний (-1004738653227) —
+див. _normalize_chat_id.
 """
 
 import os
@@ -27,10 +28,14 @@ from handlers import bot_db, team_projects, team_tasks
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 
-# За скільки днів до дедлайну нагадуємо (Олег: спочатку за тиждень, потім за 2 доби)
+# Пороги нагадувань (Олег: спочатку за тиждень, потім за 2 доби). Це саме
+# ПОРОГИ, а не точні дні: спрацьовує перший непройдений поріг, під який
+# підпадає залишок часу. Інакше нагадування «за 7 днів» мало б рівно одну
+# спробу — і якщо того дня бот лежав, не мав прав у чаті або дедлайн завели
+# пізніше, ніж за тиждень, воно губилось би назавжди.
 REMIND_DAYS = (7, 2)
 
-_RAW_FINANCE_CHAT_ID = os.environ.get("FINANCE_CHAT_ID", "4738653227")
+_RAW_FINANCE_CHAT_ID = os.environ.get("FINANCE_CHAT_ID")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS team_deadline_reminders (
@@ -149,18 +154,35 @@ def collect_due(today=None):
         except (ValueError, TypeError):
             continue
         days_left = (due - today).days
-        if days_left not in REMIND_DAYS:
+        if days_left < 0:
+            continue  # дедлайн минув — нагадувати вже пізно, це не спам-бот
+        # Найтісніший поріг, під який підпадає залишок: 5 днів → поріг 7,
+        # 1 день → поріг 2. Так пропущений день не губить нагадування, і
+        # водночас за один дедлайн не летить два повідомлення поспіль.
+        fitting = [t for t in REMIND_DAYS if days_left <= t]
+        if not fitting:
             continue
-        if _already_sent(dl["id"], days_left):
+        threshold = min(fitting)
+        if _already_sent(dl["id"], threshold):
             continue
-        out.append((dl, projects.get(dl["project_id"]), days_left))
+        out.append((dl, projects.get(dl["project_id"]), threshold, days_left))
     return out
+
+
+def _when_human(days_left):
+    if days_left == 0:
+        return "сьогодні"
+    if days_left == 1:
+        return "завтра"
+    if days_left < 5:
+        return f"через {days_left} доби"
+    return f"через {days_left} днів"
 
 
 def format_reminder(dl, project, days_left):
     donor = (project or {}).get("partner") or (project or {}).get("name") or "проєкт"
     name = (project or {}).get("name")
-    when = "за тиждень" if days_left >= 7 else f"через {days_left} доби"
+    when = _when_human(days_left)
     lines = [
         f"🦊 <b>{deadline_title(dl)}</b> — {when}",
         f"{donor}" + (f" · {name}" if name and name != donor else ""),
@@ -187,7 +209,7 @@ async def check_report_deadlines(bot, chat_id=None, force=False):
         return 0
 
     sent = 0
-    for dl, project, days_left in due:
+    for dl, project, threshold, days_left in due:
         try:
             await bot.send_message(
                 chat_id=target,
@@ -196,7 +218,7 @@ async def check_report_deadlines(bot, chat_id=None, force=False):
                 disable_web_page_preview=True,
             )
             if not force:
-                await asyncio.to_thread(_mark_sent, dl["id"], days_left)
+                await asyncio.to_thread(_mark_sent, dl["id"], threshold)
             sent += 1
         except Exception as e:
             print(f"report_reminders: нагадування по дедлайну {dl['id']} не пішло — {e}")
@@ -217,7 +239,7 @@ async def reports_check_handler(update, context):
     if not sent:
         target = FINANCE_CHAT_ID if is_configured() else "не налаштовано"
         await update.message.reply_text(
-            "Нічого нагадувати: немає звітів, до яких лишилось рівно 7 або 2 доби "
+            "Нічого нагадувати: немає звітів у вікні 7 або 2 доби "
             "(подані й прийняті не рахуються).\n"
             f"Плановий чат нагадувань: <code>{target}</code>",
             parse_mode="HTML",
