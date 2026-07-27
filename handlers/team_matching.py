@@ -1,5 +1,5 @@
 """
-Зарахування виконання creative tasks — судья-матчер (концепт, крок 1: ТЕСТ).
+Зарахування виконання creative tasks — судья-матчер і фоновий прогін.
 
 Проблема (Олег, 27.07): БД сайту віддає, що публікація зроблена В РАМКАХ
 проєкту (nodes.partner_project), але НЕ каже, по якій тематиці. А таска
@@ -19,18 +19,25 @@
   4. high  → авто-зарахування; medium → черга на рішення Каті; low/жодна →
      тихо (лог «бачено, не збіг»), нікого не смикаємо.
 
-Цей файл поки — ТІЛЬКИ ТЕСТ: /match_test <url> проганяє суддю на реальній
-статті проти реальних відкритих тасків автора і показує вердикт. НІЧОГО НЕ
-ЗАРАХОВУЄ і не пише — щоб перевірити якість матчингу, перш ніж вмикати
-авто-облік.
+Фоновий прогін (run_matching_scan, щогодини :45): ОДИН запит у БД сайту по
+свіжих проєктних публікаціях → пре-фільтр у памʼяті проти пулу відкритих
+тасків → суддя лише там, де кандидати справді є. Записи — через
+team_matches (UNIQUE (source, ref)), тож повторний прогін нічого не дублює,
+а збій AI не рухає нічого і просто повториться наступної години.
+
+/match_test <url> лишається діагностикою: проганяє суддю на одній статті і
+показує вердикт, НІЧОГО не зараховуючи.
 """
 
+import asyncio
 import os
 import re
+import time
 
-from handlers import db, team_projects, team_roster, team_tasks
+from handlers import db, team_kpi, team_matches, team_projects, team_roster, team_tasks
 from handlers.ai_messages import async_client, _record_usage
 from handlers.helpers import extract_article_id
+from handlers.news_archive import _news_url
 from handlers.team_projects import _norm_name
 
 ALLOWED_USER_IDS = {
@@ -98,15 +105,18 @@ def resolve_owner_person(owner_id):
     return None
 
 
-def candidate_tasks(person, project_id, node_type):
+def candidate_tasks(person, project_id, node_type, pool=None):
     """Пре-фільтр БЕЗ AI: відкриті таски людини в цьому проєкті, сумісні за
     типом (тип таска збігається з типом ноди, або таска «будь-який»).
-    Пости в облік не беремо (їх у nodes немає — окрема історія)."""
+    Пости в облік не беремо (їх у nodes немає — окрема історія).
+
+    pool — уже прочитані відкриті таски (прогін бере їх раз на весь скан);
+    без нього читаємо таски людини самі (шлях /match_test)."""
     if not person or not project_id:
         return []
     out = []
-    for t in team_tasks.list_tasks(person):
-        if t["status"] != "open":
+    for t in (pool if pool is not None else team_tasks.list_tasks(person)):
+        if t["status"] != "open" or t["person"] != person:
             continue
         if t["project_id"] != int(project_id):
             continue
@@ -197,7 +207,269 @@ async def judge_publication(article, candidates):
     return verdict
 
 
+# ---------- Прогін: свіжі публікації → зарахування ----------
+#
+# Ліміти БД сайту (10000 запитів/год на весь бот) диктують форму: ОДИН запит
+# на весь прогін, а не по ноді. Далі все — в памʼяті, і AI вмикається лише
+# там, де пре-фільтр знайшов кандидатів.
+
+SCAN_DAYS = 7          # вікно свіжості для щогодинного прогону
+SCAN_LIMIT = 500       # стеля вибірки за прогін (запобіжник, не робочий режим)
+JUDGE_CONCURRENCY = 4  # скільки суддів паралельно
+
+_NODE_COLS = (
+    "id, type, category, status, owner_id, partner_project, published, "
+    "slug_ua, slug, COALESCE(title_ua, title) AS title, "
+    "COALESCE(content_ua, content) AS content"
+)
+
+
+def fetch_project_nodes(since_ts, until_ts=None, limit=SCAN_LIMIT):
+    """Проєктні публікації з БД сайту за вікном — ОДНИМ запитом.
+
+    Беремо тільки те, що взагалі може щось закрити: опубліковане (status=1),
+    у рамках проєкту (partner_project) і типу, який є в тасках (news/article).
+    published <= UNIX_TIMESTAMP() — гейт відкладених в адмінці (nodes.published
+    у них бреше майбутнім/минулим, як і в fb_missing)."""
+    if not db.is_configured():
+        return []
+    sql = (
+        f"SELECT {_NODE_COLS} FROM nodes "
+        "WHERE status = 1 AND partner_project IS NOT NULL AND partner_project > 0 "
+        "AND type IN ('news', 'article') "
+        "AND published >= %s AND published <= UNIX_TIMESTAMP() "
+    )
+    params = [int(since_ts)]
+    if until_ts:
+        sql += "AND published < %s "
+        params.append(int(until_ts))
+    sql += "ORDER BY published DESC LIMIT %s"
+    params.append(int(limit))
+    return db.query(sql, params)
+
+
+def owner_person_map():
+    """{users.id: людина ростера} — з піном team_user_link, як у KPI.
+
+    Через пін, а не через ПІБ: у users бувають дублі акаунтів (звільнена +
+    нинішня), і пошук за ПІБ брав старший id — виконання зараховувалось би
+    порожньому акаунту."""
+    links = team_kpi.get_user_links()
+    names = team_kpi._user_id_map()
+    out = {}
+    for person in team_roster.ROSTER:
+        if team_roster.ROSTER[person]["manager"]:
+            continue          # у керівництва тасків немає
+        uid = team_kpi.resolve_site_user_id(person, links, names)
+        if uid:
+            out[int(uid)] = person
+    return out
+
+
+def node_signal(row):
+    """Рядок nodes → сигнатура для судді й снапшот для картки в черзі."""
+    return {
+        "node_id": row["id"],
+        "type": row["type"],
+        "category": row["category"],
+        "owner_id": row["owner_id"],
+        "project_id": row["partner_project"],
+        "published": row["published"],
+        "title": (row["title"] or "").strip(),
+        "lead": _strip_html(row["content"]),
+        "url": _news_url(row),
+    }
+
+
+class ScanReport:
+    """Підсумок прогону — те, що потім летить у чат зведенням."""
+
+    def __init__(self):
+        self.seen = 0
+        self.auto = 0
+        self.pending = 0
+        self.skipped = 0
+        self.errors = 0
+        self.closed = []        # [(person, task)] — таски, що закрились самі
+        self.judged = 0         # скільки разів реально смикали AI
+
+    def as_text(self):
+        parts = [f"переглянуто {self.seen}"]
+        if self.auto:
+            parts.append(f"зараховано {self.auto}")
+        if self.pending:
+            parts.append(f"у чергу {self.pending}")
+        if self.closed:
+            parts.append(f"закрито тасків {len(self.closed)}")
+        if self.skipped:
+            parts.append(f"без кандидатів {self.skipped}")
+        if self.errors:
+            parts.append(f"збоїв {self.errors}")
+        return " · ".join(parts)
+
+
+async def judge_nodes(rows, *, ping=None, report=None, judge=None):
+    """Ядро авто-обліку: судить публікації і пише вердикти.
+
+    ping — async-колбек (person, task) для привітання виконавиці; None —
+    пінги приглушені (саме так ретроспектива не завалює людей двадцятьма
+    привітаннями за раз).
+    judge — підміна судді (тести); за замовчуванням справжній AI.
+    """
+    report = report or ScanReport()
+    judge = judge or judge_publication
+    if not rows:
+        return report
+
+    person_by_uid, pool, counts = await asyncio.to_thread(_load_pool)
+    fresh = await asyncio.to_thread(
+        team_matches.known_refs, "site", [r["id"] for r in rows]
+    )
+    sem = asyncio.Semaphore(JUDGE_CONCURRENCY)
+    # Замок на пул: рішення по одній публікації змінює залишок таска, а судді
+    # працюють паралельно — без нього дві статті могли б зайняти одне й те
+    # саме останнє місце в тасці.
+    lock = asyncio.Lock()
+
+    async def handle(row):
+        sig = node_signal(row)
+        report.seen += 1
+        person = person_by_uid.get(sig["owner_id"])
+        project_id = sig["project_id"]
+        base = {
+            "person": person, "project_id": project_id, "title": sig["title"],
+            "url": sig["url"], "published": sig["published"], "node_type": sig["type"],
+        }
+        if not person:
+            await asyncio.to_thread(
+                team_matches.record_match, "site", sig["node_id"], "skipped",
+                reasoning="Автора немає в ростері (owner_id "
+                          f"{sig['owner_id']})", **base)
+            report.skipped += 1
+            return
+        async with lock:
+            cands = [t for t in candidate_tasks(person, project_id, sig["type"], pool)
+                     if counts.get(t["id"], 0) < t["qty"]]
+        if not cands:
+            await asyncio.to_thread(
+                team_matches.record_match, "site", sig["node_id"], "skipped",
+                reasoning="Відкритих тасків у цьому проєкті немає", **base)
+            report.skipped += 1
+            return
+
+        async with sem:
+            try:
+                verdict = await judge(sig, cands)
+                report.judged += 1
+            except Exception as e:
+                # Нічого не пишемо: наступний прогін спробує ще (курсора,
+                # який можна зіпсувати, у нас немає — рухає лише сам запис)
+                print(f"team_matching: суддя впав на ноді {sig['node_id']} — {e}")
+                report.errors += 1
+                return
+
+        task = verdict.get("task")
+        high = verdict.get("confidence") == "high" and task
+        status = "auto" if high else "pending"
+        match = await asyncio.to_thread(
+            team_matches.record_match, "site", sig["node_id"], status,
+            task_id=task["id"] if task else None,
+            confidence=verdict.get("confidence"),
+            reasoning=verdict.get("reasoning"), **base)
+        if not match:
+            return          # хтось уже вирішив цю публікацію (повторний прогін)
+        if not high:
+            report.pending += 1
+            return
+        report.auto += 1
+        async with lock:
+            counts[task["id"]] = counts.get(task["id"], 0) + 1
+        updated, action = await asyncio.to_thread(
+            team_matches.apply_progress, task["id"])
+        if action == "done":
+            async with lock:
+                pool[:] = [t for t in pool if t["id"] != task["id"]]
+            report.closed.append((person, updated))
+            if ping:
+                try:
+                    await ping(person, updated)
+                except Exception as e:
+                    print(f"team_matching: пінг про виконання не пішов — {e}")
+
+    await asyncio.gather(*[handle(r) for r in rows if str(r["id"]) not in fresh])
+    return report
+
+
+def _load_pool():
+    """Одним з'єднанням: мапа авторів, пул відкритих тасків і поточні
+    зарахування по них."""
+    from handlers import bot_db
+    with bot_db.session():
+        pool = team_tasks.list_open_tasks()
+        counted = team_matches.counted_by_task([t["id"] for t in pool])
+    person_by_uid = owner_person_map()
+    counts = {tid: len(v) for tid, v in counted.items()}
+    return person_by_uid, pool, counts
+
+
+async def _ping_done(bot, person, task):
+    """Привітання виконавиці: таск закрився сам, і видно, чим саме."""
+    links = ""
+    matches = await asyncio.to_thread(team_matches.counted_by_task, [task["id"]])
+    for m in matches.get(task["id"], []):
+        links += f"\n• {m['title']} — {m['url']}"
+    await team_tasks._ping(
+        bot, person,
+        f"🦊 Завдання виконано — зарахувала сама:\n{team_tasks.task_summary(task)}"
+        f"{links}",
+    )
+
+
+async def run_matching_scan(bot, days=SCAN_DAYS, ping=True, chat_id=None):
+    """Щогодинний прогін (scheduler). Тихий: у чат пише, лише коли є що
+    сказати, і лише на явний виклик (/match_scan)."""
+    if not db.is_configured():
+        return None
+    since = int(time.time()) - days * 86400
+    rows = await asyncio.to_thread(fetch_project_nodes, since)
+    ping_cb = (lambda person, task: _ping_done(bot, person, task)) if ping else None
+    report = await judge_nodes(rows, ping=ping_cb)
+    if report.auto or report.pending or report.errors:
+        print(f"team_matching: прогін — {report.as_text()}")
+    if chat_id:
+        await bot.send_message(chat_id=chat_id, text=f"🦊 Звірка: {report.as_text()}")
+    return report
+
+
 # ---------- Тестова команда (нічого не зараховує) ----------
+
+async def match_scan_handler(update, context):
+    """/match_scan [днів] — прогнати звірку виконання зараз (за замовчуванням
+    вікно щогодинного прогону). Зараховує по-справжньому; ідемпотентно —
+    повторний виклик нічого не подвоїть."""
+    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    try:
+        days = max(1, min(400, int(context.args[0]))) if context.args else SCAN_DAYS
+    except ValueError:
+        days = SCAN_DAYS
+    msg = await update.message.reply_text(f"🦊 Звіряю публікації за {days} дн…")
+    try:
+        report = await run_matching_scan(context.bot, days=days)
+    except Exception as e:
+        await msg.edit_text(f"❌ Прогін упав: {e}")
+        return
+    if report is None:
+        await msg.edit_text("БД сайту не налаштована — звіряти нема з чим.")
+        return
+    lines = [f"🦊 Звірка за {days} дн: {report.as_text()}"]
+    for person, task in report.closed:
+        lines.append(f"✅ {person}: {team_tasks.task_summary(task)}")
+    if report.pending:
+        lines.append(f"\n🤔 {report.pending} спірних — у «Сповіщеннях» апки.")
+    await msg.edit_text("\n".join(lines), disable_web_page_preview=True)
+
 
 async def match_test_handler(update, context):
     """/match_test <url> — прогнати суддю на реальній статті проти реальних

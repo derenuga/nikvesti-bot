@@ -480,6 +480,16 @@ def list_tasks(person=None, done_days=30, limit=200):
     return [_row_to_task(r) for r in bot_db.query(sql, params)]
 
 
+def list_open_tasks():
+    """ВСІ відкриті таски (без ліміту й без закритих) — пул кандидатів для
+    авто-обліку. Прогін бере його ОДИН раз і фільтрує в памʼяті: інакше на
+    кожну публікацію йшов би окремий запит у Нору."""
+    ensure_team_schema()
+    return [_row_to_task(r) for r in bot_db.query(
+        "SELECT * FROM team_creative_tasks WHERE status = 'open' ORDER BY id"
+    )]
+
+
 def get_task(task_id):
     ensure_team_schema()
     rows = bot_db.query("SELECT * FROM team_creative_tasks WHERE id = %s", (int(task_id),))

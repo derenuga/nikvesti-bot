@@ -22,6 +22,8 @@ const STATE = {
   currentProject: null,
   currentNorm: null,
   kpi: null,
+  pending: null,        // черга звірки (тягнеться при вході в «Сповіщення»)
+  pendingCount: 0,      // для лічильника на пункті меню
   homeView: "tasks",
   kpiTab: "norms",
   dash: { period: "week", offset: -1, data: null },
@@ -373,6 +375,7 @@ function nav(view, arg) {
     STATE.bulk = { ...arg, y: now.getFullYear(), m: now.getMonth(), qty: {} };
   }
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
+  if (view === "alerts") STATE.pending = null;   // черга могла змінитись у колеги
   if (view === "form") STATE.form = {
     person: arg, project: undefined, type: null, platform: "telegram",
     theme_id: null, qty: 1, note: "", deadline: "",
@@ -1408,26 +1411,140 @@ function assigneeRow(d) {
     </button>`;
 }
 
-/* Сповіщення — поки заглушка (Олег, 27.07): місце в меню зайняте, щоб не
-   пустувало, і видно, що саме сюди приїде. Нагадування вже працюють, але
-   летять у чати, а не в апку. */
-function renderAlerts() {
+/* Сповіщення: перший і головний тип — черга звірки. Лис бачить, що людина
+   опублікувала матеріал у проєкті, але не впевнений, яку саме тематику той
+   закриває, — і питає Катю: «це тендери чи історія з інфозапиту?».
+   Порожня черга — спокійний стан, а не помилка. */
+const CONF_LABEL = { high: "впевнено", medium: "схоже", low: "слабкий звʼязок" };
+
+function matchCard(m) {
+  const proj = m.project_id ? projectById(m.project_id) : null;
+  const donor = proj ? (proj.partner || proj.name) : "";
+  const suggested = (m.options || []).find((o) => o.id === m.task_id);
+  return `
+  <div class="al-card" data-match="${m.id}">
+    <div class="al-head">
+      ${proj ? logoSq(proj, 36) : ""}
+      <span class="al-h-txt">
+        <span class="al-who">${esc(m.person || "автор невідомий")}</span>
+        <span class="al-proj">${esc([donor, proj && proj.name].filter(Boolean).join(" · "))}</span>
+      </span>
+      ${m.confidence ? `<span class="al-conf ${esc(m.confidence)}">${esc(CONF_LABEL[m.confidence] || m.confidence)}</span>` : ""}
+    </div>
+    <a class="al-title" href="${esc(m.url)}" data-ext="${esc(m.url)}">${esc(m.title || m.url)}</a>
+    ${m.reasoning ? `<div class="al-why">${esc(m.reasoning)}</div>` : ""}
+    ${suggested
+      ? `<div class="al-guess">Схоже на «${esc(suggested.theme_name || "без тематики")}» —
+           ${suggested.done_count}/${suggested.qty}</div>`
+      : `<div class="al-guess muted">Суддя не обрав тематику — обери сама</div>`}
+    <div class="al-actions">
+      <button class="sbtn danger" data-mreject="${m.id}">Не те</button>
+      <button class="sbtn primary" data-mconfirm="${m.id}">Зарахувати</button>
+    </div>
+  </div>`;
+}
+
+async function renderAlerts() {
+  const already = STATE.pending;
   $("content").innerHTML = `
     <div class="h-big">Сповіщення</div>
-    <div class="h-sub">те, про що Лис нагадує сам</div>
+    <div class="h-sub">що Лис просить підтвердити</div>
+    <div id="alerts-body">${already ? "" : skeleton("rows", 3)}</div>`;
+  if (!already) {
+    try {
+      STATE.pending = (await api("/api/matches/pending")).pending || [];
+    } catch (e) {
+      $("alerts-body").innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+      return;
+    }
+    if (STATE.view !== "alerts") return;
+  }
+  paintAlerts();
+}
+
+function paintAlerts() {
+  const list = STATE.pending || [];
+  const box = $("alerts-body");
+  if (!box) return;
+  box.innerHTML = `
+    ${list.length
+      ? `<div class="dept-title">Звірити виконання · ${list.length}</div>
+         ${list.map(matchCard).join("")}`
+      : `<div class="empty-hint">Спірних публікацій немає —
+           усе, що вийшло, Лис розібрав сам.</div>`}
     <div class="soft-card">
-      <div class="sc-t">Уже працює — у чатах</div>
+      <div class="sc-t">Летить у чати</div>
       <div class="al-line">Звітні дедлайни грантів — у «Фінанси МикВісті»,
         за тиждень і за 2 доби до дати.</div>
-      <div class="al-line">Нове завдання — виконавиці в приват від Лиса.</div>
-    </div>
-    <div class="soft-card">
-      <div class="sc-t">Приїде сюди</div>
-      <div class="al-line">Стрічка сповіщень замість розкиданих по чатах:
-        що горить сьогодні, кого підштовхнути, які звіти без відповідального.</div>
-    </div>
-    <div class="tl-note">Екран у розробці — поки що нічого не пропустиш,
-      усе дублюється в чати.</div>`;
+      <div class="al-line">Нове завдання і виконане завдання — виконавиці
+        в приват від Лиса.</div>
+    </div>`;
+  box.querySelectorAll("[data-mreject]").forEach((b) => b.onclick = async () => {
+    const m = (STATE.pending || []).find((x) => x.id === +b.dataset.mreject);
+    if (!m) return;
+    if (!(await confirmAction(`Не зараховувати «${m.title}»?`))) return;
+    decideMatch(m.id, { action: "reject" });
+  });
+  box.querySelectorAll("[data-mconfirm]").forEach((b) => b.onclick = () => {
+    const m = (STATE.pending || []).find((x) => x.id === +b.dataset.mconfirm);
+    if (m) matchThemeSheet(m);
+  });
+}
+
+/* Куди зараховуємо: список відкритих тасків цієї людини в цьому проєкті.
+   Запропоноване суддею — зверху й позначене. */
+function matchThemeSheet(m) {
+  const options = m.options || [];
+  if (!options.length) {
+    toast("У цієї людини немає відкритих завдань у проєкті");
+    return;
+  }
+  const sorted = [...options].sort((a, b) =>
+    (b.id === m.task_id) - (a.id === m.task_id));
+  openSheet(`
+    <h2>Куди зарахувати?</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(m.title)}</p>
+    ${sorted.map((o) => `
+      <button class="pick-row" data-mtask="${o.id}">
+        <span>
+          <span class="pk-name">${esc(o.theme_name || "Без тематики")}</span>
+          <span class="pk-meta">${o.done_count}/${o.qty}${o.id === m.task_id ? " · пропозиція Лиса" : ""}</span>
+        </span>
+        ${o.id === m.task_id ? icon("check", "ic chev") : ""}
+      </button>`).join("")}`);
+  $("sheet").querySelectorAll("[data-mtask]").forEach((b) => b.onclick = () => {
+    closeSheet();
+    decideMatch(m.id, { action: "confirm", task_id: +b.dataset.mtask });
+  });
+}
+
+async function decideMatch(matchId, body) {
+  try {
+    const res = await api(`/api/matches/${matchId}/decide`, {
+      method: "POST", body: JSON.stringify(body),
+    });
+    haptic("success");
+    STATE.pending = (STATE.pending || []).filter((x) => x.id !== matchId);
+    (res.tasks || []).forEach(patchTask);
+    STATE.pendingCount = res.pending_count;
+    syncAlertsBadge();
+    paintAlerts();
+  } catch (e) { toast(e.message); }
+}
+
+/* Лічильник непрочитаного на пункті меню «Сповіщення» */
+function syncAlertsBadge() {
+  const btn = document.querySelector('#bottomnav [data-view="alerts"]');
+  if (!btn) return;
+  const n = STATE.pendingCount || 0;
+  let dot = btn.querySelector(".bn-badge");
+  if (!n) { if (dot) dot.remove(); return; }
+  if (!dot) {
+    dot = document.createElement("span");
+    dot.className = "bn-badge";
+    btn.appendChild(dot);
+  }
+  dot.textContent = n > 9 ? "9+" : n;
 }
 
 function renderReports() {
@@ -2164,6 +2281,8 @@ async function reload() {
   STATE.projects = data.projects || [];
   STATE.assignees = data.assignees || [];
   STATE.managers = data.managers || [];
+  STATE.pendingCount = data.pending_count || 0;
+  syncAlertsBadge();
 }
 
 /* ---------- Локальні патчі STATE ----------

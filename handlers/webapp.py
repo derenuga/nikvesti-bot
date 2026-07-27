@@ -222,11 +222,17 @@ def _bootstrap_blocking(person, is_manager):
         photos = {n: None for n in names}
 
     themes = []
+    out["pending_count"] = 0
     if out["nora"]:
         try:
             themes = team_tasks.list_themes()
         except Exception as e:
             print(f"webapp: тематики не прочитались — {e}")
+        try:
+            # Лічильник черги звірки — на пункті меню «Сповіщення»
+            out["pending_count"] = team_matches.pending_count()
+        except Exception as e:
+            print(f"webapp: черга звірки не прочиталась — {e}")
 
     theme_by_project = {}
     for t in themes:
@@ -675,6 +681,74 @@ async def api_deadline_delete(request):
     return web.json_response({"ok": True})
 
 
+# ---------- Черга звірки (спірні матчі) ----------
+
+def _pending_payload():
+    """Черга + кандидати на перевизначення. Кандидати рахуються тут, а не на
+    фронті: у апці немає закритих тасків інших людей і немає ліміту qty."""
+    pending = team_matches.pending_matches()
+    if not pending:
+        return {"pending": []}
+    pool = team_tasks.list_open_tasks()
+    counted = team_matches.counted_by_task([t["id"] for t in pool])
+    for m in pending:
+        options = [
+            {"id": t["id"], "theme_name": t["theme_name"], "type": t["type"],
+             "qty": t["qty"], "done_count": len(counted.get(t["id"], [])),
+             "person": t["person"], "project_id": t["project_id"]}
+            for t in pool
+            if t["person"] == m["person"] and t["project_id"] == m["project_id"]
+        ]
+        m["options"] = options
+    return {"pending": pending}
+
+
+async def api_matches_pending(request):
+    """Черга звірки для «Сповіщень». Тільки менеджери — це редакторське
+    рішення, кому й куди зараховувати."""
+    person, info, _ = await _require_manager(request)
+    data = await _in_session(_pending_payload)
+    return web.json_response(data)
+
+
+def _decide_blocking(match_id, actor, action, task_id):
+    """Рішення + перерахунок прогресу обох зачеплених тасків в одній сесії."""
+    match, touched = team_matches.decide_match(match_id, actor, action, task_id=task_id)
+    if not match:
+        return None
+    tasks = []
+    for tid in touched:
+        task, _ = team_matches.apply_progress(tid, actor)
+        if task:
+            tasks.append(task)
+    team_matches.attach_progress(tasks)
+    return {"match": match, "tasks": tasks, "pending_count": team_matches.pending_count()}
+
+
+async def api_matches_decide(request):
+    """{action: confirm|reject, task_id?} — «зарахувати» (можливо в іншу
+    тематику) або «не те». Запис лишається в обох випадках: повторно ту саму
+    публікацію суддя вже не чіпатиме."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    action = payload.get("action")
+    if action not in ("confirm", "reject"):
+        raise web.HTTPBadRequest(text="action: confirm або reject")
+    task_id = payload.get("task_id")
+    if action == "confirm" and task_id is not None:
+        try:
+            task_id = int(task_id)
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="task_id: число")
+    result = await _in_session(
+        _decide_blocking, int(request.match_info["match_id"]), person, action,
+        task_id if action == "confirm" else None,
+    )
+    if not result:
+        raise web.HTTPNotFound(text="Матчу немає (або нема куди зараховувати)")
+    return web.json_response(result)
+
+
 # ---------- Відділ людини (Катя переносить в апці) ----------
 
 async def api_people_dept(request):
@@ -963,6 +1037,8 @@ async def start_webapp(application):
         web.put("/api/project_deadlines/{dl_id:\\d+}/status", api_deadline_status),
         web.delete("/api/project_deadlines/{dl_id:\\d+}", api_deadline_delete),
         web.put("/api/people/dept", api_people_dept),
+        web.get("/api/matches/pending", api_matches_pending),
+        web.post("/api/matches/{match_id:\\d+}/decide", api_matches_decide),
         web.get("/api/kpi", api_kpi),
         web.get("/api/kpi/dashboard", api_kpi_dashboard),
         web.get("/api/kpi/person", api_kpi_person),
