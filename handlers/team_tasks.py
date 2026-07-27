@@ -32,7 +32,7 @@ from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
-from handlers import bot_db, team_roster
+from handlers import bot_db, team_notifications, team_roster
 from handlers.helpers import normalize_https_url
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
@@ -524,6 +524,15 @@ def create_task(creator, person, type_, project_id=None, project_name=None,
     )
     task = _row_to_task(rows[0])
     _add_event(task["id"], creator, "created", f"→ {person}")
+    # Сповіщення в апці дублює пінг у приват: пінг не дійде, доки людина хоч
+    # раз не відкрила апку, а стрічка чекає її там завжди
+    team_notifications.notify_safe(
+        "task_assigned", task_summary(task), audience="person", person=person,
+        body=f"поставила {creator.split()[0]}"
+             + (f" · до {task['deadline'][8:10]}.{task['deadline'][5:7]}"
+                if task["deadline"] else ""),
+        object_type="task", object_id=task["id"],
+        dedup_key=f"task_assigned:{task['id']}")
     return task
 
 

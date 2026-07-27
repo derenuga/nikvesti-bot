@@ -25,7 +25,9 @@ handlers/team_tasks.py     — Нора: creative tasks, тематики, по�
                              дедлайни звітності, папки Drive; пінги від Лиса
 handlers/team_kpi.py       — Нора: норми і правки KPI; факт і історія з nodes;
                              дашборд, профіль людини, /kpi_debug, /kpi_link
-handlers/team_matching.py  — судья-матчер зарахування виконання (поки /match_test)
+handlers/team_matching.py  — суддя-матчер + фоновий прогін і ретроспектива
+handlers/team_matches.py   — Нора: зараховане виконання, прогрес, черга звірки
+handlers/team_notifications.py — Нора: стрічка подій за роллю (сповіщення)
 handlers/webapp.py         — aiohttp: HMAC initData, API, статика, /health, /team
 webapp/                    — SPA без збірки: index.html + style.css + app.js
 ```
@@ -288,6 +290,8 @@ CMS немає: тематики, creative tasks, норми KPI, порядок
 | PUT | `/api/projects/{id}/drive` | менеджер | папка Drive (порожній url — відкріпити) |
 | POST/PATCH/DELETE | `/api/project_deadlines[/{id}]` | менеджер | звітність і майлстоуни |
 | PUT | `/api/people/dept` | менеджер | перенести людину між відділами |
+| GET | `/api/notifications` | всі | стрічка подій за роллю + лічильник непрочитаного |
+| POST | `/api/notifications/read` | всі | `{all: true}` або `{ids: […]}` — позначити прочитаним |
 | GET | `/api/matches/pending` | менеджер | черга звірки: спірні публікації + куди їх можна зарахувати |
 | POST | `/api/matches/{id}/decide` | менеджер | `{action: confirm\|reject, task_id?}` — зарахувати (у будь-яку тематику) або «не те» |
 | GET | `/api/kpi` | всі | зведення: менеджер — усі норми з людьми; журналістка — свій рядок |
@@ -318,6 +322,8 @@ CMS немає: тематики, creative tasks, норми KPI, порядок
 | `team_project_drive` | папка Google Drive проєкту |
 | `team_kpi_norms` | норми: dept, metric, period, target, own |
 | `team_kpi_overrides` | правки: norm_id, person, period_start, target, note |
+| `team_notifications` | стрічка подій: kind, audience (managers/person), person, object, title/body/url, dedup_key (UNIQUE) |
+| `team_notification_reads` | прочитане: подія × людина (менеджерську подію бачать двоє-троє) |
 | `team_task_matches` | зараховане виконання: source+ref (UNIQUE), task_id, person, project_id, confidence, reasoning, status, title/url/published (снапшот публікації), decided_by/decided_at |
 
 Схема створюється ліниво (`ensure_team_schema` / `ensure_kpi_schema`) з

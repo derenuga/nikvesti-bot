@@ -50,7 +50,8 @@ except ImportError:  # локальний dev без aiohttp — модуль п
     web = None
 
 from handlers import (
-    bot_db, team_kpi, team_matches, team_projects, team_roster, team_tasks,
+    bot_db, team_kpi, team_matches, team_notifications, team_projects,
+    team_roster, team_tasks,
 )
 from handlers.helpers import normalize_https_url
 
@@ -175,11 +176,13 @@ def _bootstrap_blocking(person, is_manager):
     (тематики/таски). Кожне джерело деградує окремо."""
     out = {"site_db": False, "nora": False}
 
+    out["unread"] = 0
     try:
         out["tasks"] = team_tasks.list_tasks(None if is_manager else person)
         # Прогрес «2/3» і лінки зарахованих публікацій — одним запитом на
         # весь список (не по таску), інакше екран Каті вибив би сотню запитів
         team_matches.attach_progress(out["tasks"])
+        out["unread"] = team_notifications.unread_count(person, is_manager)
         out["nora"] = True
     except Exception as e:
         print(f"webapp: Нора недоступна — {e}")
@@ -749,6 +752,35 @@ async def api_matches_decide(request):
     return web.json_response(result)
 
 
+# ---------- Стрічка сповіщень ----------
+
+async def api_notifications(request):
+    """Стрічка подій за роллю: свої персональні + менеджерські для керівництва.
+    Доступна всім — журналістці теж (її завдання і зарахування)."""
+    person, info, _ = await _authenticate(request)
+    data = await _in_session(
+        lambda: {"items": team_notifications.feed(person, info["manager"]),
+                 "unread": team_notifications.unread_count(person, info["manager"])}
+    )
+    return web.json_response(data)
+
+
+async def api_notifications_read(request):
+    """{ids: [...]} або {all: true} — позначити прочитаним."""
+    person, info, _ = await _authenticate(request)
+    payload = await _json(request)
+    ids = None if payload.get("all") else payload.get("ids") or []
+    if ids is not None and not isinstance(ids, list):
+        raise web.HTTPBadRequest(text="ids: список")
+    unread = await _in_session(_mark_read_blocking, person, info["manager"], ids)
+    return web.json_response({"ok": True, "unread": unread})
+
+
+def _mark_read_blocking(person, is_manager, ids):
+    team_notifications.mark_read(person, is_manager, ids)
+    return team_notifications.unread_count(person, is_manager)
+
+
 # ---------- Відділ людини (Катя переносить в апці) ----------
 
 async def api_people_dept(request):
@@ -1038,6 +1070,8 @@ async def start_webapp(application):
         web.delete("/api/project_deadlines/{dl_id:\\d+}", api_deadline_delete),
         web.put("/api/people/dept", api_people_dept),
         web.get("/api/matches/pending", api_matches_pending),
+        web.get("/api/notifications", api_notifications),
+        web.post("/api/notifications/read", api_notifications_read),
         web.post("/api/matches/{match_id:\\d+}/decide", api_matches_decide),
         web.get("/api/kpi", api_kpi),
         web.get("/api/kpi/dashboard", api_kpi_dashboard),

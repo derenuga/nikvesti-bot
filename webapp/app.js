@@ -24,6 +24,8 @@ const STATE = {
   kpi: null,
   pending: null,        // черга звірки (тягнеться при вході в «Сповіщення»)
   pendingCount: 0,      // для лічильника на пункті меню
+  notifs: null,         // стрічка подій
+  unread: 0,
   homeView: "tasks",
   kpiTab: "norms",
   dash: { period: "week", offset: -1, data: null },
@@ -375,7 +377,8 @@ function nav(view, arg) {
     STATE.bulk = { ...arg, y: now.getFullYear(), m: now.getMonth(), qty: {} };
   }
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
-  if (view === "alerts") STATE.pending = null;   // черга могла змінитись у колеги
+  // Черга і стрічка могли змінитись у колеги — перечитуємо при кожному вході
+  if (view === "alerts") { STATE.pending = null; STATE.notifs = null; }
   if (view === "form") STATE.form = {
     person: arg, project: undefined, type: null, platform: "telegram",
     theme_id: null, qty: 1, note: "", deadline: "",
@@ -1444,15 +1447,43 @@ function matchCard(m) {
   </div>`;
 }
 
+/* Стрічка подій — другий шар «Сповіщень» (черга просить дії, стрічка просто
+   розповідає, що сталось). Прочитане не зникає, а приглушується. */
+const NOTIF_ICON = {
+  task_assigned: "plus", task_done: "check", report_deadline: "calendar",
+};
+
+function notifRow(n) {
+  const when = n.created_at ? shortDate(n.created_at) : "";
+  const inner = `
+    <span class="st-mark ${n.kind === "task_done" ? "done" : "dropped"}">
+      ${icon(NOTIF_ICON[n.kind] || "bell")}</span>
+    <span class="tr-main">
+      <span class="tr-who">${esc(n.title)}</span>
+      ${n.body ? `<span class="tr-what">${esc(n.body)}</span>` : ""}
+    </span>
+    <span class="tr-right"><span class="mr-d">${esc(when)}</span></span>`;
+  const cls = `task-row nt-row${n.unread ? " unread" : ""}`;
+  return n.url
+    ? `<a class="${cls}" href="${esc(n.url)}" data-ext="${esc(n.url)}">${inner}</a>`
+    : `<div class="${cls}">${inner}</div>`;
+}
+
 async function renderAlerts() {
-  const already = STATE.pending;
+  const already = STATE.pending && STATE.notifs;
   $("content").innerHTML = `
     <div class="h-big">Сповіщення</div>
-    <div class="h-sub">що Лис просить підтвердити</div>
+    <div class="h-sub">що просить підтвердити і що вже сталось</div>
     <div id="alerts-body">${already ? "" : skeleton("rows", 3)}</div>`;
   if (!already) {
     try {
-      STATE.pending = (await api("/api/matches/pending")).pending || [];
+      // Черга і стрічка — різні джерела; тягнемо паралельно, бо екран один
+      const [q, feed] = await Promise.all([
+        api("/api/matches/pending"), api("/api/notifications"),
+      ]);
+      STATE.pending = q.pending || [];
+      STATE.notifs = feed.items || [];
+      STATE.unread = feed.unread || 0;
     } catch (e) {
       $("alerts-body").innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
       return;
@@ -1460,10 +1491,25 @@ async function renderAlerts() {
     if (STATE.view !== "alerts") return;
   }
   paintAlerts();
+  markNotifsRead();
+}
+
+/* Побачила — прочитано. Позначаємо ПІСЛЯ малювання, щоб непрочитані ще раз
+   підсвітились у цьому заході, і тихо: збій позначки нічого не ламає. */
+async function markNotifsRead() {
+  if (!STATE.unread) return;
+  try {
+    const res = await api("/api/notifications/read", {
+      method: "POST", body: JSON.stringify({ all: true }),
+    });
+    STATE.unread = res.unread || 0;
+    syncAlertsBadge();
+  } catch (e) { /* лічильник просто оновиться наступного разу */ }
 }
 
 function paintAlerts() {
   const list = STATE.pending || [];
+  const feed = STATE.notifs || [];
   const box = $("alerts-body");
   if (!box) return;
   box.innerHTML = `
@@ -1472,6 +1518,10 @@ function paintAlerts() {
          ${list.map(matchCard).join("")}`
       : `<div class="empty-hint">Спірних публікацій немає —
            усе, що вийшло, Лис розібрав сам.</div>`}
+    ${feed.length
+      ? `<div class="dept-title">Що сталось</div>
+         <div class="soft-card">${feed.map(notifRow).join("")}</div>`
+      : ""}
     <div class="soft-card">
       <div class="sc-t">Летить у чати</div>
       <div class="al-line">Звітні дедлайни грантів — у «Фінанси МикВісті»,
@@ -1532,11 +1582,11 @@ async function decideMatch(matchId, body) {
   } catch (e) { toast(e.message); }
 }
 
-/* Лічильник непрочитаного на пункті меню «Сповіщення» */
+/* Лічильник на пункті меню «Сповіщення»: спірні + непрочитані події */
 function syncAlertsBadge() {
   const btn = document.querySelector('#bottomnav [data-view="alerts"]');
   if (!btn) return;
-  const n = STATE.pendingCount || 0;
+  const n = (STATE.pendingCount || 0) + (STATE.unread || 0);
   let dot = btn.querySelector(".bn-badge");
   if (!n) { if (dot) dot.remove(); return; }
   if (!dot) {
@@ -2151,6 +2201,7 @@ function renderJournalist() {
       <div class="me-ring" id="me-ring">${meRingHtml(null, null)}</div>
     </div>
     <div id="my-kpi"></div>
+    <div id="my-notifs"></div>
     <div id="my-history"></div>
     ${open.length ? `<div class="soft-card">${open.map((t) => {
       const tp = taskProject(t);
@@ -2174,7 +2225,29 @@ function renderJournalist() {
     <div class="empty-hint" style="padding-top:16px">Це попередній перегляд —
       повний твій інтерфейс уже в розробці.</div>`;
   renderMyKpi();
+  renderMyNotifs();
   renderMyHistory();
+}
+
+/* Стрічка журналістки: нижнього меню в неї немає, тож сповіщення живуть
+   прямо на її екрані — «тобі поставили завдання», «твоя публікація
+   зарахована». Вантажиться окремо, як і решта блоків. */
+async function renderMyNotifs() {
+  let data;
+  try { data = await api("/api/notifications"); } catch (e) { return; }
+  const box = $("my-notifs");
+  const items = (data.items || []).slice(0, 8);
+  if (!box || !items.length) return;
+  box.innerHTML = `<div class="soft-card">
+    <div class="sc-t">Що нового${data.unread ? ` · ${data.unread}` : ""}</div>
+    ${items.map(notifRow).join("")}</div>`;
+  if (data.unread) {
+    try {
+      await api("/api/notifications/read", {
+        method: "POST", body: JSON.stringify({ all: true }),
+      });
+    } catch (e) { /* побачить наступного разу */ }
+  }
 }
 
 /* Власна помісячна динаміка журналістки — ті самі стовпчики, що бачить
@@ -2282,6 +2355,7 @@ async function reload() {
   STATE.assignees = data.assignees || [];
   STATE.managers = data.managers || [];
   STATE.pendingCount = data.pending_count || 0;
+  STATE.unread = data.unread || 0;
   syncAlertsBadge();
 }
 

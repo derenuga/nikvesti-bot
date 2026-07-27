@@ -11,7 +11,9 @@
 - «Зарахувати» → вибір тематики, пропозиція Лиса зверху й позначена;
 - рішення шле правильний запит і одразу прибирає картку зі списку;
 - «Не те» питає підтвердження (скасування нічого не шле);
-- порожня черга — спокійний стан, а не помилка.
+- порожня черга — спокійний стан, а не помилка;
+- стрічка подій під чергою: непрочитане з крапкою, лічильник меню = спірні +
+  непрочитані, вхід на екран позначає прочитаним.
 
 Запуск (потрібні playwright + chromium):
     python test_webapp_alerts.py
@@ -64,7 +66,7 @@ PENDING = [
 BOOTSTRAP = {
     "me": {"name": "Катерина Середа", "first_name": "Катя", "dept": "admin",
            "dept_title": "Адміністративний", "manager": True},
-    "site_db": True, "nora": True, "pending_count": 2,
+    "site_db": True, "nora": True, "pending_count": 2, "unread": 2,
     "people": [
         {"name": "Юлія Бойченко", "dept": "creative", "dept_title": "Creative",
          "photo": None, "photo_sm": None, "photo_orig": None},
@@ -74,8 +76,23 @@ BOOTSTRAP = {
     "projects": PROJECTS, "assignees": [], "managers": [], "tasks": [],
 }
 
+NOTIFS = [
+    {"id": 31, "kind": "task_done", "kind_title": "Завдання виконано",
+     "audience": "managers", "person": None, "object_type": "task",
+     "object_id": "71", "title": "Юлія Бойченко: 3 новини · IWPR",
+     "body": "зарахувала сама: 3 із 3",
+     "url": "https://nikvesti.com/news/economics/321844-tendery",
+     "created_at": "2026-07-26T18:20:00+03:00", "unread": True},
+    {"id": 30, "kind": "report_deadline", "kind_title": "Звітний дедлайн",
+     "audience": "managers", "person": None, "object_type": "deadline",
+     "object_id": "3", "title": "Фінансовий звіт · фінальний",
+     "body": "IWPR · за 2 дні · пише Олена Бондаренко", "url": "",
+     "created_at": "2026-07-25T09:40:00+03:00", "unread": False},
+]
+
 STUB = """
 window.__posts = [];
+window.__reads = [];
 window.__opened = [];
 window.__confirmAnswer = true;
 window.Telegram = { WebApp: {
@@ -91,6 +108,12 @@ window.fetch = async (url, opts = {}) => {
   const body = opts.body ? JSON.parse(opts.body) : {};
   if (url === "/api/bootstrap") return json(window.BOOT);
   if (url === "/api/matches/pending") return json({ pending: window.PENDING });
+  if (url === "/api/notifications") return json({ items: window.NOTIFS, unread: 2 });
+  if (url === "/api/notifications/read") {
+    window.__reads.push(body);
+    window.NOTIFS = window.NOTIFS.map((n) => ({ ...n, unread: false }));
+    return json({ ok: true, unread: 0 });
+  }
   let m;
   if ((m = url.match(/^\\/api\\/matches\\/(\\d+)\\/decide$/))) {
     window.__posts.push({ id: +m[1], body });
@@ -123,7 +146,8 @@ async def _open(pw):
         r.fulfill(path=str(WEBAPP / "index.html"), content_type="text/html")))
     await page.add_init_script(
         "window.BOOT = " + json.dumps(BOOTSTRAP) + ";"
-        "window.PENDING = " + json.dumps(PENDING) + ";" + STUB)
+        "window.PENDING = " + json.dumps(PENDING) + ";"
+        "window.NOTIFS = " + json.dumps(NOTIFS) + ";" + STUB)
     await page.goto("https://app.local/")
     await page.wait_for_selector("#screen-main:not(.hidden)", timeout=10000)
     return browser, page
@@ -145,8 +169,8 @@ async def main():
     async with async_playwright() as pw:
         browser, page = await _open(pw)
         try:
-            check("лічильник черги видно на пункті меню",
-                  await page.inner_text('#bottomnav [data-view="alerts"] .bn-badge') == "2")
+            check("лічильник меню = спірні + непрочитані події",
+                  await page.inner_text('#bottomnav [data-view="alerts"] .bn-badge') == "4")
 
             await page.click('[data-view="alerts"]')
             await page.wait_for_selector(".al-card")
@@ -160,7 +184,22 @@ async def main():
             check("видно обґрунтування судді", "історії з інфозапиту" in body)
             check("видно пропозицію судді з прогресом", "Тендери" in body and "1/3" in body)
             check("коли суддя не обрав — так і сказано", "обери сама" in body)
+            # --- стрічка подій під чергою ---
+            check("стрічка подій показана під чергою",
+                  await page.locator(".nt-row").count() == 2)
+            check("видно, що завдання виконано і чиє",
+                  "Юлія Бойченко: 3 новини" in body and "зарахувала сама" in body)
+            check("видно нагадування про звітний дедлайн",
+                  "Фінансовий звіт" in body and "Олена Бондаренко" in body)
+            check("непрочитане позначене, прочитане — ні",
+                  await page.locator(".nt-row.unread").count() == 1)
             await page.screenshot(path="/tmp/alerts-queue.png", full_page=True)
+
+            await page.wait_for_timeout(300)
+            check("вхід на екран позначив події прочитаними",
+                  await page.evaluate("window.__reads") == [{"all": True}])
+            check("лічильник меню лишився тільки за спірними",
+                  await page.inner_text('#bottomnav [data-view="alerts"] .bn-badge') == "2")
 
             # --- лінк на публікацію ---
             await page.click(".al-card .al-title")
