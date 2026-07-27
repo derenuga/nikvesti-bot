@@ -457,10 +457,10 @@ function taskSheet(t) {
     if (btn.dataset.status === "dropped" &&
         !(await confirmAction(`Зняти завдання з ${t.person.split(" ")[0]}?\n${taskSummary(t)}`))) return;
     try {
-      await api(`/api/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify({ status: btn.dataset.status }) });
+      const res = await api(`/api/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify({ status: btn.dataset.status }) });
       closeSheet();
       haptic("success");
-      await reload();
+      patchTask(res.task);
       render();
     } catch (err) { toast(err.message); }
   });
@@ -506,7 +506,7 @@ function taskEditSheet(t) {
   $("te-cancel").onclick = closeSheet;
   $("te-save").onclick = async () => {
     try {
-      await api(`/api/tasks/${t.id}`, {
+      const res = await api(`/api/tasks/${t.id}`, {
         method: "PATCH",
         body: JSON.stringify({
           qty: st.qty,
@@ -517,7 +517,7 @@ function taskEditSheet(t) {
       });
       closeSheet();
       haptic("success");
-      await reload();
+      patchTask(res.task);
       render();
     } catch (e) { toast(e.message); }
   };
@@ -661,7 +661,7 @@ async function createTask() {
   const btn = $("f-create");
   btn.disabled = true;
   try {
-    await api("/api/tasks", {
+    const res = await api("/api/tasks", {
       method: "POST",
       body: JSON.stringify({
         person: f.person,
@@ -676,7 +676,7 @@ async function createTask() {
     });
     haptic("success");
     toast(`Завдання полетіло до ${f.person.split(" ")[0]}`);
-    await reload();
+    patchTask(res.task);
     nav("home");
   } catch (e) {
     btn.disabled = false;
@@ -976,10 +976,10 @@ function driveSheet(p) {
   $("dr-cancel").onclick = closeSheet;
   const save = async (url) => {
     try {
-      await api(`/api/projects/${p.id}/drive`, { method: "PUT", body: JSON.stringify({ url }) });
+      const res = await api(`/api/projects/${p.id}/drive`, { method: "PUT", body: JSON.stringify({ url }) });
       closeSheet();
       haptic("success");
-      await reload();
+      patchDrive(p.id, res.url);
       nav("project", p.id);
     } catch (e) { toast(e.message); }
   };
@@ -1064,7 +1064,7 @@ function renderBulk() {
       });
       haptic("success");
       toast(`Полетіло ${res.created} людям`);
-      await reload();
+      (res.tasks || []).forEach(patchTask);
       nav("project", p.id);
     } catch (e) {
       $("bulk-save").disabled = false;
@@ -1124,7 +1124,7 @@ function dlSheet(project, dl) {
     try {
       await api(`/api/project_deadlines/${dl.id}`, { method: "DELETE" });
       closeSheet();
-      await reload();
+      dropDeadline(project.id, dl.id);
       nav("project", project.id);
     } catch (e) { toast(e.message); }
   };
@@ -1140,11 +1140,12 @@ function dlSheet(project, dl) {
     };
     if (st.kind === "milestone" && !body.title) { toast("Майлстоуну потрібна назва"); return; }
     try {
-      if (dl) await api(`/api/project_deadlines/${dl.id}`, { method: "PATCH", body: JSON.stringify(body) });
-      else await api("/api/project_deadlines", { method: "POST", body: JSON.stringify(body) });
+      const res = dl
+        ? await api(`/api/project_deadlines/${dl.id}`, { method: "PATCH", body: JSON.stringify(body) })
+        : await api("/api/project_deadlines", { method: "POST", body: JSON.stringify(body) });
       closeSheet();
       haptic("success");
-      await reload();
+      patchDeadline(project.id, res.deadline);
       nav("project", project.id);
     } catch (e) { toast(e.message); }
   };
@@ -1179,7 +1180,7 @@ function themeSheet(project, theme) {
     try {
       await api(`/api/themes/${theme.id}`, { method: "DELETE" });
       closeSheet();
-      await reload();
+      dropTheme(project.id, theme.id);
       nav("project", project.id);
     } catch (e) { toast(e.message); }
   };
@@ -1188,11 +1189,12 @@ function themeSheet(project, theme) {
     if (!name) { toast("Потрібна назва"); return; }
     const planned = $("t-planned").value ? +$("t-planned").value : null;
     try {
-      if (theme) await api(`/api/themes/${theme.id}`, { method: "PATCH", body: JSON.stringify({ name, planned, format: fmt }) });
-      else await api("/api/themes", { method: "POST", body: JSON.stringify({ project_id: project.id, name, planned, format: fmt }) });
+      const res = theme
+        ? await api(`/api/themes/${theme.id}`, { method: "PATCH", body: JSON.stringify({ name, planned, format: fmt }) })
+        : await api("/api/themes", { method: "POST", body: JSON.stringify({ project_id: project.id, name, planned, format: fmt }) });
       closeSheet();
       haptic("success");
-      await reload();
+      patchTheme(project.id, res.theme);
       nav("project", project.id);
     } catch (e) { toast(e.message); }
   };
@@ -1617,7 +1619,7 @@ function deptSheet(p) {
       await api("/api/people/dept", { method: "PUT", body: JSON.stringify({ person: p.name, dept }) });
       closeSheet();
       haptic("success");
-      await reload();
+      patchDept(p.name, dept, (depts.find(([v]) => v === dept) || [])[1] || "");
       renderTeam();
     } catch (e) { toast(e.message); }
   };
@@ -1710,6 +1712,91 @@ async function reload() {
   STATE.projects = data.projects || [];
 }
 
+/* ---------- Локальні патчі STATE ----------
+   Раніше після КОЖНОЇ дії йшов повний /api/bootstrap: створив таску — апка
+   перечитувала людей, фото, всі проєкти, тематики, дедлайни й Drive, хоча
+   змінився один рядок. Це і затримка перед тим, як дія стане видимою, і
+   зайва робота обом БД (проєкти й фото живуть у БД сайту з жорсткими
+   лімітами).
+
+   Усі роути мутацій і так повертають змінений об'єкт, тож просто вкладаємо
+   його в STATE і малюємо одразу. Свіжість чужих змін (Олег і Катя в апці
+   одночасно) забезпечує refreshIfStale при поверненні в апку — див. нижче. */
+
+function patchTask(task) {
+  if (!task || !task.id) return;
+  const i = STATE.tasks.findIndex((t) => t.id === task.id);
+  if (i >= 0) STATE.tasks[i] = task;
+  else STATE.tasks.unshift(task);      // новіші — зверху, як у списку з сервера
+}
+
+function projectById(id) {
+  return STATE.projects.find((p) => p.id === id) || null;
+}
+
+function patchTheme(projectId, theme) {
+  const p = projectById(projectId);
+  if (!p || !theme) return;
+  p.themes = p.themes || [];
+  const i = p.themes.findIndex((t) => t.id === theme.id);
+  if (i >= 0) p.themes[i] = { ...p.themes[i], ...theme };
+  else p.themes.push(theme);
+  p.themes.sort((a, b) => a.id - b.id);          // порядок як у bootstrap
+}
+
+function dropTheme(projectId, themeId) {
+  const p = projectById(projectId);
+  if (p && p.themes) p.themes = p.themes.filter((t) => t.id !== themeId);
+}
+
+function patchDeadline(projectId, dl) {
+  const p = projectById(projectId);
+  if (!p || !dl) return;
+  p.deadlines = p.deadlines || [];
+  const i = p.deadlines.findIndex((d) => d.id === dl.id);
+  if (i >= 0) p.deadlines[i] = dl;
+  else p.deadlines.push(dl);
+  // За датою — nextDeadline() бере ПЕРШИЙ невідбулий, тож порядок значущий
+  p.deadlines.sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : a.id - b.id));
+}
+
+function dropDeadline(projectId, dlId) {
+  const p = projectById(projectId);
+  if (p && p.deadlines) p.deadlines = p.deadlines.filter((d) => d.id !== dlId);
+}
+
+function patchDrive(projectId, url) {
+  const p = projectById(projectId);
+  if (p) p.drive_url = url || null;
+}
+
+function patchDept(personName, dept, deptTitle) {
+  const person = STATE.people.find((x) => x.name === personName);
+  if (!person) return;
+  person.dept = dept;
+  person.dept_title = deptTitle;
+  // Відділ визначає, які норми діють на людину — зведення KPI протухло
+  STATE.kpi = null;
+  STATE.dash.data = null;
+}
+
+/* Свіжість даних від колеги. Патчі показують ВЛАСНУ дію миттєво, але змін
+   іншого менеджера в STATE взятись нізвідки — тому тихо перечитуємо все,
+   коли апку повертають з фону (Mini App у Telegram живе короткими сеансами:
+   згорнув — розгорнув). Не частіше ніж раз на 30 с і без спінера. */
+const REFRESH_MIN_INTERVAL = 30000;
+let lastLoadedAt = 0;
+
+async function refreshIfStale() {
+  if (!STATE.me || Date.now() - lastLoadedAt < REFRESH_MIN_INTERVAL) return;
+  try {
+    await reload();
+    lastLoadedAt = Date.now();
+    if (STATE.me.manager) render();
+    else renderJournalist();
+  } catch (e) { /* фонове оновлення мовчазне: показуємо, що маємо */ }
+}
+
 /* Екран помилки. canRetry — чи є сенс пробувати ще: мережа моргнула або
    сервер віддав 5xx. Відмова доступу (401/403) кнопки не отримує — від
    повторного тику вона не мине. */
@@ -1741,6 +1828,7 @@ async function boot() {
   try { tg.onEvent("themeChanged", syncTheme); } catch (e) {}
   try {
     await reload();
+    lastLoadedAt = Date.now();
     $("screen-error").classList.add("hidden");
     $("screen-loading").classList.add("hidden");
     $("screen-main").classList.remove("hidden");
@@ -1800,6 +1888,11 @@ $("bottomnav").addEventListener("click", (e) => {
 
 $("sheet-backdrop").addEventListener("click", (e) => {
   if (e.target === $("sheet-backdrop")) closeSheet();
+});
+
+// Повернулись в апку після згортання — тихо підтягуємо зміни колеги
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refreshIfStale();
 });
 
 boot();

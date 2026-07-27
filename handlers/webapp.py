@@ -483,7 +483,9 @@ async def api_tasks_bulk(request):
         )
         created.append(task)
         loop.create_task(team_tasks.ping_assigned(request.app["bot"], task))
-    return web.json_response({"created": len(created)})
+    # Віддаємо самі таски, а не лише лічильник: апка домальовує їх у себе
+    # локально, замість перечитувати весь /api/bootstrap.
+    return web.json_response({"created": len(created), "tasks": created})
 
 
 # ---------- Порядок проєктів (drag-n-drop) ----------
