@@ -55,7 +55,7 @@ ROSTER = {
     "Юлія Лук'яненко": {"username": "yuliia_lukianenko", "tg_id": None, "dept": DEPT_JOURNALISTS, "manager": False},
     "Таміла Ксьонжик": {"username": "tamilissssa", "tg_id": None, "dept": DEPT_JOURNALISTS, "manager": False},
     "Кристина Леонова": {"username": "skxxlw", "tg_id": None, "dept": DEPT_JOURNALISTS, "manager": False},
-    "Кирил Витвицький": {"username": "simada24", "tg_id": None, "dept": DEPT_VIDEO, "manager": False},
+    "Кірілл Витвицький": {"username": "simada24", "tg_id": None, "dept": DEPT_VIDEO, "manager": False},
     "Ірина Федорович": {"username": "diiessa", "tg_id": None, "dept": DEPT_TRANSLATION, "manager": False},
 }
 
