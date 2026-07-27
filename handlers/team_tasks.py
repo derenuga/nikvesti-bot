@@ -128,6 +128,18 @@ _SCHEMA_STATEMENTS = [
     """,
     # Ідемпотентна міграція для таблиці, створеної до появи дедлайну (27.07)
     "ALTER TABLE team_creative_tasks ADD COLUMN IF NOT EXISTS deadline DATE",
+    # Тип матеріалу став опційним (27.07): «будь-який» — зарахування виконання
+    # йде через зв'язок із проєктом, незалежно від типу
+    "ALTER TABLE team_creative_tasks ALTER COLUMN type DROP NOT NULL",
+    # Папка проєкту на Google Drive (лінк; документи гранту — там)
+    """
+    CREATE TABLE IF NOT EXISTS team_project_drive (
+        project_id BIGINT PRIMARY KEY,
+        url        TEXT NOT NULL,
+        updated_by TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_team_ctasks_person ON team_creative_tasks (person, status)",
     "CREATE INDEX IF NOT EXISTS idx_team_ctasks_status ON team_creative_tasks (status)",
     """
@@ -236,6 +248,35 @@ def set_project_order(project_ids):
             "INSERT INTO team_project_order (project_id, position) VALUES (%s, %s)",
             (int(pid), pos),
         )
+
+
+# ---------- Папки проєктів на Google Drive ----------
+
+def get_drive_links():
+    """{project_id: url} — прикріплені папки Drive."""
+    ensure_team_schema()
+    return {
+        r["project_id"]: r["url"]
+        for r in bot_db.query("SELECT project_id, url FROM team_project_drive")
+    }
+
+
+def set_drive_link(project_id, url, updated_by):
+    """Прикріпляє папку (upsert); порожній url — відкріпляє."""
+    ensure_team_schema()
+    if not url:
+        return bot_db.execute(
+            "DELETE FROM team_project_drive WHERE project_id = %s", (int(project_id),)
+        )
+    return bot_db.execute(
+        """
+        INSERT INTO team_project_drive (project_id, url, updated_by, updated_at)
+        VALUES (%s, %s, %s, now())
+        ON CONFLICT (project_id) DO UPDATE SET
+            url = EXCLUDED.url, updated_by = EXCLUDED.updated_by, updated_at = now()
+        """,
+        (int(project_id), url, updated_by),
+    )
 
 
 # ---------- Дедлайни звітності проєктів ----------
@@ -364,7 +405,7 @@ def create_task(creator, person, type_, project_id=None, project_name=None,
         """,
         (person, creator,
          int(project_id) if project_id else None, project_name or None,
-         type_,
+         type_ or None,
          int(theme_id) if theme_id else None, theme_name or None,
          max(1, int(qty)), (note or "").strip() or None, deadline or None),
     )
@@ -419,14 +460,19 @@ async def _ping(bot, person, text):
         return False
 
 
+_QTY_WORDS = {
+    "news": ("новина", "новини", "новин"),
+    "article": ("стаття", "статті", "статей"),
+    None: ("матеріал", "матеріали", "матеріалів"),
+}
+
+
 def task_summary(task):
-    """Людський рядок таска: «3 новини · Мінна безпека (Критичні потреби)»."""
+    """Людський рядок таска: «3 новини · Мінна безпека (Критичні потреби)»;
+    без типу — «2 матеріали · …»."""
     qty = task["qty"]
-    type_word = TYPE_TITLES[task["type"]]
-    if qty > 1:
-        # 2-4 новини/статті, 5+ новин/статей — досить грубої форми
-        type_word = ("новини" if qty < 5 else "новин") if task["type"] == "news" \
-            else ("статті" if qty < 5 else "статей")
+    one, few, many = _QTY_WORDS.get(task["type"], _QTY_WORDS[None])
+    type_word = one if qty == 1 else (few if qty < 5 else many)
     parts = [f"{qty} {type_word}" if qty > 1 else type_word]
     if task["project_name"]:
         parts.append(task["project_name"])

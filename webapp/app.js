@@ -25,6 +25,7 @@ const STATE = {
 const TYPE_WORDS = {
   news: { one: "новина", few: "новини", many: "новин" },
   article: { one: "стаття", few: "статті", many: "статей" },
+  any: { one: "матеріал", few: "матеріали", many: "матеріалів" },
 };
 
 const THEME_FORMATS = [
@@ -152,7 +153,7 @@ function fmtRange(p) {
 }
 
 function qtyWord(type, qty) {
-  const w = TYPE_WORDS[type];
+  const w = TYPE_WORDS[type] || TYPE_WORDS.any;
   if (qty === 1) return w.one;
   return qty < 5 ? w.few : w.many;
 }
@@ -191,7 +192,7 @@ function nav(view, arg) {
   if (view === "kpinorm") STATE.currentNorm = arg;
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
   if (view === "form") STATE.form = {
-    person: arg, project: undefined, type: "news", theme_id: null, qty: 1, note: "", deadline: "",
+    person: arg, project: undefined, type: null, theme_id: null, qty: 1, note: "", deadline: "",
   };
   const navKey = view === "kpinorm" ? "kpi" : view === "project" ? "projects" : view;
   document.querySelectorAll("#bottomnav .bn").forEach((b) =>
@@ -312,8 +313,9 @@ function renderForm() {
 
     <div class="f-label">Тип матеріалу</div>
     <div class="two">
-      <button class="bigbtn ${f.type === "news" ? "on" : ""}" data-type="news">Новина</button>
-      <button class="bigbtn ${f.type === "article" ? "on" : ""}" data-type="article">Стаття</button>
+      <button class="bigbtn slim ${f.type === null ? "on" : ""}" data-type="">Будь-який</button>
+      <button class="bigbtn slim ${f.type === "news" ? "on" : ""}" data-type="news">Новина</button>
+      <button class="bigbtn slim ${f.type === "article" ? "on" : ""}" data-type="article">Стаття</button>
     </div>
 
     ${proj ? `
@@ -346,7 +348,7 @@ function renderForm() {
   $("qty-plus").onclick = () => { f.qty = Math.min(99, f.qty + 1); $("qty-val").textContent = f.qty; };
   $("f-deadline").oninput = (e) => { f.deadline = e.target.value; };
   $("f-note").oninput = (e) => { f.note = e.target.value; };
-  $("content").querySelectorAll("[data-type]").forEach((b) => b.onclick = () => { f.type = b.dataset.type; renderForm(); });
+  $("content").querySelectorAll("[data-type]").forEach((b) => b.onclick = () => { f.type = b.dataset.type || null; renderForm(); });
   $("content").querySelectorAll("[data-theme]").forEach((b) => b.onclick = () => {
     const id = +b.dataset.theme;
     f.theme_id = f.theme_id === id ? null : id;
@@ -597,6 +599,12 @@ function renderProject() {
       </div>
     </div>
     ${quotaTotal ? `<div class="quota-pill">Квота з сайту: <b>${p.kpi_news || 0} новин + ${p.kpi_articles || 0} статей</b></div>` : ""}
+    ${p.drive_url ? `
+      <button class="bigpick" id="drive-open" style="margin-top:10px">
+        ${icon("folder")} Папка проєкту на Google Drive
+        <span class="chev" id="drive-edit" style="margin-left:auto">${icon("edit", "ic chev")}</span>
+      </button>`
+      : `<button class="add-theme" id="drive-attach" style="margin-top:10px">${icon("folder")} Прикріпити папку Google Drive</button>`}
     <div class="f-label">Тематики</div>
     ${p.themes.map((t) => `
       <div class="theme-row">
@@ -620,6 +628,43 @@ function renderProject() {
   $("add-dl").onclick = () => dlSheet(p, null);
   $("content").querySelectorAll("[data-edit-dl]").forEach((b) =>
     b.onclick = () => dlSheet(p, p.deadlines.find((d) => d.id === +b.dataset.editDl)));
+  if (p.drive_url) {
+    $("drive-open").onclick = (e) => {
+      if (e.target.closest("#drive-edit")) { driveSheet(p); return; }
+      try { tg.openLink(p.drive_url); } catch (err) { window.open(p.drive_url, "_blank"); }
+    };
+  } else {
+    $("drive-attach").onclick = () => driveSheet(p);
+  }
+}
+
+function driveSheet(p) {
+  openSheet(`
+    <h2>Папка на Google Drive</h2>
+    <div class="field"><label>Лінк на папку проєкту</label>
+      <input id="dr-url" type="url" placeholder="https://drive.google.com/drive/folders/…"
+        value="${esc(p.drive_url || "")}"></div>
+    <div class="sheet-actions">
+      ${p.drive_url ? `<button class="sbtn danger" id="dr-remove">Відкріпити</button>` : ""}
+      <button class="sbtn" id="dr-cancel">Скасувати</button>
+      <button class="sbtn primary" id="dr-save">Зберегти</button>
+    </div>`);
+  $("dr-cancel").onclick = closeSheet;
+  const save = async (url) => {
+    try {
+      await api(`/api/projects/${p.id}/drive`, { method: "PUT", body: JSON.stringify({ url }) });
+      closeSheet();
+      haptic("success");
+      await reload();
+      nav("project", p.id);
+    } catch (e) { toast(e.message); }
+  };
+  if (p.drive_url) $("dr-remove").onclick = () => save("");
+  $("dr-save").onclick = () => {
+    const url = $("dr-url").value.trim();
+    if (!url) { toast("Встав лінк на папку"); return; }
+    save(url);
+  };
 }
 
 /* Шторка дедлайну звітності: наративний/фінансовий звіт (проміжний/фінальний)

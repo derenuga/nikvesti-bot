@@ -190,16 +190,19 @@ def _bootstrap_blocking(person, is_manager):
         )
     deadlines_by_project = {}
     order = {}
+    drive = {}
     if out["nora"]:
         try:
             for d in team_tasks.list_project_deadlines():
                 deadlines_by_project.setdefault(d["project_id"], []).append(d)
             order = team_tasks.get_project_order()
+            drive = team_tasks.get_drive_links()
         except Exception as e:
-            print(f"webapp: порядок/дедлайни проєктів не прочитались — {e}")
+            print(f"webapp: порядок/дедлайни/drive проєктів не прочитались — {e}")
     for p in projects:
         p["themes"] = theme_by_project.get(p["id"], [])
         p["deadlines"] = deadlines_by_project.get(p["id"], [])
+        p["drive_url"] = drive.get(p["id"])
     # Ручний порядок Каті; невпорядковані — після, у дефолтному порядку
     default_pos = {p["id"]: i for i, p in enumerate(projects)}
     projects.sort(key=lambda p: (order.get(p["id"], 10**9), default_pos[p["id"]]))
@@ -232,9 +235,9 @@ async def api_tasks_create(request):
     assignee = payload.get("person")
     if assignee not in team_roster.ROSTER:
         raise web.HTTPBadRequest(text="Невідома людина")
-    type_ = payload.get("type")
-    if type_ not in team_tasks.TASK_TYPES:
-        raise web.HTTPBadRequest(text="type: news або article")
+    type_ = payload.get("type") or None
+    if type_ is not None and type_ not in team_tasks.TASK_TYPES:
+        raise web.HTTPBadRequest(text="type: news, article або порожньо (будь-який)")
     qty = payload.get("qty", 1)
     try:
         qty = max(1, min(99, int(qty)))
@@ -355,6 +358,19 @@ async def api_projects_order(request):
         raise web.HTTPBadRequest(text="ids: список id проєктів")
     await asyncio.to_thread(team_tasks.set_project_order, ids)
     return web.json_response({"ok": True})
+
+
+async def api_project_drive(request):
+    """Прикріпити/змінити/відкріпити папку Google Drive проєкту."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    url = normalize_https_url(payload.get("url"))
+    if url and "://" in url and not url.startswith("https://"):
+        raise web.HTTPBadRequest(text="Потрібен https-лінк")
+    await asyncio.to_thread(
+        team_tasks.set_drive_link, int(request.match_info["project_id"]), url, person
+    )
+    return web.json_response({"ok": True, "url": url or None})
 
 
 # ---------- Дедлайни звітності проєктів ----------
@@ -552,6 +568,7 @@ async def start_webapp(application):
         web.patch("/api/themes/{theme_id:\\d+}", api_themes_patch),
         web.delete("/api/themes/{theme_id:\\d+}", api_themes_delete),
         web.put("/api/projects/order", api_projects_order),
+        web.put("/api/projects/{project_id:\\d+}/drive", api_project_drive),
         web.post("/api/project_deadlines", api_deadline_create),
         web.patch("/api/project_deadlines/{dl_id:\\d+}", api_deadline_patch),
         web.delete("/api/project_deadlines/{dl_id:\\d+}", api_deadline_delete),
