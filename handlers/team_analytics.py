@@ -45,7 +45,7 @@ import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from handlers import bot_db, db, team_kpi, team_projects
+from handlers import bot_db, db, team_kpi, team_projects, team_roster
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 
@@ -69,6 +69,12 @@ _tg_cache = {"at": 0.0, "value": None}
 TOP_MATERIALS = 6
 TOP_AUTHORS = 8
 TOP_DONORS = 5
+
+# Вага власного матеріалу проти рерайту в рейтингу авторів (коефіцієнт Олега,
+# 27.07): власна новина коштує редакції приблизно як 2,6 звичайних, тож «хто
+# більше зробив» — це НЕ «хто більше рядків опублікував». Рейтинг і довжина
+# барів ідуть за цією вагою, а в самій цифрі лишається чесна кількість.
+OWN_WEIGHT = 2.6
 
 
 # ---------- Періоди ----------
@@ -234,6 +240,31 @@ def _search_block(rg):
 
 # ---------- Вихід редакції (nodes БД сайту) ----------
 
+def _person_by_owner_id():
+    """{users.id: людина ростера} — той самий резолв, що в KPI: спершу пін
+    team_user_link, потім нормалізований ПІБ. Потрібен, щоб у списку авторів
+    стояло канонічне написання (з ним фронт знаходить фото і трекер) навіть
+    коли в users інший апостроф, «ь» або взагалі дубль акаунта.
+
+    Резолв — необовʼязкова окраса: без нього автори просто підписані так, як
+    їх записано в users. Тому будь-який збій ковтаємо, а не гасимо весь блок."""
+    links, names = {}, {}
+    try:
+        links = team_kpi.get_user_links()
+    except Exception as e:
+        print(f"team_analytics: піни users.id не прочитались — {e}")
+    try:
+        names = team_kpi._user_id_map()
+    except Exception as e:
+        print(f"team_analytics: довідник users не прочитався — {e}")
+    out = {}
+    for person in team_roster.ROSTER:
+        uid = team_kpi.resolve_site_user_id(person, links, names)
+        if uid:
+            out[uid] = person
+    return out
+
+
 def _newsroom_block(rg):
     """Скільки вийшло за період: новини / статті / власні + топ авторів.
 
@@ -274,19 +305,27 @@ def _newsroom_block(rg):
         return out
 
     cur, prev = totals(True), totals(False)
+    # Автора зводимо до людини ростера по owner_id (пін → ПІБ), а не за рядком
+    # імені з users: там інший апостроф чи «ь» («Лук'яненко» / «Лукьяненко»),
+    # і фронт не знаходив ні фото, ні трекера. Той самий шлях, що в KPI.
+    person_by_uid = _person_by_owner_id()
     authors = {}
     for r in rows:
         if not r["cur"]:
             continue
-        name = (r["name"] or "").strip() or f"id {r['owner_id']}"
-        a = authors.setdefault(name, {"name": name, "count": 0, "own": 0,
-                                      "news": 0, "articles": 0})
+        uid = r["owner_id"]
+        person = person_by_uid.get(uid)
+        name = person or (r["name"] or "").strip() or f"id {uid}"
+        a = authors.setdefault(uid, {"name": name, "person": person, "count": 0,
+                                     "own": 0, "news": 0, "articles": 0})
         c = int(r["c"])
         a["count"] += c
         a["news" if r["type"] == "news" else "articles"] += c
         if r["own"] == 1:
             a["own"] += c
-    top = sorted(authors.values(), key=lambda a: (-a["count"], a["name"]))[:TOP_AUTHORS]
+    for a in authors.values():
+        a["score"] = round(a["own"] * OWN_WEIGHT + (a["count"] - a["own"]), 1)
+    top = sorted(authors.values(), key=lambda a: (-a["score"], a["name"]))[:TOP_AUTHORS]
     return {
         "news": {"value": cur["news"], "prev": prev["news"],
                  "delta": _delta(cur["news"], prev["news"])},

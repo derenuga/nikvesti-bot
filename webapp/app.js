@@ -712,14 +712,22 @@ function anNewsroomHtml(d) {
     return anHead("file-text", "Вихід редакції") +
       `<div class="empty-hint">БД сайту недоступна — вихід не порахувати.</div>`;
   }
-  const maxCount = n.authors.length ? n.authors[0].count : 0;
+  // Порядок і довжина барів — за ВАГОЮ (власний матеріал = 2,6 звичайних,
+  // коефіцієнт Олега), а не за кількістю рядків: 85 рерайтів і 30 власних —
+  // різна робота. У цифрі праворуч лишається чесна кількість.
+  const maxScore = n.authors.length
+    ? Math.max(...n.authors.map((a) => a.score || a.count)) : 0;
   const rows = n.authors.map((a) => {
-    const entry = personEntry(a.name);
-    const w = maxCount ? Math.max(4, Math.round((a.count / maxCount) * 100)) : 0;
+    // Ім'я людини ростера сервер уже підставив (a.person) — по ньому і фото,
+    // і трекер; a.name лишається на випадок автора поза ростером
+    const who = a.person || a.name;
+    const entry = personEntry(who);
+    const score = a.score == null ? a.count : a.score;
+    const w = maxScore ? Math.max(4, Math.round((score / maxScore) * 100)) : 0;
     const inner = `
-      ${avatar(a.name, entry, 36)}
+      ${avatar(who, entry, 36)}
       <span class="ar-main">
-        <span class="ar-n">${esc(a.name)}</span>
+        <span class="ar-n">${esc(who)}</span>
         <span class="kbar"><i style="width:${w}%"></i></span>
       </span>
       <span class="ar-r">
@@ -729,7 +737,7 @@ function anNewsroomHtml(d) {
     // Тап по автору з ростера веде в його трекер — аналітика і завдання
     // однієї людини не мають бути двома різними подорожами
     return entry
-      ? `<button class="an-row" data-tracker="${esc(a.name)}">${inner}</button>`
+      ? `<button class="an-row" data-tracker="${esc(who)}">${inner}</button>`
       : `<div class="an-row">${inner}</div>`;
   }).join("");
   return `
@@ -740,7 +748,12 @@ function anNewsroomHtml(d) {
       ${anTile("Власних", n.own.value, deltaHtml(n.own.delta),
         n.own_share == null ? "" : `${n.own_share}% усього`)}
     </div>
-    ${rows ? `<div class="soft-card"><div class="sc-t">Хто написав</div>${rows}</div>` : ""}`;
+    ${rows ? `<div class="soft-card">
+      <div class="sc-t">Хто написав</div>
+      ${rows}
+      <div class="sp-note">порядок і смуги — за вагою: власний матеріал
+        вважається за 2,6 звичайних</div>
+    </div>` : ""}`;
 }
 
 function anSocialHtml(d) {
