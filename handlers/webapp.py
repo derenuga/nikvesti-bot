@@ -279,6 +279,14 @@ async def api_tasks_patch(request):
     return web.json_response({"task": task})
 
 
+def _validate_theme_format(payload):
+    """format: news/article/post/video/hybrid або None (без формату)."""
+    fmt = payload.get("format") or None
+    if fmt is not None and fmt not in team_tasks.THEME_FORMATS:
+        raise web.HTTPBadRequest(text="format: news, article, post, video, hybrid або порожньо")
+    return fmt
+
+
 async def api_themes_create(request):
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
@@ -287,7 +295,8 @@ async def api_themes_create(request):
     if not name or not project_id:
         raise web.HTTPBadRequest(text="Потрібні project_id і назва")
     theme = await asyncio.to_thread(
-        team_tasks.add_theme, int(project_id), name, payload.get("planned")
+        team_tasks.add_theme, int(project_id), name, payload.get("planned"),
+        _validate_theme_format(payload),
     )
     return web.json_response({"theme": theme})
 
@@ -303,6 +312,8 @@ async def api_themes_patch(request):
         kwargs["name"] = name
     if "planned" in payload:
         kwargs["planned"] = payload.get("planned")
+    if "format" in payload:
+        kwargs["format"] = _validate_theme_format(payload)
     theme = await asyncio.to_thread(
         team_tasks.update_theme, int(request.match_info["theme_id"]), **kwargs
     )
@@ -331,8 +342,8 @@ async def api_people_dept(request):
     target_info = team_roster.ROSTER.get(who)
     if not target_info or target_info["manager"]:
         raise web.HTTPBadRequest(text="Невідома людина")
-    if dept not in (team_roster.DEPT_NEWSROOM, team_roster.DEPT_CREATIVE):
-        raise web.HTTPBadRequest(text="dept: newsroom або creative")
+    if dept not in team_roster.MOVABLE_DEPTS:
+        raise web.HTTPBadRequest(text="dept: newsroom, creative або digital")
     await asyncio.to_thread(team_roster.set_dept, who, dept, person)
     return web.json_response({"ok": True})
 
@@ -353,7 +364,7 @@ async def api_kpi_norm_create(request):
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
     dept = payload.get("dept")
-    if dept not in team_roster.DEPT_TITLES or dept == team_roster.DEPT_LEADERSHIP:
+    if dept not in team_roster.MOVABLE_DEPTS:
         raise web.HTTPBadRequest(text="Невідомий відділ")
     if payload.get("metric") not in team_kpi.KPI_METRICS:
         raise web.HTTPBadRequest(text="metric: news або article")
@@ -365,7 +376,8 @@ async def api_kpi_norm_create(request):
     except (TypeError, ValueError, AssertionError):
         raise web.HTTPBadRequest(text="target: число від 1 до 500")
     norm = await asyncio.to_thread(
-        team_kpi.add_norm, person, dept, payload["metric"], payload["period"], target
+        team_kpi.add_norm, person, dept, payload["metric"], payload["period"],
+        target, bool(payload.get("own")),
     )
     return web.json_response({"norm": norm})
 

@@ -42,6 +42,10 @@ TASK_TYPES = ("news", "article")
 TASK_STATUSES = ("open", "done", "dropped")
 TYPE_TITLES = {"news": "новина", "article": "стаття"}
 
+# Формат тематики проєкту (рішення Олега 27.07): конкретний формат,
+# «гібридний» (мікс форматів) або None — тематика без формату.
+THEME_FORMATS = ("news", "article", "post", "video", "hybrid")
+
 _SCHEMA_STATEMENTS = [
     """
     CREATE TABLE IF NOT EXISTS team_users (
@@ -68,10 +72,13 @@ _SCHEMA_STATEMENTS = [
         project_id BIGINT NOT NULL,
         name       TEXT NOT NULL,
         planned    INTEGER,
+        format     TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_team_themes_project ON team_project_themes (project_id)",
+    # Ідемпотентна міграція для таблиці, створеної до появи формату (27.07)
+    "ALTER TABLE team_project_themes ADD COLUMN IF NOT EXISTS format TEXT",
     """
     CREATE TABLE IF NOT EXISTS team_creative_tasks (
         id           BIGSERIAL PRIMARY KEY,
@@ -123,30 +130,35 @@ def ensure_team_schema():
 
 # ---------- Тематики проєктів ----------
 
+def _row_to_theme(r):
+    return {"id": r["id"], "project_id": r["project_id"], "name": r["name"],
+            "planned": r["planned"], "format": r["format"]}
+
+
 def list_themes():
     """Усі тематики всіх проєктів (їх десятки, не тисячі) — фронт групує сам."""
     ensure_team_schema()
     return [
-        {"id": r["id"], "project_id": r["project_id"], "name": r["name"], "planned": r["planned"]}
+        _row_to_theme(r)
         for r in bot_db.query(
-            "SELECT id, project_id, name, planned FROM team_project_themes ORDER BY project_id, id"
+            "SELECT id, project_id, name, planned, format FROM team_project_themes "
+            "ORDER BY project_id, id"
         )
     ]
 
 
-def add_theme(project_id, name, planned=None):
+def add_theme(project_id, name, planned=None, format=None):
     ensure_team_schema()
     rows = bot_db.query(
-        "INSERT INTO team_project_themes (project_id, name, planned) "
-        "VALUES (%s, %s, %s) RETURNING id, project_id, name, planned",
-        (int(project_id), name.strip(), int(planned) if planned else None),
+        "INSERT INTO team_project_themes (project_id, name, planned, format) "
+        "VALUES (%s, %s, %s, %s) RETURNING id, project_id, name, planned, format",
+        (int(project_id), name.strip(), int(planned) if planned else None, format or None),
     )
-    r = rows[0]
-    return {"id": r["id"], "project_id": r["project_id"], "name": r["name"], "planned": r["planned"]}
+    return _row_to_theme(rows[0])
 
 
-def update_theme(theme_id, name=None, planned=..., ):
-    """planned=... (сентинел) — «не чіпати»; None — явно стерти цифру."""
+def update_theme(theme_id, name=None, planned=..., format=...):
+    """Сентинел ... — «не чіпати»; None — явно стерти (цифру або формат)."""
     ensure_team_schema()
     sets, params = [], []
     if name is not None:
@@ -155,18 +167,18 @@ def update_theme(theme_id, name=None, planned=..., ):
     if planned is not ...:
         sets.append("planned = %s")
         params.append(int(planned) if planned else None)
+    if format is not ...:
+        sets.append("format = %s")
+        params.append(format or None)
     if not sets:
         return None
     params.append(int(theme_id))
     rows = bot_db.query(
         f"UPDATE team_project_themes SET {', '.join(sets)} WHERE id = %s "
-        "RETURNING id, project_id, name, planned",
+        "RETURNING id, project_id, name, planned, format",
         params,
     )
-    if not rows:
-        return None
-    r = rows[0]
-    return {"id": r["id"], "project_id": r["project_id"], "name": r["name"], "planned": r["planned"]}
+    return _row_to_theme(rows[0]) if rows else None
 
 
 def delete_theme(theme_id):

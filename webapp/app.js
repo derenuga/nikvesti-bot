@@ -27,6 +27,20 @@ const TYPE_WORDS = {
   article: { one: "стаття", few: "статті", many: "статей" },
 };
 
+const THEME_FORMATS = [
+  { v: null, label: "Без формату" },
+  { v: "news", label: "Новина" },
+  { v: "article", label: "Стаття" },
+  { v: "post", label: "Пост" },
+  { v: "video", label: "Відео" },
+  { v: "hybrid", label: "Гібридний" },
+];
+
+function formatTitle(v) {
+  const f = THEME_FORMATS.find((x) => x.v === v);
+  return f && f.v ? f.label : null;
+}
+
 const MONTHS_SHORT = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер", "Лип", "Сер", "Вер", "Жов", "Лис", "Гру"];
 
 /* ---------- API ---------- */
@@ -475,7 +489,8 @@ function renderProject() {
     <div class="f-label">Тематики</div>
     ${p.themes.map((t) => `
       <div class="theme-row">
-        <span class="tn">${esc(t.name)}</span>
+        <span class="tn">${esc(t.name)}
+          ${formatTitle(t.format) ? `<span class="fmt-badge">${esc(formatTitle(t.format))}</span>` : ""}</span>
         <span class="tc">${t.planned || ""}</span>
         <button class="tact" data-edit-theme="${t.id}" aria-label="Редагувати">${icon("edit")}</button>
       </div>`).join("")}
@@ -487,10 +502,14 @@ function renderProject() {
 }
 
 function themeSheet(project, theme) {
+  let fmt = theme ? theme.format || null : null;
   openSheet(`
     <h2>${theme ? "Тематика" : "Нова тематика"}</h2>
     <div class="field"><label>Назва</label>
       <input id="t-name" maxlength="120" placeholder="напр. Репортажі з сесій" value="${theme ? esc(theme.name) : ""}"></div>
+    <div class="field"><label>Формат</label>
+      <div class="chips" id="t-format">${THEME_FORMATS.map((f) => `
+        <button class="chip ${fmt === f.v ? "on" : ""}" data-f="${f.v || ""}">${f.label}</button>`).join("")}</div></div>
     <div class="field"><label>Скільки матеріалів (необовʼязково)</label>
       <input id="t-planned" type="number" min="0" max="999" inputmode="numeric" value="${theme && theme.planned ? theme.planned : ""}"></div>
     <div class="sheet-actions">
@@ -498,6 +517,12 @@ function themeSheet(project, theme) {
       <button class="sbtn" id="t-cancel">Скасувати</button>
       <button class="sbtn primary" id="t-save">Зберегти</button>
     </div>`);
+  $("t-format").onclick = (e) => {
+    const b = e.target.closest("[data-f]");
+    if (!b) return;
+    fmt = b.dataset.f || null;
+    $("t-format").querySelectorAll(".chip").forEach((c) => c.classList.toggle("on", c === b));
+  };
   $("t-cancel").onclick = closeSheet;
   if (theme) $("t-delete").onclick = async () => {
     try {
@@ -512,8 +537,8 @@ function themeSheet(project, theme) {
     if (!name) { toast("Потрібна назва"); return; }
     const planned = $("t-planned").value ? +$("t-planned").value : null;
     try {
-      if (theme) await api(`/api/themes/${theme.id}`, { method: "PATCH", body: JSON.stringify({ name, planned }) });
-      else await api("/api/themes", { method: "POST", body: JSON.stringify({ project_id: project.id, name, planned }) });
+      if (theme) await api(`/api/themes/${theme.id}`, { method: "PATCH", body: JSON.stringify({ name, planned, format: fmt }) });
+      else await api("/api/themes", { method: "POST", body: JSON.stringify({ project_id: project.id, name, planned, format: fmt }) });
       closeSheet();
       haptic("success");
       await reload();
@@ -529,7 +554,8 @@ async function loadKpi() {
 }
 
 function normTitle(n) {
-  return `${n.target} ${qtyWord(n.metric, n.target)} · ${n.period === "week" ? "щотижня" : "щомісяця"}`;
+  const own = n.own ? (n.target === 1 ? "власна " : "власних ") : "";
+  return `${n.target} ${own}${qtyWord(n.metric, n.target)} · ${n.period === "week" ? "щотижня" : "щомісяця"}`;
 }
 
 function normById(id) {
@@ -575,7 +601,7 @@ function normCreateSheet() {
     if (!acc.find((d) => d.dept === p.dept)) acc.push({ dept: p.dept, title: p.dept_title });
     return acc;
   }, []);
-  const st = { dept: depts[0] ? depts[0].dept : null, metric: "news", period: "week", target: 5 };
+  const st = { dept: depts[0] ? depts[0].dept : null, metric: "news", period: "week", target: 5, own: false };
   openSheet(`
     <h2>Нова норма</h2>
     <div class="f-label" style="margin-top:0">Відділ</div>
@@ -585,6 +611,11 @@ function normCreateSheet() {
     <div class="two" id="n-metric">
       <button class="bigbtn slim on" data-m="news">Новини</button>
       <button class="bigbtn slim" data-m="article">Статті</button>
+    </div>
+    <div class="f-label">Які матеріали</div>
+    <div class="two" id="n-own">
+      <button class="bigbtn slim on" data-o="all">Усі</button>
+      <button class="bigbtn slim" data-o="own">Лише власні</button>
     </div>
     <div class="f-label">Період</div>
     <div class="two" id="n-period">
@@ -612,6 +643,12 @@ function normCreateSheet() {
     if (!b) return;
     st.metric = b.dataset.m;
     $("n-metric").querySelectorAll(".bigbtn").forEach((c) => c.classList.toggle("on", c === b));
+  };
+  $("n-own").onclick = (e) => {
+    const b = e.target.closest("[data-o]");
+    if (!b) return;
+    st.own = b.dataset.o === "own";
+    $("n-own").querySelectorAll(".bigbtn").forEach((c) => c.classList.toggle("on", c === b));
   };
   $("n-period").onclick = (e) => {
     const b = e.target.closest("[data-p]");
@@ -770,13 +807,14 @@ function renderTeam() {
 function deptSheet(p) {
   if (!p) return;
   let dept = p.dept;
+  const depts = [
+    ["newsroom", "Newsroom"], ["creative", "Creative"], ["digital", "Діджитал та дистрибуція"],
+  ];
   openSheet(`
     <h2>${esc(p.name)}</h2>
     <div class="f-label" style="margin-top:0">Відділ</div>
-    <div class="two" id="d-pick">
-      <button class="bigbtn slim ${dept === "newsroom" ? "on" : ""}" data-d="newsroom">Newsroom</button>
-      <button class="bigbtn slim ${dept === "creative" ? "on" : ""}" data-d="creative">Creative</button>
-    </div>
+    <div class="chips" id="d-pick">${depts.map(([v, t]) => `
+      <button class="chip ${dept === v ? "on" : ""}" data-d="${v}">${t}</button>`).join("")}</div>
     <p style="color:var(--muted);font-size:12.5px;margin-top:12px">Відділ визначає,
       які KPI-норми діють на людину — з моменту перенесення.</p>
     <div class="sheet-actions">
@@ -787,7 +825,7 @@ function deptSheet(p) {
     const b = e.target.closest("[data-d]");
     if (!b) return;
     dept = b.dataset.d;
-    $("d-pick").querySelectorAll(".bigbtn").forEach((c) => c.classList.toggle("on", c === b));
+    $("d-pick").querySelectorAll(".chip").forEach((c) => c.classList.toggle("on", c === b));
   };
   $("d-cancel").onclick = closeSheet;
   $("d-save").onclick = async () => {
