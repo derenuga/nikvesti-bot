@@ -49,7 +49,9 @@ try:
 except ImportError:  # локальний dev без aiohttp — модуль просто "не налаштований"
     web = None
 
-from handlers import bot_db, team_kpi, team_projects, team_roster, team_tasks
+from handlers import (
+    bot_db, team_kpi, team_matches, team_projects, team_roster, team_tasks,
+)
 from handlers.helpers import normalize_https_url
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -175,6 +177,9 @@ def _bootstrap_blocking(person, is_manager):
 
     try:
         out["tasks"] = team_tasks.list_tasks(None if is_manager else person)
+        # Прогрес «2/3» і лінки зарахованих публікацій — одним запитом на
+        # весь список (не по таску), інакше екран Каті вибив би сотню запитів
+        team_matches.attach_progress(out["tasks"])
         out["nora"] = True
     except Exception as e:
         print(f"webapp: Нора недоступна — {e}")
@@ -366,7 +371,7 @@ async def api_tasks_patch(request):
         status = payload.get("status")
         if status not in team_tasks.TASK_STATUSES:
             raise web.HTTPBadRequest(text="status: open, done або dropped")
-        task = await asyncio.to_thread(team_tasks.set_status, task_id, person, status)
+        task = await _in_session(_set_status_blocking, task_id, person, status)
         if not task:
             raise web.HTTPNotFound(text="Таска немає")
         return web.json_response({"task": task})
@@ -402,10 +407,30 @@ async def api_tasks_patch(request):
             theme_name = theme["name"]
         kwargs["theme_id"] = theme_id
         kwargs["theme_name"] = theme_name
-    task = await asyncio.to_thread(
-        team_tasks.update_task_fields, task_id, person, **kwargs
-    )
+    task = await _in_session(_update_task_blocking, task_id, person, kwargs)
     return web.json_response({"task": task})
+
+
+def _set_status_blocking(task_id, person, status):
+    """Статус руками + свіжий прогрес у відповідь (щоб картка одразу показала
+    зараховані публікації, а не чекала наступного bootstrap)."""
+    task = team_tasks.set_status(task_id, person, status)
+    if task:
+        team_matches.attach_progress([task])
+    return task
+
+
+def _update_task_blocking(task_id, person, kwargs):
+    """Редагування полів. Після зміни qty статус має наздогнати прогрес в
+    обидва боки: підняли кількість авто-закритому — він вертається у відкриті,
+    знизили до вже зарахованого — закривається."""
+    task = team_tasks.update_task_fields(task_id, person, **kwargs)
+    if task and "qty" in kwargs:
+        updated, _ = team_matches.recount_after_qty_change(task_id)
+        task = updated or task
+    if task:
+        team_matches.attach_progress([task])
+    return task
 
 
 def _validate_theme_format(payload):

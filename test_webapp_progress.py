@@ -1,0 +1,195 @@
+"""
+Тест прогресу виконання «2/3» у Mini App «Команда» (webapp/app.js).
+
+Крок 1 авто-обліку: таски отримали done_count і matches (зараховані публікації
+з лінками — вимога Олега: до «виконано» має бути прикріплений матеріал).
+
+Що стереже:
+- «2/3» видно в трекері людини і в списку журналістки;
+- набраний прогрес зелений, недобраний — синій;
+- «0/1» не малюється (шум на кожному односкладовому таску);
+- картка таска показує зараховані публікації з лінками;
+- тап по лінку відкриває матеріал через tg.openLink, а не всередині апки.
+
+Запуск (потрібні playwright + chromium):
+    python test_webapp_progress.py
+"""
+
+import asyncio
+import json
+import os
+import pathlib
+import sys
+
+WEBAPP = pathlib.Path(__file__).resolve().parent / "webapp"
+
+CHROMIUM_CANDIDATES = [
+    os.environ.get("CHROMIUM_PATH"),
+    "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
+]
+
+
+def _task(i, qty, done, status="open", matches=()):
+    return {
+        "id": i, "person": "Аліна Квітко", "creator": "Катерина Середа",
+        "project_id": 1, "project_name": "Голоси Миколаєва",
+        "partner_name": "IMS", "platform": None, "type": "article",
+        "theme_id": 1, "theme_name": "Репортажі з сесій", "qty": qty,
+        "note": "", "deadline": "2026-08-31", "status": status,
+        "auto_done": status == "done", "created_at": "2026-07-01T10:00:00+03:00",
+        "done_at": None, "done_count": done, "matches": list(matches),
+    }
+
+
+MATCH_1 = {"id": 11, "title": "Сесія міськради ухвалила бюджет",
+           "url": "https://nikvesti.com/news/politics/321001-sesiia",
+           "published": "2026-07-10T12:00:00+03:00", "source": "site"}
+MATCH_2 = {"id": 12, "title": "Депутати не зібрались вдруге",
+           "url": "https://nikvesti.com/news/politics/321044-deputaty",
+           "published": "2026-07-18T09:30:00+03:00", "source": "site"}
+
+TASKS = [
+    _task(1, 3, 2, matches=[MATCH_1, MATCH_2]),          # 2/3 — синій
+    _task(2, 2, 2, status="done", matches=[MATCH_1, MATCH_2]),  # 2/2 — зелений
+    _task(3, 1, 0),                                      # 0/1 — не малюємо
+]
+
+PEOPLE = [{"name": "Аліна Квітко", "dept": "creative", "dept_title": "Creative",
+           "photo": None, "photo_sm": None, "photo_orig": None}]
+
+PROJECTS = [{"id": 1, "name": "Голоси Миколаєва", "partner": "IMS", "logo": None,
+             "logo_orig": None, "start_date": 1740000000, "end_date": 1798000000,
+             "kpi_news": 30, "kpi_articles": 5, "themes": [], "deadlines": [],
+             "drive_url": None}]
+
+BOOTSTRAP = {
+    "me": {"name": "Олег Деренюга", "first_name": "Олег", "dept": "admin",
+           "dept_title": "Адміністративний", "manager": True},
+    "site_db": True, "nora": True, "people": PEOPLE, "projects": PROJECTS,
+    "assignees": [], "managers": [], "tasks": TASKS,
+}
+
+JOURNALIST = {
+    **BOOTSTRAP,
+    "me": {"name": "Аліна Квітко", "first_name": "Аліна", "dept": "creative",
+           "dept_title": "Creative", "manager": False},
+}
+
+STUB = """
+window.__opened = [];
+window.Telegram = { WebApp: {
+  initData: "stub", colorScheme: "light",
+  ready(){}, expand(){}, onEvent(){}, disableVerticalSwipes(){},
+  openLink(u){ window.__opened.push(u); },
+  showConfirm(m, c){ c(true); },
+  BackButton: { show(){}, hide(){}, onClick(){} },
+  HapticFeedback: { notificationOccurred(){} } } };
+window.fetch = async (url, opts = {}) => {
+  const json = (o) => new Response(JSON.stringify(o),
+    { headers: { "Content-Type": "application/json" } });
+  if (url === "/api/bootstrap") return json(window.BOOT);
+  if (url === "/api/kpi") return json({ norms: [], week_label: "", month_label: "", site_db: true });
+  if (url.startsWith("/api/kpi/person")) return json({ has_norms: false, months: [] });
+  return json({ ok: true });
+};
+"""
+
+
+def _chromium_path():
+    for p in CHROMIUM_CANDIDATES:
+        if p and pathlib.Path(p).exists():
+            return p
+    return None
+
+
+async def _open(pw, boot):
+    launch = {}
+    path = _chromium_path()
+    if path:
+        launch["executable_path"] = path
+    browser = await pw.chromium.launch(**launch)
+    page = await browser.new_page(viewport={"width": 390, "height": 844})
+    await page.route("**/static/*", lambda r: asyncio.ensure_future(
+        r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
+    await page.route("https://app.local/", lambda r: asyncio.ensure_future(
+        r.fulfill(path=str(WEBAPP / "index.html"), content_type="text/html")))
+    await page.add_init_script("window.BOOT = " + json.dumps(boot) + ";" + STUB)
+    await page.goto("https://app.local/")
+    await page.wait_for_selector("#screen-main:not(.hidden)", timeout=10000)
+    return browser, page
+
+
+async def main():
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        print("playwright не встановлено — тест пропущено (pip install playwright)")
+        return 0
+
+    results = []
+
+    def check(name, cond):
+        results.append((name, bool(cond)))
+
+    print("Прогрес виконання «2/3» у Mini App «Команда»:")
+    async with async_playwright() as pw:
+        browser, page = await _open(pw, BOOTSTRAP)
+        try:
+            # --- трекер людини ---
+            await page.click('[data-tracker="Аліна Квітко"]')
+            await page.wait_for_selector(".task-row")
+            badges = await page.locator(".prog").all_inner_texts()
+            check("у трекері видно «2/3» недобраного таска", "2/3" in badges)
+            check("видно «2/2» закритого", "2/2" in badges)
+            check("«0/1» не малюється", "0/1" not in badges)
+            check("недобраний прогрес не зелений",
+                  not await page.locator('.prog:not(.ok)').first.evaluate(
+                      "el => el.classList.contains('ok')"))
+            check("набраний прогрес зелений",
+                  await page.locator(".prog.ok").count() == 1)
+
+            await page.screenshot(path="/tmp/progress-tracker.png", full_page=True)
+
+            # --- картка таска: лінки зарахованого ---
+            await page.click('[data-task="1"]')
+            await page.wait_for_selector("#sheet .mrow")
+            sheet = await page.inner_text("#sheet")
+            check("картка каже, скільки зараховано", "Зараховано 2 із 3" in sheet)
+            check("видно заголовки зарахованих публікацій",
+                  "Сесія міськради ухвалила бюджет" in sheet
+                  and "Депутати не зібрались вдруге" in sheet)
+            check("видно дату публікації", "10.07" in sheet)
+            await page.screenshot(path="/tmp/progress-sheet.png")
+
+            await page.click("#sheet .mrow")
+            await page.wait_for_timeout(200)
+            opened = await page.evaluate("window.__opened")
+            check("тап по публікації відкриває її через tg.openLink",
+                  opened and opened[0].endswith("321001-sesiia"))
+            check("апка при цьому нікуди не пішла",
+                  page.url.startswith("https://app.local/"))
+        finally:
+            await browser.close()
+
+        # --- журналістка ---
+        browser, page = await _open(pw, JOURNALIST)
+        try:
+            await page.wait_for_selector(".task-row")
+            body = await page.inner_text("#content")
+            check("журналістка теж бачить свій прогрес", "2/3" in body)
+            check("і бачить, що саме зараховано",
+                  "Сесія міськради ухвалила бюджет" in body)
+            await page.screenshot(path="/tmp/progress-journalist.png", full_page=True)
+        finally:
+            await browser.close()
+
+    ok = 0
+    for name, passed in results:
+        print(f"  {'✅' if passed else '❌'} {name}")
+        ok += passed
+    print(f"{ok}/{len(results)} перевірок пройдено")
+    return 0 if ok == len(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
