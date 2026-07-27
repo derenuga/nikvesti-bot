@@ -50,7 +50,7 @@ from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, vibe
 from handlers.webapp import start_webapp, team_handler
 from handlers.team_matching import (
     match_test_handler, match_scan_handler, match_estimate_handler,
-    match_backfill_handler, match_tg_handler,
+    match_backfill_handler, match_tg_handler, match_cards_handler,
 )
 from handlers.team_kpi import kpi_debug, set_user_link
 from handlers import team_roster
@@ -409,6 +409,7 @@ def main():
     app.add_handler(CommandHandler("match_estimate", match_estimate_handler))
     app.add_handler(CommandHandler("match_backfill", match_backfill_handler))
     app.add_handler(CommandHandler("match_tg", match_tg_handler))
+    app.add_handler(CommandHandler("match_cards", match_cards_handler))
     app.add_handler(CommandHandler("kpi_debug", kpi_debug_handler))
     app.add_handler(CommandHandler("kpi_link", kpi_link_handler))
     app.add_handler(CommandHandler("viber_setup", viber_setup_handler))

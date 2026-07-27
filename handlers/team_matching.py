@@ -40,7 +40,7 @@ from handlers import (
 )
 from handlers.ai_messages import async_client, _record_usage
 from handlers.helpers import extract_article_id
-from handlers.news_archive import _news_url
+from handlers.news_archive import BASE_URL, _news_url
 from handlers.team_projects import _norm_name
 
 ALLOWED_USER_IDS = {
@@ -307,6 +307,17 @@ def owner_person_map():
     return out
 
 
+def node_url(row):
+    """Канонічний URL матеріалу. Статті живуть за іншим шляхом, ніж новини:
+    /articles/{slug} проти /news/{рубрика}/{slug}. Двіжок редиректить із
+    новинного шляху на статейний, тож картка відкрилась би й так — але лінк
+    у черзі має бути тим самим, що в GA4 і в репостах, а не редиректом."""
+    if row.get("type") == "article":
+        slug = (row.get("slug_ua") or row.get("slug") or "").strip()
+        return f"{BASE_URL}/articles/{slug or row['id']}"
+    return _news_url(row)
+
+
 def node_signal(row):
     """Рядок nodes → сигнатура для судді й снапшот для картки в черзі."""
     return {
@@ -318,7 +329,7 @@ def node_signal(row):
         "published": row["published"],
         "title": (row["title"] or "").strip(),
         "lead": _strip_html(row["content"]),
-        "url": _news_url(row),
+        "url": node_url(row),
     }
 
 
@@ -507,7 +518,7 @@ async def _ping_done(bot, person, task):
     )
 
 
-def _enrich_pending_cards(limit=10):
+def _enrich_pending_cards(limit=50):
     """Самолікування черги: добирає опис і зображення тим спірним, у кого їх
     ще немає. Пости Telegram сюди не йдуть — у них картинка вже зі стрічки."""
     from handlers import bot_db
@@ -810,6 +821,31 @@ async def match_scan_handler(update, context):
     if report.pending:
         lines.append(f"\n🤔 {report.pending} спірних — у «Сповіщеннях» апки.")
     await msg.edit_text("\n".join(lines), disable_web_page_preview=True)
+
+
+async def match_cards_handler(update, context):
+    """/match_cards [скільки] — доодягнути картки черги зараз: опис і
+    зображення зі сторінок матеріалів. Те саме робить щогодинний прогін, але
+    після великої ретроспективи чекати годину нема сенсу."""
+    if ALLOWED_USER_IDS and update.effective_user.id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    try:
+        limit = max(1, min(300, int(context.args[0]))) if context.args else 100
+    except ValueError:
+        limit = 100
+    msg = await update.message.reply_text("🦊 Одягаю картки черги…")
+    try:
+        filled = await asyncio.to_thread(_enrich_pending_cards, limit)
+        left = await asyncio.to_thread(
+            lambda: len(team_matches.pending_without_meta(limit)))
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось: {e}")
+        return
+    await msg.edit_text(
+        f"🦊 Оновлено карток: {filled}"
+        + (f"\nЩе без опису/картинки: {left} — повтори /match_cards."
+           if left else "\nУсі картки черги з описом і зображенням."))
 
 
 async def match_tg_handler(update, context):
