@@ -617,3 +617,15 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 .search-box:focus-within { border-color: var(--blue); }
 /* Хрестик очищення в Safari/Chrome — щоб не тулився до краю */
 .search-box input::-webkit-search-cancel-button { margin-left: 6px; }
+
+/* ---------- шапка журналістки: фото з кільцем KPI ---------- */
+.me-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 20px; }
+.me-txt { flex: 1; min-width: 0; }
+.me-txt .h-sub { margin-bottom: 0; }
+.me-ring {
+  flex-shrink: 0; display: flex; flex-direction: column;
+  align-items: center; gap: 6px; width: 104px;
+}
+.me-cap { text-align: center; line-height: 1.2; }
+.me-cap b { display: block; font-size: 17px; font-weight: 800; color: var(--good); }
+.me-cap span { display: block; font-size: 11.5px; color: var(--muted); }

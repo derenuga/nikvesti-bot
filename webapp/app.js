@@ -1395,11 +1395,14 @@ function pctColor(pct) {
 }
 
 /* Кільце навколо аватарки: % виконання KPI за період, колір за рівнем */
-function avatarRing(person, entry, pct, size) {
+/* fixedColor — коли смуга має бути одного кольору незалежно від результату.
+   Так зроблено на екрані журналістки: зелений завжди. Червоне кільце на
+   власному профілі демотивує, а не інформує — вона й так бачить цифри. */
+function avatarRing(person, entry, pct, size, fixedColor) {
   const r = 44, c = 2 * Math.PI * r;
   const p = pct == null ? 0 : Math.max(0, Math.min(100, pct));
   const off = c * (1 - p / 100);
-  const color = pctColor(pct);
+  const color = fixedColor || pctColor(pct);
   return `<span class="avaring" style="width:${size}px;height:${size}px">
     <svg viewBox="0 0 100 100" class="ring">
       <circle class="track" cx="50" cy="50" r="${r}"/>
@@ -1777,8 +1780,13 @@ function deptSheet(p) {
 function renderJournalist() {
   const open = STATE.tasks.filter((t) => t.status === "open");
   $("content").innerHTML = `
-    <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
-    <div class="h-sub">твої завдання і KPI</div>
+    <div class="me-head">
+      <div class="me-txt">
+        <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
+        <div class="h-sub">твої завдання і KPI</div>
+      </div>
+      <div class="me-ring" id="me-ring">${meRingHtml(null, null)}</div>
+    </div>
     <div id="my-kpi"></div>
     <div id="my-history"></div>
     ${open.length ? `<div class="soft-card">${open.map((t) => {
@@ -1822,11 +1830,38 @@ async function renderMyHistory() {
   scrollHistoryToEnd("my-hist-chart");
 }
 
+/* Кільце з фото журналістки та підписом, за який період цифри. Смуга завжди
+   зелена (див. avatarRing), відсоток — теж: колір тут не носить інформації. */
+function meRingHtml(pct, monthLabel) {
+  return `
+    ${avatarRing(STATE.me.name, STATE.me, pct, 92, "var(--good)")}
+    <div class="me-cap">
+      ${pct == null ? "" : `<b>${pct}%</b>`}
+      <span>${esc(monthLabel ? `за ${monthLabel}` : "цього місяця")}</span>
+    </div>`;
+}
+
 /* «Мої KPI» журналістки: норми її відділу зі своїм фактом тижня/місяця.
    Вантажиться після основного екрана — щоб таски не чекали на MySQL сайту. */
 async function renderMyKpi() {
   let k;
   try { k = await api("/api/kpi"); } catch (e) { return; }
+  // Кільце у шапці — за МІСЯЧНИМИ нормами: тижневі стрибають надто різко,
+  // щоб бути обличчям екрана (у вівторок там завжди буде мало).
+  const monthly = k.norms.filter((n) => n.period === "month");
+  const pcts = monthly.map((n) => {
+    const r = n.rows[0];
+    return r && r.fact !== null && r.target > 0
+      ? Math.min(100, Math.round(r.fact / r.target * 100)) : null;
+  }).filter((v) => v !== null);
+  const ring = $("me-ring");
+  if (ring) {
+    ring.innerHTML = meRingHtml(
+      pcts.length ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length) : null,
+      monthly.length ? k.month_label : null,
+    );
+  }
+
   const box = $("my-kpi");
   if (!box || !k.norms.length) return;
   box.innerHTML = `<div class="soft-card"><div class="sc-t">Мої KPI</div>

@@ -181,6 +181,13 @@ def _bootstrap_blocking(person, is_manager):
         out["tasks"] = []
 
     if not is_manager:
+        # Своє фото — для кільця KPI у шапці її екрана
+        try:
+            out["me_photo"] = (team_projects.avatar_map([person]).get(person) or {})
+            out["site_db"] = team_projects.is_configured()
+        except Exception as e:
+            print(f"webapp: фото «{person}» не прочиталось — {e}")
+            out["me_photo"] = {}
         # Журналістці — мінімум про проєкти (донор + лого) для рядків тасків
         try:
             out["projects"] = [
@@ -255,6 +262,8 @@ async def api_bootstrap(request):
     person, info, tg_user = await _authenticate(request)
     data = await _in_session(_bootstrap_blocking, person, info["manager"])
     data["me"] = _me_payload(person, info, tg_user)
+    # Фото журналістки кладемо прямо в me — далі воно потрібне лише їй самій
+    data["me"].update(data.pop("me_photo", None) or {})
     return web.json_response(data)
 
 
