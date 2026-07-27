@@ -565,14 +565,19 @@ def resolve_publication(url, fallback_project=None):
     }, None
 
 
-def queue_publication(url, actor):
+def queue_publication(url, actor, force=False):
     """Покласти публікацію в чергу «Сповіщень» РУКАМИ, за лінком.
 
     Потрібно, коли редактор сам натрапив на матеріал, якого прогін не побачив
     (не той автор у CMS, публікація поза проєктом, старіша за вікно), і хоче
-    вирішити по ньому окремо. Уже зараховане повертається в чергу тим самим
-    записом — див. requeue_match. Повертає (матч, [зачеплені таски]) або
-    (None, помилка)."""
+    вирішити по ньому окремо.
+
+    Якщо публікацію ВЖЕ ЗАРАХОВАНО в чиєсь завдання — мовчки знімати її
+    звідти не можна: у людини просто впав би прогрес без пояснення. Тому
+    повертаємо конфлікт (куди саме зараховано), і лише з force=True знімаємо
+    і кладемо в чергу тим самим записом (див. requeue_match).
+
+    Повертає (матч, [зачеплені таски]) | (None, помилка) | (None, {конфлікт})."""
     info, error = resolve_publication(url)
     if error:
         return None, error
@@ -580,6 +585,16 @@ def queue_publication(url, actor):
     if existing:
         if existing["status"] == "pending":
             return None, "Ця публікація вже в черзі"
+        if existing["status"] in team_matches.COUNTED and not force:
+            task = team_tasks.get_task(existing["task_id"]) if existing["task_id"] else None
+            return None, {
+                "conflict": "counted",
+                "title": existing["title"],
+                "person": (task or {}).get("person") or existing["person"],
+                "theme_name": (task or {}).get("theme_name"),
+                "project_name": (task or {}).get("project_name"),
+                "partner_name": (task or {}).get("partner_name"),
+            }
         return team_matches.requeue_match(existing["id"], actor)
     if info["source"] == "site":
         info["description"], info["image"] = fetch_card_meta(info["url"])

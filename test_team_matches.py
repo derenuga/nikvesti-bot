@@ -239,7 +239,7 @@ def main():
     check("зараховано в дубль", counted(dup["id"]) == 1)
 
     # Підміна БД сайту: лінк має розрішитись у справжню ноду
-    class FakeDB:
+    class FakeDB:  # noqa: E306
         def is_configured(self):
             return True
 
@@ -285,6 +285,36 @@ def main():
     finally:
         team_matching.db = orig_db
         bot_db.execute("DELETE FROM team_task_matches WHERE ref IN ('5001', '82296')")
+
+    # ---------- 10. «Додати в чергу» вже зарахованої публікації ----------
+    # Питання Олега: що буде, якщо кинути в чергу лінк, який уже десь
+    # зарахований? Мовчки знімати не можна — у людини впав би прогрес без
+    # пояснення. Тому спершу конфлікт, і лише з force — зняття.
+    keeper = new_task(qty=2)
+    team_matches.record_match(
+        "site", "6001", "auto", task_id=keeper["id"], person="Тест Тестова",
+        project_id=999, confidence="high", title="Уже зарахована",
+        url="https://nikvesti.com/news/politics/6001-a")
+    team_matching.db = FakeDB()   # той самий підмінений сайт, id не важливий
+    try:
+        m3, conflict = team_matching.queue_publication(
+            "https://nikvesti.com/news/politics/6001-a", "Олег Деренюга")
+        check("сама по собі публікація з черги не зникає",
+              m3 is None and isinstance(conflict, dict)
+              and conflict["conflict"] == "counted")
+        check("конфлікт каже, кому і куди вона зарахована",
+              conflict["person"] == "Тест Тестова"
+              and conflict["theme_name"] == "Тестова тематика")
+        check("і нічого не змінилось", counted(keeper["id"]) == 1)
+        m4, touched4 = team_matching.queue_publication(
+            "https://nikvesti.com/news/politics/6001-a", "Олег Деренюга", force=True)
+        for tid in touched4:
+            team_matches.apply_progress(tid)
+        check("з підтвердженням — знялась і стала в чергу",
+              m4 and m4["status"] == "pending" and counted(keeper["id"]) == 0)
+    finally:
+        team_matching.db = orig_db
+        bot_db.execute("DELETE FROM team_task_matches WHERE ref = '6001'")
 
     cleanup()
 
