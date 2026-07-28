@@ -336,20 +336,83 @@ async def check_report_deadlines(bot, chat_id=None, force=False):
     return sent
 
 
+def diagnose(today=None):
+    """Чому нагадувань немає: розкладка всіх дедлайнів по причинах. Потрібна
+    саме тому, що «нічого не прийшло» має щонайменше пʼять різних причин, і
+    без цифр вони не розрізняються."""
+    today = today or datetime.now(KYIV_TZ).date()
+    out = {"total": 0, "closed": 0, "past": 0, "far": 0,
+           "already": 0, "ready": 0, "error": None}
+    try:
+        deadlines = team_tasks.list_project_deadlines()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+    out["total"] = len(deadlines)
+    for dl in deadlines:
+        if dl.get("status") in ("submitted", "accepted"):
+            out["closed"] += 1
+            continue
+        try:
+            due = datetime.strptime(dl["due"], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        days_left = (due - today).days
+        if days_left < 0:
+            out["past"] += 1
+            continue
+        fitting = [t for t in REMIND_DAYS if days_left <= t]
+        if not fitting:
+            out["far"] += 1
+            continue
+        if _already_sent(dl["id"], min(fitting)):
+            out["already"] += 1
+        else:
+            out["ready"] += 1
+    return out
+
+
 # ---------- Команда ----------
 
 async def reports_check_handler(update, context):
-    """/reports — прогнати перевірку зараз. Нагадування летять у той чат, де
-    викликали команду, і НЕ позначаються як надіслані, щоб не з'їсти планове."""
-    await update.message.reply_text("Дивлюсь звітні дедлайни…")
+    """/reports — прогнати перевірку зараз І показати, чому нагадувань немає.
+    Прев'ю летить у той чат, де викликали команду, і НЕ позначається як
+    надіслане, щоб не з'їсти планове."""
+    import asyncio
+
+    d = await asyncio.to_thread(diagnose)
+
+    lines = ["🦊 <b>Звітні дедлайни — діагностика</b>"]
+    if is_configured():
+        lines.append(f"Чат нагадувань: <code>{FINANCE_CHAT_ID}</code>")
+        # Найважливіша перевірка: чи бот справді бачить той чат. Помилковий id
+        # і відсутність прав виглядають однаково — «нічого не прийшло».
+        try:
+            chat = await context.bot.get_chat(FINANCE_CHAT_ID)
+            lines.append(f"Доступ до чату: ✅ «{chat.title or chat.id}»")
+        except Exception as e:
+            lines.append(f"Доступ до чату: ❌ {e}")
+    else:
+        lines.append("Чат нагадувань: ❌ <b>змінна FINANCE_CHAT_ID не задана</b> "
+                     "(Railway → Variables)")
+
+    if d["error"]:
+        lines.append(f"Дедлайни не прочитались: {d['error']}")
+    else:
+        lines.append(
+            f"\nДедлайнів усього: <b>{d['total']}</b>\n"
+            f"• подані/прийняті (не нагадуємо): {d['closed']}\n"
+            f"• дата вже минула: {d['past']}\n"
+            f"• ще далеко (понад 7 діб): {d['far']}\n"
+            f"• у вікні, але вже нагадано: {d['already']}\n"
+            f"• <b>чекають нагадування: {d['ready']}</b>"
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
     sent = await check_report_deadlines(
         context.bot, chat_id=update.effective_chat.id, force=True
     )
-    if not sent:
-        target = FINANCE_CHAT_ID if is_configured() else "не налаштовано"
+    if not sent and not d["error"]:
         await update.message.reply_text(
-            "Нічого нагадувати: немає звітів у вікні 7 або 2 доби "
-            "(подані й прийняті не рахуються).\n"
-            f"Плановий чат нагадувань: <code>{target}</code>",
-            parse_mode="HTML",
+            "Прев'ю порожнє — сьогодні нагадувати нема про що.",
         )
