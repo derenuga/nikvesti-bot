@@ -51,8 +51,8 @@ except ImportError:  # локальний dev без aiohttp — модуль п
     web = None
 
 from handlers import (
-    bot_db, team_kpi, team_matches, team_notifications, team_projects,
-    team_roster, team_tasks,
+    bot_db, team_analytics, team_kpi, team_matches, team_notifications,
+    team_projects, team_roster, team_tasks,
 )
 from handlers.helpers import normalize_https_url
 
@@ -1005,6 +1005,26 @@ async def api_people_dept(request):
     return web.json_response({"ok": True})
 
 
+# ---------- Аналітика ----------
+
+async def api_dashboard(request):
+    """Аналітичний дашборд Головної: ?period=week|month&offset=0|-1…
+
+    Дефолт offset=-1 — ПОПЕРЕДНІЙ період: у вівторок поточний тиждень має два
+    дні даних і сам собою нічого не каже. Тільки менеджери: це цифри всієї
+    редакції разом із виходом по авторах."""
+    person, info, _ = await _require_manager(request)
+    period = request.query.get("period", "week")
+    if period not in team_analytics.PERIODS:
+        period = "week"
+    try:
+        offset = int(request.query.get("offset", "-1"))
+    except ValueError:
+        offset = -1
+    data = await _in_session(team_analytics.dashboard, period, offset)
+    return web.json_response(data)
+
+
 # ---------- KPI ----------
 
 async def api_kpi(request):
@@ -1286,6 +1306,7 @@ async def start_webapp(application):
         web.get("/api/absences", api_absences),
         web.post("/api/absences", api_absence_create),
         web.delete("/api/absences/{absence_id:\\d+}", api_absence_delete),
+        web.get("/api/dashboard", api_dashboard),
         web.get("/api/kpi", api_kpi),
         web.get("/api/kpi/dashboard", api_kpi_dashboard),
         web.get("/api/kpi/person", api_kpi_person),

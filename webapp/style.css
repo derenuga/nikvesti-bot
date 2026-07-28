@@ -823,6 +823,180 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 }
 .nt-row .st-mark { width: 26px; height: 26px; }
 
+/* ---------- Аналітика ----------
+   Категоріальна трійка для часток пошуку. Ті самі три хʼю, що в таймлайні
+   (валідовані scripts/validate_palette.js в обох темах: ΔE 9.2 deutan,
+   27.6 normal у світлій; у темній усі перевірки PASS). Змінними — бо тут вони
+   потрібні і як фон смуги, і як крапка легенди. */
+:root { --cat1: #2a78d6; --cat2: #eb6834; --cat3: #1baf7a; }
+body.dark { --cat1: #3987e5; --cat2: #d95926; --cat3: #199e70; }
+
+.an-head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin: 26px 0 12px;
+}
+.an-head .an-i { width: 18px; height: 18px; color: var(--blue); align-self: center; }
+.an-head .an-t { font-size: 17px; font-weight: 800; }
+.an-head .an-s { font-size: 12px; color: var(--muted); flex: 1 0 100%; }
+
+/* Геройське число — рівно одне на екран: читачі періоду. Пропорційні цифри
+   (НЕ tabular-nums): на 44 px табличні виглядають розтягнутими. */
+.hero {
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 16px 18px 12px; margin-bottom: 12px;
+}
+.hero-l { display: block; font-size: 12.5px; color: var(--muted); }
+.hero-v { display: block; font-size: 44px; font-weight: 800; line-height: 1.05; margin: 2px 0 4px; }
+.hero-d { display: flex; align-items: baseline; gap: 8px; }
+
+/* Стат-плитки: підпис · значення · дельта (колір = напрямок) */
+.stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-bottom: 12px; }
+.stat {
+  background: var(--card); border-radius: 15px; box-shadow: var(--shadow);
+  padding: 12px 12px 11px; min-width: 0;
+}
+.st-l { display: block; font-size: 11.5px; color: var(--muted); line-height: 1.3; }
+.st-v { display: block; font-size: 21px; font-weight: 800; line-height: 1.2; margin-top: 3px; }
+.st-v.big { font-size: 28px; }
+.st-b { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.st-m { font-size: 11px; color: var(--muted); }
+.st-d { font-size: 12px; font-weight: 800; white-space: nowrap; }
+.st-d.up { color: var(--good); }
+.st-d.down { color: var(--red); }
+.st-d.flat { color: var(--muted); }
+@media (max-width: 360px) {
+  .stat-grid { gap: 6px; }
+  .st-v { font-size: 19px; }
+}
+
+/* Стовпчики днів. ≤24 px товщини, 4 px закруглення зверху й прямий кут на
+   базовій лінії; проміжок між сусідами робить поверхня (3 px gap). */
+.sp-cap { font-size: 11.5px; color: var(--muted); margin-top: 10px; }
+.spark {
+  display: flex; align-items: flex-end; gap: 3px; height: 92px;
+  border-bottom: 1px solid var(--line); margin-top: 6px;
+}
+.sp-col {
+  flex: 1 1 0; min-width: 0; height: 100%; padding: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+}
+.sp-track { width: 100%; max-width: 24px; flex: 1; display: flex; align-items: flex-end; }
+.sp-track i {
+  display: block; width: 100%; background: var(--blue);
+  border-radius: 4px 4px 0 0; opacity: .55;
+}
+.sp-col.max .sp-track i { opacity: 1; }
+.sp-x {
+  font-size: 9.5px; color: var(--muted); line-height: 1.6; height: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.sp-note { font-size: 11px; color: var(--muted); margin-top: 8px; }
+
+/* Складена смуга часток. Розрив між сегментами — 2 px поверхні: не обведення
+   (то була б зайва фарба), а власний бордюр сегмента в колір картки. */
+.shr { display: flex; height: 12px; border-radius: 6px; overflow: hidden; margin: 12px 0 10px; }
+.shr i { display: block; min-width: 3px; border-right: 2px solid var(--card); box-sizing: border-box; }
+.shr i:last-child { border-right: 0; }
+.shr i.c1 { background: var(--cat1); }
+.shr i.c2 { background: var(--cat2); }
+.shr i.c3 { background: var(--cat3); }
+
+.legend { display: block; }
+.lg-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.lg-row:first-child { border-top: 0; }
+.lg-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.lg-dot.c1 { background: var(--cat1); }
+.lg-dot.c2 { background: var(--cat2); }
+.lg-dot.c3 { background: var(--cat3); }
+.lg-l { flex: 1; min-width: 0; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lg-v { font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.lg-s { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+
+.an-two { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.an-two-r { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+
+/* Автори: горизонтальні бари одного хʼю (магнітуда), тап веде в трекер */
+.an-row {
+  display: flex; align-items: center; gap: 11px; width: 100%; text-align: left;
+  padding: 9px 0; border-top: 1px solid var(--line);
+}
+.an-row:first-of-type { border-top: 0; }
+.an-row .ava { width: 36px; height: 36px; font-size: 12px; }
+.ar-main { flex: 1; min-width: 0; }
+.ar-n { display: block; font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ar-main .kbar { margin-top: 5px; }
+.ar-r { flex-shrink: 0; text-align: right; }
+.ar-r b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+
+/* Соцмережі: картка на платформу — підписники великим, метрики періоду під ними */
+.soc-card {
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 13px 16px; margin-bottom: 10px;
+}
+.soc-h { display: flex; align-items: center; gap: 8px; }
+/* Знак мережі: бренд-відтінок несе впізнаваність, форма — ідентичність.
+   TikTok у світлій темі майже чорний (як його лого), у темній — світлий:
+   інакше знак зникав би у власному фоні. */
+.soc-ic {
+  width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(128, 148, 170, .14);
+}
+.soc-ic .ic { width: 16px; height: 16px; }
+.soc-ic.facebook { color: #1877f2; }
+.soc-ic.instagram { color: #c13584; }
+.soc-ic.telegram { color: #229ed9; }
+.soc-ic.youtube { color: #cc0000; }
+.soc-ic.viber { color: #7360f2; }
+.soc-ic.tiktok { color: #16181c; }
+body.dark .soc-ic.tiktok { color: #e8e6e1; }
+body.dark .soc-ic.facebook { color: #5b9bf7; }
+body.dark .soc-ic.instagram { color: #e06aae; }
+body.dark .soc-ic.telegram { color: #55b9e8; }
+body.dark .soc-ic.youtube { color: #ff6b6b; }
+body.dark .soc-ic.viber { color: #9c8cff; }
+.soc-n { font-size: 14.5px; font-weight: 800; flex: 1; min-width: 0; }
+.soc-f {
+  font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums;
+  display: flex; align-items: baseline; gap: 6px;
+}
+.soc-m {
+  display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px;
+  font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.soc-m span { display: inline-flex; align-items: baseline; gap: 5px; }
+.soc-m i { font-style: normal; color: var(--muted); font-size: 12px; }
+
+/* «Показати всіх» — м'яка кнопка всередині картки: дія локальна (список уже
+   приїхав), тож і виглядати має скромніше за CTA */
+.more-btn {
+  display: block; width: 100%; margin-top: 8px; padding: 10px;
+  border-radius: 12px; background: var(--blue-soft); color: var(--blue);
+  font-size: 13.5px; font-weight: 700;
+}
+
+.an-line { font-size: 13.5px; line-height: 1.5; margin-bottom: 6px; }
+.an-line:last-child { margin-bottom: 0; }
+.an-line b { font-weight: 800; }
+
+/* Топ матеріалів — список, а не графік: сім довгих назв колонками не читаються */
+.top-row {
+  display: flex; align-items: center; gap: 11px; padding: 10px 0;
+  border-top: 1px solid var(--line); color: inherit; text-decoration: none;
+}
+.top-row:first-child { border-top: 0; }
+.tp-n {
+  width: 22px; flex-shrink: 0; text-align: center; font-size: 13px; font-weight: 800;
+  color: var(--blue); font-variant-numeric: tabular-nums;
+}
+.tp-main { flex: 1; min-width: 0; }
+.tp-t { display: block; font-size: 13.5px; font-weight: 600; line-height: 1.35; }
+.tp-m { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.tp-v { font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
 /* Лічильник черги на пункті меню «Сповіщення» */
 .bn { position: relative; }
 .bn-badge {

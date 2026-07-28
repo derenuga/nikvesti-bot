@@ -1153,37 +1153,17 @@ def _collect_youtube(year, month, with_followers):
     return out
 
 
-_TG_SUBS_RE = re.compile(r"([\d\s ]+)\s*(?:subscribers|підписник)")
-
-
 def _tg_subscribers():
-    """Підписники каналу з веб-прев'ю t.me/{channel} («41 012 subscribers»);
-    фолбек — округлений лічильник зі стрічки /s («41K»)."""
-    try:
-        html = tg_stats._fetch_html(f"/{tg_stats.CHANNEL}")
-        soup = BeautifulSoup(html, "html.parser")
-        extra = soup.find("div", class_="tgme_page_extra")
-        if extra:
-            m = _TG_SUBS_RE.search(extra.get_text(" ", strip=True))
-            if m:
-                return int(re.sub(r"\D", "", m.group(1)))
-    except Exception as e:
-        print(f"social_sheet: прев'ю t.me/{tg_stats.CHANNEL} — {e}")
-    html = tg_stats._fetch_html(f"/s/{tg_stats.CHANNEL}")
-    soup = BeautifulSoup(html, "html.parser")
-    for counter in soup.find_all("div", class_="tgme_channel_info_counter"):
-        type_span = counter.find("span", class_="counter_type")
-        value_span = counter.find("span", class_="counter_value")
-        if type_span and value_span and "subscriber" in type_span.get_text().lower():
-            return tg_stats._parse_views_text(value_span.get_text(strip=True))
-    return None
+    """Підписники каналу. Сам парсер — у telegram_stats.channel_subscribers:
+    тим самим числом користується й аналітичний дашборд Mini App, і дві копії
+    розійшлись би при першій зміні розмітки t.me."""
+    return tg_stats.channel_subscribers()
 
 
 def _collect_telegram(year, month, with_followers):
-    """Пости місяця зі стрічки t.me/s: старт — оцінка message_id початку
-    наступного місяця по якорях (+ запас), гортаємо вниз до виходу за початок
-    місяця. Перегляди — поточні накопичені (t.me округлює: 12.3K), для
-    минулого місяця це майже фінальні числа. Підписники — лише живий знімок."""
+    """Telegram за місяць: підписники (живий знімок) + пости й перегляди зі
+    стрічки t.me/s. Саме гортання вікна — у telegram_stats.collect_window
+    (ним же користується тижневий захват у Нору)."""
     m_start = datetime(year, month, 1, tzinfo=KYIV_TZ)
     last = calendar.monthrange(year, month)[1]
     m_end = datetime(year, month, last, tzinfo=KYIV_TZ) + timedelta(days=1)
@@ -1191,41 +1171,7 @@ def _collect_telegram(year, month, with_followers):
     out = {"subscribers": None, "posts": None, "views_total": None, "avg_views": None}
     if with_followers:
         out["subscribers"] = _tg_subscribers()
-
-    before = tg_stats.estimate_message_id(m_end) + 250  # запас на похибку інтерполяції
-    posts, views_sum, views_n = 0, 0, 0
-    for _ in range(80):  # ~1600 постів — з запасом на найактивніший місяць
-        html = tg_stats._fetch_html(f"/s/{tg_stats.CHANNEL}",
-                                    params={"before": before})
-        soup = BeautifulSoup(html, "html.parser")
-        blocks = soup.find_all("div", class_="tgme_widget_message")
-        if not blocks:
-            break
-        page_min_id, oldest_dt = None, None
-        for block in blocks:
-            msg_id, views, _hrefs, dt = tg_stats._parse_message_block(block)
-            if msg_id is not None and (page_min_id is None or msg_id < page_min_id):
-                page_min_id = msg_id
-            if dt is None:
-                continue
-            if oldest_dt is None or dt < oldest_dt:
-                oldest_dt = dt
-            if m_start <= dt < m_end:
-                posts += 1
-                if views is not None:
-                    views_sum += views
-                    views_n += 1
-        if page_min_id is None or page_min_id <= 1:
-            break
-        if oldest_dt is not None and oldest_dt < m_start:
-            break
-        before = page_min_id
-        time.sleep(0.3)
-
-    if posts:
-        out["posts"] = posts
-        out["views_total"] = views_sum if views_n else None
-        out["avg_views"] = round(views_sum / views_n) if views_n else None
+    out.update(tg_stats.collect_window(m_start, m_end))
     return out
 
 
@@ -1424,6 +1370,19 @@ async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt", "tt
         except Exception as e:
             vb = None
             results["vb"] = f"⛔ {e}"
+
+    # Ті самі числа — і в нору (Олег, 27.07: «нора має зберігати весь наш
+    # прогрес по соцмережах»). Пишемо ДО таблиці й в окремому try: збій Sheets
+    # не має забирати з собою пам'ять бота, і навпаки.
+    try:
+        from handlers import social_store
+
+        saved = await social_store.record_month(
+            year, month, {"fb": fb, "ig": ig, "tg": tg, "yt": yt, "tt": tt, "vb": vb})
+        if saved:
+            print(f"social_sheet: у нору записано {saved} рядків за {year}-{month:02d}")
+    except Exception as e:
+        print(f"social_sheet: місячний знімок у нору не записався — {e}")
 
     data = _month_value_ranges(year, month, site, fb, ig, tg, yt, tt, vb)
     if data:
