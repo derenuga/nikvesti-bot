@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from handlers import bot_db, team_projects, team_tasks
-from handlers.helpers import normalize_https_url
+from handlers.helpers import app_link_with_param, normalize_https_url, resolve_app_link
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 
@@ -43,9 +43,10 @@ REMIND_DAYS = (7, 2)
 
 _RAW_FINANCE_CHAT_ID = os.environ.get("FINANCE_CHAT_ID")
 
-# Прямий лінк апки з BotFather. У ГРУПІ Telegram не дозволяє web_app-кнопки —
-# лише URL, тож ведемо саме прямим лінком; startapp=reports відкриває апку
-# одразу на «Звітності», а не на Головній.
+# Прямий лінк апки з BotFather (/newapp, вигляду https://t.me/mykvisti_bot/team).
+# Задавати руками НЕ обов'язково — без змінної лінк збирається сам із username
+# бота (helpers.resolve_app_link). startapp=reports відкриває апку одразу на
+# «Звітності», а не на Головній.
 WEBAPP_DIRECT_LINK = normalize_https_url(os.environ.get("WEBAPP_DIRECT_LINK"))
 
 _SCHEMA = """
@@ -314,14 +315,18 @@ def format_reminder(dl, project, days_left):
     return "\n".join(lines)
 
 
-def _app_markup():
-    """Кнопка «Дедлайни в апці». Без WEBAPP_DIRECT_LINK кнопки просто не буде —
+async def app_link(bot):
+    """Лінк апки для кнопки під нагадуванням: (url, джерело)."""
+    return await resolve_app_link(bot, WEBAPP_DIRECT_LINK)
+
+
+def _app_markup(base_url):
+    """Кнопка «Дедлайни в апці». Без лінка кнопки просто не буде —
     повідомлення лишиться корисним і без неї."""
-    if not WEBAPP_DIRECT_LINK:
+    url = app_link_with_param(base_url, "reports")
+    if not url:
         return None
-    sep = "&" if "?" in WEBAPP_DIRECT_LINK else "?"
-    return InlineKeyboardMarkup([[InlineKeyboardButton(
-        "📅 Дедлайни в апці", url=f"{WEBAPP_DIRECT_LINK}{sep}startapp=reports")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📅 Дедлайни в апці", url=url)]])
 
 
 def _notify_app(dl, project, threshold, days_left):
@@ -357,6 +362,9 @@ async def check_report_deadlines(bot, chat_id=None, force=False):
         print(f"report_reminders: не вдалось зібрати дедлайни — {e}")
         return 0
 
+    app_url, _ = await app_link(bot)
+    markup = _app_markup(app_url)
+
     sent = 0
     for group in group_due(due):
         project, threshold = group["project"], group["threshold"]
@@ -367,7 +375,7 @@ async def check_report_deadlines(bot, chat_id=None, force=False):
                 text=format_group(group),
                 parse_mode="HTML",
                 disable_web_page_preview=True,
-                reply_markup=_app_markup(),
+                reply_markup=markup,
             )
             if not force:
                 # Позначку і подію в апці ставимо на КОЖЕН звіт групи: у чат
@@ -468,14 +476,18 @@ async def reports_check_handler(update, context):
         if here < 0:
             lines.append(f"Постав у Railway: <code>FINANCE_CHAT_ID={here}</code>")
 
-    # Кнопка «Дедлайни в апці» можлива лише з прямим лінком BotFather: у групі
-    # Telegram не дозволяє web_app-кнопки, а звичайний https-URL відкрив би
-    # сторінку в браузері без initData — тобто «Тільки з Telegram».
-    if WEBAPP_DIRECT_LINK:
-        lines.append(f"Кнопка в апку: ✅ <code>{WEBAPP_DIRECT_LINK}</code>")
+    # Кнопка в апку — це саме лінк t.me, а не web_app-кнопка як у /team:
+    # web_app-кнопки Telegram дозволяє лише в приваті, у групі вони не
+    # приймаються. Лінк бот збирає сам із власного username, якщо руками не
+    # задали WEBAPP_DIRECT_LINK.
+    app_url, source = await app_link(context.bot)
+    if app_url:
+        origin = "WEBAPP_DIRECT_LINK" if source == "env" else "зібрано з username бота"
+        lines.append(f"Кнопка в апку: ✅ <code>{app_url}?startapp=reports</code> ({origin})")
+        if source != "env":
+            lines.append("  (працює, коли Mini App увімкнено в BotFather)")
     else:
-        lines.append("Кнопка в апку: ❌ немає <b>WEBAPP_DIRECT_LINK</b> "
-                     "(BotFather → /myapps → лінк виду https://t.me/mykvisti_bot/team)")
+        lines.append("Кнопка в апку: ❌ не вдалось визначити лінк апки")
 
     if d["error"]:
         lines.append(f"Дедлайни не прочитались: {d['error']}")
