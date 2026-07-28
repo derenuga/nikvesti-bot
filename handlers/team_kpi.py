@@ -117,6 +117,30 @@ _SCHEMA_STATEMENTS = [
     "UPDATE team_kpi_norms SET dept = 'digital' WHERE dept IN ('соцмережі', 'відео')",
 ]
 
+# Відсутності: відпустка / лікарняна / відрядження. Живуть окремо від правок
+# KPI, бо це факт про ЛЮДИНУ, а не про конкретну норму: одна відпустка має
+# пригасити всі її норми — і тижневі, і місячні, і в усіх періодах, яких вона
+# торкається. Правка (team_kpi_overrides) лишається ручним «я так вирішила»
+# і має пріоритет над авто-перерахунком.
+_SCHEMA_STATEMENTS.append("""
+    CREATE TABLE IF NOT EXISTS team_absences (
+        id         BIGSERIAL PRIMARY KEY,
+        person     TEXT NOT NULL,
+        start_date DATE NOT NULL,
+        end_date   DATE NOT NULL,
+        kind       TEXT NOT NULL DEFAULT 'vacation',
+        note       TEXT,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+""")
+_SCHEMA_STATEMENTS.append(
+    "CREATE INDEX IF NOT EXISTS idx_team_absences_person "
+    "ON team_absences (person, start_date)")
+
+ABSENCE_KINDS = ("vacation", "sick", "trip")
+ABSENCE_TITLES = {"vacation": "відпустка", "sick": "лікарняна", "trip": "відрядження"}
+
 _schema_lock = threading.Lock()
 _schema_done = False
 
@@ -241,6 +265,101 @@ def clear_override(norm_id, person):
         "DELETE FROM team_kpi_overrides WHERE norm_id = %s AND person = %s AND period_start = %s",
         (int(norm_id), person, start),
     )
+
+
+# ---------- Відсутності (відпустка/лікарняна/відрядження) ----------
+
+def _row_to_absence(r):
+    return {"id": r["id"], "person": r["person"],
+            "start": r["start_date"].isoformat(), "end": r["end_date"].isoformat(),
+            "kind": r["kind"], "title": ABSENCE_TITLES.get(r["kind"], r["kind"]),
+            "note": r["note"] or "", "created_by": r["created_by"]}
+
+
+def list_absences(person=None):
+    ensure_kpi_schema()
+    sql = ("SELECT id, person, start_date, end_date, kind, note, created_by "
+           "FROM team_absences")
+    params = []
+    if person:
+        sql += " WHERE person = %s"
+        params.append(person)
+    sql += " ORDER BY start_date DESC, id DESC"
+    return [_row_to_absence(r) for r in bot_db.query(sql, params)]
+
+
+def add_absence(creator, person, start, end, kind="vacation", note=None):
+    ensure_kpi_schema()
+    if kind not in ABSENCE_KINDS:
+        kind = "vacation"
+    if end < start:
+        start, end = end, start
+    rows = bot_db.query(
+        "INSERT INTO team_absences (person, start_date, end_date, kind, note, created_by) "
+        "VALUES (%s, %s, %s, %s, %s, %s) "
+        "RETURNING id, person, start_date, end_date, kind, note, created_by",
+        (person, start, end, kind, (note or "").strip() or None, creator),
+    )
+    return _row_to_absence(rows[0])
+
+
+def delete_absence(absence_id):
+    ensure_kpi_schema()
+    return bot_db.execute("DELETE FROM team_absences WHERE id = %s", (int(absence_id),))
+
+
+def _workdays(start, end_exclusive):
+    """Робочих днів (пн–пт) у [start, end). Вихідні не рахуємо: норма — про
+    робочий вихід, і тиждень відпустки пн–пт має занулити тижневу ціль, а не
+    лишити «дві сьомих»."""
+    days = 0
+    day = start
+    while day < end_exclusive:
+        if day.weekday() < 5:
+            days += 1
+        day += timedelta(days=1)
+    return days
+
+
+def absence_factor(person, start, end_exclusive, absences=None):
+    """(частка періоду, яку людина працювала; скільки робочих днів пропущено).
+
+    Ціль масштабується пропорційно: відпустка 8–17 липня з'їдає 8 робочих днів
+    із 23 → ціль множиться на 15/23. Повністю пропущений період → 0.0, і
+    людина просто випадає зі звіту, як звільнена правкою."""
+    absences = list_absences(person) if absences is None else absences
+    total = _workdays(start, end_exclusive)
+    if not total:
+        return 1.0, 0
+    missed = 0
+    for a in absences:
+        a_start = date.fromisoformat(a["start"])
+        a_end = date.fromisoformat(a["end"]) + timedelta(days=1)   # включно
+        lo, hi = max(start, a_start), min(end_exclusive, a_end)
+        if lo < hi:
+            missed += _workdays(lo, hi)
+    missed = min(missed, total)
+    return (total - missed) / total, missed
+
+
+def _absences_by_person(people=None):
+    """{людина: [відсутності]} — одним запитом на весь дашборд."""
+    out = {}
+    for a in list_absences():
+        if people is None or a["person"] in people:
+            out.setdefault(a["person"], []).append(a)
+    return out
+
+
+def scaled_target(base_target, factor):
+    """Ціль із урахуванням відсутності: округлюємо вниз, але не нижче 1, поки
+    людина хоч скількись працювала — інакше тиждень із одним робочим днем
+    перетворювався б на «0 із 0» і виглядав як виконаний."""
+    if factor >= 1:
+        return base_target
+    if factor <= 0:
+        return 0
+    return max(1, int(base_target * factor))
 
 
 def _overrides_for(norm_id, period, offset=0):
@@ -450,19 +569,32 @@ def kpi_payload(for_person=None):
                       and team_roster.effective_dept(p, depts) == n["dept"]]
         overrides = _overrides_for(n["id"], n["period"])
         facts = fact_counts(n["metric"], n["period"], n["own"])
+        p_start, p_end = period_bounds(n["period"])
+        absences = _absences_by_person(set(people))
         rows = []
         for person in people:
             ov = overrides.get(person)
-            target = ov["target"] if ov else n["target"]
+            # Ручна правка сильніша за арифметику: якщо Катя поставила ціль
+            # руками, відпустку поверх неї не перераховуємо
+            factor, missed = (1.0, 0) if ov else absence_factor(
+                person, p_start, p_end, absences.get(person, []))
+            target = ov["target"] if ov else scaled_target(n["target"], factor)
             fact = None if facts is None else facts.get(person)
+            away = [a for a in absences.get(person, [])
+                    if a["end"] >= p_start.isoformat()
+                    and a["start"] < p_end.isoformat()]
             rows.append({
                 "person": person,
                 "fact": fact,
                 "target": target,
                 "base_target": n["target"],
                 "overridden": ov is not None,
-                "note": ov["note"] if ov else None,
-                "excused": bool(ov and ov["target"] == 0),
+                "note": ov["note"] if ov else (
+                    f"{away[0]['title']} · ціль {target} замість {n['target']}"
+                    if missed and target else None),
+                "excused": bool(ov and ov["target"] == 0) or (not ov and target == 0),
+                "absence": away[0] if away else None,
+                "missed_days": missed,
                 "done": fact is not None and target > 0 and fact >= target,
             })
         out.append({
@@ -509,17 +641,23 @@ def kpi_person_history(person, months=12):
     norms = [n for n in list_norms() if n["period"] == "month" and n["dept"] == dept]
     uid = resolve_site_user_id(person) if db.is_configured() else None
     buckets = _person_month_buckets(uid, months) if uid else {}
+    person_absences = list_absences(person)
 
     out_months = []
     for off in range(-(months - 1), 1):
         start, _ = period_bounds("month", off)
         b = buckets.get((start.year, start.month), {})
         m_norms, pcts = [], []
+        month_end = period_bounds("month", off)[1]
         for n in norms:
             ov = _overrides_for(n["id"], "month", off).get(person)
             if ov and ov["target"] == 0:
                 continue  # звільнена того місяця
-            target = ov["target"] if ov else n["target"]
+            factor, _missed = (1.0, 0) if ov else absence_factor(
+                person, start, month_end, person_absences)
+            target = ov["target"] if ov else scaled_target(n["target"], factor)
+            if not ov and target == 0:
+                continue  # весь місяць у відпустці
             if uid is None:
                 fact = None
             elif n["own"]:
@@ -570,6 +708,8 @@ def kpi_dashboard(period, offset=0):
 
     # людина → її норми цього періоду (за фактичним відділом) з фактом
     per_person = {}
+    p_start, p_end = period_bounds(period, offset)
+    absences = _absences_by_person()
     for n in norms:
         overrides = _overrides_for(n["id"], period, offset)
         facts = facts_for(n)
@@ -579,9 +719,17 @@ def kpi_dashboard(period, offset=0):
             ov = overrides.get(person)
             if ov and ov["target"] == 0:
                 continue  # звільнена цього періоду — у дашборд не тягнемо
-            target = ov["target"] if ov else n["target"]
+            # Відпустка пропорційно знижує ціль (правка руками — сильніша)
+            factor, missed = (1.0, 0) if ov else absence_factor(
+                person, p_start, p_end, absences.get(person, []))
+            target = ov["target"] if ov else scaled_target(n["target"], factor)
+            if not ov and target == 0:
+                continue  # весь період у відпустці — у звіті їй нічого робити
             fact = None if facts is None else facts.get(person)
-            per_person.setdefault(person, {"dept": n["dept"], "norms": []})["norms"].append({
+            bucket = per_person.setdefault(
+                person, {"dept": n["dept"], "norms": [], "missed_days": missed})
+            bucket["missed_days"] = max(bucket["missed_days"], missed)
+            bucket["norms"].append({
                 "label": norm_label(n["metric"], target, n["own"]),
                 "metric": n["metric"], "own": n["own"],
                 "fact": fact, "target": target,
@@ -598,6 +746,7 @@ def kpi_dashboard(period, offset=0):
             "dept": d["dept"],
             "dept_title": team_roster.DEPT_TITLES.get(d["dept"], d["dept"]),
             "norms": d["norms"],
+            "missed_days": d.get("missed_days", 0),
             "overall_pct": overall,
             "all_done": bool(d["norms"]) and all(x["done"] for x in d["norms"]),
         })

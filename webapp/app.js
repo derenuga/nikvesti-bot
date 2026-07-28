@@ -1051,13 +1051,94 @@ function renderPerson() {
     <div id="person-kpi">${kpiReady
       ? (kpiRows ? `<div class="soft-card" style="margin-top:16px"><div class="sc-t">Загальні задачі</div>${kpiRows}</div>` : "")
       : `<div class="soft-card" style="margin-top:16px"><div class="sc-t">Загальні задачі</div>${skeleton("rows", 2)}</div>`}</div>
+    <button class="link-btn" id="person-away">${icon("calendar")} Відпустка / лікарняна / відрядження</button>
     <div class="f-label" style="margin-top:20px;font-size:14px;color:var(--ink)">Проєктні задачі</div>
     ${donorSections || `<div class="empty-hint">Відкритих проєктних задач немає.</div>`}
     ${closed.length ? `<div class="dept-title">Закриті недавно · ${closed.length}</div>
       <div class="soft-card">${closed.map(taskRow).join("")}</div>` : ""}`;
 
+  $("person-away").onclick = () => absenceSheet(person);
   wirePersonKpi(person);
   if (!kpiReady) loadPersonKpi(person);
+}
+
+/* Відпустка / лікарняна / відрядження. Це факт про ЛЮДИНУ, а не про окрему
+   норму: одна відпустка пропорційно знижує всі її цілі — і тижневі, і
+   місячні — у кожному періоді, якого торкається. «Звільнити від норми» руками
+   лишається для випадків, коли рішення не про календар. */
+const ABSENCE_KINDS = [
+  { v: "vacation", label: "Відпустка" },
+  { v: "sick", label: "Лікарняна" },
+  { v: "trip", label: "Відрядження" },
+];
+
+async function absenceSheet(person) {
+  let list = [];
+  try {
+    list = (await api(`/api/absences?person=${encodeURIComponent(person)}`)).absences || [];
+  } catch (e) { /* покажемо порожній список */ }
+  const st = { kind: "vacation" };
+  openSheet(`
+    <h2>Відсутність</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(person)}</p>
+    ${list.length ? `<div class="f-label" style="margin-top:0">Уже записано</div>
+      ${list.map((a) => `
+        <div class="pick-row" style="justify-content:space-between">
+          <span>
+            <span class="pk-name">${esc(a.title)}</span>
+            <span class="pk-meta">${esc(shortDate(a.start))} — ${esc(shortDate(a.end))}${a.note ? " · " + esc(a.note) : ""}</span>
+          </span>
+          <button class="st-mark dropped" data-away-del="${a.id}"
+            aria-label="Прибрати">${icon("x")}</button>
+        </div>`).join("")}` : ""}
+    <div class="f-label">Тип</div>
+    ${segment("data-away-kind", ABSENCE_KINDS.map((k) => [k.v, k.label]), st.kind)}
+    <div class="f-label">З якого дня</div>
+    <input id="aw-start" type="date" value="${todayISO()}">
+    <div class="f-label">По який (включно)</div>
+    <input id="aw-end" type="date" value="${todayISO()}">
+    <div class="mr-hint">Цілі KPI перерахуються самі: пропорційно робочим дням,
+      які випали. Повністю пропущений період — людина зникає зі «Звіту».</div>
+    <div class="sheet-actions">
+      <button class="sbtn" id="aw-cancel">Скасувати</button>
+      <button class="sbtn primary" id="aw-save">Зберегти</button>
+    </div>`);
+  $("sheet").querySelectorAll("[data-away-kind]").forEach((b) => b.onclick = () => {
+    st.kind = b.dataset.awayKind;
+    $("sheet").querySelectorAll("[data-away-kind]").forEach((x) =>
+      x.classList.toggle("on", x.dataset.awayKind === st.kind));
+  });
+  $("sheet").querySelectorAll("[data-away-del]").forEach((b) => b.onclick = async () => {
+    try {
+      await api(`/api/absences/${b.dataset.awayDel}`, { method: "DELETE" });
+      STATE.kpi = null;
+      STATE.dash.data = null;
+      closeSheet();
+      renderPerson();
+      toast("Прибрав");
+    } catch (e) { toast(e.message); }
+  });
+  $("aw-cancel").onclick = closeSheet;
+  $("aw-save").onclick = async () => {
+    const start = $("aw-start").value, end = $("aw-end").value;
+    if (!start || !end) { toast("Вкажи обидві дати"); return; }
+    $("aw-save").disabled = true;
+    try {
+      await api("/api/absences", {
+        method: "POST",
+        body: JSON.stringify({ person, start, end, kind: st.kind }),
+      });
+      haptic("success");
+      STATE.kpi = null;              // цілі змінились — зведення протухло
+      STATE.dash.data = null;
+      closeSheet();
+      renderPerson();
+      toast("Записав — цілі перерахую");
+    } catch (e) {
+      $("aw-save").disabled = false;
+      toast(e.message);
+    }
+  };
 }
 
 /* KPI людини приїжджають окремо: збій або повільна БД сайту не мають тримати

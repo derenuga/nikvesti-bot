@@ -685,6 +685,48 @@ async def api_deadline_delete(request):
     return web.json_response({"ok": True})
 
 
+# ---------- Відсутності (відпустка / лікарняна / відрядження) ----------
+
+async def api_absences(request):
+    """Список відсутностей: ?person=… або всі."""
+    person, info, _ = await _require_manager(request)
+    who = request.query.get("person")
+    data = await _in_session(team_kpi.list_absences, who or None)
+    return web.json_response({"absences": data})
+
+
+async def api_absence_create(request):
+    """{person, start, end, kind?, note?} — «була у відпустці з 8 по 17».
+    Цілі KPI перерахуються самі, пропорційно робочим дням."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    who = payload.get("person")
+    if who not in team_roster.ROSTER:
+        raise web.HTTPBadRequest(text="Невідома людина")
+    dates = []
+    for key in ("start", "end"):
+        try:
+            dates.append(time.strftime("%Y-%m-%d", time.strptime(payload.get(key), "%Y-%m-%d")))
+        except (ValueError, TypeError):
+            raise web.HTTPBadRequest(text=f"{key}: YYYY-MM-DD")
+    kind = payload.get("kind") or "vacation"
+    if kind not in team_kpi.ABSENCE_KINDS:
+        raise web.HTTPBadRequest(text="kind: vacation, sick або trip")
+    absence = await _in_session(
+        team_kpi.add_absence, person, who, dates[0], dates[1], kind, payload.get("note"))
+    team_kpi._fact_cache.clear()      # цілі змінились — зведення протухло
+    return web.json_response({"absence": absence})
+
+
+async def api_absence_delete(request):
+    person, info, _ = await _require_manager(request)
+    deleted = await _in_session(
+        team_kpi.delete_absence, int(request.match_info["absence_id"]))
+    if not deleted:
+        raise web.HTTPNotFound(text="Запису немає")
+    return web.json_response({"ok": True})
+
+
 # ---------- Черга звірки (спірні матчі) ----------
 
 def _pending_payload():
@@ -1261,6 +1303,9 @@ async def start_webapp(application):
         web.post("/api/matches/queue", api_matches_queue),
         web.post("/api/matches/{match_id:\\d+}/decide", api_matches_decide),
         web.post("/api/tasks/{task_id:\\d+}/attach", api_task_attach),
+        web.get("/api/absences", api_absences),
+        web.post("/api/absences", api_absence_create),
+        web.delete("/api/absences/{absence_id:\\d+}", api_absence_delete),
         web.get("/api/dashboard", api_dashboard),
         web.get("/api/kpi", api_kpi),
         web.get("/api/kpi/dashboard", api_kpi_dashboard),
