@@ -12,11 +12,15 @@
 - тап по лінку відкриває матеріал через tg.openLink, а не всередині апки;
 - ОДНУ зараховану публікацію можна зняти тапом по галочці (з підтвердженням),
   не відкидаючи решту — з пʼятнадцяти зарахованих не підходити може одна;
-- у списку завдань людини донор іде перед назвою проєкту;
+- у списку завдань людини другим рядком донор, а назви проєкту немає;
 - у картці є «Зарахувати публікацію за лінком»: вставив URL — пішов запит на
   attach (перенос із задубльованого завдання робиться цим же шляхом);
 - екран людини малюється ОДРАЗУ, не чекаючи на KPI (той іде в MySQL сайту і
-  думає секунди — раніше тап виглядав як зависання).
+  думає секунди — раніше тап виглядав як зависання);
+- у журналістки зверху ТЕМАТИКА (що писати), під нею «скільки і чого» + донор,
+  а назви проєкту немає взагалі — вона займала перший рядок і не відповідала
+  на жодне питання;
+- тип матеріалу редагується в картці завдання (звідси і брався «матеріал»).
 
 Запуск (потрібні playwright + chromium):
     python test_webapp_progress.py
@@ -59,6 +63,8 @@ TASKS = [
     _task(1, 3, 2, matches=[MATCH_1, MATCH_2]),          # 2/3 — синій
     _task(2, 2, 2, status="done", matches=[MATCH_1, MATCH_2]),  # 2/2 — зелений
     _task(3, 1, 0),                                      # 0/1 — не малюємо
+    {**_task(4, 2, 0), "type": None, "theme_name": "Тендери",
+     "note": "Хто виграв тендери на укриття шкіл"},   # без типу — «матеріали»
 ]
 
 PEOPLE = [{"name": "Аліна Квітко", "dept": "creative", "dept_title": "Creative",
@@ -103,6 +109,11 @@ window.fetch = async (url, opts = {}) => {
   }
   if (url.startsWith("/api/kpi/person")) return json({ has_norms: false, months: [] });
   let m;
+  if ((m = url.match(/^\\/api\\/tasks\\/(\\d+)$/)) && opts.method === "PATCH") {
+    window.__posts.push({ patch: +m[1], body: JSON.parse(opts.body) });
+    const t = window.BOOT.tasks.find((x) => x.id === +m[1]);
+    return json({ task: { ...t, ...JSON.parse(opts.body) } });
+  }
   if ((m = url.match(/^\\/api\\/tasks\\/(\\d+)\\/attach$/))) {
     window.__posts.push({ attach: +m[1], body: JSON.parse(opts.body) });
     const t = window.BOOT.tasks.find((x) => x.id === +m[1]);
@@ -182,7 +193,9 @@ async def main():
                   await page.locator("#person-kpi .sk").count() == 0)
             await page.evaluate("window.__kpiDelay = 0")
             body0 = await page.inner_text("#content")
-            check("донор іде перед назвою проєкту", "IMS · Голоси Миколаєва" in body0)
+            # Назва проєкту не несе інформації — у рядку лишається донор
+            check("у трекері другим рядком донор", "IMS" in body0)
+            check("назви проєкту в трекері немає", "Голоси Миколаєва" not in body0)
             badges = await page.locator(".prog").all_inner_texts()
             check("у трекері видно «2/3» недобраного таска", "2/3" in badges)
             check("видно «2/2» закритого", "2/2" in badges)
@@ -253,6 +266,14 @@ async def main():
             check("журналістка теж бачить свій прогрес", "2/3" in body)
             check("і бачить, що саме зараховано",
                   "Сесія міськради ухвалила бюджет" in body)
+            # Головне питання Аліни: «що мені писати?»
+            titles = await page.locator(".task-row .tr-who").all_inner_texts()
+            check("зверху рядка — ТЕМАТИКА, а не донор", "Тендери" in titles)
+            check("назви проєкту в списку немає взагалі",
+                  "Голоси Миколаєва" not in body)
+            check("донор лишився дрібним рядком", "IMS" in body)
+            check("нотатка редактора видима",
+                  "Хто виграв тендери на укриття шкіл" in body)
             await page.screenshot(path="/tmp/progress-journalist.png", full_page=True)
         finally:
             await browser.close()

@@ -406,6 +406,20 @@ async def api_tasks_patch(request):
         kwargs["deadline"] = deadline
     if "note" in payload:
         kwargs["note"] = payload.get("note")
+    if "type" in payload:
+        type_ = payload.get("type") or None
+        if type_ is not None and type_ not in team_tasks.TASK_TYPES:
+            raise web.HTTPBadRequest(text="type: news, article, post або порожньо")
+        kwargs["type_"] = type_
+        # Платформа має сенс лише для поста — інакше стираємо, щоб у рядку не
+        # лишалось «стаття у Telegram»
+        platform = payload.get("platform") or None
+        if type_ == "post":
+            if platform not in team_tasks.TASK_PLATFORMS:
+                raise web.HTTPBadRequest(text="platform: telegram або instagram")
+            kwargs["platform"] = platform
+        else:
+            kwargs["platform"] = None
     if "theme_id" in payload:
         theme_id = payload.get("theme_id") or None
         theme_name = None

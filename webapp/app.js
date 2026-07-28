@@ -269,18 +269,17 @@ function qtyWord(type, qty) {
   return qty < 5 ? w.few : w.many;
 }
 
-/* Один рядок таска: «2 новини · IMS · Голоси Миколаєва (Репортажі з сесій)».
-   donor — чи згадувати донора: у картці таска потрібен, а в списку
-   журналістки він уже стоїть заголовком, і повторювати його ні до чого. */
+/* Один рядок таска: «2 новини · Тендери · IMS».
+   Порядок не випадковий (Олег, 28.07): спершу ЩО писати (тематика), потім
+   кому це в звіт (донор). Назва проєкту — найменш корисне з трьох, тож іде
+   лише тоді, коли ні тематики, ні донора немає. */
 function taskLine(t, { donor = false } = {}) {
   const { partner, projName } = taskProject(t);
   const parts = [t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1)];
-  const withDonor = donor && partner;
-  if (withDonor) parts.push(partner);
-  if (projName) parts.push(projName);
-  else if (!withDonor) parts.push("позапроєктне");
-  const line = parts.join(" · ");
-  return t.theme_name ? `${line} (${t.theme_name})` : line;
+  if (t.theme_name) parts.push(t.theme_name);
+  if (donor && partner) parts.push(partner);
+  if (!t.theme_name && !(donor && partner)) parts.push(projName || "позапроєктне");
+  return parts.join(" · ");
 }
 
 /* Фото людини за іменем. Шукаємо і серед журналісток, і серед керівництва:
@@ -1020,10 +1019,10 @@ function renderPerson() {
   // Перший рядок — тематика (Олег, 27.07), проєкт — дрібним під нею
   const taskRow = (t) => {
     const qtyPart = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
-    // Донор першим, проєкт після нього: «IMS · Голоси Миколаєва». Сама назва
-    // проєкту мало що каже — по донору видно, кому цей матеріал у звіт.
+    // Другим рядком — ДОНОР, і тільки він: по донору видно, кому цей матеріал
+    // у звіт, а назва проєкту місця не варта (Олег, 28.07).
     const { partner, projName } = taskProject(t);
-    const where = [partner, projName].filter(Boolean).join(" · ");
+    const where = partner || projName || "";
     return `
     <button class="task-row ${t.status === "done" ? "is-done" : t.status === "dropped" ? "is-dropped" : ""}" data-task="${t.id}">
       <span class="tr-main">
@@ -1269,11 +1268,19 @@ function attachSheet(t) {
 function taskEditSheet(t) {
   const proj = t.project_id ? STATE.projects.find((p) => p.id === t.project_id) : null;
   const themes = (proj && proj.themes) || [];
-  const st = { qty: t.qty, theme_id: t.theme_id };
+  const st = { qty: t.qty, theme_id: t.theme_id, type: t.type || "",
+               platform: t.platform || "telegram" };
   openSheet(`
     <h2>Редагувати завдання</h2>
     <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(t.person)}</p>
-    <div class="f-label" style="margin-top:0">Кількість</div>
+    <div class="f-label" style="margin-top:0">Тип матеріалу</div>
+    ${segment("data-te-type", [["news", "Новина"], ["article", "Стаття"],
+                               ["post", "Пост"], ["", "Будь-який"]], st.type)}
+    <div id="te-platform" class="${st.type === "post" ? "" : "hidden"}">
+      ${segment("data-te-plat", [["telegram", "Telegram"], ["instagram", "Instagram"]],
+                st.platform, { sub: true })}
+    </div>
+    <div class="f-label">Кількість</div>
     <div class="stepper">
       <button id="te-minus">${icon("minus")}</button>
       <b id="te-val">${st.qty}</b>
@@ -1291,6 +1298,18 @@ function taskEditSheet(t) {
       <button class="sbtn" id="te-cancel">Скасувати</button>
       <button class="sbtn primary" id="te-save">Зберегти</button>
     </div>`);
+  // Тип: саме через нього зникає безликий «матеріал» у списку виконавиці
+  $("sheet").querySelectorAll("[data-te-type]").forEach((b) => b.onclick = () => {
+    st.type = b.dataset.teType;
+    $("sheet").querySelectorAll("[data-te-type]").forEach((x) =>
+      x.classList.toggle("on", x.dataset.teType === st.type));
+    $("te-platform").classList.toggle("hidden", st.type !== "post");
+  });
+  $("sheet").querySelectorAll("[data-te-plat]").forEach((b) => b.onclick = () => {
+    st.platform = b.dataset.tePlat;
+    $("sheet").querySelectorAll("[data-te-plat]").forEach((x) =>
+      x.classList.toggle("on", x.dataset.tePlat === st.platform));
+  });
   $("te-minus").onclick = () => { st.qty = Math.max(1, st.qty - 1); $("te-val").textContent = st.qty; };
   $("te-plus").onclick = () => { st.qty = Math.min(99, st.qty + 1); $("te-val").textContent = st.qty; };
   const themesEl = $("te-themes");
@@ -1310,6 +1329,8 @@ function taskEditSheet(t) {
         body: JSON.stringify({
           qty: st.qty,
           theme_id: st.theme_id,
+          type: st.type || null,
+          platform: st.type === "post" ? st.platform : null,
           deadline: $("te-deadline").value || null,
           note: $("te-note").value.trim(),
         }),
@@ -3033,13 +3054,19 @@ function renderJournalist() {
     <div id="my-history"></div>
     ${open.length ? `<div class="soft-card">${open.map((t) => {
       const tp = taskProject(t);
+      const qtyPart = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
+      // Головне для журналістки — ЩО писати: тематика великим, під нею
+      // «скільки і чого» + донор. Назви проєкту тут немає навмисно: вона
+      // займала перший рядок і не відповідала на жодне питання.
+      const what = t.theme_name || qtyPart;
+      const meta = [t.theme_name ? qtyPart : null, tp.partner].filter(Boolean).join(" · ");
       return `
       <div class="task-row">
         ${tp.logoHtml || ""}
         <span class="tr-main">
-          <span class="tr-who">${esc(tp.partner || tp.projName || "Позапроєктне завдання")}</span>
-          <span class="tr-what">${esc(taskLine(t))}</span>
-          ${t.note ? `<span class="tr-what">${esc(t.note)}</span>` : ""}
+          <span class="tr-who">${esc(what)}</span>
+          ${meta ? `<span class="tr-what">${esc(meta)}</span>` : ""}
+          ${t.note ? `<span class="tr-note">${esc(t.note)}</span>` : ""}
           ${matchesHtml(t)}
         </span>
         <span class="tr-right">
