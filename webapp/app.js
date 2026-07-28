@@ -2759,7 +2759,7 @@ async function renderPersonHistory() {
 /* Стовпчики помісячного виконання KPI. Спільні для профілю людини у Звіті
    (редакторський вид) і для власної динаміки журналістки — щоб дівчата
    бачили ті самі цифри, що бачить редакція, а не інші. */
-function historyChartHtml(data, chartId = "hist-chart") {
+function historyChartHtml(data, chartId = "hist-chart", sub = "виконання KPI по місяцях") {
   const maxH = 120;
   const bars = data.months.map((m) => {
     const pct = m.overall_pct;
@@ -2777,9 +2777,12 @@ function historyChartHtml(data, chartId = "hist-chart") {
       <div class="hb-month">${esc(m.label)}</div>
     </div>`;
   }).join("");
+  // Підпис: у журналістки заголовок картки вже каже «KPI по місяцях», тож
+  // вона передає sub=null і лишається сама норма — без масла масляного.
   const norm = data.months[data.months.length - 1].norms[0];
+  const subLine = [sub, norm ? norm.label : null].filter(Boolean).join(" · ");
   return `
-    <div class="h-sub">виконання KPI по місяцях${norm ? " · " + esc(norm.label) : ""}</div>
+    ${subLine ? `<div class="h-sub">${esc(subLine)}</div>` : ""}
     <div class="hist-chart" id="${chartId}">${bars}</div>
     ${!data.site_db ? `<div class="tl-note">БД сайту недоступна — факт не рахується.</div>` : ""}`;
 }
@@ -3112,17 +3115,31 @@ function renderJournalist() {
 }
 
 /* Стрічка журналістки: нижнього меню в неї немає, тож сповіщення живуть
-   прямо на її екрані — «тобі поставили завдання», «твоя публікація
-   зарахована». Вантажиться окремо, як і решта блоків. */
+   прямо на її екрані. Розкладаємо стрічку на два названі блоки замість
+   одного «Що нового» (Олег, 28.07: під таким заголовком незрозуміло, чим
+   воно відрізняється від «Виконаних»). Різниця по суті така:
+   «Виконані» — СТАН її тасків (закриті), а тут — ПОДІЇ: що бот зарахував
+   останнім часом (може бути й «1 із 2» — публікація зарахована, таск ще
+   відкритий) і що їй поставили нового. Тому й імена по факту події. */
+const MY_FEED_BLOCKS = [
+  { kind: "task_done", title: "Нещодавно зараховані" },
+  { kind: null, title: "Нові завдання" },   // решта стрічки
+];
+
 async function renderMyNotifs() {
   let data;
   try { data = await api("/api/notifications"); } catch (e) { return; }
   const box = $("my-notifs");
   const items = (data.items || []).slice(0, 8);
   if (!box || !items.length) return;
-  box.innerHTML = `<div class="soft-card">
-    <div class="sc-t">Що нового${data.unread ? ` · ${data.unread}` : ""}</div>
-    ${items.map(notifRow).join("")}</div>`;
+  box.innerHTML = MY_FEED_BLOCKS.map((b) => {
+    const rows = items.filter((n) => b.kind ? n.kind === b.kind : n.kind !== "task_done");
+    if (!rows.length) return "";
+    const unread = rows.filter((n) => n.unread).length;
+    return `<div class="soft-card">
+      <div class="sc-t">${b.title}${unread ? ` · ${unread}` : ""}</div>
+      ${rows.map(notifRow).join("")}</div>`;
+  }).join("");
   if (data.unread) {
     try {
       await api("/api/notifications/read", {
@@ -3148,11 +3165,12 @@ async function renderMyHistory() {
   const shown = localStorage.getItem("myHistOpen") === "1";
   box.innerHTML = `<div class="soft-card">
     <button class="sc-toggle" id="hist-toggle">
-      <span class="sc-t" style="margin:0">Як іде місяць до місяця</span>
+      <span class="sc-ic">${icon("bar-chart")}</span>
+      <span class="sc-t" style="margin:0">KPI по місяцях</span>
       <span class="sc-chev">${icon(shown ? "chevron-up" : "chevron-down", "ic chev")}</span>
     </button>
     <div id="hist-body" class="${shown ? "" : "hidden"}">
-      ${historyChartHtml(data, "my-hist-chart")}
+      ${historyChartHtml(data, "my-hist-chart", null)}
     </div>
   </div>`;
   $("hist-toggle").onclick = () => {

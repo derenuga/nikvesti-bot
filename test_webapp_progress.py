@@ -103,6 +103,16 @@ KPI_HISTORY = {
                 "overall_pct": 35, "norms": []}],
 }
 
+# Стрічка журналістки: подія зарахування і подія постановки — різні блоки
+NOTIFS = [
+    {"id": 1, "kind": "task_done", "title": "матеріал · IMS · Голоси Миколаєва",
+     "body": "зарахувала сама: 1 із 1", "url": None, "unread": True,
+     "created_at": "2026-07-27T10:00:00+03:00"},
+    {"id": 2, "kind": "task_assigned", "title": "2 новини · IWPR · Тендери",
+     "body": "поставила Катерина Середа", "url": None, "unread": False,
+     "created_at": "2026-07-26T10:00:00+03:00"},
+]
+
 JOURNALIST = {
     **BOOTSTRAP,
     "me": {"name": "Аліна Квітко", "first_name": "Аліна", "dept": "creative",
@@ -131,6 +141,8 @@ window.fetch = async (url, opts = {}) => {
   }
   if (url.startsWith("/api/kpi/person")) return json(window.KPI_HISTORY
     || { has_norms: false, months: [] });
+  if (url === "/api/notifications") return json({ items: window.NOTIFS || [],
+                                                  unread: 1 });
   let m;
   if ((m = url.match(/^\\/api\\/tasks\\/(\\d+)$/)) && opts.method === "PATCH") {
     window.__posts.push({ patch: +m[1], body: JSON.parse(opts.body) });
@@ -183,7 +195,8 @@ async def _open(pw, boot):
     await page.add_init_script(
         "window.BOOT = " + json.dumps(boot) + ";"
         "window.KPI_NORMS = " + json.dumps(KPI_NORMS) + ";"
-        "window.KPI_HISTORY = " + json.dumps(KPI_HISTORY) + ";" + STUB)
+        "window.KPI_HISTORY = " + json.dumps(KPI_HISTORY) + ";"
+        "window.NOTIFS = " + json.dumps(NOTIFS) + ";" + STUB)
     await page.goto("https://app.local/")
     await page.wait_for_selector("#screen-main:not(.hidden)", timeout=10000)
     return browser, page
@@ -295,8 +308,10 @@ async def main():
             # Головне питання Аліни: «що мені писати?»
             titles = await page.locator(".task-row .tr-who").all_inner_texts()
             check("зверху рядка — ТЕМАТИКА, а не донор", "Тендери" in titles)
+            rows_txt = " ".join(await page.locator(
+                ".task-row:not(.nt-row)").all_inner_texts())
             check("назви проєкту в списку немає взагалі",
-                  "Голоси Миколаєва" not in body)
+                  "Голоси Миколаєва" not in rows_txt)
             check("донор лишився дрібним рядком", "IMS" in body)
             check("нотатка редактора видима",
                   "Хто виграв тендери на укриття шкіл" in body)
@@ -308,8 +323,29 @@ async def main():
             check("виконані пішли ПІД відкриті", first_open < first_done)
             check("виконані під власним заголовком", "ВИКОНАНІ" in body.upper())
 
+            # --- стрічка розкладена на названі блоки ---
+            await page.wait_for_selector("#my-notifs .soft-card")
+            feed = await page.inner_text("#my-notifs")
+            check("замість «Що нового» — «Нещодавно зараховані»",
+                  "Нещодавно зараховані" in feed and "Що нового" not in feed)
+            check("постановка завдань — окремим блоком",
+                  "Нові завдання" in feed)
+            check("подія зарахування пішла у свій блок",
+                  feed.index("Нещодавно зараховані") < feed.index("Голоси Миколаєва")
+                  < feed.index("Нові завдання"))
+
             # --- графік згорнутий, розгортається тапом ---
             await page.wait_for_selector("#hist-toggle")
+            head = await page.inner_text("#hist-toggle")
+            check("заголовок графіка — «KPI по місяцях»", "KPI по місяцях" in head)
+            check("«Як іде місяць до місяця» більше немає",
+                  "місяць до місяця" not in await page.inner_text("#content"))
+            check("зліва від заголовка — іконка графіка",
+                  await page.locator("#hist-toggle .sc-ic use[href='#i-bar-chart']")
+                  .count() == 1)
+            check("справа — стрілка розкриття",
+                  await page.locator("#hist-toggle .sc-chev use[href='#i-chevron-down']")
+                  .count() == 1)
             check("графік динаміки за замовчуванням схований",
                   await page.locator("#hist-body.hidden").count() == 1)
             await page.click("#hist-toggle")

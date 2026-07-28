@@ -658,22 +658,27 @@ _QTY_WORDS = {
 
 
 def task_summary(task):
-    """Людський рядок таска, донор першим: «3 новини · IMS · Голоси Миколаєва
-    (Критичні потреби)»; пост — «2 пости у Telegram · …»."""
+    """Людський рядок таска: «3 новини · Критичні потреби · IMS».
+
+    Порядок той самий, що в апці (taskLine): скільки й чого → ТЕМАТИКА →
+    донор. Назва проєкту сюди не йде взагалі — крім випадку, коли тематики
+    немає й донора немає, і без неї рядок став би безадресним. Олег про це
+    просив не раз: людині треба знати, ЩО писати, а назва проєкту («Fight
+    for Facts – Stage 9-11») цього не каже і лише з'їдає рядок."""
     qty = task["qty"]
     one, few, many = _QTY_WORDS.get(task["type"], _QTY_WORDS[None])
     type_word = one if qty == 1 else (few if qty < 5 else many)
     if task["type"] == "post" and task.get("platform") in PLATFORM_PHRASES:
         type_word += f" {PLATFORM_PHRASES[task['platform']]}"
     parts = [f"{qty} {type_word}" if qty > 1 else type_word]
+    if task.get("theme_name"):
+        parts.append(task["theme_name"])
     if task.get("partner_name"):
         parts.append(task["partner_name"])
-    if task["project_name"]:
+    if not task.get("theme_name") and not task.get("partner_name") \
+            and task.get("project_name"):
         parts.append(task["project_name"])
-    line = " · ".join(parts)
-    if task["theme_name"]:
-        line += f" ({task['theme_name']})"
-    return line
+    return " · ".join(parts)
 
 
 async def ping_assigned(bot, task):
