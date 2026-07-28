@@ -25,6 +25,7 @@ const STATE = {
   pending: null,        // черга звірки (тягнеться при вході в «Сповіщення»)
   pendingCount: 0,      // для лічильника на пункті меню
   notifs: null,         // стрічка подій
+  myFeed: null,         // стрічка журналістки (лічильник на дверях «Події»)
   unread: 0,
   homeView: null,        // ставиться нижче: остання обрана таба Головної
   kpiTab: "norms",
@@ -387,6 +388,9 @@ function backTarget() {
     case "bulk": return ["project", STATE.bulk && STATE.bulk.projectId];
     case "kpi": return ["home"];
     case "kpinorm": return ["kpi"];
+    case "mydone":
+    case "myfeed":
+    case "myhist": return ["home"];
     default: return null;      // корінь табів — назад нікуди
   }
 }
@@ -441,7 +445,14 @@ function nav(view, arg) {
 
 function render() {
   const v = STATE.view;
-  if (v === "home") renderHome();
+  // Журналістка ходить тим самим роутером, що менеджер: у неї зʼявились
+  // підекрани («Виконані», «Події», «KPI по місяцях»), а без роутера їх не
+  // було б куди повертати нативним «Назад».
+  if (v === "home" && STATE.me && !STATE.me.manager) renderJournalist();
+  else if (v === "mydone") renderMyDone();
+  else if (v === "myfeed") renderMyFeed();
+  else if (v === "myhist") renderMyHistory();
+  else if (v === "home") renderHome();
   else if (v === "person") renderPerson();
   else if (v === "personhist") renderPersonHistory();
   else if (v === "people") renderPeople();
@@ -3146,24 +3157,48 @@ function deptSheet(p) {
   };
 }
 
-/* ---------- Журналістський режим (read-only, інтерфейс — наступний крок) ---------- */
+/* ---------- Журналістський режим ----------
+   Два поверхи (Олег, 28.07: «а що як розділити на зрозумілі кнопки»):
+   ЗВЕРХУ — відповідь на сьогоднішнє питання (як я йду по нормі + що робити),
+   живцем і цілком. ЗНИЗУ — двері з числами.
+
+   Чому саме так, а не список кнопок: зробити перший екран меню означало б
+   відсунути головне на другий тап, а журналістка відкриває апку рівно заради
+   нього. І чому двері, а не згортання (той тумблер на графіку був імпульсом,
+   як Олег сам і сказав): згорнутий блок усе одно займає рядок і не каже, чи
+   є всередині щось нове, — а двері з числом кажуть.
+
+   ПРАВИЛО: двері зобов'язані нести число. «Мої публікації →» це пункт меню;
+   «Мої публікації · 12 за місяць» — це вже інформація, і заразом двері. Без
+   числа екран-хаб перетворюється на витрачений екран. */
+
+/* Двері: іконка в мʼякій плашці, назва, підпис і число праворуч. */
+function doorHtml(view, iconName, tone, title, meta, n) {
+  return `
+    <button class="door ${tone}" data-nav="${view}">
+      <span class="door-ic">${icon(iconName)}</span>
+      <span class="door-txt">
+        <span class="door-t">${esc(title)}</span>
+        ${meta ? `<span class="door-m">${esc(meta)}</span>` : ""}
+      </span>
+      ${n ? `<span class="door-n">${esc(String(n))}</span>` : ""}
+      ${icon("chevron-right", "ic chev")}
+    </button>`;
+}
 
 function renderJournalist() {
   const open = STATE.tasks.filter((t) => t.status === "open");
-  // Виконані — окремим блоком ПІД відкритими: спершу те, що робити, і лише
-  // потім те, що зроблено (Олег, 28.07)
-  const closed = STATE.tasks.filter((t) => t.status === "done").slice(0, 10);
+  const closed = STATE.tasks.filter((t) => t.status === "done");
+  const feed = STATE.myFeed;
   $("content").innerHTML = `
     <div class="me-head">
       <div class="me-txt">
         <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
         <div class="h-sub">твої завдання і KPI</div>
       </div>
-      <div class="me-ring" id="me-ring">${meRingHtml(null, null)}</div>
+      <div class="me-ring" id="me-ring">${meRingHtml(null)}</div>
     </div>
     <div id="my-kpi"></div>
-    <div id="my-notifs"></div>
-    <div id="my-history"></div>
     ${open.length ? `<div class="soft-card">${open.map((t) => {
       const tp = taskProject(t);
       const qtyPart = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
@@ -3189,92 +3224,132 @@ function renderJournalist() {
       </div>`;
     }).join("")}</div>`
       : `<div class="empty-hint">Відкритих завдань немає.</div>`}
-    ${closed.length ? `<div class="dept-title">Виконані · ${closed.length}</div>
-      <div class="soft-card">${closed.map((t) => {
-        const qtyPart = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
-        return `
-        <div class="task-row is-done">
-          <span class="tr-main">
-            <span class="tr-who">${esc(t.theme_name || qtyPart)}</span>
-            <span class="tr-what">${esc([t.theme_name ? qtyPart : null,
-              taskProject(t).partner].filter(Boolean).join(" · "))}</span>
-            ${matchesHtml(t)}
-          </span>
-          <span class="tr-right">${progressHtml(t)}${statusMark(t)}</span>
-        </div>`;
-      }).join("")}</div>` : ""}`;
+    <div class="doors">
+      ${closed.length ? doorHtml("mydone", "check", "c-good", "Виконані",
+        "завдання, які вже закрито", closed.length) : ""}
+      ${doorHtml("myfeed", "bell", "c-blue", "Події",
+        feed && feed.unread ? "є нові" : "що зарахували і що поставили",
+        feed ? (feed.unread || (feed.items || []).length) : "")}
+      ${doorHtml("myhist", "bar-chart", "c-sky", "KPI по місяцях",
+        "як іде місяць до місяця", "")}
+    </div>`;
+  $("content").querySelectorAll("[data-nav]").forEach((b) =>
+    b.onclick = () => nav(b.dataset.nav));
   renderMyKpi();
-  renderMyNotifs();
-  renderMyHistory();
+  loadMyFeed();
 }
 
-/* Стрічка журналістки: нижнього меню в неї немає, тож сповіщення живуть
-   прямо на її екрані. Розкладаємо стрічку на два названі блоки замість
-   одного «Що нового» (Олег, 28.07: під таким заголовком незрозуміло, чим
-   воно відрізняється від «Виконаних»). Різниця по суті така:
-   «Виконані» — СТАН її тасків (закриті), а тут — ПОДІЇ: що бот зарахував
-   останнім часом (може бути й «1 із 2» — публікація зарахована, таск ще
-   відкритий) і що їй поставили нового. Тому й імена по факту події. */
+/* Лічильник на дверях «Події». Стрічку тягнемо ОДИН раз і кладемо в STATE:
+   прочитаним вона стає лише коли двері відкрили — раніше подія позначалась
+   прочитаною просто за те, що екран намалювався. */
+async function loadMyFeed() {
+  if (STATE.myFeed) return;
+  try {
+    STATE.myFeed = await api("/api/notifications");
+  } catch (e) { return; }
+  if (STATE.view === "home") renderJournalist();
+}
+
+/* Виконані завдання — окремий екран. На головній вони займали пів скрола, а
+   дивляться в них рідко: це СТАН, а не робота. */
+function renderMyDone() {
+  const closed = STATE.tasks.filter((t) => t.status === "done");
+  $("content").innerHTML = `
+    <button class="back" data-nav="home">${icon("chevron-left")} Головна</button>
+    <div class="h-big">Виконані</div>
+    <div class="h-sub">завдань закрито: ${closed.length}</div>
+    ${closed.length ? `<div class="soft-card">${closed.map((t) => {
+      const qtyPart = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
+      return `
+      <div class="task-row is-done">
+        <span class="tr-main">
+          <span class="tr-who">${esc(t.theme_name || qtyPart)}</span>
+          <span class="tr-what">${esc([t.theme_name ? qtyPart : null,
+            taskProject(t).partner].filter(Boolean).join(" · "))}</span>
+          ${matchesHtml(t)}
+        </span>
+        <span class="tr-right">${progressHtml(t)}${statusMark(t)}</span>
+      </div>`;
+    }).join("")}</div>` : `<div class="empty-hint">Поки нічого не закрито.</div>`}`;
+  $("content").querySelectorAll("[data-nav]").forEach((b) =>
+    b.onclick = () => nav(b.dataset.nav));
+}
+
+/* Стрічка подій — окремий екран. Два названі блоки лишились: «Виконані» це
+   СТАН тасків, а тут ПОДІЇ (що зарахували, що поставили). */
 const MY_FEED_BLOCKS = [
   { kind: "task_done", title: "Нещодавно зараховані" },
   { kind: null, title: "Нові завдання" },   // решта стрічки
 ];
 
-async function renderMyNotifs() {
-  let data;
-  try { data = await api("/api/notifications"); } catch (e) { return; }
-  const box = $("my-notifs");
-  const items = (data.items || []).slice(0, 8);
-  if (!box || !items.length) return;
-  box.innerHTML = MY_FEED_BLOCKS.map((b) => {
-    const rows = items.filter((n) => b.kind ? n.kind === b.kind : n.kind !== "task_done");
-    if (!rows.length) return "";
-    const unread = rows.filter((n) => n.unread).length;
-    return `<div class="soft-card">
-      <div class="sc-t">${b.title}${unread ? ` · ${unread}` : ""}</div>
-      ${rows.map(notifRow).join("")}</div>`;
-  }).join("");
+async function renderMyFeed() {
+  const back = `<button class="back" data-nav="home">${icon("chevron-left")} Головна</button>
+    <div class="h-big">Події</div>`;
+  $("content").innerHTML = back + skeleton("rows", 3);
+  let data = STATE.myFeed;
+  if (!data) {
+    try { data = STATE.myFeed = await api("/api/notifications"); } catch (e) {
+      $("content").innerHTML = back +
+        `<div class="empty-hint">Не вдалося завантажити стрічку.</div>`;
+      return;
+    }
+  }
+  if (STATE.view !== "myfeed") return;
+  const items = (data.items || []).slice(0, 20);
+  $("content").innerHTML = back + (items.length
+    ? MY_FEED_BLOCKS.map((b) => {
+        const rows = items.filter((n) => b.kind ? n.kind === b.kind : n.kind !== "task_done");
+        if (!rows.length) return "";
+        return `<div class="soft-card">
+          <div class="sc-t">${b.title}</div>
+          ${rows.map(notifRow).join("")}</div>`;
+      }).join("")
+    : `<div class="empty-hint">Поки тихо.</div>`);
+  $("content").querySelectorAll("[data-nav]").forEach((b) =>
+    b.onclick = () => nav(b.dataset.nav));
   if (data.unread) {
     try {
       await api("/api/notifications/read", {
         method: "POST", body: JSON.stringify({ all: true }),
       });
+      data.unread = 0;   // двері більше не світяться
     } catch (e) { /* побачить наступного разу */ }
   }
 }
 
 /* Власна помісячна динаміка журналістки — ті самі стовпчики, що бачить
-   редакція у Звіті. Вантажиться після основного екрана, окремо від «Моїх
-   KPI»: обидва блоки йдуть у БД сайту, і якщо один не відповість, другий
-   усе одно з'явиться. */
+   редакція у «Звіті», але окремим екраном за дверима. Раніше це був блок на
+   головній, згорнутий тумблером із памʼяттю в localStorage: він з'їдав пів
+   екрана щодня, хоч дивляться в нього раз на місяць. Тумблер був імпульсом
+   (Олег сам так і сказав), двері — рішенням: і довжину прибирають, і кажуть,
+   що всередині. */
 async function renderMyHistory() {
+  const back = `<button class="back" data-nav="home">${icon("chevron-left")} Головна</button>
+    <div class="h-big">KPI по місяцях</div>`;
+  $("content").innerHTML = back + skeleton("bars", 12);
+  const wire = () => $("content").querySelectorAll("[data-nav]").forEach((b) =>
+    b.onclick = () => nav(b.dataset.nav));
+  wire();
   let data;
   try {
     data = await api("/api/kpi/person");   // сервер сам підставить мене
-  } catch (e) { return; }
-  const box = $("my-history");
-  if (!box || !data.has_norms || !data.months || !data.months.length) return;
-  // Графік займав пів екрана щодня, хоч дивляться в нього раз на місяць —
-  // тому згорнутий за замовчуванням, а вибір памʼятається (Олег, 28.07)
-  const shown = localStorage.getItem("myHistOpen") === "1";
-  box.innerHTML = `<div class="soft-card">
-    <button class="sc-toggle" id="hist-toggle">
-      <span class="sc-ic">${icon("bar-chart")}</span>
-      <span class="sc-t" style="margin:0">KPI по місяцях</span>
-      <span class="sc-chev">${icon(shown ? "chevron-up" : "chevron-down", "ic chev")}</span>
-    </button>
-    <div id="hist-body" class="${shown ? "" : "hidden"}">
-      ${historyChartHtml(data, "my-hist-chart", null)}
-    </div>
-  </div>`;
-  $("hist-toggle").onclick = () => {
-    const open = $("hist-body").classList.toggle("hidden") === false;
-    localStorage.setItem("myHistOpen", open ? "1" : "0");
-    $("hist-toggle").querySelector(".sc-chev").innerHTML =
-      icon(open ? "chevron-up" : "chevron-down", "ic chev");
-    if (open) scrollHistoryToEnd("my-hist-chart");
-  };
-  if (shown) scrollHistoryToEnd("my-hist-chart");
+  } catch (e) {
+    $("content").innerHTML = back +
+      `<div class="empty-hint">${esc(e.message)}</div>`;
+    wire();
+    return;
+  }
+  if (STATE.view !== "myhist") return;
+  if (!data.has_norms || !data.months || !data.months.length) {
+    $("content").innerHTML = back +
+      `<div class="empty-hint">У відділі немає місячної норми —<br>динаміку показати нема з чого.</div>`;
+    wire();
+    return;
+  }
+  $("content").innerHTML = back +
+    `<div class="soft-card">${historyChartHtml(data, "my-hist-chart", null)}</div>`;
+  wire();
+  scrollHistoryToEnd("my-hist-chart");
 }
 
 /* ---------- Прогрес періоду: темп замість вироку ----------
@@ -3453,6 +3528,14 @@ async function renderMyKpi() {
       : null);
     animateFill(ring);
   }
+  // Двері «KPI по місяцях» отримують своє число — інакше це просто пункт меню
+  const histDoor = document.querySelector('.door[data-nav="myhist"]');
+  if (histDoor && pct != null && !histDoor.querySelector(".door-n")) {
+    const n = document.createElement("span");
+    n.className = "door-n";
+    n.textContent = `${pct}%`;
+    histDoor.insertBefore(n, histDoor.querySelector(".chev"));
+  }
 
   const box = $("my-kpi");
   if (!box || !k.norms.length) return;
@@ -3618,8 +3701,7 @@ async function refreshIfStale() {
   try {
     await reload();
     lastLoadedAt = Date.now();
-    if (STATE.me.manager) render();
-    else renderJournalist();
+    render();
   } catch (e) { /* фонове оновлення мовчазне: показуємо, що маємо */ }
 }
 
@@ -3669,7 +3751,7 @@ async function boot() {
       const start = (tg.initDataUnsafe || {}).start_param || "";
       nav(start === "reports" ? "reports" : "home");
     } else {
-      renderJournalist();
+      nav("home");
     }
     syncBackButton();
   } catch (e) {

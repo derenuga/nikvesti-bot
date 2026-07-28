@@ -21,8 +21,9 @@
   а назви проєкту немає взагалі — вона займала перший рядок і не відповідала
   на жодне питання;
 - тип матеріалу редагується в картці завдання (звідси і брався «матеріал»);
-- у журналістки: відкриті завдання зверху, виконані — окремим блоком унизу,
-  а графік динаміки згорнутий (розгортається тапом, вибір памʼятається);
+- у журналістки ДВА ПОВЕРХИ: зверху живцем те, заради чого відкривають
+  (прогрес і відкриті завдання), знизу двері з числами — «Виконані», «Події»,
+  «KPI по місяцях»; за кожними дверима свій екран із поверненням «Назад»;
 - стаття важить три новини, і в рядку KPI видно, звідки взялась цифра.
 
 Запуск (потрібні playwright + chromium):
@@ -328,16 +329,30 @@ async def main():
             check("нотатка редактора видима",
                   "Хто виграв тендери на укриття шкіл" in body)
 
-            # --- виконані внизу, відкриті зверху ---
-            rows = await page.locator(".task-row").all_inner_texts()
-            first_done = next((i for i, r in enumerate(rows) if "2/2" in r), 99)
-            first_open = next((i for i, r in enumerate(rows) if "0/2" in r), 99)
-            check("виконані пішли ПІД відкриті", first_open < first_done)
-            check("виконані під власним заголовком", "ВИКОНАНІ" in body.upper())
+            # --- два поверхи: зверху робота, знизу двері з числами ---
+            check("виконаних НА ГОЛОВНІЙ більше немає (вони за дверима)",
+                  "2/2" not in body)
+            doors = await page.locator(".door").all_inner_texts()
+            check("двері «Виконані» з числом",
+                  any("Виконані" in d and "1" in d for d in doors))
+            check("двері «Події»", any("Події" in d for d in doors))
+            check("двері «KPI по місяцях»",
+                  any("KPI по місяцях" in d for d in doors))
+            check("графік на головній більше не займає екран",
+                  await page.locator("#my-hist-chart").count() == 0)
 
-            # --- стрічка розкладена на названі блоки ---
-            await page.wait_for_selector("#my-notifs .soft-card")
-            feed = await page.inner_text("#my-notifs")
+            # --- за дверима «Виконані» ---
+            await page.click('.door[data-nav="mydone"]')
+            await page.wait_for_selector(".task-row.is-done", timeout=3000)
+            check("виконані знайшлись за своїми дверима",
+                  "2/2" in await page.inner_text("#content"))
+            await page.click('.back[data-nav="home"]')
+            await page.wait_for_selector(".door", timeout=3000)
+
+            # --- за дверима «Події»: стрічка двома названими блоками ---
+            await page.click('.door[data-nav="myfeed"]')
+            await page.wait_for_selector(".nt-row", timeout=3000)
+            feed = await page.inner_text("#content")
             check("замість «Що нового» — «Нещодавно зараховані»",
                   "Нещодавно зараховані" in feed and "Що нового" not in feed)
             check("постановка завдань — окремим блоком",
@@ -345,31 +360,18 @@ async def main():
             check("подія зарахування пішла у свій блок",
                   feed.index("Нещодавно зараховані") < feed.index("Голоси Миколаєва")
                   < feed.index("Нові завдання"))
+            await page.click('.back[data-nav="home"]')
+            await page.wait_for_selector(".door", timeout=3000)
 
-            # --- графік згорнутий, розгортається тапом ---
-            await page.wait_for_selector("#hist-toggle")
-            head = await page.inner_text("#hist-toggle")
-            check("заголовок графіка — «KPI по місяцях»", "KPI по місяцях" in head)
-            check("«Як іде місяць до місяця» більше немає",
-                  "місяць до місяця" not in await page.inner_text("#content"))
-            check("зліва від заголовка — іконка графіка",
-                  await page.locator("#hist-toggle .sc-ic use[href='#i-bar-chart']")
-                  .count() == 1)
-            check("справа — стрілка розкриття",
-                  await page.locator("#hist-toggle .sc-chev use[href='#i-chevron-down']")
-                  .count() == 1)
-            check("графік динаміки за замовчуванням схований",
-                  await page.locator("#hist-body.hidden").count() == 1)
-            await page.click("#hist-toggle")
-            await page.wait_for_timeout(200)
-            check("тап розгортає графік",
-                  await page.locator("#hist-body.hidden").count() == 0)
-            check("вибір запамʼятався",
-                  await page.evaluate("localStorage.getItem('myHistOpen')") == "1")
-            await page.click("#hist-toggle")
-            await page.wait_for_timeout(200)
-            check("повторний тап ховає назад",
-                  await page.locator("#hist-body.hidden").count() == 1)
+            # --- за дверима «KPI по місяцях»: графік цілим екраном ---
+            await page.click('.door[data-nav="myhist"]')
+            await page.wait_for_selector("#my-hist-chart", timeout=3000)
+            check("графік відкрився окремим екраном",
+                  await page.locator("#my-hist-chart .hb-col").count() > 0)
+            check("тумблера згортання більше немає",
+                  await page.locator("#hist-toggle").count() == 0)
+            await page.click('.back[data-nav="home"]')
+            await page.wait_for_selector(".door", timeout=3000)
 
             # --- вага статей у «Моїх KPI» ---
             check("у рядку KPI пояснено, звідки цифра",
