@@ -28,9 +28,12 @@
 «закрила Катя». Руками закритий таск авто-логіка не перевідкриває ніколи.
 """
 
+import logging
 import threading
 
 from handlers import bot_db, team_notifications, team_tasks
+
+log = logging.getLogger(__name__)
 
 MATCH_STATUSES = ("auto", "pending", "confirmed", "rejected", "skipped")
 
@@ -95,6 +98,40 @@ def ensure_match_schema():
             for sql in _SCHEMA_STATEMENTS:
                 bot_db.execute(sql)
         _schema_done = True
+    _fix_legacy_credit()
+
+
+LEGACY_CREDIT = "зарахувала сама"
+
+
+def _fix_legacy_credit():
+    """Разова лікувалка стрічки: до 28.07 подія «завдання виконано» писала
+    глухе «зарахувала сама: 3 із 3» — і хто зарахував (суддя чи Катя руками),
+    з неї було не видно. Текст події лежить у БД, тож правка коду нові рядки
+    полагодила, а старі — ні, і Олег дивиться саме на старі.
+
+    Перераховуємо їх із самих матчів (status + decided_by). Ідемпотентно:
+    після правки префікс уже не збігається, тож наступний старт бачить
+    порожній EXISTS і нічого не робить."""
+    try:
+        team_notifications.ensure_notifications_schema()
+        rows = bot_db.query(
+            "SELECT id, object_id, body FROM team_notifications "
+            "WHERE kind = 'task_done' AND body LIKE %s", (LEGACY_CREDIT + "%",))
+        if not rows:
+            return
+        counted = counted_by_task([r["object_id"] for r in rows
+                                   if str(r["object_id"] or "").isdigit()])
+        with bot_db.session():
+            for r in rows:
+                tail = r["body"][len(LEGACY_CREDIT):]        # «: 3 із 3»
+                credit = _credit(counted.get(int(r["object_id"]), [])
+                                 if str(r["object_id"] or "").isdigit() else [])
+                bot_db.execute("UPDATE team_notifications SET body = %s WHERE id = %s",
+                               (credit + tail, r["id"]))
+        log.info("team_matches: полагоджено %d старих подій виконання", len(rows))
+    except Exception as e:      # стрічка — не критичний шлях
+        log.warning("team_matches: не вдалось полагодити старі події: %s", e)
 
 
 _COLS = ("id, source, ref, task_id, person, project_id, confidence, reasoning, "
@@ -273,14 +310,41 @@ def apply_progress(task_id, actor="🦊 Лис"):
     return task, None
 
 
+def _credit(counted):
+    """Хто саме зарахував — «Лис зарахував сам» / «зарахувала Катерина» /
+    «Лис і Катерина зарахували».
+
+    Олег, 28.07: у стрічці стояло глухе «зарахувала сама» на всіх подіях
+    підряд, і з нього не було видно, це суддя спрацював чи людина руками
+    підтвердила з черги. Різниця важлива: авто-зарахуванню довіряють менше,
+    ніж рішенню Каті. Дані для цього вже лежать у самому матчі —
+    status auto/confirmed і decided_by."""
+    auto = any(m["status"] == "auto" for m in counted)
+    people = []
+    for m in counted:
+        who = (m.get("decided_by") or "").strip()
+        if m["status"] == "confirmed" and who and who not in people:
+            people.append(who)
+    names = [w.split()[0] for w in people]
+    if auto and names:
+        # Множина знімає питання роду — у команді є й чоловіки
+        return "Лис і " + ", ".join(names) + " зарахували"
+    if len(names) > 1:
+        return ", ".join(names) + " зарахували"
+    if names:
+        return f"підтвердив(ла) {names[0]}"
+    return "Лис зарахував сам"
+
+
 def _notify_done(task):
     """Подія «завдання виконано» — і виконавиці, і керівництву. Обидві
     сповіщення дедуплікуються по id таска: повторний прогін чи перевідкриття
     й нове закриття не сиплють дублями."""
     if not task:
         return
-    links = [m["url"] for m in counted_by_task([task["id"]]).get(task["id"], [])]
-    body = f"Лис зарахував сам: {len(links)} із {task['qty']}"
+    counted = counted_by_task([task["id"]]).get(task["id"], [])
+    links = [m["url"] for m in counted]
+    body = f"{_credit(counted)}: {len(links)} із {task['qty']}"
     team_notifications.notify_safe(
         "task_done", team_tasks.task_summary(task), audience="person",
         person=task["person"], body=body, url=links[0] if links else None,
