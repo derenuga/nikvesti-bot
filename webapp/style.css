@@ -540,6 +540,10 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
   width: 100%; text-align: left; padding: 0;
 }
 .sc-toggle .sc-chev { color: var(--muted); display: inline-flex; }
+/* Іконка зліва від заголовка: підказує, що під згорнутим блоком графік */
+.sc-toggle .sc-ic { color: var(--blue); display: inline-flex; margin-right: 8px; }
+.sc-toggle .sc-ic .ic { width: 17px; height: 17px; }
+.sc-toggle .sc-t { flex: 1; }
 
 /* ---------- дашборд: кільця виконання ---------- */
 /* Звіт — головний екран, на який дивляться. Фото великі, кільце товсте,
