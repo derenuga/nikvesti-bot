@@ -2679,15 +2679,64 @@ function avatarRing(person, entry, pct, size, fixedColor) {
 /* Звітний дашборд: перемикач тиждень/місяць + гортання період-влево/вправо,
    люди кружечками з кільцем % виконання KPI. Дані — з /api/kpi/dashboard
    (історія рахується з nodes за минулі періоди). */
+/* Шапка дашборда (перемикач + гортання періодів) окремо від кілець: її треба
+   намалювати ОДРАЗУ по тапу, ще до відповіді сервера. Факт іде в БД сайту і
+   їде помітно, а до цього екран стояв зі старими цифрами під старим
+   перемикачем — виглядало як зависання, і Олег тикав удруге (28.07).
+   data == null — режим завантаження: підпис періоду шимерить. */
+function dashControls(data) {
+  const d = STATE.dash;
+  const label = data
+    ? `<b>${esc(data.label)}${data.is_current ? " · зараз"
+        : d.offset === -1 ? " · минулий" : ""}</b>`
+    : `<b class="sk sk-lbl"></b>`;
+  // Поки не знаємо is_current — беремо клієнтську оцінку, інакше «вперед»
+  // на секунду відкривалась би в майбутнє
+  const atNow = data ? data.is_current : d.offset >= defaultOffset(d.period);
+  return `
+    ${segment("data-dp", [["week", "Тиждень"], ["month", "Місяць"]], d.period, { sub: true })}
+    <div class="month-nav">
+      <button class="arr" data-doff="-1">${icon("chevron-left")}</button>
+      ${label}
+      <button class="arr" data-doff="1" ${atNow ? "disabled" : ""}>${icon("chevron-right")}</button>
+    </div>`;
+}
+
+function wireDashControls(body) {
+  body.querySelectorAll("[data-dp]").forEach((b) => b.onclick = () => {
+    const d = STATE.dash;
+    if (d.period === b.dataset.dp) return;
+    d.period = b.dataset.dp; d.offset = defaultOffset(d.period); renderDashboard();
+  });
+  body.querySelectorAll("[data-doff]").forEach((b) => b.onclick = () => {
+    if (b.disabled) return;
+    const d = STATE.dash;
+    d.offset = Math.min(0, d.offset + (+b.dataset.doff)); renderDashboard();
+  });
+}
+
+let dashReq = 0;
+
 async function renderDashboard() {
   const d = STATE.dash;
+  const loading = $("dash-body");
+  if (loading) {
+    loading.innerHTML = dashControls(null) + skeleton("rings", 6);
+    wireDashControls(loading);   // перемикач лишається живим і під час завантаження
+  }
+  // Тики швидші за відповідь: перемогти має ОСТАННІЙ вибір, інакше повільніша
+  // відповідь попереднього періоду перемалює екран поверх свіжішої
+  const req = ++dashReq;
   try {
     d.data = await api(`/api/kpi/dashboard?period=${d.period}&offset=${d.offset}`);
   } catch (e) {
     const body = $("dash-body");
-    if (body) body.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+    if (body && req === dashReq) body.innerHTML = dashControls(null)
+      + `<div class="empty-hint">${esc(e.message)}</div>`;
+    if (body && req === dashReq) wireDashControls(body);
     return;
   }
+  if (req !== dashReq) return;
   if (STATE.view !== "home" || STATE.homeView !== "report") return;
   const data = d.data;
   const byDept = {};
@@ -2704,23 +2753,10 @@ async function renderDashboard() {
     </div>`).join("");
   const body = $("dash-body");
   if (!body) return;
-  body.innerHTML = `
-    ${segment("data-dp", [["week", "Тиждень"], ["month", "Місяць"]], d.period, { sub: true })}
-    <div class="month-nav">
-      <button class="arr" data-doff="-1">${icon("chevron-left")}</button>
-      <b>${esc(data.label)}${data.is_current ? " · зараз"
-      : d.offset === -1 ? " · минулий" : ""}</b>
-      <button class="arr" data-doff="1" ${data.is_current ? "disabled" : ""}>${icon("chevron-right")}</button>
-    </div>
+  body.innerHTML = dashControls(data) + `
     ${grid || `<div class="empty-hint">Норм на цей період немає.</div>`}
     ${!data.site_db ? `<div class="tl-note">БД сайту недоступна — факт не рахується.</div>` : ""}`;
-  body.querySelectorAll("[data-dp]").forEach((b) => b.onclick = () => {
-    d.period = b.dataset.dp; d.offset = defaultOffset(d.period); renderDashboard();
-  });
-  body.querySelectorAll("[data-doff]").forEach((b) => b.onclick = () => {
-    if (b.disabled) return;
-    d.offset = Math.min(0, d.offset + (+b.dataset.doff)); renderDashboard();
-  });
+  wireDashControls(body);
   body.querySelectorAll("[data-rperson]").forEach((b) => b.onclick = () =>
     nav("personhist", b.dataset.rperson));
 }
