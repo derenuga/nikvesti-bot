@@ -468,6 +468,15 @@ async def reports_check_handler(update, context):
         if here < 0:
             lines.append(f"Постав у Railway: <code>FINANCE_CHAT_ID={here}</code>")
 
+    # Кнопка «Дедлайни в апці» можлива лише з прямим лінком BotFather: у групі
+    # Telegram не дозволяє web_app-кнопки, а звичайний https-URL відкрив би
+    # сторінку в браузері без initData — тобто «Тільки з Telegram».
+    if WEBAPP_DIRECT_LINK:
+        lines.append(f"Кнопка в апку: ✅ <code>{WEBAPP_DIRECT_LINK}</code>")
+    else:
+        lines.append("Кнопка в апку: ❌ немає <b>WEBAPP_DIRECT_LINK</b> "
+                     "(BotFather → /myapps → лінк виду https://t.me/mykvisti_bot/team)")
+
     if d["error"]:
         lines.append(f"Дедлайни не прочитались: {d['error']}")
     else:
