@@ -242,8 +242,13 @@ def setup_scheduler(bot, last_channel_post_time=None):
     scheduler.add_job(run_check_competitors, "cron", hour="1,4,7,10,13,16,19,22", minute=15, args=[bot])
     # Правоохоронці — три рази на день: 10:00, 13:00, 16:00
     # Нагадування про звітні дедлайни грантів у чат «Фінанси МикВісті»:
-    # за тиждень і за 2 доби. Ідемпотентно — двічі те саме не пришле.
-    scheduler.add_job(check_report_deadlines, "cron", hour=9, minute=40, args=[bot])
+    # за тиждень і за 2 доби. Штатний час — 09:40, але прогін щогодини до
+    # вечора: раз на добу означає, що будь-який збій (немає прав у чаті,
+    # хибний id, редеплой саме о 09:40) з'їдає цілий день мовчки — так і
+    # сталось 28.07. Повтори безкоштовні: позначка ставиться лише після
+    # успішної відправки, тож наступна година просто добере невідправлене,
+    # а вже надіслане не задублює.
+    scheduler.add_job(check_report_deadlines, "cron", hour="9-20", minute=40, args=[bot])
     scheduler.add_job(run_check_law_enforcement, "cron", hour=10, minute=0, args=[bot])
     scheduler.add_job(run_check_law_enforcement, "cron", hour=13, minute=0, args=[bot])
     scheduler.add_job(run_check_law_enforcement, "cron", hour=16, minute=0, args=[bot])
