@@ -292,6 +292,17 @@ function personEntry(name) {
     || null;
 }
 
+/* Пояснення, звідки взявся факт більший за кількість новин: стаття важить
+   три новини (Олег, 28.07 — «людям дозволено забивати на новини, коли вони в
+   статті»). Без цього підпису цифра виглядала б помилкою. */
+function articleHint(row) {
+  const n = row && row.articles;
+  if (!n) return "";
+  const w = row.article_weight || 3;
+  const word = n === 1 ? "стаття" : n < 5 ? "статті" : "статей";
+  return `<span class="mk-bonus">+${n} ${word} ×${w}</span>`;
+}
+
 /* Прогрес зарахованого виконання: «2/3». Порожньо там, де показувати нічого:
    на «1 новина» без жодного зарахування «0/1» був би шумом, а не інформацією. */
 function progressHtml(t) {
@@ -1005,7 +1016,8 @@ function renderPerson() {
     const pct = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
     return `<button class="mykpi-row" data-kpn="${n.id}">
       <span class="mk-t">${esc(normTitle(n))}
-        <span class="mk-p">· ${esc(n.period === "week" ? STATE.kpi.week_label : STATE.kpi.month_label)}</span></span>
+        <span class="mk-p">· ${esc(n.period === "week" ? STATE.kpi.week_label : STATE.kpi.month_label)}</span>
+        ${articleHint(r)}</span>
       <span class="kp-fact ${r.done ? "ok" : ""}">${r.fact === null ? "—" : `${r.fact}/${r.target}${r.done ? " ✓" : ""}`}</span>
       <span class="kbar wide"><i class="${r.done ? "ok" : ""}" style="width:${pct}%"></i></span>
     </button>`;
@@ -3041,6 +3053,9 @@ function deptSheet(p) {
 
 function renderJournalist() {
   const open = STATE.tasks.filter((t) => t.status === "open");
+  // Виконані — окремим блоком ПІД відкритими: спершу те, що робити, і лише
+  // потім те, що зроблено (Олег, 28.07)
+  const closed = STATE.tasks.filter((t) => t.status === "done").slice(0, 10);
   $("content").innerHTML = `
     <div class="me-head">
       <div class="me-txt">
@@ -3077,8 +3092,20 @@ function renderJournalist() {
       </div>`;
     }).join("")}</div>`
       : `<div class="empty-hint">Відкритих завдань немає.</div>`}
-    <div class="empty-hint" style="padding-top:16px">Це попередній перегляд —
-      повний твій інтерфейс уже в розробці.</div>`;
+    ${closed.length ? `<div class="dept-title">Виконані · ${closed.length}</div>
+      <div class="soft-card">${closed.map((t) => {
+        const qtyPart = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
+        return `
+        <div class="task-row is-done">
+          <span class="tr-main">
+            <span class="tr-who">${esc(t.theme_name || qtyPart)}</span>
+            <span class="tr-what">${esc([t.theme_name ? qtyPart : null,
+              taskProject(t).partner].filter(Boolean).join(" · "))}</span>
+            ${matchesHtml(t)}
+          </span>
+          <span class="tr-right">${progressHtml(t)}${statusMark(t)}</span>
+        </div>`;
+      }).join("")}</div>` : ""}`;
   renderMyKpi();
   renderMyNotifs();
   renderMyHistory();
@@ -3116,11 +3143,26 @@ async function renderMyHistory() {
   } catch (e) { return; }
   const box = $("my-history");
   if (!box || !data.has_norms || !data.months || !data.months.length) return;
+  // Графік займав пів екрана щодня, хоч дивляться в нього раз на місяць —
+  // тому згорнутий за замовчуванням, а вибір памʼятається (Олег, 28.07)
+  const shown = localStorage.getItem("myHistOpen") === "1";
   box.innerHTML = `<div class="soft-card">
-    <div class="sc-t">Як іде місяць до місяця</div>
-    ${historyChartHtml(data, "my-hist-chart")}
+    <button class="sc-toggle" id="hist-toggle">
+      <span class="sc-t" style="margin:0">Як іде місяць до місяця</span>
+      <span class="sc-chev">${icon(shown ? "chevron-up" : "chevron-down", "ic chev")}</span>
+    </button>
+    <div id="hist-body" class="${shown ? "" : "hidden"}">
+      ${historyChartHtml(data, "my-hist-chart")}
+    </div>
   </div>`;
-  scrollHistoryToEnd("my-hist-chart");
+  $("hist-toggle").onclick = () => {
+    const open = $("hist-body").classList.toggle("hidden") === false;
+    localStorage.setItem("myHistOpen", open ? "1" : "0");
+    $("hist-toggle").querySelector(".sc-chev").innerHTML =
+      icon(open ? "chevron-up" : "chevron-down", "ic chev");
+    if (open) scrollHistoryToEnd("my-hist-chart");
+  };
+  if (shown) scrollHistoryToEnd("my-hist-chart");
 }
 
 /* Кільце з фото журналістки та підписом, за який період цифри. Смуга завжди
@@ -3167,7 +3209,8 @@ async function renderMyKpi() {
       const pct = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
       return `<div class="mykpi-row">
         <span class="mk-t">${esc(normTitle(n))}
-          <span class="mk-p">· ${esc(n.period === "week" ? k.week_label : k.month_label)}</span></span>
+          <span class="mk-p">· ${esc(n.period === "week" ? k.week_label : k.month_label)}</span>
+          ${articleHint(r)}</span>
         <span class="kp-fact ${r.done ? "ok" : ""}">${r.fact === null ? "—" : `${r.fact}/${r.target}${r.done ? " ✓" : ""}`}</span>
         <span class="kbar wide"><i class="${r.done ? "ok" : ""}" style="width:${pct}%"></i></span>
       </div>`;

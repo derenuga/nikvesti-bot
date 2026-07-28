@@ -527,6 +527,19 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
   display: inline-flex; align-items: center; justify-content: center;
 }
 .mykpi-row { width: 100%; text-align: left; }
+/* «+1 стаття ×3» — пояснення, чому факт більший за кількість новин */
+.mk-bonus {
+  display: inline-block; margin-left: 6px; font-size: 11.5px; font-weight: 700;
+  color: var(--good); background: var(--good-soft);
+  border-radius: 8px; padding: 1px 6px; white-space: nowrap;
+}
+
+/* Згортання блоку (графік динаміки в журналістки) */
+.sc-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; text-align: left; padding: 0;
+}
+.sc-toggle .sc-chev { color: var(--muted); display: inline-flex; }
 
 /* ---------- дашборд: кільця виконання ---------- */
 /* Звіт — головний екран, на який дивляться. Фото великі, кільце товсте,

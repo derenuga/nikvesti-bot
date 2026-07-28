@@ -19,7 +19,8 @@
 - відсутність поза періодом нічого не чіпає;
 - видалення запису повертає ціль на місце;
 - написане ПІД ЧАС відпустки зараховується (факт — з дати публікації), і
-  людина не зникає зі «Звіту», навіть якщо період накрито цілком.
+  людина не зникає зі «Звіту», навіть якщо період накрито цілком;
+- стаття важить ТРИ новини в нормі на новини (модифікатор ×3).
 
 Запуск:
     BOT_DATABASE_URL=postgresql://... python test_team_absences.py
@@ -99,7 +100,11 @@ def main():
     # має лишитись у «Звіті» з тим, що зробила, а не зникнути разом із роботою.
     norm = team_kpi.add_norm("Олег Деренюга", "creative", "news", "week", 5)
     orig_facts = team_kpi.fact_counts
-    team_kpi.fact_counts = lambda metric, period, own=False, offset=0: {ALINA: 2}
+    # 2 новини і ЖОДНОЇ статті — інакше вага ×3 домішалась би у перевірку,
+    # яка тут не про неї
+    team_kpi.fact_counts = (
+        lambda metric, period, own=False, offset=0:
+        {ALINA: 2} if metric == "news" else {ALINA: 0})
     try:
         # тиждень 13–19 липня 2026 — цілком у відпустці (див. вище)
         today = date(2026, 7, 15)
@@ -117,6 +122,27 @@ def main():
     finally:
         team_kpi.fact_counts = orig_facts
         team_kpi.delete_norm(norm["id"])
+
+    # ---------- 5б. Стаття важить три новини ----------
+    # Норма є лише на новини, а статті — це зазвичай таски. Людей демотивувало,
+    # що написана стаття не рухає кружечок: за правилами редакції на новини
+    # можна забивати, коли працюєш у статті. Вага ×3 це і виправляє.
+    orig_counts = team_kpi.fact_counts
+
+    def fake_counts(metric, period, own=False, offset=0):
+        return {ALINA: 2} if metric == "news" else {ALINA: 3}
+
+    team_kpi.fact_counts = fake_counts
+    try:
+        facts, bonus = team_kpi.weighted_facts("news", "month")
+        check("2 новини + 3 статті = 11 за нормою на новини", facts[ALINA] == 11)
+        check("к-сть статей віддається окремо — щоб пояснити цифру",
+              bonus[ALINA] == 3)
+        art_facts, art_bonus = team_kpi.weighted_facts("article", "month")
+        check("норму на статті вага не чіпає",
+              art_facts[ALINA] == 3 and art_bonus == {})
+    finally:
+        team_kpi.fact_counts = orig_counts
 
     # ---------- 6. Видалення повертає все як було ----------
     team_kpi.delete_absence(absences[0]["id"])

@@ -20,7 +20,10 @@
 - у журналістки зверху ТЕМАТИКА (що писати), під нею «скільки і чого» + донор,
   а назви проєкту немає взагалі — вона займала перший рядок і не відповідала
   на жодне питання;
-- тип матеріалу редагується в картці завдання (звідси і брався «матеріал»).
+- тип матеріалу редагується в картці завдання (звідси і брався «матеріал»);
+- у журналістки: відкриті завдання зверху, виконані — окремим блоком унизу,
+  а графік динаміки згорнутий (розгортається тапом, вибір памʼятається);
+- стаття важить три новини, і в рядку KPI видно, звідки взялась цифра.
 
 Запуск (потрібні playwright + chromium):
     python test_webapp_progress.py
@@ -61,7 +64,7 @@ MATCH_2 = {"id": 12, "title": "Депутати не зібрались вдру
 
 TASKS = [
     _task(1, 3, 2, matches=[MATCH_1, MATCH_2]),          # 2/3 — синій
-    _task(2, 2, 2, status="done", matches=[MATCH_1, MATCH_2]),  # 2/2 — зелений
+    _task(2, 2, 2, status="done", matches=[MATCH_1, MATCH_2]),  # 2/2 — виконаний
     _task(3, 1, 0),                                      # 0/1 — не малюємо
     {**_task(4, 2, 0), "type": None, "theme_name": "Тендери",
      "note": "Хто виграв тендери на укриття шкіл"},   # без типу — «матеріали»
@@ -80,6 +83,24 @@ BOOTSTRAP = {
            "dept_title": "Адміністративний", "manager": True},
     "site_db": True, "nora": True, "people": PEOPLE, "projects": PROJECTS,
     "assignees": [], "managers": [], "tasks": TASKS,
+}
+
+# Норма на новини з фактом, у якому 1 новина + 2 статті ×3 = 7
+KPI_NORMS = [{
+    "id": 1, "dept": "creative", "metric": "news", "period": "month",
+    "target": 20, "own": True, "dept_title": "Creative", "period_label": "липень",
+    "rows": [{"person": "Аліна Квітко", "fact": 7, "target": 20, "base_target": 20,
+              "overridden": False, "note": None, "excused": False, "done": False,
+              "articles": 2, "article_weight": 3}],
+}]
+
+KPI_HISTORY = {
+    "person": "Аліна Квітко", "dept_title": "Creative", "has_norms": True,
+    "site_db": True,
+    "months": [{"label": "чер 26", "offset": -1, "is_current": False,
+                "overall_pct": 60, "norms": []},
+               {"label": "лип 26", "offset": 0, "is_current": True,
+                "overall_pct": 35, "norms": []}],
 }
 
 JOURNALIST = {
@@ -105,9 +126,11 @@ window.fetch = async (url, opts = {}) => {
   if (url === "/api/kpi") {
     // KPI навмисно повільні — як реальна БД сайту
     await new Promise((r) => setTimeout(r, window.__kpiDelay || 0));
-    return json({ norms: [], week_label: "", month_label: "", site_db: true });
+    return json({ norms: window.KPI_NORMS || [], week_label: "тиж",
+                  month_label: "липень", site_db: true });
   }
-  if (url.startsWith("/api/kpi/person")) return json({ has_norms: false, months: [] });
+  if (url.startsWith("/api/kpi/person")) return json(window.KPI_HISTORY
+    || { has_norms: false, months: [] });
   let m;
   if ((m = url.match(/^\\/api\\/tasks\\/(\\d+)$/)) && opts.method === "PATCH") {
     window.__posts.push({ patch: +m[1], body: JSON.parse(opts.body) });
@@ -157,7 +180,10 @@ async def _open(pw, boot):
         r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
     await page.route("https://app.local/", lambda r: asyncio.ensure_future(
         r.fulfill(path=str(WEBAPP / "index.html"), content_type="text/html")))
-    await page.add_init_script("window.BOOT = " + json.dumps(boot) + ";" + STUB)
+    await page.add_init_script(
+        "window.BOOT = " + json.dumps(boot) + ";"
+        "window.KPI_NORMS = " + json.dumps(KPI_NORMS) + ";"
+        "window.KPI_HISTORY = " + json.dumps(KPI_HISTORY) + ";" + STUB)
     await page.goto("https://app.local/")
     await page.wait_for_selector("#screen-main:not(.hidden)", timeout=10000)
     return browser, page
@@ -274,6 +300,33 @@ async def main():
             check("донор лишився дрібним рядком", "IMS" in body)
             check("нотатка редактора видима",
                   "Хто виграв тендери на укриття шкіл" in body)
+
+            # --- виконані внизу, відкриті зверху ---
+            rows = await page.locator(".task-row").all_inner_texts()
+            first_done = next((i for i, r in enumerate(rows) if "2/2" in r), 99)
+            first_open = next((i for i, r in enumerate(rows) if "0/2" in r), 99)
+            check("виконані пішли ПІД відкриті", first_open < first_done)
+            check("виконані під власним заголовком", "ВИКОНАНІ" in body.upper())
+
+            # --- графік згорнутий, розгортається тапом ---
+            await page.wait_for_selector("#hist-toggle")
+            check("графік динаміки за замовчуванням схований",
+                  await page.locator("#hist-body.hidden").count() == 1)
+            await page.click("#hist-toggle")
+            await page.wait_for_timeout(200)
+            check("тап розгортає графік",
+                  await page.locator("#hist-body.hidden").count() == 0)
+            check("вибір запамʼятався",
+                  await page.evaluate("localStorage.getItem('myHistOpen')") == "1")
+            await page.click("#hist-toggle")
+            await page.wait_for_timeout(200)
+            check("повторний тап ховає назад",
+                  await page.locator("#hist-body.hidden").count() == 1)
+
+            # --- вага статей у «Моїх KPI» ---
+            check("у рядку KPI пояснено, звідки цифра",
+                  "+2 статті ×3" in await page.inner_text("#my-kpi"))
+            check("сам факт зважений", "7/20" in await page.inner_text("#my-kpi"))
             await page.screenshot(path="/tmp/progress-journalist.png", full_page=True)
         finally:
             await browser.close()
