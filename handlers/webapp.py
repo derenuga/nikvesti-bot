@@ -1358,14 +1358,20 @@ async def team_handler(update, context):
                 [[InlineKeyboardButton("Відкрити «Команду»", web_app=WebAppInfo(url=WEBAPP_URL))]]
             ),
         )
-    elif WEBAPP_DIRECT_LINK:
-        await update.message.reply_text(
-            "🦊 Завдання і KPI команди:",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("Відкрити «Команду»", url=WEBAPP_DIRECT_LINK)]]
-            ),
-        )
     else:
-        await update.message.reply_text(
-            "🦊 Відкрий мене в приваті й надішли /team — там кнопка апки."
-        )
+        # У групі web_app-кнопка недоступна — лише URL t.me. Заданого руками
+        # лінка не потребуємо: helpers збере його з username бота.
+        from handlers.helpers import resolve_app_link
+
+        link, _ = await resolve_app_link(context.bot, WEBAPP_DIRECT_LINK)
+        if link:
+            await update.message.reply_text(
+                "🦊 Завдання і KPI команди:",
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("Відкрити «Команду»", url=link)]]
+                ),
+            )
+        else:
+            await update.message.reply_text(
+                "🦊 Відкрий мене в приваті й надішли /team — там кнопка апки."
+            )

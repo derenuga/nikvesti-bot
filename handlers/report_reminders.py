@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from handlers import bot_db, team_projects, team_tasks
-from handlers.helpers import normalize_https_url
+from handlers.helpers import app_link_with_param, normalize_https_url, resolve_app_link
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 
@@ -43,9 +43,10 @@ REMIND_DAYS = (7, 2)
 
 _RAW_FINANCE_CHAT_ID = os.environ.get("FINANCE_CHAT_ID")
 
-# Прямий лінк апки з BotFather. У ГРУПІ Telegram не дозволяє web_app-кнопки —
-# лише URL, тож ведемо саме прямим лінком; startapp=reports відкриває апку
-# одразу на «Звітності», а не на Головній.
+# Прямий лінк апки з BotFather (/newapp, вигляду https://t.me/mykvisti_bot/team).
+# Задавати руками НЕ обов'язково — без змінної лінк збирається сам із username
+# бота (helpers.resolve_app_link). startapp=reports відкриває апку одразу на
+# «Звітності», а не на Головній.
 WEBAPP_DIRECT_LINK = normalize_https_url(os.environ.get("WEBAPP_DIRECT_LINK"))
 
 _SCHEMA = """
@@ -71,25 +72,72 @@ STAGE_TITLES = {"interim": "проміжний", "final": "фінальний"}
 _KIND_ORDER = {"narrative": 0, "financial": 1, "milestone": 2}
 
 
-def _normalize_chat_id(raw):
-    """Telegram id супергрупи — відʼємний, з префіксом -100. Олег дає id у
-    «сирому» вигляді (4738653227), як показують деякі клієнти, тож приймаємо
-    обидві форми і не змушуємо пам'ятати про префікс."""
+def _chat_candidates(raw):
+    """Можливі Telegram id для «сирого» числа з налаштувань.
+
+    З одного й того самого числа id буває ДВОХ форм, і ззовні вони не
+    розрізняються:
+      • звичайна група      → просто мінус:  4738653227 → -4738653227
+      • супергрупа/канал    → префікс -100:  1857099475 → -1001857099475
+    Вгадувати не можна: помилка дає «Chat not found» — саме на цьому й
+    згоріло перше налаштування чату фінансів. Тому віддаємо обидва варіанти,
+    а робочий визначаємо живою перевіркою (resolve_chat_id).
+
+    Якщо в env уже написали від'ємне число — воно й береться, без здогадок."""
     raw = str(raw or "").strip()
     if not raw:
-        return None
+        return []
     try:
         n = int(raw)
     except ValueError:
-        return None
-    return n if n < 0 else -1000000000000 - n
+        return []
+    # Обидві форми пробуємо НАВІТЬ для явно від'ємного значення: людина може
+    # вписати «-1004738653227», хоча насправді чат звичайна група
+    # (-4738653227), — і навпаки. Зайвий кандидат нічого не коштує, а
+    # неправильно вгаданий префікс коштує мовчазного «Chat not found».
+    magnitude = abs(n)
+    text = str(magnitude)
+    candidates = []
+    if n < 0:
+        candidates.append(n)
+    if text.startswith("100") and len(text) > 12:
+        candidates.append(-int(text[3:]))          # знімаємо префікс -100
+    else:
+        candidates.append(-1000000000000 - magnitude)   # додаємо префікс -100
+    if -magnitude not in candidates:
+        candidates.append(-magnitude)              # просто мінус
+    # без дублів, порядок збережено
+    return list(dict.fromkeys(candidates))
 
 
-FINANCE_CHAT_ID = _normalize_chat_id(_RAW_FINANCE_CHAT_ID)
+FINANCE_CHAT_CANDIDATES = _chat_candidates(_RAW_FINANCE_CHAT_ID)
+# Перший кандидат — щоб було що показати в діагностиці до першої перевірки
+FINANCE_CHAT_ID = FINANCE_CHAT_CANDIDATES[0] if FINANCE_CHAT_CANDIDATES else None
+
+_resolved_chat = {"id": None}
+
+
+async def resolve_chat_id(bot):
+    """Який із кандидатів насправді існує. Перевіряємо через get_chat один раз
+    на процес — далі беремо з кешу."""
+    if _resolved_chat["id"] is not None:
+        return _resolved_chat["id"]
+    last_error = None
+    for candidate in FINANCE_CHAT_CANDIDATES:
+        try:
+            await bot.get_chat(candidate)
+        except Exception as e:
+            last_error = e
+            continue
+        _resolved_chat["id"] = candidate
+        return candidate
+    if last_error:
+        print(f"report_reminders: жоден id чату не відгукнувся — {last_error}")
+    return None
 
 
 def is_configured():
-    return FINANCE_CHAT_ID is not None
+    return bool(FINANCE_CHAT_CANDIDATES)
 
 
 def _ensure_schema():
@@ -267,14 +315,18 @@ def format_reminder(dl, project, days_left):
     return "\n".join(lines)
 
 
-def _app_markup():
-    """Кнопка «Дедлайни в апці». Без WEBAPP_DIRECT_LINK кнопки просто не буде —
+async def app_link(bot):
+    """Лінк апки для кнопки під нагадуванням: (url, джерело)."""
+    return await resolve_app_link(bot, WEBAPP_DIRECT_LINK)
+
+
+def _app_markup(base_url):
+    """Кнопка «Дедлайни в апці». Без лінка кнопки просто не буде —
     повідомлення лишиться корисним і без неї."""
-    if not WEBAPP_DIRECT_LINK:
+    url = app_link_with_param(base_url, "reports")
+    if not url:
         return None
-    sep = "&" if "?" in WEBAPP_DIRECT_LINK else "?"
-    return InlineKeyboardMarkup([[InlineKeyboardButton(
-        "📅 Дедлайни в апці", url=f"{WEBAPP_DIRECT_LINK}{sep}startapp=reports")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📅 Дедлайни в апці", url=url)]])
 
 
 def _notify_app(dl, project, threshold, days_left):
@@ -300,12 +352,18 @@ async def check_report_deadlines(bot, chat_id=None, force=False):
         print("report_reminders: FINANCE_CHAT_ID не задано — нагадування вимкнено")
         return 0
 
-    target = chat_id or FINANCE_CHAT_ID
+    target = chat_id or await resolve_chat_id(bot)
+    if target is None:
+        print("report_reminders: чат недоступний — нагадування не пішли")
+        return 0
     try:
         due = await asyncio.to_thread(collect_due)
     except Exception as e:
         print(f"report_reminders: не вдалось зібрати дедлайни — {e}")
         return 0
+
+    app_url, _ = await app_link(bot)
+    markup = _app_markup(app_url)
 
     sent = 0
     for group in group_due(due):
@@ -317,7 +375,7 @@ async def check_report_deadlines(bot, chat_id=None, force=False):
                 text=format_group(group),
                 parse_mode="HTML",
                 disable_web_page_preview=True,
-                reply_markup=_app_markup(),
+                reply_markup=markup,
             )
             if not force:
                 # Позначку і подію в апці ставимо на КОЖЕН звіт групи: у чат
@@ -336,20 +394,118 @@ async def check_report_deadlines(bot, chat_id=None, force=False):
     return sent
 
 
+def diagnose(today=None):
+    """Чому нагадувань немає: розкладка всіх дедлайнів по причинах. Потрібна
+    саме тому, що «нічого не прийшло» має щонайменше пʼять різних причин, і
+    без цифр вони не розрізняються."""
+    today = today or datetime.now(KYIV_TZ).date()
+    out = {"total": 0, "closed": 0, "past": 0, "far": 0,
+           "already": 0, "ready": 0, "error": None}
+    try:
+        deadlines = team_tasks.list_project_deadlines()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+    out["total"] = len(deadlines)
+    for dl in deadlines:
+        if dl.get("status") in ("submitted", "accepted"):
+            out["closed"] += 1
+            continue
+        try:
+            due = datetime.strptime(dl["due"], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        days_left = (due - today).days
+        if days_left < 0:
+            out["past"] += 1
+            continue
+        fitting = [t for t in REMIND_DAYS if days_left <= t]
+        if not fitting:
+            out["far"] += 1
+            continue
+        if _already_sent(dl["id"], min(fitting)):
+            out["already"] += 1
+        else:
+            out["ready"] += 1
+    return out
+
+
 # ---------- Команда ----------
 
 async def reports_check_handler(update, context):
-    """/reports — прогнати перевірку зараз. Нагадування летять у той чат, де
-    викликали команду, і НЕ позначаються як надіслані, щоб не з'їсти планове."""
-    await update.message.reply_text("Дивлюсь звітні дедлайни…")
+    """/reports — прогнати перевірку зараз І показати, чому нагадувань немає.
+    Прев'ю летить у той чат, де викликали команду, і НЕ позначається як
+    надіслане, щоб не з'їсти планове."""
+    import asyncio
+
+    d = await asyncio.to_thread(diagnose)
+
+    here = update.effective_chat.id
+    lines = ["🦊 <b>Звітні дедлайни — діагностика</b>",
+             f"Цей чат: <code>{here}</code>"]
+    if is_configured():
+        # Найважливіша перевірка: чи бот справді бачить чат. Помилковий id і
+        # відсутність прав виглядають однаково — «нічого не прийшло». Пробуємо
+        # обидві можливі форми id і показуємо, яка спрацювала.
+        found = None
+        errors = []
+        for candidate in FINANCE_CHAT_CANDIDATES:
+            try:
+                chat = await context.bot.get_chat(candidate)
+            except Exception as e:
+                errors.append(f"<code>{candidate}</code> — {e}")
+                continue
+            found = (candidate, chat.title or str(chat.id))
+            break
+        if found:
+            lines.append(f"Чат нагадувань: <code>{found[0]}</code>")
+            lines.append(f"Доступ до чату: ✅ «{found[1]}»")
+        else:
+            lines.append("Доступ до чату: ❌ жоден варіант id не відгукнувся")
+            lines.extend("  " + e for e in errors)
+        # Найнадійніший спосіб дізнатись id — спитати сам чат. Якщо команду
+        # викликали там, де нагадування й мають з'являтись, підказуємо точне
+        # значення для Railway замість здогадок про префікси.
+        if here < 0 and here not in FINANCE_CHAT_CANDIDATES:
+            lines.append(
+                f"\n⚠️ Id цього чату не збігається з налаштованим.\n"
+                f"Якщо нагадування мають приходити сюди — постав у Railway:\n"
+                f"<code>FINANCE_CHAT_ID={here}</code>")
+    else:
+        lines.append("Чат нагадувань: ❌ <b>змінна FINANCE_CHAT_ID не задана</b>")
+        if here < 0:
+            lines.append(f"Постав у Railway: <code>FINANCE_CHAT_ID={here}</code>")
+
+    # Кнопка в апку — це саме лінк t.me, а не web_app-кнопка як у /team:
+    # web_app-кнопки Telegram дозволяє лише в приваті, у групі вони не
+    # приймаються. Лінк бот збирає сам із власного username, якщо руками не
+    # задали WEBAPP_DIRECT_LINK.
+    app_url, source = await app_link(context.bot)
+    if app_url:
+        origin = "WEBAPP_DIRECT_LINK" if source == "env" else "зібрано з username бота"
+        lines.append(f"Кнопка в апку: ✅ <code>{app_url}?startapp=reports</code> ({origin})")
+        if source != "env":
+            lines.append("  (працює, коли Mini App увімкнено в BotFather)")
+    else:
+        lines.append("Кнопка в апку: ❌ не вдалось визначити лінк апки")
+
+    if d["error"]:
+        lines.append(f"Дедлайни не прочитались: {d['error']}")
+    else:
+        lines.append(
+            f"\nДедлайнів усього: <b>{d['total']}</b>\n"
+            f"• подані/прийняті (не нагадуємо): {d['closed']}\n"
+            f"• дата вже минула: {d['past']}\n"
+            f"• ще далеко (понад 7 діб): {d['far']}\n"
+            f"• у вікні, але вже нагадано: {d['already']}\n"
+            f"• <b>чекають нагадування: {d['ready']}</b>"
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
     sent = await check_report_deadlines(
         context.bot, chat_id=update.effective_chat.id, force=True
     )
-    if not sent:
-        target = FINANCE_CHAT_ID if is_configured() else "не налаштовано"
+    if not sent and not d["error"]:
         await update.message.reply_text(
-            "Нічого нагадувати: немає звітів у вікні 7 або 2 доби "
-            "(подані й прийняті не рахуються).\n"
-            f"Плановий чат нагадувань: <code>{target}</code>",
-            parse_mode="HTML",
+            "Прев'ю порожнє — сьогодні нагадувати нема про що.",
         )

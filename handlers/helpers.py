@@ -58,6 +58,50 @@ def normalize_https_url(url):
     return url
 
 
+_app_link_cache = {}
+
+
+async def resolve_app_link(bot, explicit=None):
+    """Базовий лінк Mini App для кнопок у ГРУПОВИХ чатах.
+
+    У приваті кнопку апки дає web_app — але Telegram дозволяє web_app-кнопки
+    ЛИШЕ в приваті, у групі їх не приймає зовсім. Тому в групу йде звичайний
+    URL t.me, який Telegram сам відкриває як апку.
+
+    Лінк не потребує ручного налаштування: https://t.me/<bot> веде в Main Mini
+    App, і достатньо username бота. WEBAPP_DIRECT_LINK лишається як override —
+    коли апку зареєстрували окремо через /newapp і потрібна форма з short name
+    (https://t.me/<bot>/<app>).
+
+    Повертає (url, джерело) — джерело потрібне діагностиці. get_me смикаємо
+    раз на процес; збій не має валити те, заради чого кнопку показують."""
+    key = explicit or ""
+    if key in _app_link_cache:
+        return _app_link_cache[key]
+    if explicit:
+        result = (explicit, "env")
+    else:
+        try:
+            me = await bot.get_me()
+            username = (me.username or "").lstrip("@")
+        except Exception as e:
+            print(f"resolve_app_link: username бота не дістався — {e}")
+            return None, None
+        if not username:
+            return None, None
+        result = (f"https://t.me/{username}", "get_me")
+    _app_link_cache[key] = result
+    return result
+
+
+def app_link_with_param(base_url, param):
+    """Дочіпляє startapp=… до лінка апки, поважаючи вже наявні параметри."""
+    if not base_url:
+        return None
+    sep = "&" if "?" in base_url else "?"
+    return f"{base_url}{sep}startapp={param}"
+
+
 def escape_html(text):
     """Екранування для Telegram parse_mode=HTML. Єдина копія для всіх модулів."""
     return (
