@@ -1,6 +1,9 @@
 """
 Нагадування про звітні дедлайни грантів — у чат «Фінанси МикВісті».
 
+Кілька звітів одного проєкту з однією датою йдуть ОДНИМ повідомленням
+(Олег: «часто наративку і фінансовий разом») — див. group_due.
+
 Запит Олега 27.07.2026: дедлайни звітності вже заводяться в Mini App
 «Команда» (team_project_deadlines), але досі лише показувались. Тепер Лис
 нагадує сам — двічі: за тиждень (щоб сісти писати) і за дві доби (щоб
@@ -62,6 +65,10 @@ KIND_TITLES = {
     "milestone": "Майлстоун",
 }
 STAGE_TITLES = {"interim": "проміжний", "final": "фінальний"}
+
+# Порядок звітів усередині одного повідомлення: спершу наративка (її пишуть
+# довше), потім фінансовий, потім майлстоуни.
+_KIND_ORDER = {"narrative": 0, "financial": 1, "milestone": 2}
 
 
 def _normalize_chat_id(raw):
@@ -197,6 +204,53 @@ def _when_human(days_left):
     return f"через {days_left} днів"
 
 
+def group_due(items):
+    """Звіти одного проєкту з ОДНІЄЮ датою — в одну групу (Олег: «часто
+    наративку і фінансовий разом»). Інакше в чат летіли два майже однакові
+    повідомлення поспіль, які око зчитує як дубль.
+
+    Групуємо саме за парою «проєкт + дата»: різні дати — це різні події,
+    і зливати їх в одне повідомлення означало б ховати одну з них."""
+    groups = {}
+    for dl, project, threshold, days_left in items:
+        key = (dl["project_id"], dl["due"], threshold)
+        group = groups.setdefault(key, {
+            "project": project, "threshold": threshold,
+            "days_left": days_left, "deadlines": [],
+        })
+        group["deadlines"].append(dl)
+    for group in groups.values():
+        group["deadlines"].sort(key=lambda d: (_KIND_ORDER.get(d["kind"], 9), d["id"]))
+    return list(groups.values())
+
+
+def _project_line(project):
+    donor = (project or {}).get("partner") or (project or {}).get("name") or "проєкт"
+    name = (project or {}).get("name")
+    return donor + (f" · {name}" if name and name != donor else "")
+
+
+def format_group(group):
+    """Повідомлення на групу. Один звіт — компактний вигляд «що і кому»;
+    кілька — шапка проєкту з датою і список звітів під нею."""
+    project, dls = group["project"], group["deadlines"]
+    days_left = group["days_left"]
+    if len(dls) == 1:
+        return format_reminder(dls[0], project, days_left)
+
+    lines = [
+        f"🦊 <b>{_project_line(project)}</b> — {_when_human(days_left)}",
+        f"Дедлайн: <b>{_due_human(dls[0]['due'])}</b>",
+        "",
+    ]
+    for dl in dls:
+        lines.append(f"• {deadline_title(dl)} — {_mention(dl.get('assignee'))}")
+    if (project or {}).get("drive_url"):
+        lines.append("")
+        lines.append(f"<a href=\"{project['drive_url']}\">Папка проєкту на Drive</a>")
+    return "\n".join(lines)
+
+
 def format_reminder(dl, project, days_left):
     donor = (project or {}).get("partner") or (project or {}).get("name") or "проєкт"
     name = (project or {}).get("name")
@@ -254,23 +308,29 @@ async def check_report_deadlines(bot, chat_id=None, force=False):
         return 0
 
     sent = 0
-    for dl, project, threshold, days_left in due:
+    for group in group_due(due):
+        project, threshold = group["project"], group["threshold"]
+        days_left, dls = group["days_left"], group["deadlines"]
         try:
             await bot.send_message(
                 chat_id=target,
-                text=format_reminder(dl, project, days_left),
+                text=format_group(group),
                 parse_mode="HTML",
                 disable_web_page_preview=True,
                 reply_markup=_app_markup(),
             )
             if not force:
-                await asyncio.to_thread(_mark_sent, dl["id"], threshold)
-                # Те саме нагадування — у стрічку «Сповіщень» апки: у чаті
-                # фінансів воно тоне, а тут лежить, доки не прочитають.
-                await asyncio.to_thread(_notify_app, dl, project, threshold, days_left)
+                # Позначку і подію в апці ставимо на КОЖЕН звіт групи: у чат
+                # пішло одне повідомлення, але закрито ним кілька дедлайнів.
+                for dl in dls:
+                    await asyncio.to_thread(_mark_sent, dl["id"], threshold)
+                    # Те саме нагадування — у стрічку «Сповіщень» апки: у чаті
+                    # фінансів воно тоне, а тут лежить, доки не прочитають.
+                    await asyncio.to_thread(_notify_app, dl, project, threshold, days_left)
             sent += 1
         except Exception as e:
-            print(f"report_reminders: нагадування по дедлайну {dl['id']} не пішло — {e}")
+            ids = ", ".join(str(d["id"]) for d in dls)
+            print(f"report_reminders: нагадування по дедлайнах {ids} не пішло — {e}")
     if sent:
         print(f"report_reminders: надіслано {sent} нагадувань у {target}")
     return sent
