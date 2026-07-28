@@ -591,7 +591,10 @@ def kpi_payload(for_person=None):
                 "overridden": ov is not None,
                 "note": ov["note"] if ov else (
                     f"{away[0]['title']} · ціль {target} замість {n['target']}"
-                    if missed and target else None),
+                    if missed and target else
+                    (f"{away[0]['title']} · написала {fact} понад норму"
+                     if missed and fact else
+                     (away[0]["title"] if missed else None))),
                 "excused": bool(ov and ov["target"] == 0) or (not ov and target == 0),
                 "absence": away[0] if away else None,
                 "missed_days": missed,
@@ -723,9 +726,12 @@ def kpi_dashboard(period, offset=0):
             factor, missed = (1.0, 0) if ov else absence_factor(
                 person, p_start, p_end, absences.get(person, []))
             target = ov["target"] if ov else scaled_target(n["target"], factor)
-            if not ov and target == 0:
-                continue  # весь період у відпустці — у звіті їй нічого робити
             fact = None if facts is None else facts.get(person)
+            # Весь період у відпустці — у звіті їй нічого робити. АЛЕ якщо вона
+            # все ж щось опублікувала (буває: дописала матеріал із відпустки),
+            # ховати це не можна — робота зроблена, і має бути видно.
+            if not ov and target == 0 and not fact:
+                continue
             bucket = per_person.setdefault(
                 person, {"dept": n["dept"], "norms": [], "missed_days": missed})
             bucket["missed_days"] = max(bucket["missed_days"], missed)
@@ -733,8 +739,14 @@ def kpi_dashboard(period, offset=0):
                 "label": norm_label(n["metric"], target, n["own"]),
                 "metric": n["metric"], "own": n["own"],
                 "fact": fact, "target": target,
-                "pct": None if fact is None or target <= 0 else min(100, round(fact / target * 100)),
-                "done": fact is not None and target > 0 and fact >= target,
+                # Ціль 0 (відпустка) з фактом — це 100%: зробила більше, ніж
+                # вимагалось. Ділити на нуль тут ні до чого.
+                "pct": 100 if (target <= 0 and fact) else (
+                    None if fact is None or target <= 0
+                    else min(100, round(fact / target * 100))),
+                "beyond": bool(target <= 0 and fact),
+                "done": (fact is not None and target > 0 and fact >= target)
+                        or bool(target <= 0 and fact),
             })
 
     people = []
