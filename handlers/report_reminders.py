@@ -24,7 +24,10 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
 from handlers import bot_db, team_projects, team_tasks
+from handlers.helpers import normalize_https_url
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 
@@ -36,6 +39,11 @@ KYIV_TZ = ZoneInfo("Europe/Kiev")
 REMIND_DAYS = (7, 2)
 
 _RAW_FINANCE_CHAT_ID = os.environ.get("FINANCE_CHAT_ID")
+
+# Прямий лінк апки з BotFather. У ГРУПІ Telegram не дозволяє web_app-кнопки —
+# лише URL, тож ведемо саме прямим лінком; startapp=reports відкриває апку
+# одразу на «Звітності», а не на Головній.
+WEBAPP_DIRECT_LINK = normalize_https_url(os.environ.get("WEBAPP_DIRECT_LINK"))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS team_deadline_reminders (
@@ -144,6 +152,12 @@ def collect_due(today=None):
         print(f"report_reminders: проєкти з БД сайту не прочитались — {e}")
         projects = {}
 
+    try:
+        drive = team_tasks.get_drive_links()
+    except Exception as e:
+        print(f"report_reminders: папки Drive не прочитались — {e}")
+        drive = {}
+
     out = []
     for dl in deadlines:
         # Подані й прийняті не смикаємо — рух звіту менеджери відмічають в апці
@@ -165,7 +179,11 @@ def collect_due(today=None):
         threshold = min(fitting)
         if _already_sent(dl["id"], threshold):
             continue
-        out.append((dl, projects.get(dl["project_id"]), threshold, days_left))
+        # Копія, а не сам обʼєкт зі списку: list_projects віддає кешовані
+        # словники, і дописування в них отруїло б кеш на 10 хв
+        project = dict(projects.get(dl["project_id"]) or {})
+        project["drive_url"] = drive.get(dl["project_id"])
+        out.append((dl, project, threshold, days_left))
     return out
 
 
@@ -189,7 +207,20 @@ def format_reminder(dl, project, days_left):
         f"Дедлайн: <b>{_due_human(dl['due'])}</b>",
         f"Пише: {_mention(dl.get('assignee'))}",
     ]
+    # Папка проєкту на Drive — щоб не шукати документи гранту по чатах
+    if (project or {}).get("drive_url"):
+        lines.append(f"<a href=\"{project['drive_url']}\">Папка проєкту на Drive</a>")
     return "\n".join(lines)
+
+
+def _app_markup():
+    """Кнопка «Дедлайни в апці». Без WEBAPP_DIRECT_LINK кнопки просто не буде —
+    повідомлення лишиться корисним і без неї."""
+    if not WEBAPP_DIRECT_LINK:
+        return None
+    sep = "&" if "?" in WEBAPP_DIRECT_LINK else "?"
+    return InlineKeyboardMarkup([[InlineKeyboardButton(
+        "📅 Дедлайни в апці", url=f"{WEBAPP_DIRECT_LINK}{sep}startapp=reports")]])
 
 
 def _notify_app(dl, project, threshold, days_left):
@@ -230,6 +261,7 @@ async def check_report_deadlines(bot, chat_id=None, force=False):
                 text=format_reminder(dl, project, days_left),
                 parse_mode="HTML",
                 disable_web_page_preview=True,
+                reply_markup=_app_markup(),
             )
             if not force:
                 await asyncio.to_thread(_mark_sent, dl["id"], threshold)

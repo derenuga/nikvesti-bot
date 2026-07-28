@@ -3232,7 +3232,10 @@ async function boot() {
     $("screen-main").classList.remove("hidden");
     if (STATE.me.manager) {
       $("bottomnav").classList.remove("hidden");
-      nav("home");
+      // startapp із прямого лінка: кнопка «Дедлайни в апці» під нагадуванням
+      // у чаті фінансів має відкривати одразу «Звітність», а не Головну
+      const start = (tg.initDataUnsafe || {}).start_param || "";
+      nav(start === "reports" ? "reports" : "home");
     } else {
       renderJournalist();
     }
