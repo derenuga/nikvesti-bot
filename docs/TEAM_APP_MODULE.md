@@ -457,7 +457,11 @@ Annenberg School (USC), адаптованої MDF у «News Deserts in Ukraine 
 2. Env `WEBAPP_URL = https://<домен>` (голий домен без схеми теж приймається —
    бот добудує `https://`).
 3. BotFather → `/newapp` → Web App URL = WEBAPP_URL, short name `team` →
-   env `WEBAPP_DIRECT_LINK = https://t.me/mykvisti_bot/team` (запуск із груп).
+   env `WEBAPP_DIRECT_LINK = https://t.me/mykvisti_bot/team` — **опційно**: для
+   запуску з груп достатньо увімкненого Main Mini App, лінк
+   `https://t.me/<username>?startapp=…` бот збирає сам із `get_me`
+   (`helpers.resolve_app_link`). Змінна потрібна лише коли треба вести саме
+   на окрему апку з short name.
 4. Опційно BotFather → Menu Button → той самий URL; і **Configure Mini App** —
    тоді працює «Додати на головний екран» (⋯ у вікні апки).
 5. Бонус: `GET /health` віддає 200 — придатний як `VIBER_WEBHOOK_URL`.
