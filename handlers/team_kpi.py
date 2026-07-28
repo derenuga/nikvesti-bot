@@ -138,6 +138,13 @@ _SCHEMA_STATEMENTS.append(
     "CREATE INDEX IF NOT EXISTS idx_team_absences_person "
     "ON team_absences (person, start_date)")
 
+# Скільки новин «важить» одна стаття у нормі на новини (Олег, 28.07).
+# Причина: норма є лише на новини, а стаття коштує в рази дорожче за часом.
+# Людям дозволено забивати на новини, коли вони в статті — але кружечок
+# показував провал, і це демотивувало. Тепер стаття зараховується в норму
+# новин із вагою ×3, тож робота видно, а не «нічого не зробила».
+ARTICLE_WEIGHT = 3
+
 ABSENCE_KINDS = ("vacation", "sick", "trip")
 ABSENCE_TITLES = {"vacation": "відпустка", "sick": "лікарняна", "trip": "відрядження"}
 
@@ -362,6 +369,24 @@ def scaled_target(base_target, factor):
     return max(1, int(base_target * factor))
 
 
+def weighted_facts(metric, period, own=False, offset=0):
+    """({людина: зважений факт}, {людина: скільки статей}) для норми.
+
+    Для норми на НОВИНИ додаємо статті з вагою ARTICLE_WEIGHT: одна стаття
+    закриває три новини. Для решти норм — звичайний факт і порожній бонус.
+    Обидва запити кешовані в _fact_cache, тож зайвого походу в БД сайту немає."""
+    base = fact_counts(metric, period, own, offset)
+    if metric != "news" or base is None:
+        return base, {}
+    articles = fact_counts("article", period, own, offset) or {}
+    out, bonus = {}, {}
+    for person, value in base.items():
+        count = articles.get(person) or 0
+        bonus[person] = count
+        out[person] = None if value is None else value + count * ARTICLE_WEIGHT
+    return out, bonus
+
+
 def _overrides_for(norm_id, period, offset=0):
     start, _ = period_bounds(period, offset)
     return {
@@ -568,7 +593,7 @@ def kpi_payload(for_person=None):
                       if not i["manager"]
                       and team_roster.effective_dept(p, depts) == n["dept"]]
         overrides = _overrides_for(n["id"], n["period"])
-        facts = fact_counts(n["metric"], n["period"], n["own"])
+        facts, article_bonus = weighted_facts(n["metric"], n["period"], n["own"])
         p_start, p_end = period_bounds(n["period"])
         absences = _absences_by_person(set(people))
         rows = []
@@ -598,6 +623,8 @@ def kpi_payload(for_person=None):
                 "excused": bool(ov and ov["target"] == 0) or (not ov and target == 0),
                 "absence": away[0] if away else None,
                 "missed_days": missed,
+                "articles": article_bonus.get(person, 0),
+                "article_weight": ARTICLE_WEIGHT,
                 "done": fact is not None and target > 0 and fact >= target,
             })
         out.append({
@@ -661,18 +688,28 @@ def kpi_person_history(person, months=12):
             target = ov["target"] if ov else scaled_target(n["target"], factor)
             if not ov and target == 0:
                 continue  # весь місяць у відпустці
+            def bucket_count(metric):
+                if n["own"]:
+                    return b.get((metric, 1), 0)
+                return b.get((metric, 0), 0) + b.get((metric, 1), 0)
+
+            articles = 0
             if uid is None:
                 fact = None
-            elif n["own"]:
-                fact = b.get((n["metric"], 1), 0)
             else:
-                fact = b.get((n["metric"], 0), 0) + b.get((n["metric"], 1), 0)
+                fact = bucket_count(n["metric"])
+                # Стаття важить три новини — та сама вага, що в поточних
+                # цифрах, інакше динаміка місяців суперечила б кружечку
+                if n["metric"] == "news":
+                    articles = bucket_count("article")
+                    fact += articles * ARTICLE_WEIGHT
             pct = None if fact is None or target <= 0 else min(100, round(fact / target * 100))
             if pct is not None:
                 pcts.append(pct)
             m_norms.append({
                 "label": norm_label(n["metric"], target, n["own"]),
                 "fact": fact, "target": target, "pct": pct,
+                "articles": articles, "article_weight": ARTICLE_WEIGHT,
                 "done": fact is not None and target > 0 and fact >= target,
             })
         out_months.append({
@@ -706,7 +743,7 @@ def kpi_dashboard(period, offset=0):
     def facts_for(n):
         key = (n["metric"], n["own"])
         if key not in fact_cache:
-            fact_cache[key] = fact_counts(n["metric"], period, n["own"], offset)
+            fact_cache[key] = weighted_facts(n["metric"], period, n["own"], offset)
         return fact_cache[key]
 
     # людина → її норми цього періоду (за фактичним відділом) з фактом
@@ -715,7 +752,7 @@ def kpi_dashboard(period, offset=0):
     absences = _absences_by_person()
     for n in norms:
         overrides = _overrides_for(n["id"], period, offset)
-        facts = facts_for(n)
+        facts, article_bonus = facts_for(n)
         for person, info in team_roster.ROSTER.items():
             if info["manager"] or team_roster.effective_dept(person, depts) != n["dept"]:
                 continue
@@ -738,6 +775,8 @@ def kpi_dashboard(period, offset=0):
             bucket["norms"].append({
                 "label": norm_label(n["metric"], target, n["own"]),
                 "metric": n["metric"], "own": n["own"],
+                "articles": article_bonus.get(person, 0),
+                "article_weight": ARTICLE_WEIGHT,
                 "fact": fact, "target": target,
                 # Ціль 0 (відпустка) з фактом — це 100%: зробила більше, ніж
                 # вимагалось. Ділити на нуль тут ні до чого.
