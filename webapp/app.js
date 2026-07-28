@@ -2661,19 +2661,53 @@ function pctColor(pct) {
 /* fixedColor — коли смуга має бути одного кольору незалежно від результату.
    Так зроблено на екрані журналістки: зелений завжди. Червоне кільце на
    власному профілі демотивує, а не інформує — вона й так бачить цифри. */
-function avatarRing(person, entry, pct, size, fixedColor) {
+/* mark — засічка «де ти маєш бути сьогодні» (відсоток очікуваного). Саме вона
+   робить нуль першого числа спокійним: заповнення порожнє, але й засічка
+   стоїть на нулі, тобто відставання немає.
+   animate — намалювати порожнім і залити наступним кадром (див. animateFill). */
+function avatarRing(person, entry, pct, size, fixedColor, { mark, animate } = {}) {
   const r = 44, c = 2 * Math.PI * r;
   const p = pct == null ? 0 : Math.max(0, Math.min(100, pct));
   const off = c * (1 - p / 100);
   const color = fixedColor || pctColor(pct);
+  let notch = "";
+  if (mark != null && mark > 0 && mark < 100) {
+    const a = 2 * Math.PI * (Math.min(100, mark) / 100);
+    const xy = (rad) => [50 + rad * Math.cos(a), 50 + rad * Math.sin(a)];
+    const [x1, y1] = xy(r - 7), [x2, y2] = xy(r + 7);
+    notch = `<line class="mark" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}"
+      x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/>`;
+  }
   return `<span class="avaring" style="width:${size}px;height:${size}px">
     <svg viewBox="0 0 100 100" class="ring">
       <circle class="track" cx="50" cy="50" r="${r}"/>
       <circle class="prog" cx="50" cy="50" r="${r}"
-        style="stroke-dasharray:${c.toFixed(1)};stroke-dashoffset:${off.toFixed(1)};stroke:${color || "transparent"}"/>
+        ${animate ? `data-fill="${off.toFixed(1)}"` : ""}
+        style="stroke-dasharray:${c.toFixed(1)};stroke-dashoffset:${(animate ? c : off).toFixed(1)};stroke:${color || "transparent"}"/>
+      ${notch}
     </svg>
     <span class="ava-inner">${avatar(person, entry, size - 18)}</span>
   </span>`;
+}
+
+/* Заливка анімацією: намальоване в нулі приїжджає до свого значення наступним
+   кадром. Робимо це ПРИ ВХОДІ на екран, а не при кожній перемальовці — інакше
+   після кожного тику по чому завгодно все повзло б заново і за день набридло.
+   Два вкладені rAF — щоб браузер устиг застосувати початковий стан, інакше
+   він схлопне обидва значення в одне й переходу не буде. */
+function animateFill(root) {
+  const nodes = root ? root.querySelectorAll("[data-fill]") : [];
+  if (!nodes.length) return;
+  const apply = () => nodes.forEach((n) => {
+    if (n.tagName === "circle") n.style.strokeDashoffset = n.dataset.fill;
+    else n.style.width = n.dataset.fill;
+    n.removeAttribute("data-fill");
+  });
+  if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    apply();
+    return;
+  }
+  requestAnimationFrame(() => requestAnimationFrame(apply));
 }
 
 /* Звітний дашборд: перемикач тиждень/місяць + гортання період-влево/вправо,
@@ -2744,12 +2778,25 @@ async function renderDashboard() {
   const grid = Object.entries(byDept).map(([dept, list]) => `
     <div class="dept-title">${esc(dept)}</div>
     <div class="ring-grid">
-      ${list.map((p) => `
+      ${list.map((p) => {
+        // Колір — за ТЕМПОМ, заповнення — за виконанням. У завершеному періоді
+        // це одне й те саме число (очікування = ціль), тож минулі періоди
+        // виглядають рівно як раніше; змінюється лише той, що триває — і 1
+        // серпня вся редакція більше не червона (Олег, 28.07).
+        // Період, що ТРИВАЄ, без темпу (перші дні: очікування ще нульове) не
+        // фарбуємо взагалі. Інакше overall_pct = 0 давав рівно те червоне
+        // кільце, від якого ми йдемо, — просто в іншому місці.
+        const ring = p.pace_pct != null ? p.pace_pct
+          : (data.is_current ? null : p.overall_pct);
+        const mark = markPct(p);
+        return `
         <button class="ring-cell" data-rperson="${esc(p.person)}">
-          ${avatarRing(p.person, personEntry(p.person), p.overall_pct, 104)}
+          ${avatarRing(p.person, personEntry(p.person), p.overall_pct, 104,
+            pctColor(ring) || "transparent", { mark, animate: true })}
           <span class="rc-name">${esc(p.person.split(" ")[0])}</span>
-          <span class="rc-pct" style="color:${pctColor(p.overall_pct) || "var(--muted)"}">${p.overall_pct == null ? "—" : p.overall_pct + "%"}</span>
-        </button>`).join("")}
+          <span class="rc-pct" style="color:${pctColor(ring) || "var(--muted)"}">${p.overall_pct == null ? "—" : p.overall_pct + "%"}</span>
+        </button>`;
+      }).join("")}
     </div>`).join("");
   const body = $("dash-body");
   if (!body) return;
@@ -2757,8 +2804,19 @@ async function renderDashboard() {
     ${grid || `<div class="empty-hint">Норм на цей період немає.</div>`}
     ${!data.site_db ? `<div class="tl-note">БД сайту недоступна — факт не рахується.</div>` : ""}`;
   wireDashControls(body);
+  animateFill(body);
   body.querySelectorAll("[data-rperson]").forEach((b) => b.onclick = () =>
     nav("personhist", b.dataset.rperson));
+}
+
+/* Засічка «де людина має бути сьогодні» у відсотках від цілі. Одна норма —
+   беремо її; кілька — усереднюємо, бо кільце теж усереднене. */
+function markPct(p) {
+  const vals = (p.norms || [])
+    .filter((n) => n.expected != null && n.target > 0)
+    .map((n) => Math.min(100, Math.round(n.expected / n.target * 100)));
+  if (!vals.length) return null;
+  return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
 }
 
 /* Профіль співробітника: помісячна динаміка виконання KPI стовпчиками —
@@ -3219,56 +3277,225 @@ async function renderMyHistory() {
   if (shown) scrollHistoryToEnd("my-hist-chart");
 }
 
-/* Кільце з фото журналістки та підписом, за який період цифри. Смуга завжди
-   зелена (див. avatarRing), відсоток — теж: колір тут не носить інформації. */
-function meRingHtml(pct, monthLabel) {
+/* ---------- Прогрес періоду: темп замість вироку ----------
+   Олег, 28.07: «скоро початок місяця — людина відкриє, побачить 0% і
+   засмутиться». І мала б рацію: 0% першого числа це рівно за планом, а
+   кружечок був червоний, бо колір рахувався від КІНЦЯ періоду.
+
+   Сервер тепер віддає очікування на сьогодні (team_kpi.period_pace /
+   pace_row), а екран говорить про ТЕМП: фраза, засічка на кільці й колір
+   беруться від відставання від графіка. У завершеному періоді очікування
+   дорівнює цілі, тож минулі місяці виглядають рівно як раніше. */
+
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100;
+  if (a >= 11 && a <= 14) return many;
+  const b = a % 10;
+  return b === 1 ? one : (b >= 2 && b <= 4 ? few : many);
+}
+
+function daysWord(n) {
+  return `${n} ${plural(n, "робочий день", "робочі дні", "робочих днів")}`;
+}
+
+/* Колір темпу. На ВЛАСНОМУ екрані червоного немає навіть тоді, коли людина
+   відстає: вона це й так бачить у цифрах, а червоне коло на своєму фото
+   демотивує (те саме рішення, що було в avatarRing із fixedColor). Відставання
+   позначаємо бурштиновим — це «підтягнись», а не «ти провалила». */
+const PACE_COLOR = {
+  done: "var(--good)", ahead: "var(--good)",
+  on: "var(--blue)", start: "var(--blue)", behind: "var(--warn)",
+};
+
+/* Фраза за матрицею «фаза періоду × стан темпу», а не за натхненням: тоді
+   вона завжди правдива і її не можна отримати за ніщо. Похвали за нуль тут
+   немає в жодній клітинці — інакше через місяць не вірять жодній. */
+function pacePhrase(p) {
+  const { pace, phase, left, fact, expected, remaining, word } = p;
+  if (pace === "done") {
+    if (phase === "start") return "Норму вже закрито — і це на початку місяця 🔥";
+    if (phase === "mid") return "Норму закрито 👏 усе, що далі, — понад план";
+    return "Норму закрито 👏";
+  }
+  if (pace === "start") return `Місяць щойно почався — попереду ${daysWord(left)}. Спокійно 🙂`;
+  if (phase === "start") {
+    if (pace === "ahead") return "Потужний старт 🔥 ти вже попереду графіка";
+    if (pace === "on") return "Гарний старт — тримай темп";
+    return `Ще все попереду: ${daysWord(left)} до кінця місяця`;
+  }
+  if (phase === "end") {
+    if (pace === "ahead") return `Попереду графіка 🔥 і ще ${daysWord(left)} у запасі`;
+    if (pace === "on") return `Фініш близько, темп рівний — лишилось ${remaining} ${word}`;
+    return `Лишилось ${remaining} ${word} і ${daysWord(left)} — ще встигаєш 💪`;
+  }
+  if (pace === "ahead") return `Попереду графіка 🔥 ${fact} при очікуваних ${expected}`;
+  if (pace === "on") return `Рівно в темпі — ${fact} із ${expected} на сьогодні`;
+  return `Трохи позаду графіка: ${fact} із ${expected} на сьогодні. Попереду ${daysWord(left)}`;
+}
+
+/* Кроки тижнів місяця — та сама «стрічка кроків», що в онбордингах: рух
+   видно навіть тоді, коли до цілі ще далеко. Закритий тиждень схлопується в
+   галочку, поточний підсвічений, майбутні — порожні. */
+function stepsHtml(steps) {
+  if (!steps || steps.length < 2) return "";
+  return `<div class="steps">${steps.map((s) => {
+    const cls = s.away ? "away" : s.done ? "done" : s.is_current ? "cur" : s.future ? "fut" : "miss";
+    return `<span class="step ${cls}">
+      <span class="sdot">${s.done ? icon("check") : ""}</span>
+      <span class="slbl">${esc(s.label)}</span>
+    </span>`;
+  }).join("")}</div>`;
+}
+
+/* Салют. Без бібліотеки: CSP не пускає CDN, статика гзіпиться в ~26 КБ, і
+   тягнути пакет заради тридцяти квадратиків не варто.
+   ГОЛОВНЕ — правило запуску: рівно один раз на ПЕРЕТИН норми, а не «поки
+   100%». Інакше людина, що закрила норму 20-го, до кінця місяця відкриває
+   апку під конфеті, і за тиждень це дратує сильніше за червоний кружечок. */
+function celebrate() {
+  if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const box = document.createElement("div");
+  box.className = "confetti";
+  const colors = ["var(--cat1)", "var(--cat2)", "var(--cat3)", "var(--good)", "var(--blue)"];
+  for (let i = 0; i < 32; i++) {
+    const p = document.createElement("i");
+    p.style.left = `${Math.round(Math.random() * 100)}%`;
+    p.style.background = colors[i % colors.length];
+    p.style.animationDelay = `${(Math.random() * 0.5).toFixed(2)}s`;
+    p.style.animationDuration = `${(1.6 + Math.random() * 0.9).toFixed(2)}s`;
+    p.style.transform = `rotate(${Math.round(Math.random() * 360)}deg)`;
+    box.appendChild(p);
+  }
+  document.body.appendChild(box);
+  setTimeout(() => box.remove(), 2800);
+}
+
+/* Пам'ять святкування — у localStorage, бо це вкус момента, а не дані:
+   ключ «місяць + норма», тож новий місяць святкується заново, а той самий —
+   ніколи двічі. Без localStorage (приватний режим) просто не святкуємо. */
+function celebrateOnce(key) {
+  try {
+    if (localStorage.getItem(`kpiCheers:${key}`)) return;
+    localStorage.setItem(`kpiCheers:${key}`, "1");
+  } catch (e) { return; }
+  haptic("success");
+  celebrate();
+}
+
+/* Кільце з фото журналістки: заповнення — це рух крізь період (факт від
+   цілі), засічка — де вона мала б бути сьогодні, колір — темп. */
+function meRingHtml(info) {
+  // Поки нічого не зроблено і нічого ще не чекають (перші дні місяця), «0%»
+  // не пишемо: цифра тут не несе змісту, а читається як докір. Замість неї
+  // говорить фраза — рівно те, чого просив Олег.
+  const pct = info && !(info.pace === "start" && !info.fact) ? info.pct : null;
   return `
-    ${avatarRing(STATE.me.name, STATE.me, pct, 92, "var(--good)")}
+    ${avatarRing(STATE.me.name, STATE.me, pct, 92,
+      info ? PACE_COLOR[info.pace] || "var(--good)" : "var(--good)",
+      { mark: info ? info.mark : null, animate: true })}
     <div class="me-cap">
-      ${pct == null ? "" : `<b>${pct}%</b>`}
-      <span>${esc(monthLabel ? `за ${monthLabel}` : "цього місяця")}</span>
+      ${pct == null ? "" : `<b style="color:${PACE_COLOR[info.pace] || "var(--good)"}">${pct}%</b>`}
+      <span>${esc(info && info.label ? `за ${info.label}` : "цього місяця")}</span>
     </div>`;
 }
 
 /* «Мої KPI» журналістки: норми її відділу зі своїм фактом тижня/місяця.
    Вантажиться після основного екрана — щоб таски не чекали на MySQL сайту. */
+/* «Що далі» — конкретика замість відсотка. Відсоток каже, як усе, а людині
+   треба знати, що зробити: скільки лишилось, чим це можна закрити і що вже
+   стоїть у чергу з дедлайном. */
+function nextStepsHtml(norm, r) {
+  const bits = [];
+  if (r && r.remaining) {
+    bits.push(`<b>${r.remaining} ${esc(qtyWord(norm.metric, r.remaining))}</b> до норми`);
+    if (norm.metric === "news" && r.article_weight > 1) {
+      bits.push(`одна стаття закриє ${r.article_weight}`);
+    }
+  }
+  const soon = STATE.tasks
+    .filter((t) => t.status === "open" && t.deadline)
+    .sort((a, b) => a.deadline.localeCompare(b.deadline))[0];
+  if (soon) {
+    bits.push(`найближче завдання — ${esc(taskLine(soon))}, ${esc(dlLabel_(soon.deadline))}`);
+  }
+  if (!bits.length) return "";
+  return `<div class="pace-next">${bits.join(" · ")}</div>`;
+}
+
+/* «до 14.08» / «сьогодні» — короткий строк для рядка «що далі» */
+function dlLabel_(iso) {
+  const today = todayISO();
+  if (iso === today) return "сьогодні";
+  if (iso === todayISO(1)) return "завтра";
+  if (iso < today) return "прострочене";
+  return `до ${shortDate(iso)}`;
+}
+
 async function renderMyKpi() {
   let k;
   try { k = await api("/api/kpi"); } catch (e) { return; }
-  // Кільце у шапці — за МІСЯЧНИМИ нормами: тижневі стрибають надто різко,
-  // щоб бути обличчям екрана (у вівторок там завжди буде мало).
+  // Обличчя екрана — МІСЯЧНА норма: тижнева стрибає надто різко (у вівторок
+  // там завжди буде мало). Беремо провідну, а не середнє: фраза і засічка
+  // мають говорити про одну конкретну норму, інакше вони ні про що.
   const monthly = k.norms.filter((n) => n.period === "month");
-  const pcts = monthly.map((n) => {
-    const r = n.rows[0];
-    return r && r.fact !== null && r.target > 0
-      ? Math.min(100, Math.round(r.fact / r.target * 100)) : null;
-  }).filter((v) => v !== null);
+  const lead = monthly.find((n) => n.rows[0] && n.rows[0].fact !== null) || monthly[0];
+  const lr = lead && lead.rows[0];
+  const live = lr && lr.fact !== null && !lr.excused;
+  const pct = live && lr.target > 0 ? Math.min(100, Math.round(lr.fact / lr.target * 100))
+    : (live && lr.target <= 0 ? 100 : null);
+  const mark = live && lr.target > 0 && lr.expected != null
+    ? Math.min(100, Math.round(lr.expected / lr.target * 100)) : null;
+
   const ring = $("me-ring");
   if (ring) {
-    ring.innerHTML = meRingHtml(
-      pcts.length ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length) : null,
-      monthly.length ? k.month_label : null,
-    );
+    ring.innerHTML = meRingHtml(live
+      ? { pct, mark, pace: lr.pace, fact: lr.fact, label: k.month_label }
+      : null);
+    animateFill(ring);
   }
 
   const box = $("my-kpi");
   if (!box || !k.norms.length) return;
-  box.innerHTML = `<div class="soft-card"><div class="sc-t">Мої KPI</div>
+  const pace = lead && lead.pace;
+  const phrase = live && pace ? pacePhrase({
+    pace: lr.pace, phase: pace.phase, left: pace.left,
+    fact: lr.fact, expected: lr.expected, remaining: lr.remaining,
+    word: qtyWord(lead.metric, lr.remaining || 0),
+  }) : null;
+
+  box.innerHTML = `
+    ${phrase ? `<div class="pace-card">
+      <div class="pace-say">${esc(phrase)}</div>
+      ${stepsHtml(lead.week_steps)}
+      ${nextStepsHtml(lead, lr)}
+    </div>` : ""}
+    <div class="soft-card"><div class="sc-t">Мої KPI</div>
     ${k.norms.map((n) => {
       const r = n.rows[0];
       if (!r) return "";
       if (r.excused) return `<div class="mykpi-row">
         <span class="mk-t">${esc(normTitle(n))}</span>
         <span class="kp-excused">звільнено${r.note ? " · " + esc(r.note) : ""}</span></div>`;
-      const pct = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
+      const p = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
+      const m = r.expected != null && r.target > 0
+        ? Math.min(100, Math.round(r.expected / r.target * 100)) : null;
       return `<div class="mykpi-row">
         <span class="mk-t">${esc(normTitle(n))}
           <span class="mk-p">· ${esc(n.period === "week" ? k.week_label : k.month_label)}</span>
           ${articleHint(r)}</span>
         <span class="kp-fact ${r.done ? "ok" : ""}">${r.fact === null ? "—" : `${r.fact}/${r.target}${r.done ? " ✓" : ""}`}</span>
-        <span class="kbar wide"><i class="${r.done ? "ok" : ""}" style="width:${pct}%"></i></span>
+        <span class="kbar wide">
+          <i class="${r.done ? "ok" : ""}" data-fill="${p}%" style="width:0%"></i>
+          ${m != null && m > 0 && m < 100 ? `<u style="left:${m}%"></u>` : ""}
+        </span>
       </div>`;
     }).join("")}</div>`;
+  animateFill(box);
+
+  // Салют — рівно на перетин норми, один раз на місяць і норму
+  if (lr && lr.done && lead.period === "month") {
+    celebrateOnce(`${k.month_label}:${lead.id}`);
+  }
 }
 
 /* ---------- Шторка ---------- */

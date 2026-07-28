@@ -369,6 +369,176 @@ def scaled_target(base_target, factor):
     return max(1, int(base_target * factor))
 
 
+# ---------- Темп періоду (прогрес замість вироку) ----------
+#
+# Проблема, з якої це виросло (Олег, 28.07): 1 серпня людина відкриє апку,
+# побачить 0% місячної норми і засмутиться — хоча 0% першого числа це рівно
+# за планом. Кружечок при цьому був червоний, бо колір рахувався від
+# ВІДСОТКА ВИКОНАННЯ, тобто від кінця періоду, а людина живе в часі.
+#
+# Лікування: очікування на сьогодні = ціль × частка робочих днів, що минули.
+# Колір і фраза беруться від відставання ВІД ТЕМПУ, а не від ста відсотків.
+#
+# Приємна властивість: у завершеному періоді частка = 1, тож очікування
+# дорівнює цілі й темп збігається зі звичайним відсотком виконання. Тому
+# історія («Звіт» за минулі періоди, помісячна динаміка) від цієї зміни не
+# змінюється жодною цифрою — нові правила діють тільки на періоді, що триває.
+
+PACE_TOLERANCE = 0.8    # 80% від очікуваного — ще «в темпі», нижче — відстає
+PACE_PHASE_START = 0.3  # частка періоду, до якої він вважається початком
+PACE_PHASE_END = 0.75   # і від якої — фінішем
+
+
+def _available_workdays(start, end_exclusive, absences):
+    """Робочі дні проміжку за вирахуванням відсутностей людини.
+
+    Саме доступні, а не календарні: ціль уже знижена відпусткою
+    (scaled_target), і темп має рахуватись у тих самих днях — інакше людина,
+    що вийшла з відпустки 20-го, з першого ж дня виглядала б безнадійно."""
+    total = _workdays(start, end_exclusive)
+    if not total or not absences:
+        return total
+    missed = 0
+    for a in absences:
+        a_start = date.fromisoformat(a["start"])
+        a_end = date.fromisoformat(a["end"]) + timedelta(days=1)   # включно
+        lo, hi = max(start, a_start), min(end_exclusive, a_end)
+        if lo < hi:
+            missed += _workdays(lo, hi)
+    return max(0, total - missed)
+
+
+def period_pace(period, offset=0, absences=None, today=None):
+    """Скільки періоду минуло в робочих днях: (elapsed, total, left, share, phase).
+
+    День, що триває, у минулі НЕ рахуємо — вимагати денну норму о 9:00 ранку
+    це те саме червоне, від якого ми йдемо. Тому перше число дає share = 0.
+    """
+    today = today or datetime.now(KYIV_TZ).date()
+    start, end = period_bounds(period, offset, today)
+    absences = absences or []
+    total = _available_workdays(start, end, absences)
+    if today >= end:
+        elapsed, current = total, False          # період завершено
+    elif today < start:
+        elapsed, current = 0, False              # ще не почався
+    else:
+        elapsed, current = _available_workdays(start, today, absences), True
+    if total:
+        share = elapsed / total
+    else:
+        share = 0.0 if current else 1.0          # цілком у відпустці
+    phase = ("over" if not current else
+             "start" if share < PACE_PHASE_START else
+             "mid" if share < PACE_PHASE_END else "end")
+    return {"elapsed": elapsed, "total": total, "left": max(0, total - elapsed),
+            "share": share, "phase": phase, "is_current": current}
+
+
+def pace_row(fact, target, share):
+    """Стан ВІДНОСНО ТЕМПУ: скільки мало б бути зроблено на сьогодні.
+
+    pace_pct — саме темп (факт/очікування), ним фарбується кільце; заповнення
+    кільця лишається фактом від цілі, тобто рухом крізь період."""
+    if fact is None:
+        return {"expected": None, "pace": None, "pace_pct": None}
+    if target <= 0:
+        # Ціль 0 (вся відпустка) з фактом — це робота понад вимоги
+        return {"expected": 0, "pace": "done" if fact else "start",
+                "pace_pct": 100 if fact else None}
+    if fact >= target:
+        return {"expected": target, "pace": "done", "pace_pct": 100}
+    expected = round(target * share)
+    if expected <= 0:
+        # Період щойно почався: зробленого ще не чекають, і червоного тут бути
+        # не може за визначенням
+        return {"expected": 0, "pace": "ahead" if fact else "start",
+                "pace_pct": 100 if fact else None}
+    ratio = fact / expected
+    pace = ("ahead" if ratio >= 1 else
+            "on" if ratio >= PACE_TOLERANCE else "behind")
+    return {"expected": expected, "pace": pace,
+            "pace_pct": min(100, round(ratio * 100))}
+
+
+_week_cache = {}   # (uid, start, end) -> (expires, {понеділок: {(type, own): к-сть}})
+
+
+def _person_week_facts(uid, start, end):
+    """{ISO-понеділок: {(type, own_material): к-сть}} виходу людини в [start, end).
+
+    ОДИН запит до nodes на весь місяць — кроки тижнів не мають коштувати
+    пʼяти походів у БД сайту з її лімітами. Кеш той самий, що у фактів."""
+    key = (int(uid), start.isoformat(), end.isoformat())
+    hit = _week_cache.get(key)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    to_ts = lambda d: int(datetime(d.year, d.month, d.day, tzinfo=KYIV_TZ).timestamp())
+    rows = db.query(
+        "SELECT published, type, own_material FROM nodes "
+        "WHERE owner_id = %s AND status = 1 "
+        "AND published >= %s AND published < %s AND published <= UNIX_TIMESTAMP()",
+        (int(uid), to_ts(start), to_ts(end)),
+    )
+    out = {}
+    for r in rows or []:
+        d = datetime.fromtimestamp(r["published"], KYIV_TZ).date()
+        monday = (d - timedelta(days=d.weekday())).isoformat()
+        bucket = out.setdefault(monday, {})
+        k = (r["type"], 1 if r["own_material"] == 1 else 0)
+        bucket[k] = bucket.get(k, 0) + 1
+    _week_cache[key] = (time.time() + FACT_CACHE_TTL, out)
+    return out
+
+
+def month_week_steps(norm, target, absences, uid, today=None):
+    """Кроки тижнів місяця: чи закрила людина свою частку кожного тижня.
+
+    Це та сама «стрічка кроків», що в онбордингах: рух видно навіть тоді, коли
+    до цілі ще далеко. Частка тижня — пропорційно його РОБОЧИМ дням (перший і
+    останній тижні місяця обрізані, і вимагати з них повну пʼятиденку не можна).
+    """
+    today = today or datetime.now(KYIV_TZ).date()
+    start, end = period_bounds("month", 0, today)
+    total_days = _available_workdays(start, end, absences)
+    if not total_days or not uid or target <= 0:
+        return []
+    buckets = _person_week_facts(uid, start, end)
+    steps, day = [], start
+    while day < end:
+        wk_end = min(day + timedelta(days=7 - day.weekday()), end)
+        raw = _workdays(day, wk_end)
+        if not raw:
+            # Хвіст місяця з самих вихідних (1–2 серпня — субота й неділя):
+            # робити там нічого, і сірий крок «1–2» був би шумом. Відпустка —
+            # інша річ: там робочі дні є, просто людини не було, і такий
+            # тиждень видно приглушеним.
+            day = wk_end
+            continue
+        days = _available_workdays(day, wk_end, absences)
+        monday = (day - timedelta(days=day.weekday())).isoformat()
+        b = buckets.get(monday, {})
+        count = lambda metric: (b.get((metric, 1), 0) if norm["own"]
+                                else b.get((metric, 0), 0) + b.get((metric, 1), 0))
+        fact = count(norm["metric"])
+        if norm["metric"] == "news":
+            fact += count("article") * ARTICLE_WEIGHT
+        # Ціль тижня не може бути нулем, поки в ньому є хоч один робочий день:
+        # інакше обрізаний тиждень місяця виглядав би закритим сам собою
+        wk_target = max(1, round(target * days / total_days)) if days else 0
+        last = wk_end - timedelta(days=1)
+        steps.append({
+            "label": f"{day.day}–{last.day}",
+            "fact": fact, "target": wk_target,
+            "done": bool(wk_target) and fact >= wk_target,
+            "is_current": day <= today < wk_end,
+            "future": day > today,
+            "away": days == 0,
+        })
+        day = wk_end
+    return steps
+
+
 def weighted_facts(metric, period, own=False, offset=0):
     """({людина: зважений факт}, {людина: скільки статей}) для норми.
 
@@ -581,9 +751,13 @@ def kpi_payload(for_person=None):
     norms = list_norms()
     # Відділи — фактичні (перекриття з team_dept, Катя переносить в апці)
     depts = team_roster.dept_overrides()
+    uid = None
     if for_person:
         dept = team_roster.effective_dept(for_person, depts)
         norms = [n for n in norms if n["dept"] == dept]
+        # для кроків тижнів (один запит на весь місяць, див. month_week_steps)
+        if db.is_configured():
+            uid = resolve_site_user_id(for_person)
     out = []
     for n in norms:
         if for_person:
@@ -605,6 +779,7 @@ def kpi_payload(for_person=None):
                 person, p_start, p_end, absences.get(person, []))
             target = ov["target"] if ov else scaled_target(n["target"], factor)
             fact = None if facts is None else facts.get(person)
+            pace = period_pace(n["period"], 0, absences.get(person, []))
             away = [a for a in absences.get(person, [])
                     if a["end"] >= p_start.isoformat()
                     and a["start"] < p_end.isoformat()]
@@ -626,11 +801,25 @@ def kpi_payload(for_person=None):
                 "articles": article_bonus.get(person, 0),
                 "article_weight": ARTICLE_WEIGHT,
                 "done": fact is not None and target > 0 and fact >= target,
+                "remaining": (max(0, target - fact)
+                              if fact is not None and target > 0 else None),
+                "days_left": pace["left"],
+                **pace_row(fact, target, pace["share"]),
             })
+        # Темп норми — персональний, коли екран персональний (у журналістки
+        # відпустка зсуває і її очікування); інакше загальний по календарю
+        norm_pace = period_pace(
+            n["period"], 0, absences.get(for_person, []) if for_person else [])
+        steps = []
+        if for_person and n["period"] == "month" and rows and uid:
+            steps = month_week_steps(
+                n, rows[0]["target"], absences.get(for_person, []), uid)
         out.append({
             **n,
             "dept_title": team_roster.DEPT_TITLES.get(n["dept"], n["dept"]),
             "period_label": period_label(n["period"]),
+            "pace": norm_pace,
+            "week_steps": steps,
             "rows": rows,
         })
     return {
@@ -769,10 +958,13 @@ def kpi_dashboard(period, offset=0):
             # ховати це не можна — робота зроблена, і має бути видно.
             if not ov and target == 0 and not fact:
                 continue
+            pace = period_pace(period, offset, absences.get(person, []))
             bucket = per_person.setdefault(
-                person, {"dept": n["dept"], "norms": [], "missed_days": missed})
+                person, {"dept": n["dept"], "norms": [], "missed_days": missed,
+                         "pace": pace})
             bucket["missed_days"] = max(bucket["missed_days"], missed)
             bucket["norms"].append({
+                **pace_row(fact, target, pace["share"]),
                 "label": norm_label(n["metric"], target, n["own"]),
                 "metric": n["metric"], "own": n["own"],
                 "articles": article_bonus.get(person, 0),
@@ -789,9 +981,14 @@ def kpi_dashboard(period, offset=0):
             })
 
     people = []
+    # Найгірший стан темпу визначає колір кільця людини: закрити одну норму і
+    # завалити другу — це не «в темпі»
+    worst = {"behind": 0, "on": 1, "ahead": 2, "start": 3, "done": 4}
     for person, d in per_person.items():
         pcts = [x["pct"] for x in d["norms"] if x["pct"] is not None]
         overall = round(sum(pcts) / len(pcts)) if pcts else None
+        paces = [x["pace_pct"] for x in d["norms"] if x["pace_pct"] is not None]
+        states = [x["pace"] for x in d["norms"] if x["pace"]]
         people.append({
             "person": person,
             "dept": d["dept"],
@@ -799,6 +996,11 @@ def kpi_dashboard(period, offset=0):
             "norms": d["norms"],
             "missed_days": d.get("missed_days", 0),
             "overall_pct": overall,
+            # Кільце фарбується темпом, а заповнюється виконанням: у
+            # завершеному періоді це одне й те саме число (share = 1), тож
+            # історія виглядає рівно так, як виглядала
+            "pace_pct": round(sum(paces) / len(paces)) if paces else None,
+            "pace": min(states, key=lambda s: worst.get(s, 9)) if states else None,
             "all_done": bool(d["norms"]) and all(x["done"] for x in d["norms"]),
         })
     # спершу хто відстає (менший %), звільнені/без норм не потрапили
@@ -809,6 +1011,7 @@ def kpi_dashboard(period, offset=0):
         "offset": offset,
         "label": period_label(period, offset),
         "is_current": offset == 0,
+        "pace": period_pace(period, offset),
         "site_db": db.is_configured(),
         "people": people,
     }

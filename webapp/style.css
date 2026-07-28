@@ -8,17 +8,44 @@
   --card: var(--tg-theme-bg-color, #ffffff);
   --ink: var(--tg-theme-text-color, #16283c);
   --muted: var(--tg-theme-hint-color, #6a7f96);
-  --line: #dfe9f4;
+  /* --line і --fill РІЗНІ навмисно. Раніше це була одна змінна на дві роботи:
+     розділювач (потрібен низький контраст) і нейтральна заливка (потрібна
+     помітність) — тому її й не вдавалось полагодити одним значенням, і в
+     темній темі скелетони світились світло-блакитним. */
+  --line: #dfe9f4;   /* розділювачі, обведення полів */
+  --fill: #e3edf8;   /* заливки: скелетони, доріжки смуг, підкладки картинок */
   --blue: var(--tg-theme-button-color, #1f6fd6);
   --blue-fg: var(--tg-theme-button-text-color, #ffffff);
   --blue-soft: rgba(31, 111, 214, .1);
   --sky: rgba(31, 111, 214, .06);
   --good: #2f9e5f;
   --good-soft: rgba(47, 158, 95, .13);
+  --warn: #cf7a1c;   /* «відстаєш» — не провал, а «підтягнись» */
   --red: #d4453a;
   --red-soft: rgba(212, 69, 58, .1);
   --radius: 18px;
   --shadow: 0 3px 16px rgba(22, 50, 90, .07);
+}
+
+/* Тёмна тема. Досі тут лежали тільки категоріальні кольори й знаки мереж, а
+   базові токени лишались світлими намертво: --line світився блакитним на
+   всіх розділювачах і скелетонах, --shadow (7% темно-синього) на темному фоні
+   не видно фізично — і вся карткова система, яка тримається ТІЛЬКИ на тіні,
+   переставала існувати. Лікували двічі точково (трек кільця, бейдж
+   впевненості), причину — жодного разу. */
+body.dark {
+  --line: rgba(150, 175, 200, .22);
+  --fill: rgba(150, 175, 200, .16);
+  --blue-soft: rgba(90, 160, 245, .18);
+  --sky: rgba(90, 160, 245, .10);
+  --good: #4cbe7d;
+  --good-soft: rgba(76, 190, 125, .20);
+  --warn: #e8a33d;
+  --red: #ef6a5f;
+  --red-soft: rgba(239, 106, 95, .18);
+  /* На темному підйом дає не тінь, а світліша поверхня (--card світліший за
+     --paper у темі Telegram); тінь лишається як мʼяка глибина під карткою */
+  --shadow: 0 2px 14px rgba(0, 0, 0, .45);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -169,7 +196,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--blue); }
 }
 .st-mark .ic { width: 15px; height: 15px; stroke-width: 3; }
 .st-mark.done { background: var(--good-soft); color: var(--good); }
-.st-mark.dropped { background: var(--line); color: var(--muted); }
+.st-mark.dropped { background: var(--fill); color: var(--muted); }
 .task-row.is-done .tr-who { color: var(--muted); }
 .task-row.is-dropped { opacity: .6; }
 .task-row.is-dropped .tr-who { text-decoration: line-through; }
@@ -489,10 +516,16 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 }
 
 .kbar {
-  display: block; height: 5px; border-radius: 3px; background: var(--line);
+  display: block; height: 5px; border-radius: 3px; background: var(--fill);
   margin-top: 7px; overflow: hidden;
 }
-.kbar i { display: block; height: 100%; border-radius: 3px; background: var(--blue); }
+/* Смуга їде з нуля при вході на екран (animateFill): рух приємніший і
+   помітніший за намальований одразу підсумок */
+.kbar i {
+  display: block; height: 100%; border-radius: 3px; background: var(--blue);
+  transition: width .7s cubic-bezier(.22, .61, .36, 1);
+}
+@media (prefers-reduced-motion: reduce) { .kbar i { transition: none; } }
 .kbar i.ok { background: var(--good); }
 .kbar.wide { flex-basis: 100%; margin-top: 4px; }
 
@@ -668,7 +701,7 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 /* Тримають висоту майбутнього вмісту: раніше тут стояв текст «Завантажую…»
    і екран стрибав, коли дані приїжджали. */
 .sk {
-  display: block; background: var(--line); border-radius: 12px;
+  display: block; background: var(--fill); border-radius: 12px;
   opacity: .6; animation: sk-pulse 1.3s ease-in-out infinite;
 }
 @keyframes sk-pulse { 50% { opacity: .28; } }
@@ -802,7 +835,7 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 }
 .al-thumb {
   width: 76px; height: 60px; border-radius: 10px; overflow: hidden;
-  flex-shrink: 0; background: var(--line); display: block;
+  flex-shrink: 0; background: var(--fill); display: block;
 }
 .al-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
@@ -1030,3 +1063,60 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   font-size: 10px; font-weight: 800; line-height: 16px; text-align: center;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- Прогрес періоду: темп замість вироку ----------
+   Олег, 28.07: «людина відкриє 1 серпня, побачить 0% і засмутиться». Тому
+   кільце тепер має ЗАСІЧКУ «де ти маєш бути сьогодні»: заповнення — рух крізь
+   період, засічка — очікування, колір — темп. Першого числа засічка теж на
+   нулі, тож відставання не малюється в принципі. */
+
+/* Засічка ріже кільце кольором поверхні — читається на будь-якій заливці */
+.avaring .ring .mark { stroke: var(--card); stroke-width: 3.5; stroke-linecap: round; }
+/* Та сама засічка на смузі норми */
+.kbar { position: relative; }
+.kbar u {
+  position: absolute; top: 0; width: 2px; height: 100%;
+  background: var(--ink); opacity: .45;
+}
+
+.pace-card {
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 15px 18px 16px; margin-bottom: 12px;
+}
+.pace-say { font-size: 15px; font-weight: 600; line-height: 1.4; text-wrap: balance; }
+/* «Що далі» — конкретика під фразою: скільки лишилось і чим це закрити */
+.pace-next {
+  font-size: 12.5px; color: var(--muted); line-height: 1.5;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+}
+.pace-next b { color: var(--ink); font-weight: 800; }
+
+/* Кроки тижнів місяця: закритий тиждень схлопується в галочку, поточний
+   підсвічений, майбутні порожні. Рух видно навіть коли до цілі далеко. */
+.steps { display: flex; gap: 8px; margin-top: 14px; }
+.step {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  align-items: center; gap: 5px;
+}
+.sdot {
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--fill); color: #fff;
+}
+.sdot .ic { width: 15px; height: 15px; stroke-width: 3; }
+.step.done .sdot { background: var(--good); }
+.step.cur .sdot { background: var(--blue); box-shadow: 0 0 0 4px var(--blue-soft); }
+.step.miss .sdot { box-shadow: inset 0 0 0 2px var(--warn); }
+.step.away .sdot { opacity: .35; }
+.slbl { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.step.cur .slbl { color: var(--blue); font-weight: 700; }
+
+/* Салют на закриття норми. Без бібліотеки: CSP не пускає CDN, а тягнути пакет
+   заради тридцяти квадратиків при статиці в 26 КБ немає сенсу. */
+.confetti { position: fixed; inset: 0; pointer-events: none; z-index: 90; overflow: hidden; }
+.confetti i {
+  position: absolute; top: -8vh; width: 9px; height: 14px; border-radius: 2px;
+  animation-name: cfall; animation-timing-function: linear; animation-fill-mode: forwards;
+}
+@keyframes cfall { to { transform: translateY(114vh) rotate(720deg); opacity: .15; } }
+@media (prefers-reduced-motion: reduce) { .confetti { display: none; } }
