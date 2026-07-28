@@ -122,6 +122,9 @@ def main():
     check("у події є лінк на зараховану публікацію",
           done_anna[0]["url"].endswith("/1-a"))
     check("керівництву видно, чиє це виконання", ANNA in done_mgr[0]["title"])
+    # Питання Олега 28.07: «хто саме зарахував — я, Катя чи бот?»
+    check("видно, що зарахував саме Лис, а не хтось із людей",
+          done_anna[0]["body"].startswith("Лис зарахував сам"))
 
     # Повторний перерахунок не має сипати дублями
     team_matches.apply_progress(task["id"])
@@ -156,6 +159,46 @@ def main():
           isinstance(bulk, list) and len(bulk) == 3)
     check("і таски справді в базі",
           isinstance(bulk, list) and all(team_tasks.get_task(t["id"]) for t in bulk))
+
+    # ---------- 7. Хто зарахував: Лис, людина чи обидва ----------
+    task2 = team_tasks.create_task(
+        creator="Катерина Середа", person=ANNA, type_="news", project_id=999,
+        project_name="Тестовий проєкт", theme_name="Тест-кредит", qty=2,
+        partner_name="Тест-донор")
+    team_matches.record_match(
+        "site", "test-nt-2", "pending", task_id=task2["id"], person=ANNA,
+        project_id=999, title="Спірна новина",
+        url="https://nikvesti.com/news/politics/2-a")
+    m = team_matches.find_match("site", "test-nt-2")
+    team_matches.decide_match(m["id"], "Катерина Середа", "confirm",
+                              task_id=task2["id"], person=ANNA)
+    counted = team_matches.counted_by_task([task2["id"]])[task2["id"]]
+    check("рішення людини підписане нею",
+          team_matches._credit(counted) == "підтвердив(ла) Катерина")
+    team_matches.record_match(
+        "site", "test-nt-3", "auto", task_id=task2["id"], person=ANNA,
+        project_id=999, confidence="high", title="Авто-новина",
+        url="https://nikvesti.com/news/politics/3-a")
+    counted = team_matches.counted_by_task([task2["id"]])[task2["id"]]
+    check("змішаний випадок називає обох",
+          team_matches._credit(counted) == "Лис і Катерина зарахували")
+    team_matches.apply_progress(task2["id"])
+    done2 = [n for n in tn.feed(ANNA, False) if n["kind"] == "task_done"
+             and n["object_id"] == str(task2["id"])]
+    check("подія виконання підписана тими ж людьми",
+          done2 and done2[0]["body"] == "Лис і Катерина зарахували: 2 із 2")
+
+    # ---------- 8. Лікувалка старих подій зі стрічки ----------
+    bot_db.execute("UPDATE team_notifications SET body = %s WHERE id = %s",
+                   (team_matches.LEGACY_CREDIT + ": 2 із 2", done2[0]["id"]))
+    team_matches._fix_legacy_credit()
+    fixed = [n for n in tn.feed(ANNA, False) if n["id"] == done2[0]["id"]]
+    check("старе «зарахувала сама» перераховане з матчів",
+          fixed and fixed[0]["body"] == "Лис і Катерина зарахували: 2 із 2")
+    team_matches._fix_legacy_credit()   # ідемпотентність
+    again = [n for n in tn.feed(ANNA, False) if n["id"] == done2[0]["id"]]
+    check("повторний прогін лікувалки нічого не псує",
+          again and again[0]["body"] == "Лис і Катерина зарахували: 2 із 2")
 
     cleanup()
 
