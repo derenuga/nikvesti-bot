@@ -143,6 +143,18 @@ window.fetch = async (url, opts = {}) => {
     || { has_norms: false, months: [] });
   if (url === "/api/notifications") return json({ items: window.NOTIFS || [],
                                                   unread: 1 });
+  if (url.startsWith("/api/kpi/dashboard")) {
+    // Дашборд навмисно повільний — факт іде в БД сайту
+    await new Promise((r) => setTimeout(r, window.__dashDelay || 0));
+    const q = new URLSearchParams(url.split("?")[1] || "");
+    const period = q.get("period");
+    return json({ period, offset: +q.get("offset"), is_current: true,
+      site_db: true,
+      label: period === "month" ? "липень 2026" : "27.07–02.08",
+      people: [{ person: "Аліна Квітко", dept: "creative",
+                 dept_title: "Creative", overall_pct: 87, norms: [],
+                 missed_days: 8 }] });
+  }
   let m;
   if ((m = url.match(/^\\/api\\/tasks\\/(\\d+)$/)) && opts.method === "PATCH") {
     window.__posts.push({ patch: +m[1], body: JSON.parse(opts.body) });
@@ -364,6 +376,43 @@ async def main():
                   "+2 статті ×3" in await page.inner_text("#my-kpi"))
             check("сам факт зважений", "7/20" in await page.inner_text("#my-kpi"))
             await page.screenshot(path="/tmp/progress-journalist.png", full_page=True)
+        finally:
+            await browser.close()
+
+        # --- «Звіт»: перемикання тиждень/місяць не виглядає зависанням ---
+        browser, page = await _open(pw, BOOTSTRAP)
+        try:
+            await page.evaluate("window.__dashDelay = 900")
+            await page.click('[data-hv="report"]')
+            await page.wait_for_selector(".ring-cell", timeout=10000)
+            check("на «Звіті» спершу тиждень", await page.locator(
+                '[data-dp="week"].on').count() == 1)
+
+            await page.click('[data-dp="month"]')
+            await page.wait_for_timeout(150)      # відповідь ще їде
+            check("перемикач ОДРАЗУ переїхав на «Місяць»",
+                  await page.locator('[data-dp="month"].on').count() == 1)
+            check("замість старих цифр — скелетон",
+                  await page.locator(".sk-ring").count() > 0
+                  and await page.locator(".ring-cell").count() == 0)
+            check("підпис періоду теж шимерить, а не бреше старим",
+                  await page.locator(".month-nav .sk-lbl").count() == 1)
+            await page.screenshot(path="/tmp/progress-dash-loading.png")
+
+            await page.wait_for_selector(".ring-cell", timeout=10000)
+            check("дані приїхали і скелетон зник",
+                  await page.locator(".sk-ring").count() == 0
+                  and "липень 2026" in (await page.inner_text(".month-nav")).lower())
+
+            # Швидкі тики: перемогти має ОСТАННІЙ вибір, а не перша відповідь
+            await page.click('[data-dp="week"]')
+            await page.wait_for_timeout(50)
+            await page.click('[data-dp="month"]')
+            await page.wait_for_selector(".ring-cell", timeout=10000)
+            await page.wait_for_timeout(1200)
+            check("повільна відповідь тижня не перебила свіжий місяць",
+                  await page.locator('[data-dp="month"].on').count() == 1
+                  and "липень 2026" in (await page.inner_text(".month-nav")).lower())
         finally:
             await browser.close()
 
