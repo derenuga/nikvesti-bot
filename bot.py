@@ -32,13 +32,15 @@ from handlers.db import dbtest_handler, dbquery_handler
 from handlers.archive_mirror import (
     archive_backfill_handler, archive_status_handler, archive_sample_handler,
     archive_stop_handler, archive_report_handler, nora_sql_handler,
+    nora_resync_handler,
 )
 from handlers.dossier import dossier_handler
+from handlers.nora_article import nora_article_handler
 from handlers.entity_layer import (
     entity_estimate_handler, entity_backfill_handler,
     entity_status_handler, entity_resume_handler, entity_recover_handler,
     entity_increment_on_handler, entity_increment_off_handler, entity_export_handler,
-    entity_dedup_handler, entity_export_links_handler,
+    entity_dedup_handler, entity_export_links_handler, entity_resync_handler,
 )
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler, budget_date_handler
@@ -373,10 +375,13 @@ def main():
     app.add_handler(CommandHandler("archive_status", archive_status_handler))
     app.add_handler(CommandHandler("archive_report", archive_report_handler))
     app.add_handler(CommandHandler("nora_sql", nora_sql_handler))
+    app.add_handler(CommandHandler("nora_article", nora_article_handler))
+    app.add_handler(CommandHandler("nora_resync", nora_resync_handler))
     app.add_handler(CommandHandler("entity_estimate", entity_estimate_handler))
     app.add_handler(CommandHandler("entity_backfill", entity_backfill_handler))
     app.add_handler(CommandHandler("entity_status", entity_status_handler))
     app.add_handler(CommandHandler("entity_resume", entity_resume_handler))
+    app.add_handler(CommandHandler("entity_resync", entity_resync_handler))
     app.add_handler(CommandHandler("entity_recover", entity_recover_handler))
     app.add_handler(CommandHandler("entity_increment_on", entity_increment_on_handler))
     app.add_handler(CommandHandler("entity_increment_off", entity_increment_off_handler))

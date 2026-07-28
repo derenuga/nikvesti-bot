@@ -786,3 +786,127 @@ async def entity_status_handler(update, context):
     else:
         lines.append("Авто-інкремент: вимкнено (/entity_increment_on)")
     await update.message.reply_text("\n".join(lines))
+
+
+# ---------- /entity_resync ----------
+
+# Скільки статей за раз пускаємо в перечит: це ручний ремонт кількох нод,
+# а не прогін. Більше — це вже /entity_backfill діапазоном.
+RESYNC_MAX = 20
+
+
+async def entity_resync_handler(update, context):
+    """/entity_resync <id|URL> … — перечитати сутності конкретних статей нори.
+
+    Потрібно там само, де /nora_resync: якщо під тим самим id на сайті тепер
+    ІНШИЙ матеріал, дзеркало ми полагодили, а сутнісний шар лишився від старого
+    тексту. Просто повторний витяг не рятує — write_results зв'язки апсертить,
+    але старих не прибирає, тож стаття тягла б за собою і чужі сутності. Тому
+    спершу знімаємо всі article_entities статті, потім витягуємо заново."""
+    if not _allowed(update):
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not bot_db.is_configured() or not os.environ.get("ANTHROPIC_API_KEY"):
+        await update.message.reply_text("🦊 Потрібні нора (BOT_DATABASE_URL) і ANTHROPIC_API_KEY.")
+        return
+    if await asyncio.to_thread(_load_state):
+        await update.message.reply_text("🦊 Зараз іде бэкфіл сутностей — дочекайся його.")
+        return
+
+    from handlers.helpers import extract_article_id
+
+    ids = []
+    for a in update.message.text.split()[1:]:
+        val = extract_article_id(a) if "/" in a else (a if a.isdigit() else None)
+        if val and int(val) not in ids:
+            ids.append(int(val))
+    if not ids:
+        await update.message.reply_text(
+            "Використання: /entity_resync <id|URL> [ще id…]\n\n"
+            "Напр.: /entity_resync 321354 321692\n"
+            "Перечитує сутності статей після /nora_resync (платно, ~$0.006/стаття)."
+        )
+        return
+    if len(ids) > RESYNC_MAX:
+        await update.message.reply_text(
+            f"🦊 За раз не більше {RESYNC_MAX} статей — більше це вже /entity_backfill діапазоном."
+        )
+        return
+
+    msg = await update.message.reply_text(f"🦊 Перечитую сутності {len(ids)} статей…")
+    placeholders = ", ".join(["%s"] * len(ids))
+    rows = await bot_db.aquery(
+        "SELECT id, title_ua, title_ru, text_ua, text_ru FROM articles "
+        f"WHERE id IN ({placeholders}) ORDER BY id",
+        tuple(ids),
+    )
+    if not rows:
+        await msg.edit_text("🦊 Таких статей у норі немає — спершу /nora_resync.")
+        return
+    missing = [i for i in ids if i not in {r["id"] for r in rows}]
+
+    # Знімаємо старі зв'язки ДО витягу: далі write_results перерахує агрегати
+    # (mentions/first_seen/last_seen) з article_entities, тож лічильники
+    # сутностей, які лишились у статті через помилку, самі впадуть.
+    await asyncio.to_thread(
+        bot_db.execute,
+        f"DELETE FROM article_entities WHERE article_id IN ({placeholders})",
+        tuple(r["id"] for r in rows),
+    )
+
+    def extract_all():
+        import anthropic
+        client = anthropic.Anthropic()
+        results, errors = [], []
+        usage = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+        for r in rows:
+            text_ua = (r["text_ua"] or "")[:ep.TEXT_CAP] or None
+            text_ru = (r["text_ru"] or "")[:ep.TEXT_CAP] or None
+            if text_ua and text_ru:
+                text_ru = None  # одна мова, як у бэкфілі й інкременті
+            art = {"id": r["id"], "title_ua": r["title_ua"], "title_ru": r["title_ru"],
+                   "text_ua": text_ua, "text_ru": text_ru}
+            try:
+                entities, u = _extract_one(client, art)
+                results.append({"article_id": r["id"], "entities": entities})
+                usage["input"] += u.input_tokens or 0
+                usage["output"] += u.output_tokens or 0
+                usage["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
+                usage["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0) or 0
+            except Exception as e:
+                errors.append(f"{r['id']}: {type(e).__name__}")
+        return results, errors, usage
+
+    try:
+        results, errors, usage = await asyncio.to_thread(extract_all)
+    except Exception as e:
+        await msg.edit_text(f"❌ Витяг не вдався: {type(e).__name__}: {e}")
+        return
+
+    stats = {}
+    if results:
+        stats = await asyncio.to_thread(ep.write_results, results)
+        record_ai_usage(api.MODEL, input_tokens=usage["input"], output_tokens=usage["output"],
+                        cache_read=usage["cache_read"], cache_creation=usage["cache_creation"])
+        # Сутності, що лишились зовсім без статей (жили тільки в затертому
+        # тексті), більше нікого не згадують — обнуляємо лічильник, щоб не
+        # висіли у топі /entity_status. Картки прибирає /entity_dedup.
+        await asyncio.to_thread(
+            bot_db.execute,
+            "UPDATE entities SET mentions = 0 WHERE id NOT IN "
+            "(SELECT entity_id FROM article_entities) AND mentions <> 0",
+        )
+
+    lines = [f"🦊 Перечит сутностей: {len(results)}/{len(rows)} статей"]
+    for r in results:
+        lines.append(f"• {r['article_id']} — {len(r['entities'])} сутностей")
+    if stats:
+        lines.append(
+            f"\nЗв'язків: {stats.get('links', 0)} · нових сутностей: "
+            f"{stats.get('new_entities', 0)} · зачеплено: {stats.get('entities_touched', 0)}"
+        )
+    if errors:
+        lines.append("⚠️ збої: " + ", ".join(errors))
+    if missing:
+        lines.append("❓ немає в норі: " + ", ".join(str(i) for i in missing))
+    await msg.edit_text("\n".join(lines))
