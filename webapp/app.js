@@ -714,8 +714,8 @@ function anNewsroomHtml(d) {
     return anHead("file-text", "Вихід редакції") +
       `<div class="empty-hint">БД сайту недоступна — вихід не порахувати.</div>`;
   }
-  // Порядок і довжина барів — за ВАГОЮ (власний матеріал = 2,6 звичайних,
-  // коефіцієнт Олега), а не за кількістю рядків: 85 рерайтів і 30 власних —
+  // Порядок і довжина барів — за ВАГОЮ власного матеріалу (коефіцієнт із
+  // сервера, own_weight), а не за кількістю рядків: 85 рерайтів і 30 власних —
   // різна робота. У цифрі праворуч лишається чесна кількість.
   const maxScore = n.authors.length
     ? Math.max(...n.authors.map((a) => a.score || a.count)) : 0;
@@ -762,7 +762,8 @@ function anNewsroomHtml(d) {
       ${hidden > 0 ? `<button class="more-btn" id="an-more">
         Показати всіх · ще ${hidden}</button>` : ""}
       <div class="sp-note">порядок і смуги — за вагою: власний матеріал
-        вважається за 2,6 звичайних</div>
+        вважається за ${esc(String(n.own_weight || 1).replace(".", ","))}
+        звичайних</div>
       ${(n.zero || []).length ? `<div class="sp-note">Без публікацій за
         ${AN_PERIOD_WORD[d.period]}: ${esc(n.zero.filter((z) => z.linked)
           .map((z) => z.name.split(" ")[0] + " " + (z.name.split(" ")[1] || ""))
