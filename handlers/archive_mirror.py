@@ -773,3 +773,83 @@ async def nora_sql_handler(update, context):
     await msg.edit_text(
         f"<b>{len(rows)} рядк(ів):</b>\n<pre>{escape_html(body)}</pre>", parse_mode="HTML"
     )
+
+
+async def resync_ids(ids):
+    """Примусово перечитати конкретні nodes у нору, В ОБХІД курсора.
+
+    Потрібно, бо інкремент ходить по GREATEST(updated, published) >= курсор:
+    якщо CMS підмінила вміст ноди, не зачепивши updated (реальний кейс 28.07 —
+    матеріал відновили під новим id, а в старому лишився чужий текст зі старим
+    updated), зміна лишається ЗА курсором і нора тримає застарілий текст вічно.
+
+    Логіка та сама, що в sync_incremental: живі (status=1, published у минулому)
+    — upsert, решта — видалення з нори. Курсор не рухає (це точковий ремонт,
+    а не прогін). Повертає (оновлені_id, видалені_id, не_знайдені_id)."""
+    ids = [int(i) for i in ids]
+    if not ids:
+        return [], [], []
+    placeholders = ", ".join(["%s"] * len(ids))
+    rows = await db.aquery(
+        f"SELECT {_NODE_COLUMNS} FROM nodes WHERE id IN ({placeholders})", tuple(ids)
+    )
+    found = {r["id"] for r in rows}
+    missing = [i for i in ids if i not in found]
+    now_ts = int(datetime.now().timestamp())
+    live = [r for r in rows
+            if r.get("status") == 1 and (r.get("published") or 0) > 0
+            and (r.get("published") or 0) <= now_ts]
+    live_ids = {r["id"] for r in live}
+    dead_ids = [r["id"] for r in rows if r["id"] not in live_ids]
+
+    synced = []
+    if live:
+        synced = await _sync_rows(live, await _refresh_tags())
+    if dead_ids:
+        await asyncio.to_thread(bot_db.delete_articles, dead_ids)
+    # Ноди, яких у nodes уже немає (видалили), теж прибираємо з нори.
+    if missing:
+        await asyncio.to_thread(bot_db.delete_articles, missing)
+    return synced, dead_ids, missing
+
+
+async def nora_resync_handler(update, context):
+    """/nora_resync <id|URL> … — примусово перечитати матеріали з БД сайту в нору."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not (bot_db.is_configured() and db.is_configured()):
+        await update.message.reply_text("🦊 Потрібні обидві БД (нора + БД сайту).")
+        return
+    from handlers.helpers import extract_article_id
+
+    args = update.message.text.split()[1:]
+    ids = []
+    for a in args:
+        val = extract_article_id(a) if "/" in a else (a if a.isdigit() else None)
+        if val:
+            ids.append(int(val))
+    if not ids:
+        await update.message.reply_text(
+            "Використання: /nora_resync <id|URL> [ще id…]\n\n"
+            "Напр.: /nora_resync 321354 321692\n"
+            "Потрібно, коли на сайті підмінили вміст ноди, не зачепивши updated —"
+            " такої зміни щогодинний синк не бачить."
+        )
+        return
+
+    msg = await update.message.reply_text(f"🦊 Перечитую {len(ids)} нод(и)…")
+    try:
+        synced, dead, missing = await resync_ids(ids)
+    except Exception as e:
+        await msg.edit_text(f"❌ {type(e).__name__}: {e}")
+        return
+    lines = [f"🦊 Ресинк {len(ids)} нод(и):"]
+    if synced:
+        lines.append(f"✅ оновлено в норі: {', '.join(str(i) for i in synced)}")
+    if dead:
+        lines.append(f"🗑 прибрано (не опубліковані): {', '.join(str(i) for i in dead)}")
+    if missing:
+        lines.append(f"❓ немає в nodes: {', '.join(str(i) for i in missing)}")
+    lines.append("\nПеревірити вміст: /nora_article <id>")
+    await msg.edit_text("\n".join(lines))
