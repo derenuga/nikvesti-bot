@@ -34,6 +34,7 @@ from handlers.archive_mirror import (
     archive_stop_handler, archive_report_handler, nora_sql_handler,
 )
 from handlers.dossier import dossier_handler
+from handlers.nora_article import nora_article_handler
 from handlers.entity_layer import (
     entity_estimate_handler, entity_backfill_handler,
     entity_status_handler, entity_resume_handler, entity_recover_handler,
@@ -373,6 +374,7 @@ def main():
     app.add_handler(CommandHandler("archive_status", archive_status_handler))
     app.add_handler(CommandHandler("archive_report", archive_report_handler))
     app.add_handler(CommandHandler("nora_sql", nora_sql_handler))
+    app.add_handler(CommandHandler("nora_article", nora_article_handler))
     app.add_handler(CommandHandler("entity_estimate", entity_estimate_handler))
     app.add_handler(CommandHandler("entity_backfill", entity_backfill_handler))
     app.add_handler(CommandHandler("entity_status", entity_status_handler))
