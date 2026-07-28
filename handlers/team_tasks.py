@@ -554,11 +554,21 @@ def create_tasks_bulk(specs):
 
 
 def update_task_fields(task_id, actor, qty=None, deadline=..., note=...,
-                       theme_id=..., theme_name=...):
-    """Редагування таска (кількість, дедлайн, нотатка, тематика).
-    Сентинел ... — «не чіпати»; None/порожнє — явно стерти."""
+                       theme_id=..., theme_name=..., type_=..., platform=...):
+    """Редагування таска (кількість, дедлайн, нотатка, тематика, ТИП).
+    Сентинел ... — «не чіпати»; None/порожнє — явно стерти.
+
+    Тип редагується з тієї ж причини, з якої зʼявився безликий «матеріал»:
+    таск, заведений під тематику без формату, лишався без типу, і виконавиця
+    бачила «матеріал» замість «новина»."""
     ensure_team_schema()
     sets, params = [], []
+    if type_ is not ...:
+        sets.append("type = %s")
+        params.append(type_ or None)
+    if platform is not ...:
+        sets.append("platform = %s")
+        params.append(platform or None)
     if qty is not None:
         sets.append("qty = %s")
         params.append(max(1, min(99, int(qty))))
