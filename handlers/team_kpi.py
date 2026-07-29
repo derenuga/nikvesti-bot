@@ -726,6 +726,11 @@ def kpi_debug(name_query):
     if not urows:
         lines.append("  (жодного — саме тому факт «—»)")
 
+    # 5) відсутності й кроки тижнів — щоб на питання «чому цей кружечок
+    # порожній» відповідав бот, а не здогадка. 29.07: Олег спитав саме це, а
+    # відповісти без даних не міг ніхто.
+    away = list_absences(person) if person else []
+
     lines.append("\n<b>Вихід за місяць (тип × власний × owner_id):</b>")
     if breakdown:
         for r in breakdown:
@@ -734,6 +739,33 @@ def kpi_debug(name_query):
             lines.append(f"  owner_id={r['owner_id']} · {r['type']} · {own}: <b>{r['c']}</b>{here}")
     else:
         lines.append("  (нічого не опубліковано цього місяця під цими id)")
+
+    # Кроки тижнів — по кожній місячній нормі відділу людини, з її реальною
+    # ціллю: видно, який тиждень і ЧОМУ лишився незакритим
+    if person and matched_id:
+        p_start, p_end = period_bounds("month")
+        factor, _missed = absence_factor(person, p_start, p_end, away)
+        dept = team_roster.effective_dept(person)
+        for n in [x for x in list_norms() if x["period"] == "month" and x["dept"] == dept]:
+            tgt = scaled_target(n["target"], factor)
+            steps = month_week_steps(n, tgt, away, matched_id)
+            if not steps:
+                continue
+            lines.append(f"\n<b>Тижні місяця · {norm_label(n['metric'], tgt, n['own'])}:</b>")
+            for st in steps:
+                mark = "✅" if st["done"] else ("🏖" if st["away"] else
+                                               "⏳" if st["future"] else "⬜️")
+                lines.append(
+                    f"  {mark} {st['label']}: за тиждень {st['fact']}, "
+                    f"накопичено {st['fact_cum']} при очікуваних {st['expected_cum']}")
+
+    lines.append("\n<b>Відсутності:</b>")
+    if away:
+        for a in away:
+            lines.append(f"  {a['title']}: {a['start']} — {a['end']}")
+    else:
+        lines.append("  (немає — тобто ціль не знижувалась)")
+
 
     # Підказка: якщо весь вихід під іншим id, ніж привʼязаний — закріпити правильний
     other_ids = {r["owner_id"] for r in breakdown if r["owner_id"] != matched_id}

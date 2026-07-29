@@ -3497,7 +3497,11 @@ function monthWord(label) {
 function stepsHtml(steps) {
   if (!steps || steps.length < 2) return "";
   return `<div class="steps">${steps.map((s) => {
-    const cls = s.away ? "away" : s.done ? "done" : s.future ? "fut" : "miss";
+    // Порядок важливий: «була у графіку» сильніше за «була у відпустці».
+    // Раніше away перебивав done, і тиждень відпустки в людини, яка йшла з
+    // запасом, малювався блідим порожнім кружечком — тобто виглядав як
+    // провал, хоча провалу немає й бути не могло.
+    const cls = s.done ? "done" : s.future ? "fut" : s.away ? "away" : "miss";
     return `<span class="step ${cls}${s.is_current ? " cur" : ""}">
       <span class="sdot">${s.done ? icon("check") : ""}</span>
       <span class="slbl">${esc(s.label)}</span>
