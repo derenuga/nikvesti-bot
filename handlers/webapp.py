@@ -51,8 +51,8 @@ except ImportError:  # локальний dev без aiohttp — модуль п
     web = None
 
 from handlers import (
-    bot_db, team_analytics, team_contacts, team_kpi, team_matches,
-    team_notifications, team_publications,
+    bot_db, impact_archive, team_analytics, team_contacts, team_kpi,
+    team_matches, team_notifications, team_publications,
     team_projects, team_roster, team_tasks, team_todos,
 )
 from handlers.helpers import normalize_https_url
@@ -1309,6 +1309,104 @@ async def api_todo_delete(request):
     return web.json_response({"ok": True})
 
 
+# ---------- Імпакт-архів ----------
+#
+# Журнал впливу редакції для донорських звітів (Олег, 29.07: «мені постійно
+# важко шукати і наново описувати імпакти при кожній заявці по грант»).
+# Менеджерський інструмент: кидаєш URL новини-фіксації — бот сам збирає серію,
+# ключовий текст, донора ключового тексту і медальки. Збір асинхронний
+# (створили → building → апка полить), бо беклінки + нора + Sonnet — це
+# 15-30 секунд, і HTTP-запит апки стільки висіти не має.
+
+async def api_impacts(request):
+    person, info, _ = await _require_manager(request)
+    return web.json_response({"impacts": await _in_session(impact_archive.list_impacts)})
+
+
+async def api_impact_get(request):
+    person, info, _ = await _require_manager(request)
+    imp = await _in_session(impact_archive.get_impact, int(request.match_info["impact_id"]))
+    if not imp:
+        raise web.HTTPNotFound(text="Кейсу немає")
+    return web.json_response(imp)
+
+
+async def api_impact_create(request):
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    url = (payload.get("url") or "").strip()
+    if "nikvesti.com" not in url:
+        raise web.HTTPBadRequest(text="Потрібен лінк на матеріал nikvesti.com")
+    impact_id = await _in_session(
+        impact_archive.create_impact, person, url, payload.get("essence"))
+    # збір — у фоні того самого event loop; свій try/except усередині
+    asyncio.create_task(impact_archive.build_impact(impact_id))
+    return web.json_response({"id": impact_id, "status": "building"})
+
+
+async def api_impact_retry(request):
+    person, info, _ = await _require_manager(request)
+    impact_id = int(request.match_info["impact_id"])
+    await _in_session(impact_archive.retry_impact, impact_id)
+    asyncio.create_task(impact_archive.build_impact(impact_id))
+    return web.json_response({"id": impact_id, "status": "building"})
+
+
+async def api_impact_patch(request):
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    impact_id = int(request.match_info["impact_id"])
+    action = payload.get("action")
+    if action == "set_key":
+        await _in_session(impact_archive.set_key_article, impact_id, int(payload.get("row_id")))
+    elif action == "remove_article":
+        await _in_session(impact_archive.remove_article, impact_id, int(payload.get("row_id")))
+    elif action == "add_credit":
+        await _in_session(impact_archive.add_credit, impact_id,
+                          payload.get("person"), payload.get("note"))
+    elif action == "remove_credit":
+        await _in_session(impact_archive.remove_credit, impact_id, int(payload.get("credit_id")))
+    else:
+        imp = await _in_session(
+            impact_archive.update_impact, impact_id, payload.get("title"),
+            payload.get("essence"), payload.get("what_happened"), payload.get("significance"))
+        if not imp:
+            raise web.HTTPNotFound(text="Кейсу немає")
+        return web.json_response(imp)
+    imp = await _in_session(impact_archive.get_impact, impact_id)
+    return web.json_response(imp)
+
+
+async def api_impact_delete(request):
+    person, info, _ = await _require_manager(request)
+    deleted = await _in_session(
+        impact_archive.delete_impact, int(request.match_info["impact_id"]))
+    if not deleted:
+        raise web.HTTPNotFound(text="Кейсу немає")
+    return web.json_response({"ok": True})
+
+
+async def api_impact_send(request):
+    """Готовий кейс файлом .html у приват тому, хто натиснув: з файлу донор
+    отримує його як є, а браузер друкує в PDF. Через бота, а не download у
+    вебвʼю — там збереження файлів працює через раз."""
+    person, info, tg_user = await _require_manager(request)
+    impact_id = int(request.match_info["impact_id"])
+    fname, html = await _in_session(impact_archive.export_html, impact_id)
+    if not html:
+        raise web.HTTPBadRequest(text="Кейс ще не зібрано")
+    from io import BytesIO
+    buf = BytesIO(html.encode("utf-8"))
+    buf.name = fname
+    try:
+        await request.app["bot"].send_document(
+            chat_id=tg_user["id"], document=buf,
+            caption="🦊 Імпакт-кейс. Відкривається в браузері, звідти — у PDF.")
+    except Exception as e:
+        raise web.HTTPBadRequest(text=f"Не долетіло в приват: {e}")
+    return web.json_response({"ok": True})
+
+
 async def api_kpi_norm_create(request):
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
@@ -1559,6 +1657,13 @@ async def start_webapp(application):
         web.get("/api/kpi/dashboard", api_kpi_dashboard),
         web.get("/api/kpi/person", api_kpi_person),
         web.get("/api/publications", api_publications),
+        web.get("/api/impacts", api_impacts),
+        web.post("/api/impacts", api_impact_create),
+        web.get("/api/impacts/{impact_id:\\d+}", api_impact_get),
+        web.patch("/api/impacts/{impact_id:\\d+}", api_impact_patch),
+        web.delete("/api/impacts/{impact_id:\\d+}", api_impact_delete),
+        web.post("/api/impacts/{impact_id:\\d+}/retry", api_impact_retry),
+        web.post("/api/impacts/{impact_id:\\d+}/send", api_impact_send),
         web.get("/api/todos", api_todos),
         web.post("/api/todos", api_todo_create),
         web.patch("/api/todos/{todo_id:\\d+}", api_todo_patch),

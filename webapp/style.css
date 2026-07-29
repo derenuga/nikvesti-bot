@@ -1337,6 +1337,32 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   border-radius: 12px; padding: 9px 12px; margin-bottom: 8px;
 }
 
+/* ---------- Імпакт-архів ---------- */
+.im-p { font-size: 14.5px; line-height: 1.5; }
+/* Донор ключового тексту — головна причина, чому кейс збирається: цим
+   блоком можна порадувати того, хто фінансував */
+.im-donor {
+  margin-top: 12px; background: var(--blue-soft); border-radius: 12px;
+  padding: 10px 12px; font-size: 13px;
+}
+.im-spin {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--blue);
+  animation: imspin .9s linear infinite; flex: 0 0 auto;
+}
+@keyframes imspin { to { transform: rotate(360deg); } }
+/* Заголовок у серії — лінк на матеріал, але без підкреслення: у списку з
+   десяти рядків підкреслене синє зливається в кашу */
+#imd-body a.pub-title { text-decoration: none; }
+
+/* Зірочка призначеного ключового — активний стан кнопки в рядку серії */
+.td-act.on { color: var(--blue); background: var(--blue-soft); }
+#imd-body textarea, #sheet textarea {
+  width: 100%; background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 12px; font-size: 14px; color: var(--ink);
+  font-family: inherit; resize: vertical;
+}
+
 /* ---------- Хто коли відсутній ---------- */
 /* Імена стоять окремою НЕРУХОМОЮ колонкою: у проєктів підпис живе всередині
    смуги, бо смуга там одна на рядок і довга, а відпустка — це три дні десь

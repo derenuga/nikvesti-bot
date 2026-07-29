@@ -28,7 +28,6 @@ const STATE = {
   myFeed: null,         // стрічка журналістки (лічильник на дверях «Події»)
   absenceRequests: null, // запити на відпустку на погодження (менеджерам)
   contactQuery: "",     // пошук у телефонній базі
-  contactsMine: null,   // скільки карток завела я (для подяки на головній)
   previewPerson: null,  // менеджерський перегляд екрана журналістки
   unread: 0,
   homeView: null,        // ставиться нижче: остання обрана таба Головної
@@ -434,12 +433,14 @@ function backTarget() {
     case "bulk": return ["project", STATE.bulk && STATE.bulk.projectId];
     case "kpi": return ["home"];
     case "kpinorm": return ["kpi"];
+    case "impact": return ["impacts"];
     case "mydone":
     case "myfeed":
     case "myhist":
     case "mypubs":
     case "todo":
     case "away":
+    case "impacts":
     case "contacts": return ["home"];
     case "preview": return ["personhist", STATE.previewPerson];
     default: return null;      // корінь табів — назад нікуди
@@ -519,6 +520,8 @@ function render() {
   else if (v === "todo") renderTodos();
   else if (v === "contacts") renderContacts();
   else if (v === "away") renderAway();
+  else if (v === "impacts") renderImpacts();
+  else if (v === "impact") renderImpact();
   else if (v === "home") renderHome();
   else if (v === "person") renderPerson();
   else if (v === "personhist") renderPersonHistory();
@@ -577,6 +580,13 @@ function toolsSheet() {
       <span class="pk-txt">
         <span class="pk-name">Блокнот</span>
         <span class="pk-meta">особистий список справ · /todo у чаті</span>
+      </span>
+    </button>
+    <button class="pick-row" data-tool="impacts">
+      <span class="door-ic c-blue-ic">${icon("award")}</span>
+      <span class="pk-txt">
+        <span class="pk-name">Імпакт-архів</span>
+        <span class="pk-meta">що змінилось завдяки текстам — для заявок і донорів</span>
       </span>
     </button>
     <button class="pick-row" data-tool="away">
@@ -2631,18 +2641,6 @@ function startScreen() {
    Пошук один на все: реальне питання частіше «хто в нас по енергетиці?», ніж
    «дай Лукова», тож теми шукаються нарівні з іменем і посадою. */
 
-/* Підпис на дверях бази. Подяка — саме тут, а не окремим блоком: людина
-   бачить її, коли база згадується, а не щодня по дорозі до завдань.
-   І це ПОДЯКА, а не очко: на KPI кількість контактів не впливає ніяк
-   (щойно за них дадуть бали, база наповниться сміттям заради лічильника). */
-function contactsDoorMeta() {
-  const m = STATE.contactsMine;
-  if (m && m.added) {
-    return `твоїх — ${m.added}, дякуємо 💙`;
-  }
-  return "телефони, які вже не треба шукати в чаті";
-}
-
 function contactRow(c) {
   const meta = [c.role, c.tags].filter(Boolean).join(" · ");
   return `
@@ -2680,7 +2678,6 @@ async function renderContacts() {
     return;
   }
   if (STATE.view !== "contacts") return;
-  STATE.contactsMine = data.mine || null;
   const list = data.contacts || [];
   const body = $("cnt-body");
   if (!body) return;
@@ -2876,6 +2873,276 @@ function contactSheet(c) {
       renderContacts();
     } catch (e) { toast(e.message); }
   };
+}
+
+/* ---------- Імпакт-архів ----------
+
+   Олег, 29.07: «мені постійно важко шукати і наново описувати імпакти при
+   кожній заявці по грант». Флоу: «+» → URL новини-фіксації + суть своїми
+   словами → бот сам збирає серію (беклінки зі сторінки + нора), донорський
+   заголовок, наратив, ключовий текст і медальки. Це ЧЕРНЕТКА: ключовий можна
+   перепризначити (вага в серії різна — розслідування важить більше за
+   новину-фіксацію), зайве прибрати, імена поправити. Готове — файлом у приват.
+
+   Донор ключового тексту підсвічений окремо: якщо текст, що все змінив,
+   вийшов у межах проєкту — донора можна порадувати кейсом. */
+async function renderImpacts() {
+  const head = `
+    <button class="back" data-back>${icon("chevron-left")} Назад</button>
+    <div class="head-row">
+      <div class="h-big">Імпакт-архів</div>
+      <button class="icon-btn" id="im-add" aria-label="Новий кейс">${icon("plus")}</button>
+    </div>
+    <div class="h-sub">що змінилось завдяки нашим текстам — для заявок і донорів</div>`;
+  $("content").innerHTML = head + `<div id="im-body">${skeleton("rows", 3)}</div>`;
+  $("im-add").onclick = impactAddSheet;
+  let data;
+  try {
+    data = await api("/api/impacts");
+  } catch (e) {
+    const b = $("im-body");
+    if (b) b.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+    return;
+  }
+  if (STATE.view !== "impacts") return;
+  STATE.impacts = data.impacts || [];
+  paintImpacts();
+}
+
+function paintImpacts() {
+  const body = $("im-body");
+  if (!body) return;
+  const list = STATE.impacts || [];
+  if (!list.length) {
+    body.innerHTML = `<div class="empty-hint">Поки порожньо.<br>
+      Кинь «+» лінк новини, де видно результат («відремонтували», «скасували»,
+      «повернули») — решту серії бот збере сам.</div>`;
+    return;
+  }
+  body.innerHTML = `<div class="soft-card">${list.map((im) => `
+    <button class="cnt-row" data-impact="${im.id}">
+      <span class="pk-txt">
+        <span class="pk-name">${esc(im.title || im.essence || im.source_url)}</span>
+        <span class="pk-meta">${im.status === "building" ? "збирається…"
+          : im.status === "failed" ? "не зібрався — відкрий і спробуй ще"
+          : `${im.articles} ${plural(im.articles, "матеріал", "матеріали", "матеріалів")}${
+              im.partners ? " · " + esc(im.partners) : ""}`}</span>
+      </span>
+      ${im.status === "building" ? `<span class="im-spin"></span>` : icon("chevron-right", "ic chev")}
+    </button>`).join("")}</div>`;
+  body.querySelectorAll("[data-impact]").forEach((b) => b.onclick = () => {
+    STATE.currentImpact = +b.dataset.impact;
+    nav("impact");
+  });
+  // хтось ще збирається — тихо оновлюємо список, поки не добудується
+  if (list.some((im) => im.status === "building")) {
+    clearTimeout(STATE.impactPollT);
+    STATE.impactPollT = setTimeout(async () => {
+      if (STATE.view !== "impacts") return;
+      try {
+        STATE.impacts = (await api("/api/impacts")).impacts || [];
+        paintImpacts();
+      } catch (e) {}
+    }, 4000);
+  }
+}
+
+function impactAddSheet() {
+  openSheet(`
+    <h2>Новий імпакт-кейс</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+      Кинь лінк новини, де зафіксовано результат. Передісторію, серію і
+      авторів бот збере сам — потім усе можна поправити.</p>
+    <div class="f-label">Лінк на новину-фіксацію</div>
+    <input id="im-url" inputmode="url" placeholder="https://nikvesti.com/news/…">
+    <div class="f-label">Суть своїми словами (необовʼязково)</div>
+    <input id="im-essence" maxlength="300"
+      placeholder="після нас відремонтували, реакція на новину">
+    <div class="sheet-actions">
+      <button class="sbtn" id="im-cancel">Скасувати</button>
+      <button class="sbtn primary" id="im-save">Зібрати кейс</button>
+    </div>`);
+  $("im-cancel").onclick = closeSheet;
+  $("im-save").onclick = async () => {
+    const url = $("im-url").value.trim();
+    if (!url.includes("nikvesti.com")) { toast("Потрібен лінк nikvesti.com"); return; }
+    $("im-save").disabled = true;
+    try {
+      await api("/api/impacts", { method: "POST", body: JSON.stringify(
+        { url, essence: $("im-essence").value.trim() }) });
+      closeSheet();
+      haptic("success");
+      renderImpacts();
+    } catch (e) {
+      $("im-save").disabled = false;
+      toast(e.message);
+    }
+  };
+}
+
+async function renderImpact() {
+  const id = STATE.currentImpact;
+  $("content").innerHTML = `
+    <button class="back" data-nav="impacts">${icon("chevron-left")} Імпакт-архів</button>
+    <div id="imd-body">${skeleton("rows", 4)}</div>`;
+  $("content").querySelectorAll("[data-nav]").forEach((b) =>
+    b.onclick = () => nav(b.dataset.nav));
+  let im;
+  try {
+    im = await api(`/api/impacts/${id}`);
+  } catch (e) {
+    const b = $("imd-body");
+    if (b) b.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+    return;
+  }
+  if (STATE.view !== "impact" || STATE.currentImpact !== id) return;
+  paintImpact(im);
+}
+
+function paintImpact(im) {
+  const body = $("imd-body");
+  if (!body) return;
+  if (im.status === "building") {
+    body.innerHTML = `<div class="h-big" style="font-size:20px">${esc(im.essence || "Кейс")}</div>
+      <div class="empty-hint">Збираю серію: беклінки, нора, автори, донори…<br>
+        Це пів хвилини — можна вийти, кейс добудується сам.</div>`;
+    clearTimeout(STATE.impactPollT);
+    STATE.impactPollT = setTimeout(async () => {
+      if (STATE.view !== "impact" || STATE.currentImpact !== im.id) return;
+      try { paintImpact(await api(`/api/impacts/${im.id}`)); } catch (e) {}
+    }, 4000);
+    return;
+  }
+  if (im.status === "failed") {
+    body.innerHTML = `
+      <div class="empty-hint">Кейс не зібрався:<br>${esc(im.error || "невідома причина")}</div>
+      <button class="cta" id="im-retry">Спробувати ще</button>
+      <button class="link-btn" id="im-del">${icon("trash")} Видалити чернетку</button>`;
+    $("im-retry").onclick = async () => {
+      try {
+        await api(`/api/impacts/${im.id}/retry`, { method: "POST" });
+        renderImpact();
+      } catch (e) { toast(e.message); }
+    };
+    $("im-del").onclick = () => impactDelete(im.id);
+    return;
+  }
+
+  const key = im.articles.find((a) => a.role === "key");
+  const donor = key && key.partner_name;
+  body.innerHTML = `
+    <div class="head-row">
+      <div class="h-big" style="font-size:20px">${esc(im.title)}</div>
+      <button class="icon-btn" id="imd-edit" aria-label="Редагувати">${icon("edit")}</button>
+    </div>
+    <div class="soft-card" style="margin-top:12px">
+      <p class="im-p">${esc(im.what_happened)}</p>
+      <div class="sc-t" style="margin-top:12px">Значення та вплив</div>
+      <p class="im-p">${esc(im.significance)}</p>
+      ${donor ? `<div class="im-donor">Ключовий матеріал — у межах проєкту
+        «${esc(key.project_name)}» за підтримки <b>${esc(donor)}</b>: цим кейсом
+        можна порадувати донора.</div>` : ""}
+    </div>
+    <div class="dept-title">Серія · ${im.articles.length}</div>
+    <div class="soft-card">${im.articles.map(impactArticleRow).join("")}</div>
+    <div class="mr-hint">зірочка — призначити ключовим (він важить найбільше), хрестик — прибрати з серії</div>
+    <div class="dept-title">Кому записати</div>
+    <div class="soft-card" id="imd-credits">
+      ${im.credits.map((c) => `
+        <div class="td-row">
+          <span class="td-t"><span class="td-text">${esc(c.person)}</span>
+            ${c.note ? `<span class="td-age">${esc(c.note)}</span>` : ""}</span>
+          <button class="td-act" data-imcredit-del="${c.id}" aria-label="Зняти">${icon("x")}</button>
+        </div>`).join("") || `<div class="empty-hint">Поки нікого.</div>`}
+      <form class="td-add" id="imd-credit-form" style="margin:10px 0 2px">
+        <input id="imd-credit-name" maxlength="120" placeholder="Додати людину…">
+        <button class="td-plus" type="submit" aria-label="Додати">${icon("plus")}</button>
+      </form>
+    </div>
+    <button class="cta" id="imd-send">Надіслати файлом у приват</button>
+    <button class="link-btn" id="imd-del" style="margin-top:4px">${icon("trash")} Видалити кейс</button>`;
+  wireImpactDetail(im);
+}
+
+function impactArticleRow(a) {
+  const meta = [a.date, a.authors, a.partner_name].filter(Boolean).join(" · ");
+  return `
+    <div class="td-row">
+      <span class="pub-t">
+        <a class="pub-title" href="${esc(a.url)}" data-ext="${esc(a.url)}">${esc(a.title || a.url)}</a>
+        <span class="pub-tags">${a.role === "fixer" ? "новина-фіксація · " :
+          a.role === "key" ? "★ ключовий · " : ""}${esc(meta)}</span>
+      </span>
+      ${a.role === "fixer" ? "" : `
+        <button class="td-act${a.role === "key" ? " on" : ""}" data-imkey="${a.id}"
+          aria-label="Ключовий">${icon("award")}</button>
+        <button class="td-act" data-imdrop="${a.id}" aria-label="Прибрати">${icon("x")}</button>`}
+    </div>`;
+}
+
+function wireImpactDetail(im) {
+  const patch = async (payload) => {
+    try {
+      paintImpact(await api(`/api/impacts/${im.id}`, {
+        method: "PATCH", body: JSON.stringify(payload) }));
+    } catch (e) { toast(e.message); }
+  };
+  const body = $("imd-body");
+  body.querySelectorAll("[data-imkey]").forEach((b) => b.onclick = () =>
+    patch({ action: "set_key", row_id: +b.dataset.imkey }));
+  body.querySelectorAll("[data-imdrop]").forEach((b) => b.onclick = () =>
+    patch({ action: "remove_article", row_id: +b.dataset.imdrop }));
+  body.querySelectorAll("[data-imcredit-del]").forEach((b) => b.onclick = () =>
+    patch({ action: "remove_credit", credit_id: +b.dataset.imcreditDel }));
+  $("imd-credit-form").onsubmit = (e) => {
+    e.preventDefault();
+    const person = $("imd-credit-name").value.trim();
+    if (person) patch({ action: "add_credit", person });
+  };
+  $("imd-edit").onclick = () => impactEditSheet(im);
+  $("imd-del").onclick = () => impactDelete(im.id);
+  $("imd-send").onclick = async () => {
+    $("imd-send").disabled = true;
+    try {
+      await api(`/api/impacts/${im.id}/send`, { method: "POST" });
+      haptic("success");
+      toast("Полетіло в приват із Лисом 🦊");
+    } catch (e) { toast(e.message); }
+    $("imd-send").disabled = false;
+  };
+}
+
+function impactEditSheet(im) {
+  openSheet(`
+    <h2>Редагувати кейс</h2>
+    <div class="f-label">Заголовок</div>
+    <input id="ime-title" maxlength="300" value="${esc(im.title || "")}">
+    <div class="f-label">Що сталось</div>
+    <textarea id="ime-what" rows="5">${esc(im.what_happened)}</textarea>
+    <div class="f-label">Значення та вплив</div>
+    <textarea id="ime-sig" rows="5">${esc(im.significance)}</textarea>
+    <div class="sheet-actions">
+      <button class="sbtn" id="ime-cancel">Скасувати</button>
+      <button class="sbtn primary" id="ime-save">Зберегти</button>
+    </div>`);
+  $("ime-cancel").onclick = closeSheet;
+  $("ime-save").onclick = async () => {
+    try {
+      const fresh = await api(`/api/impacts/${im.id}`, { method: "PATCH",
+        body: JSON.stringify({ title: $("ime-title").value,
+          what_happened: $("ime-what").value, significance: $("ime-sig").value }) });
+      closeSheet();
+      paintImpact(fresh);
+    } catch (e) { toast(e.message); }
+  };
+}
+
+async function impactDelete(id) {
+  if (!await confirmAction("Видалити кейс?")) return;
+  try {
+    await api(`/api/impacts/${id}`, { method: "DELETE" });
+    nav("impacts");
+  } catch (e) { toast(e.message); }
 }
 
 /* ---------- Хто коли відсутній ----------
@@ -4413,7 +4680,7 @@ function renderJournalist() {
   const ask = $("content").querySelector("[data-ask]");
   if (ask) ask.onclick = absenceRequestSheet;
   renderMyKpi();
-  if (!me.preview) { loadMyFeed(); loadContactsMine(); }
+  if (!me.preview) loadMyFeed();
 }
 
 /* Лічильник на дверях «Події». Стрічку тягнемо ОДИН раз і кладемо в STATE:
@@ -4428,17 +4695,6 @@ async function loadMyFeed() {
   // двері з головної переїхали в нижнє меню
   syncAlertsBadge();
   if (STATE.view === "home") renderJournalist();
-}
-
-/* Скільки карток у базі і скільки з них її — для підпису на дверях. Тихо,
-   один раз за сеанс: без цього подяка не мала б звідки взятись. */
-async function loadContactsMine() {
-  if (STATE.contactsMine) return;
-  try {
-    const d = await api("/api/contacts?only=mine");
-    STATE.contactsMine = d.mine || null;
-  } catch (e) { return; }
-  if (STATE.view === "home" && STATE.contactsMine) renderJournalist();
 }
 
 /* Виконані завдання — окремий екран. На головній вони займали пів скрола, а

@@ -169,21 +169,16 @@ async def main():
     async with async_playwright() as pw:
         browser, page = await _open(pw, JOURNALIST)
         try:
-            # --- двері з подякою на головній ---
-            await page.wait_for_selector('.door[data-nav="contacts"]', timeout=5000)
-            await page.wait_for_timeout(400)
-            door = await page.inner_text('.door[data-nav="contacts"]')
-            check("двері бази є в журналістки", "Контакти" in door)
-            check("на дверях подяка за внесок", "дякуємо" in door)
-            check("і скільки саме її", "твоїх — 1" in door)
-
-            calls = await page.evaluate("window.__calls")
-            check("лічильник тягнеться дешево (only=mine), а не всією базою",
-                  any("only=mine" in c["url"] for c in calls))
-
-            # --- сам екран ---
-            await page.click('.door[data-nav="contacts"]')
+            # --- вхід: пункт нижнього меню (з 29.07 двері переїхали в меню,
+            # подяка живе внизу самої бази) ---
+            await page.wait_for_selector('#bottomnav [data-view="contacts"]', timeout=5000)
+            check("база є пунктом меню журналістки",
+                  "Контакти" in await page.inner_text('#bottomnav [data-view="contacts"]'))
+            await page.click('#bottomnav [data-view="contacts"]')
             await page.wait_for_selector(".cnt-row", timeout=5000)
+            thanks = await page.inner_text(".cnt-thanks")
+            check("подяка за внесок — на дверях бази", "Дякуємо" in thanks)
+            check("і скільки саме її", "Твоїх — 1" in thanks)
             body = await page.inner_text("#content")
             check("видно контакти", "Степан Яблучко" in body and "Олена Приходько" in body)
             check("під імʼям — посада й теми", "директор ЖЕК №5" in body)
