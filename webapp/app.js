@@ -26,6 +26,7 @@ const STATE = {
   pendingCount: 0,      // для лічильника на пункті меню
   notifs: null,         // стрічка подій
   myFeed: null,         // стрічка журналістки (лічильник на дверях «Події»)
+  absenceRequests: null, // запити на відпустку на погодження (менеджерам)
   previewPerson: null,  // менеджерський перегляд екрана журналістки
   unread: 0,
   homeView: null,        // ставиться нижче: остання обрана таба Головної
@@ -429,7 +430,9 @@ function nav(view, arg) {
   }
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
   // Черга і стрічка могли змінитись у колеги — перечитуємо при кожному вході
-  if (view === "alerts") { STATE.pending = null; STATE.notifs = null; }
+  if (view === "alerts") {
+    STATE.pending = null; STATE.notifs = null; STATE.absenceRequests = null;
+  }
   if (view === "form") STATE.form = {
     person: arg, project: undefined, type: null, platform: "telegram",
     theme_id: null, qty: 1, note: "", deadline: "",
@@ -2218,7 +2221,7 @@ function notifRow(n) {
 }
 
 async function renderAlerts() {
-  const already = STATE.pending && STATE.notifs;
+  const already = STATE.pending && STATE.notifs && STATE.absenceRequests;
   $("content").innerHTML = `
     <div class="head-row">
       <div class="h-big">Сповіщення</div>
@@ -2231,12 +2234,16 @@ async function renderAlerts() {
   if (!already) {
     try {
       // Черга і стрічка — різні джерела; тягнемо паралельно, бо екран один
-      const [q, feed] = await Promise.all([
+      // Три джерела, один екран — тягнемо паралельно. Запити на відпустку
+      // деградують окремо: їхній збій не має гасити чергу звірки.
+      const [q, feed, ar] = await Promise.all([
         api("/api/matches/pending"), api("/api/notifications"),
+        api("/api/absences/requests").catch(() => ({ requests: [] })),
       ]);
       STATE.pending = q.pending || [];
       STATE.notifs = feed.items || [];
       STATE.unread = feed.unread || 0;
+      STATE.absenceRequests = ar.requests || [];
     } catch (e) {
       $("alerts-body").innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
       return;
@@ -2406,13 +2413,40 @@ function extendSheet(t) {
   };
 }
 
+/* Картка погодження відпустки. Дві дії й нічого більше: або людина йде, або
+   ні. Погодження створює відсутність, і цілі KPI перераховуються самі. */
+function absenceRequestCard(r) {
+  const range = r.start === r.end ? shortDate(r.start)
+    : `${shortDate(r.start)} — ${shortDate(r.end)}`;
+  return `
+    <div class="al-card">
+      <div class="al-head">
+        ${avatar(r.person, personEntry(r.person), 38)}
+        <div class="al-h-txt">
+          <span class="al-who">${esc(r.person)} просить ${esc(r.title)}</span>
+          <div class="al-date">${esc(range)}</div>
+        </div>
+      </div>
+      ${r.note ? `<div class="al-why">${esc(r.note)}</div>` : ""}
+      <div class="al-actions">
+        <button class="sbtn danger" data-arno="${r.id}">Відхилити</button>
+        <button class="sbtn primary" data-aryes="${r.id}">Погодити</button>
+      </div>
+    </div>`;
+}
+
 function paintAlerts() {
   const list = STATE.pending || [];
   const feed = STATE.notifs || [];
   const box = $("alerts-body");
   if (!box) return;
   const late = overdueTasks();
+  const asks = STATE.absenceRequests || [];
   box.innerHTML = `
+    ${asks.length
+      ? `<div class="dept-title">Просять вихідні · ${asks.length}</div>
+         ${asks.map(absenceRequestCard).join("")}`
+      : ""}
     ${late.length
       ? `<div class="dept-title">Строк минув · ${late.length}</div>
          ${late.map(overdueCard).join("")}`
@@ -2433,6 +2467,28 @@ function paintAlerts() {
       <div class="al-line">Нове завдання і виконане завдання — авторові
         в приват від Лиса.</div>
     </div>`;
+  const decideAbsence = async (id, approve) => {
+    try {
+      await api(`/api/absences/requests/${id}/decide`, {
+        method: "POST", body: JSON.stringify({ approve }),
+      });
+      STATE.absenceRequests = (STATE.absenceRequests || [])
+        .filter((x) => x.id !== id);
+      haptic("success");
+      // Погоджена відпустка змінює цілі — зведення KPI протухло
+      if (approve) { STATE.kpi = null; STATE.dash.data = null; }
+      paintAlerts();
+      syncAlertsBadge();
+    } catch (e) { toast(e.message); }
+  };
+  box.querySelectorAll("[data-aryes]").forEach((b) =>
+    b.onclick = () => decideAbsence(+b.dataset.aryes, true));
+  box.querySelectorAll("[data-arno]").forEach((b) => b.onclick = async () => {
+    const r = (STATE.absenceRequests || []).find((x) => x.id === +b.dataset.arno);
+    if (!r) return;
+    if (!(await confirmAction(`Відхилити ${r.title} для ${r.person}?`))) return;
+    decideAbsence(r.id, false);
+  });
   box.querySelectorAll("[data-oext]").forEach((b) => b.onclick = () => {
     const t = (STATE.tasks || []).find((x) => x.id === +b.dataset.oext);
     if (t) extendSheet(t);
@@ -2580,7 +2636,8 @@ function syncAlertsBadge() {
   // Прострочені теж просять дії, тож і в лічильнику вони мають бути: інакше
   // Катя бачила б «0» на пункті меню, у якому лежить п'ять завислих завдань
   const n = (STATE.pendingCount || 0) + (STATE.unread || 0)
-    + (STATE.me && STATE.me.manager ? overdueTasks().length : 0);
+    + (STATE.me && STATE.me.manager
+       ? overdueTasks().length + (STATE.absenceRequests || []).length : 0);
   let dot = btn.querySelector(".bn-badge");
   if (!n) { if (dot) dot.remove(); return; }
   if (!dot) {
@@ -3358,6 +3415,73 @@ function viewPerson() {
            entry: STATE.me, preview: false };
 }
 
+/* Заглушка «Моїх KPI» на час завантаження. Факт іде в MySQL сайту і думає по
+   дві-три секунди, а до цього блок був порожній — потім різко з'являвся і
+   зсував увесь екран униз (Олег, 29.07: «так не повинно бути»). Заглушка
+   тримає приблизну висоту майбутньої картки, тож нічого не стрибає. */
+function kpiSkeleton() {
+  return `
+    <div class="pace-card">
+      <span class="sk" style="display:block;height:19px;width:72%"></span>
+      <div class="steps">${Array.from({ length: 5 }, () =>
+        `<span class="step"><span class="sk sk-dot"></span>
+         <span class="sk" style="display:block;height:9px;width:26px"></span></span>`).join("")}</div>
+      <span class="sk" style="display:block;height:13px;width:58%;margin-top:18px"></span>
+    </div>
+    <div class="soft-card">
+      <span class="sk" style="display:block;height:16px;width:34%;margin-bottom:14px"></span>
+      <span class="sk" style="display:block;height:13px;width:76%"></span>
+      <span class="sk" style="display:block;height:5px;width:100%;margin-top:9px"></span>
+      <span class="sk" style="display:block;height:13px;width:64%;margin-top:16px"></span>
+      <span class="sk" style="display:block;height:5px;width:100%;margin-top:9px"></span>
+    </div>`;
+}
+
+/* Запит на відпустку від самої людини (Олег, 29.07: «щоб співробітник сам міг
+   запропонувати дати, а Каті прийшло на погодження»). До погодження нічого не
+   змінюється: непогоджений запит не має знижувати норму — інакше її можна було
+   б збити самим фактом прохання. */
+function absenceRequestSheet() {
+  let kind = "vacation";
+  openSheet(`
+    <h2>Попросити вихідні</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 14px">
+      Катя побачить запит у «Сповіщеннях» і погодить або відхилить.</p>
+    <div class="chips" id="ar-kinds">
+      ${ABSENCE_KINDS.map((k) => `<button class="chip${k.v === kind ? " on" : ""}"
+        data-ak="${k.v}">${k.label}</button>`).join("")}
+    </div>
+    <div class="f-label">З якого дня</div>
+    <input id="ar-start" type="date" min="${todayISO()}" value="${todayISO()}">
+    <div class="f-label">По який день включно</div>
+    <input id="ar-end" type="date" min="${todayISO()}" value="${todayISO()}">
+    <div class="f-label">Коментар (необовʼязково)</div>
+    <input id="ar-note" maxlength="120" placeholder="за свій рахунок, планую…">
+    <div class="sheet-actions">
+      <button class="sbtn" id="ar-cancel">Скасувати</button>
+      <button class="sbtn primary" id="ar-send">Надіслати</button>
+    </div>`);
+  $("ar-kinds").querySelectorAll("[data-ak]").forEach((b) => b.onclick = () => {
+    kind = b.dataset.ak;
+    $("ar-kinds").querySelectorAll("[data-ak]").forEach((x) =>
+      x.classList.toggle("on", x.dataset.ak === kind));
+  });
+  $("ar-cancel").onclick = closeSheet;
+  $("ar-send").onclick = async () => {
+    const start = $("ar-start").value, end = $("ar-end").value;
+    if (!start || !end) { toast("Вкажи дати"); return; }
+    try {
+      await api("/api/absences/request", {
+        method: "POST",
+        body: JSON.stringify({ start, end, kind, note: $("ar-note").value.trim() }),
+      });
+      closeSheet();
+      haptic("success");
+      toast("Запит пішов Каті");
+    } catch (e) { toast(e.message); }
+  };
+}
+
 function renderJournalist() {
   const me = viewPerson();
   const mine = me.preview
@@ -3375,7 +3499,7 @@ function renderJournalist() {
       </div>
       <div class="me-ring" id="me-ring">${meRingHtml(null)}</div>
     </div>
-    <div id="my-kpi"></div>
+    <div id="my-kpi">${kpiSkeleton()}</div>
     ${open.length ? `<div class="soft-card">${open.map((t) => {
       const tp = taskProject(t);
       const qtyPart = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
@@ -3409,9 +3533,19 @@ function renderJournalist() {
         feed ? (feed.unread || (feed.items || []).length) : "")}
       ${doorHtml("myhist", "bar-chart", "c-sky", "KPI по місяцях",
         "як іде місяць до місяця", "")}
+      <button class="door c-good" data-ask>
+        <span class="door-ic">${icon("calendar")}</span>
+        <span class="door-txt">
+          <span class="door-t">Відпустка чи лікарняна</span>
+          <span class="door-m">попросити в Каті</span>
+        </span>
+        ${icon("chevron-right", "ic chev")}
+      </button>
     </div>`}`;
   $("content").querySelectorAll("[data-nav]").forEach((b) =>
     b.onclick = () => nav(b.dataset.nav));
+  const ask = $("content").querySelector("[data-ask]");
+  if (ask) ask.onclick = absenceRequestSheet;
   renderMyKpi();
   if (!me.preview) loadMyFeed();
 }
@@ -3740,7 +3874,12 @@ async function renderMyKpi() {
   try {
     k = await api("/api/kpi" + (me.preview
       ? `?person=${encodeURIComponent(me.name)}` : ""));
-  } catch (e) { return; }
+  } catch (e) {
+    // Заглушку треба прибрати навіть при збої — інакше вона шимеріла б вічно
+    const box0 = $("my-kpi");
+    if (box0) box0.innerHTML = "";
+    return;
+  }
   if (me.preview && STATE.view !== "preview") return;
   // Обличчя екрана — МІСЯЧНА норма: тижнева стрибає надто різко (у вівторок
   // там завжди буде мало). Беремо провідну, а не середнє: фраза і засічка
@@ -3771,7 +3910,8 @@ async function renderMyKpi() {
   }
 
   const box = $("my-kpi");
-  if (!box || !k.norms.length) return;
+  if (!box) return;
+  if (!k.norms.length) { box.innerHTML = ""; return; }
   const pace = lead && lead.pace;
   const phrase = live && pace
     ? pacePhrase(lr.pace, pace.phase, monthWord(k.month_label)) : null;

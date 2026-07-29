@@ -741,6 +741,72 @@ async def api_absence_delete(request):
     return web.json_response({"ok": True})
 
 
+# ---------- Запит на відпустку (від людини) ----------
+
+async def api_absence_request_create(request):
+    """{start, end, kind?, note?} — журналістка сама пропонує дати, Каті це
+    приходить на погодження (Олег, 29.07). До погодження цілі KPI НЕ чіпаємо:
+    інакше норму можна було б знизити самим фактом прохання."""
+    person, info, _ = await _authenticate(request)
+    payload = await _json(request)
+    dates = []
+    for key in ("start", "end"):
+        try:
+            dates.append(time.strftime("%Y-%m-%d",
+                                       time.strptime(payload.get(key), "%Y-%m-%d")))
+        except (ValueError, TypeError):
+            raise web.HTTPBadRequest(text=f"{key}: YYYY-MM-DD")
+    kind = payload.get("kind") or "vacation"
+    if kind not in team_kpi.ABSENCE_KINDS:
+        raise web.HTTPBadRequest(text="kind: vacation, sick або trip")
+    req = await _in_session(team_kpi.request_absence, person,
+                            dates[0], dates[1], kind, payload.get("note"))
+    team_notifications.notify_safe(
+        "absence_request", f"{person} просить {req['title']}",
+        body=f"{_ru_range(req['start'], req['end'])}"
+             + (f" · {req['note']}" if req.get("note") else ""),
+        object_type="absence_request", object_id=req["id"],
+        dedup_key=f"absence_request:{req['id']}",
+    )
+    return web.json_response({"request": req})
+
+
+def _ru_range(start, end):
+    """«08.08 — 17.08» одним рядком для картки погодження."""
+    fmt = lambda d: f"{d[8:10]}.{d[5:7]}"
+    return fmt(start) if start == end else f"{fmt(start)} — {fmt(end)}"
+
+
+async def api_absence_requests(request):
+    """Черга погодження — менеджерам."""
+    person, info, _ = await _require_manager(request)
+    data = await _in_session(team_kpi.list_absence_requests, "pending")
+    return web.json_response({"requests": data})
+
+
+async def api_absence_request_decide(request):
+    """{approve: true|false}. Погоджений запит СТВОРЮЄ відсутність — саме з
+    цієї хвилини перераховуються цілі."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    approve = bool(payload.get("approve"))
+    req = await _in_session(team_kpi.decide_absence_request,
+                            int(request.match_info["request_id"]), person, approve)
+    if not req:
+        raise web.HTTPNotFound(text="Запиту немає")
+    if approve:
+        team_kpi._fact_cache.clear()   # цілі змінились — зведення протухло
+    team_notifications.notify_safe(
+        "absence_decided",
+        f"{req['title'].capitalize()} {'погоджено' if approve else 'відхилено'}",
+        audience=team_notifications.AUDIENCE_PERSON, person=req["person"],
+        body=f"{_ru_range(req['start'], req['end'])} · {person}",
+        object_type="absence_request", object_id=req["id"],
+        dedup_key=f"absence_decided:{req['id']}",
+    )
+    return web.json_response({"request": req})
+
+
 # ---------- Черга звірки (спірні матчі) ----------
 
 def _pending_payload():
@@ -1326,6 +1392,10 @@ async def start_webapp(application):
         web.get("/api/absences", api_absences),
         web.post("/api/absences", api_absence_create),
         web.delete("/api/absences/{absence_id:\\d+}", api_absence_delete),
+        web.post("/api/absences/request", api_absence_request_create),
+        web.get("/api/absences/requests", api_absence_requests),
+        web.post("/api/absences/requests/{request_id:\\d+}/decide",
+                 api_absence_request_decide),
         web.get("/api/dashboard", api_dashboard),
         web.get("/api/kpi", api_kpi),
         web.get("/api/kpi/dashboard", api_kpi_dashboard),

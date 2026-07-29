@@ -1199,3 +1199,6 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   font-size: 14px; font-weight: 700;
 }
 .peek-btn .ic { width: 17px; height: 17px; }
+
+/* Кружечок кроку в заглушці «Моїх KPI» */
+.sk-dot { width: 26px; height: 26px; border-radius: 50%; display: block; }

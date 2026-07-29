@@ -138,6 +138,7 @@ window.Telegram = { WebApp: {
   BackButton: { show(){}, hide(){}, onClick(){} },
   HapticFeedback: { notificationOccurred(){} } } };
 window.fetch = async (url, opts = {}) => {
+  let m0;
   const json = (o) => new Response(JSON.stringify(o),
     { headers: { "Content-Type": "application/json" } });
   const body = opts.body ? JSON.parse(opts.body) : {};
@@ -158,6 +159,15 @@ window.fetch = async (url, opts = {}) => {
                   tasks: body.force ? [{ id: 71, done_count: 0, qty: 3,
                                          status: "open", matches: [] }] : [],
                   pending_count: window.PENDING.length + 1 });
+  }
+  if (url === "/api/absences/requests") {
+    return json({ requests: window.ABSENCE_REQS || [] });
+  }
+  if ((m0 = url.match(/^\\/api\\/absences\\/requests\\/(\\d+)\\/decide$/))) {
+    window.__posts.push({ absence: +m0[1], body });
+    window.ABSENCE_REQS = (window.ABSENCE_REQS || [])
+      .filter((x) => x.id !== +m0[1]);
+    return json({ ok: true });
   }
   if (url === "/api/notifications/read") {
     window.__reads.push(body);
@@ -431,6 +441,36 @@ async def main():
                   bool(sent) and sent["body"]["deadline"] > "2020-01-31")
             check("картка зникла зі «Строк минув»",
                   await page.locator("[data-oext]").count() == 0)
+
+            # --- запити на відпустку (Олег, 29.07) ---
+            await page.evaluate("""() => {
+              window.ABSENCE_REQS = [{ id: 5, person: 'Аліна Квітко',
+                start: '2026-08-10', end: '2026-08-17', kind: 'vacation',
+                title: 'відпустка', note: 'давно планувала', status: 'pending' }];
+              STATE.absenceRequests = null; STATE.pending = null; STATE.notifs = null;
+              nav('alerts');
+            }""")
+            await page.wait_for_selector("[data-aryes]", timeout=5000)
+            ask = await page.inner_text("#alerts-body")
+            check("запит на відпустку видно окремим блоком",
+                  "ПРОСЯТЬ ВИХІДНІ" in ask.upper())
+            check("сказано хто, що і коли",
+                  "Аліна" in ask and "відпустк" in ask and "10.08" in ask)
+            check("коментар людини видно", "давно планувала" in ask)
+            check("дві дії — погодити і відхилити",
+                  await page.locator("[data-aryes]").count() == 1
+                  and await page.locator("[data-arno]").count() == 1)
+
+            await page.click("[data-aryes]")
+            await page.wait_for_timeout(400)
+            sent = await page.evaluate("window.__posts.slice(-1)[0]")
+            check("погодження їде на сервер",
+                  bool(sent) and sent.get("absence") == 5
+                  and sent["body"]["approve"] is True)
+            check("картка зникла після рішення",
+                  await page.locator("[data-aryes]").count() == 0)
+            check("зведення KPI скинуто — відпустка змінює цілі",
+                  await page.evaluate("() => STATE.kpi") is None)
         finally:
             await browser.close()
 

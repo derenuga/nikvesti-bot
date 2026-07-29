@@ -138,6 +138,28 @@ _SCHEMA_STATEMENTS.append(
     "CREATE INDEX IF NOT EXISTS idx_team_absences_person "
     "ON team_absences (person, start_date)")
 
+# Запит на відпустку від самої людини (Олег, 29.07: «щоб співробітник сам міг
+# запропонувати дати, а Каті прийшло на погодження»). Окрема таблиця, а не
+# прапорець у team_absences: непогоджений запит НЕ має впливати на цілі KPI —
+# інакше людина знижувала б собі норму сама, просто попросивши.
+_SCHEMA_STATEMENTS.append("""
+    CREATE TABLE IF NOT EXISTS team_absence_requests (
+        id         BIGSERIAL PRIMARY KEY,
+        person     TEXT NOT NULL,
+        start_date DATE NOT NULL,
+        end_date   DATE NOT NULL,
+        kind       TEXT NOT NULL DEFAULT 'vacation',
+        note       TEXT,
+        status     TEXT NOT NULL DEFAULT 'pending',
+        decided_by TEXT,
+        decided_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+""")
+_SCHEMA_STATEMENTS.append(
+    "CREATE INDEX IF NOT EXISTS idx_team_absence_requests_status "
+    "ON team_absence_requests (status, start_date)")
+
 # Скільки новин «важить» одна стаття у нормі на новини (Олег, 28.07).
 # Причина: норма є лише на новини, а стаття коштує в рази дорожче за часом.
 # Людям дозволено забивати на новини, коли вони в статті — але кружечок
@@ -1061,3 +1083,71 @@ def kpi_dashboard(period, offset=0):
         "site_db": db.is_configured(),
         "people": people,
     }
+
+
+# ---------- Запити на відпустку (від людини — на погодження) ----------
+
+def _row_to_request(r):
+    return {"id": r["id"], "person": r["person"],
+            "start": r["start_date"].isoformat(), "end": r["end_date"].isoformat(),
+            "kind": r["kind"], "title": ABSENCE_TITLES.get(r["kind"], r["kind"]),
+            "note": r["note"], "status": r["status"],
+            "decided_by": r["decided_by"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None}
+
+
+def list_absence_requests(status="pending", person=None):
+    ensure_kpi_schema()
+    where, params = [], []
+    if status:
+        where.append("status = %s")
+        params.append(status)
+    if person:
+        where.append("person = %s")
+        params.append(person)
+    sql = "SELECT * FROM team_absence_requests"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY start_date"
+    return [_row_to_request(r) for r in bot_db.query(sql, tuple(params))]
+
+
+def request_absence(person, start, end, kind="vacation", note=None):
+    """Запит від людини. Нічого не змінює в цілях, поки Катя не погодить."""
+    ensure_kpi_schema()
+    if kind not in ABSENCE_KINDS:
+        kind = "vacation"
+    if date.fromisoformat(end) < date.fromisoformat(start):
+        start, end = end, start
+    rows = bot_db.query(
+        "INSERT INTO team_absence_requests (person, start_date, end_date, kind, note) "
+        "VALUES (%s, %s, %s, %s, %s) RETURNING *",
+        (person, start, end, kind, (note or "").strip() or None),
+    )
+    return _row_to_request(rows[0])
+
+
+def decide_absence_request(request_id, actor, approve):
+    """Рішення Каті. Погоджений запит СТВОРЮЄ відсутність — саме з цієї
+    хвилини цілі KPI перераховуються. Відхилений лишається в історії, щоб
+    людина бачила відповідь, а не тишу."""
+    ensure_kpi_schema()
+    rows = bot_db.query("SELECT * FROM team_absence_requests WHERE id = %s",
+                        (int(request_id),))
+    if not rows:
+        return None
+    req = _row_to_request(rows[0])
+    if req["status"] != "pending":
+        return req
+    status = "approved" if approve else "rejected"
+    bot_db.execute(
+        "UPDATE team_absence_requests SET status = %s, decided_by = %s, "
+        "decided_at = now() WHERE id = %s",
+        (status, actor, int(request_id)),
+    )
+    req["status"] = status
+    req["decided_by"] = actor
+    if approve:
+        add_absence(actor, req["person"], req["start"], req["end"],
+                    req["kind"], req["note"])
+    return req

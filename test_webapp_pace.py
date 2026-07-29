@@ -22,6 +22,8 @@
   конфеті;
 - смуга й кільце приїжджають анімацією з нуля, а не малюються одразу повними;
 - біля фрази є довідкове «?», і воно пояснює саме нове поняття «на сьогодні»;
+- журналістка може сама попросити відпустку: дати, тип і коментар їдуть на
+  сервер, Каті це приходить на погодження;
 - у менеджерському «Звіті» першого числа НІХТО не червоний.
 
 Запуск (потрібні playwright + chromium):
@@ -113,7 +115,7 @@ window.Telegram = { WebApp: {
   openLink(){}, showConfirm(m, c){ c(true); },
   BackButton: { show(){}, hide(){}, onClick(){} },
   HapticFeedback: { notificationOccurred(t){ window.__haptics.push(t); } } } };
-window.fetch = async (url) => {
+window.fetch = async (url, opts = {}) => {
   const json = (o) => new Response(JSON.stringify(o),
     { headers: { "Content-Type": "application/json" } });
   if (url === "/api/bootstrap") return json(window.BOOT);
@@ -121,6 +123,10 @@ window.fetch = async (url) => {
     week_label: "10–16.08", month_label: "серпень 2026", site_db: true });
   if (url.startsWith("/api/kpi/person")) return json({ has_norms: false, months: [] });
   if (url === "/api/notifications") return json({ items: [], unread: 0 });
+  if (url === "/api/absences/request") {
+    window.__askedAbsence = JSON.parse(opts.body);
+    return json({ ok: true });
+  }
   if (url.startsWith("/api/kpi/dashboard")) return json(window.DASH || { people: [] });
   return json({ ok: true });
 };
@@ -247,6 +253,24 @@ async def main():
 
             check("салюту без закритої норми немає",
                   await page.locator(".confetti").count() == 0)
+
+            # --- запит на відпустку від самої журналістки ---
+            check("є кнопка попросити вихідні",
+                  await page.locator("[data-ask]").count() == 1)
+            await page.click("[data-ask]")
+            await page.wait_for_selector("#ar-start", timeout=3000)
+            check("у шторці три типи відсутності",
+                  await page.locator("[data-ak]").count() == 3)
+            await page.fill("#ar-start", "2026-08-10")
+            await page.fill("#ar-end", "2026-08-17")
+            await page.fill("#ar-note", "давно планувала")
+            await page.click("#ar-send")
+            await page.wait_for_timeout(400)
+            req = await page.evaluate("window.__askedAbsence")
+            check("запит пішов із датами і типом",
+                  bool(req) and req["start"] == "2026-08-10"
+                  and req["end"] == "2026-08-17" and req["kind"] == "vacation")
+            check("і з коментарем", req and req["note"] == "давно планувала")
 
             # --- довідка «?»: пояснює саме те, що щойно ввели ---
             check("біля фрази стоїть «?»",
