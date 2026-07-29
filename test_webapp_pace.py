@@ -22,6 +22,8 @@
   конфеті;
 - смуга й кільце приїжджають анімацією з нуля, а не малюються одразу повними;
 - біля фрази є довідкове «?», і воно пояснює саме нове поняття «на сьогодні»;
+- робота ПОЗА нормою («+22 новини в стрічку») видима підписом, без другої
+  смуги прогресу і без слова «рерайт»;
 - журналістка може сама попросити відпустку: дати, тип і коментар їдуть на
   сервер, Каті це приходить на погодження;
 - у менеджерському «Звіті» першого числа НІХТО не червоний.
@@ -78,6 +80,7 @@ def norm(fact, target, expected, pace, phase, left, steps=(), done=False,
             "person": "Аліна Квітко", "fact": fact, "target": target,
             "base_target": target, "overridden": False, "note": None,
             "excused": False, "done": done, "articles": 0, "article_weight": 3,
+            "feed_news": 22,
             "remaining": target - fact if remaining is None else remaining,
             "days_left": left, "expected": expected, "pace": pace,
             "pace_pct": None if not expected else min(100, round(fact / expected * 100)),
@@ -246,6 +249,16 @@ async def main():
                   await page.locator(".step.fut").count() == 2)
             check("незакритий минулий тиждень позначено бурштином",
                   await page.locator(".step.miss").count() == 1)
+
+            kpi_txt = await page.inner_text("#my-kpi")
+            check("новини в стрічку видно окремим підписом",
+                  "+22 новини в стрічку" in kpi_txt)
+            check("число відмінюється правильно (22 новинИ, не новин)",
+                  "22 новин в" not in kpi_txt)
+            check("слова «рерайт» в інтерфейсі немає",
+                  "рерайт" not in kpi_txt.lower())
+            check("смуги прогресу для них немає — це не норма",
+                  await page.locator("#my-kpi .kbar").count() == 1)
 
             nxt = await page.inner_text(".pace-next")
             check("«що далі» каже, скільки лишилось", "13" in nxt)

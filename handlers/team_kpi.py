@@ -593,6 +593,31 @@ def weighted_facts(metric, period, own=False, offset=0):
     return out, bonus
 
 
+def feed_news_counts(period, offset=0):
+    """{людина: скільки новин у стрічку} — тобто НЕ власних (own_material=0).
+
+    Навіщо (Олег, 29.07): у Creative норма рахує лише власні матеріали, і в
+    Аліни за липень 22 новини в стрічку не було видно ніде — третина роботи
+    просто не існувала на екрані. Тепер вона є окремим рядком, без смуги: це
+    не норма, а зроблена робота.
+
+    Слово «рерайт» в інтерфейс не йде принципово (пряме прохання Олега):
+    людина бачить «новини в стрічку», а не оцінку жанру.
+
+    Обидва запити кешовані (_fact_cache), тож зайвого походу в БД сайту немає:
+    own=False все одно тягнеться для норм Newsroom."""
+    everything = fact_counts("news", period, False, offset)
+    own = fact_counts("news", period, True, offset)
+    if everything is None:
+        return {}
+    out = {}
+    for person, total in everything.items():
+        extra = (total or 0) - ((own or {}).get(person) or 0)
+        if extra > 0:
+            out[person] = extra
+    return out
+
+
 def _overrides_for(norm_id, period, offset=0):
     start, _ = period_bounds(period, offset)
     return {
@@ -836,6 +861,15 @@ def kpi_payload(for_person=None):
                       and team_roster.effective_dept(p, depts) == n["dept"]]
         overrides = _overrides_for(n["id"], n["period"])
         facts, article_bonus = weighted_facts(n["metric"], n["period"], n["own"])
+        # «Новини в стрічку» показуємо ЛИШЕ якщо їх не рахує інша норма цього
+        # ж відділу: інакше в людини були б і смуга прогресу, і надпис про те
+        # саме (пряме застереження Олега 29.07 — «щоб не було дубляжу»).
+        feed = {}
+        if n["metric"] == "news" and n["own"] and not any(
+                m["metric"] == "news" and not m["own"]
+                and m["dept"] == n["dept"] and m["period"] == n["period"]
+                for m in norms):
+            feed = feed_news_counts(n["period"])
         p_start, p_end = period_bounds(n["period"])
         absences = _absences_by_person(set(people))
         rows = []
@@ -868,6 +902,7 @@ def kpi_payload(for_person=None):
                 "missed_days": missed,
                 "articles": article_bonus.get(person, 0),
                 "article_weight": ARTICLE_WEIGHT,
+                "feed_news": feed.get(person) or 0,
                 "done": fact is not None and target > 0 and fact >= target,
                 "remaining": (max(0, target - fact)
                               if fact is not None and target > 0 else None),

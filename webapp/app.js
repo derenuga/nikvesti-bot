@@ -295,6 +295,16 @@ function personEntry(name) {
     || null;
 }
 
+/* Українські форми числа. Наївне «n < 5 ? few : many» ламається на 22, 23,
+   24, 32… — саме на цьому спіймався підпис «+22 новини в стрічку». Правило:
+   останні дві цифри 11–14 — завжди many, далі дивимось на останню. */
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100;
+  if (a >= 11 && a <= 14) return many;
+  const b = a % 10;
+  return b === 1 ? one : (b >= 2 && b <= 4 ? few : many);
+}
+
 /* Пояснення, звідки взявся факт більший за кількість новин: стаття важить
    три новини (Олег, 28.07 — «людям дозволено забивати на новини, коли вони в
    статті»). Без цього підпису цифра виглядала б помилкою. */
@@ -302,8 +312,23 @@ function articleHint(row) {
   const n = row && row.articles;
   if (!n) return "";
   const w = row.article_weight || 3;
-  const word = n === 1 ? "стаття" : n < 5 ? "статті" : "статей";
+  const word = plural(n, "стаття", "статті", "статей");
   return `<span class="mk-bonus">+${n} ${word} ×${w}</span>`;
+}
+
+/* «+22 новини в стрічку» — робота ПОЗА нормою на власні матеріали.
+   Олег, 29.07: у Аліни за липень 22 такі новини не було видно ніде, тобто
+   третина роботи не існувала на екрані. Слово «рерайт» в інтерфейс не йде
+   принципово — людина бачить, що зробила, а не оцінку жанру.
+
+   Смуги прогресу тут немає навмисно: це не норма. А якщо у відділу колись
+   зʼявиться норма і на такі новини, сервер сам перестане слати feed_news
+   (див. kpi_payload) — щоб не було і смуги, і цього ж надпису про те саме. */
+function feedHint(row) {
+  const n = row && row.feed_news;
+  if (!n) return "";
+  const word = plural(n, "новина", "новини", "новин");
+  return `<span class="mk-feed">+${n} ${word} в стрічку</span>`;
 }
 
 /* Прогрес зарахованого виконання: «2/3». Порожньо там, де показувати нічого:
@@ -1036,7 +1061,7 @@ function renderPerson() {
     return `<button class="mykpi-row" data-kpn="${n.id}">
       <span class="mk-t">${esc(normTitle(n, r))}
         <span class="mk-p">· ${esc(n.period === "week" ? STATE.kpi.week_label : STATE.kpi.month_label)}</span>
-        ${normWhy(n, r)}${articleHint(r)}</span>
+        ${normWhy(n, r)}${articleHint(r)}${feedHint(r)}</span>
       <span class="kp-fact ${r.done ? "ok" : ""}">${r.fact === null ? "—" : `${r.fact}/${r.target}${r.done ? " ✓" : ""}`}</span>
       <span class="kbar wide"><i class="${r.done ? "ok" : ""}" style="width:${pct}%"></i></span>
     </button>`;
@@ -3937,7 +3962,7 @@ async function renderMyKpi() {
       return `<div class="mykpi-row">
         <span class="mk-t">${esc(normTitle(n, r))}
           <span class="mk-p">· ${esc(n.period === "week" ? k.week_label : k.month_label)}</span>
-          ${normWhy(n, r)}${articleHint(r)}</span>
+          ${normWhy(n, r)}${articleHint(r)}${feedHint(r)}</span>
         <span class="kp-fact ${r.done ? "ok" : ""}">${r.fact === null ? "—" : `${r.fact}/${r.target}${r.done ? " ✓" : ""}`}</span>
         <span class="kbar wide">
           <i class="${r.done ? "ok" : ""}" data-fill="${p}%" style="width:0%"></i>
