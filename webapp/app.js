@@ -419,6 +419,12 @@ function projectColorIdx(id) {
    нативна і намальована ніколи не розійдуться. Зі стеком розійшлися б —
    nav("project") після збереження тематики клав би туди зайвий запис. */
 function backTarget() {
+  // У перегляді чужими очима підекрани повертають у САМ перегляд, а не на
+  // головну менеджера — інакше «Назад» із її публікацій викидало б із
+  // перегляду зовсім
+  if (inPreview() && STATE.view !== "preview") {
+    return ["preview", STATE.previewPerson];
+  }
   switch (STATE.view) {
     case "person":
     case "personhist":
@@ -431,6 +437,8 @@ function backTarget() {
     case "mydone":
     case "myfeed":
     case "myhist":
+    case "mypubs":
+    case "away":
     case "contacts": return ["home"];
     case "preview": return ["personhist", STATE.previewPerson];
     default: return null;      // корінь табів — назад нікуди
@@ -4442,7 +4450,7 @@ async function renderMyPubs() {
   $("content").innerHTML = `
     <button class="back" data-back>${icon("chevron-left")} Назад</button>
     <div class="h-big">${me.preview ? esc(me.first_name) + " · публікації" : "Мої публікації"}</div>
-    <div class="h-sub">що вийшло під твоїм іменем</div>
+    <div class="h-sub">${me.preview ? "вихід за місяць" : "що вийшло під твоїм іменем"}</div>
     <div id="pubs-body">${skeleton("rows", 4)}</div>`;
   $("content").querySelectorAll("[data-nav]").forEach((b) =>
     b.onclick = () => nav(b.dataset.nav));

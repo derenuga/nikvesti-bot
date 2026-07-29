@@ -183,6 +183,15 @@ async def main():
             await page.wait_for_timeout(200)
             check("тап по матеріалу відкриває його на сайті",
                   (await page.evaluate("window.__opened") or "").endswith("/321"))
+            # Олег, 29.07: «у мене не працює кнопка назад у списку публікацій».
+            # backTarget() не знав ні про mypubs, ні про away — кнопка просто
+            # нічого не робила, і в журналістки так само.
+            await page.click("[data-back]")
+            await page.wait_for_timeout(300)
+            check("«Назад» зі списку публікацій веде на головну",
+                  await page.evaluate("STATE.view") == "home")
+            await page.click('#bottomnav [data-view="mypubs"]')
+            await page.wait_for_selector(".pub-hero", timeout=5000)
             await page.screenshot(path="/tmp/ph-shots/pubs.png", full_page=True)
         finally:
             await browser.close()
@@ -208,6 +217,12 @@ async def main():
                   any("person=" in c for c in calls))
             check("у заголовку видно, чиї це публікації",
                   "Юлія" in await page.inner_text(".h-big"))
+            check("і підпис не бреше про «твоє імʼя» — це чужий екран",
+                  "твоїм" not in await page.inner_text(".h-sub"))
+            await page.click("[data-back]")
+            await page.wait_for_timeout(300)
+            check("«Назад» у перегляді повертає в перегляд, а не викидає з нього",
+                  await page.evaluate("STATE.view") == "preview")
 
             await page.evaluate("nav('home')")
             await page.wait_for_timeout(300)
