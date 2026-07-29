@@ -4489,13 +4489,20 @@ function periodStrip(label, off) {
   </div>`;
 }
 
+/* Рядок публікації. Дата й час стоять ПЕРШИМИ і в окремому боксі (Олег,
+   29.07). Спершу вони йшли підписом під заголовком — і в живому списку з
+   тридцяти новин заголовок перетікав у дату одним абзацом:
+   «…призначили майора Гіпіка 27.07 · 21:35» читалось як частина заголовка.
+   Бокс ліворуч розриває це фізично: око бачить стовпчик дат і окремо тексти. */
 function pubRow(p) {
+  const tags = [p.own ? "власний" : null, p.kind === "article" ? "стаття" : null]
+    .filter(Boolean).join(" · ");
   return `
-    <a class="cnt-row" data-ext="${esc(p.url)}" href="${esc(p.url)}">
-      <span class="pk-txt">
-        <span class="pk-name">${esc(p.title)}</span>
-        <span class="pk-meta">${esc(p.date)} · ${esc(p.time)}${
-          p.own ? " · власний" : ""}${p.kind === "article" ? " · стаття" : ""}</span>
+    <a class="pub-row" data-ext="${esc(p.url)}" href="${esc(p.url)}">
+      <span class="pub-when"><b>${esc(p.date)}</b><i>${esc(p.time)}</i></span>
+      <span class="pub-t">
+        <span class="pub-title">${esc(p.title)}</span>
+        ${tags ? `<span class="pub-tags">${esc(tags)}</span>` : ""}
       </span>
       ${p.views ? `<span class="pub-v">${fmtNum(p.views)}</span>` : ""}
     </a>`;

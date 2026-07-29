@@ -163,6 +163,8 @@ async def main():
             body = await page.inner_text("#pubs-body")
             check("видно сам перелік", "нову підстанцію" in body)
             check("зі статтею, позначеною окремо", "стаття" in body)
+            check("дата й час стоять окремим боксом, а не всередині заголовка",
+                  await page.locator(".pub-row .pub-when").count() == 2)
             check("чесно сказано, що лічильник за весь час, а не за місяць",
                   "за весь час" in body)
 
@@ -177,7 +179,7 @@ async def main():
             check("і не підмішує чужу людину — журналістка бачить лише себе",
                   all("person=" not in c for c in calls))
 
-            await page.click(".cnt-row")
+            await page.click(".pub-row")
             await page.wait_for_timeout(200)
             check("тап по матеріалу відкриває його на сайті",
                   (await page.evaluate("window.__opened") or "").endswith("/321"))

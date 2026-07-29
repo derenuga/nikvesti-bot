@@ -1246,10 +1246,31 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 .pub-n { font-size: 34px; font-weight: 800; line-height: 1.05; }
 .pub-l { font-size: 13px; color: var(--muted); margin-top: 2px; }
 .pub-s { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
-.pub-v { font-size: 12.5px; font-weight: 700; color: var(--muted); white-space: nowrap; }
 /* Рядок публікації — це посилання, але виглядати має рядком: синє з
    підкресленням у списку з сорока заголовків читається як суцільна каша */
-a.cnt-row { color: inherit; text-decoration: none; }
+.pub-row {
+  display: flex; align-items: flex-start; gap: 11px; width: 100%;
+  padding: 11px 0; border-top: 1px solid var(--line);
+  color: inherit; text-decoration: none; text-align: left;
+}
+.pub-row:first-child { border-top: none; padding-top: 2px; }
+/* Дата окремим боксом: інакше заголовок і час зливаються в один абзац */
+.pub-when {
+  flex: 0 0 50px; text-align: center; background: var(--fill);
+  border-radius: 10px; padding: 5px 0 4px;
+}
+.pub-when b { display: block; font-size: 12px; font-weight: 800; line-height: 1.2; }
+.pub-when i {
+  display: block; font-style: normal; font-size: 11px; color: var(--muted);
+  line-height: 1.2; margin-top: 1px;
+}
+.pub-t { flex: 1 1 auto; min-width: 0; }
+.pub-title { display: block; font-size: 14.5px; line-height: 1.35; }
+.pub-tags { display: block; font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.pub-v {
+  flex: 0 0 auto; font-size: 12.5px; font-weight: 700; color: var(--muted);
+  white-space: nowrap; padding-top: 6px;
+}
 
 /* Гортання періодів: стрілка ‹ назад, › вперед — те саме, що у «Звіті» */
 .per-strip {
