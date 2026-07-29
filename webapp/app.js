@@ -463,10 +463,13 @@ function nav(view, arg) {
   if (view === "kpinorm") STATE.currentNorm = arg;
   if (view === "person" || view === "personhist") STATE.currentPerson = arg;
   if (view === "preview") STATE.previewPerson = arg;
+  // Вийшли за межі журналістських підекранів — перегляд закінчився
+  else if (!J_SUBVIEWS.has(view)) STATE.previewPerson = null;
   if (view === "bulk") {
     const now = new Date();
     STATE.bulk = { ...arg, y: now.getFullYear(), m: now.getMonth(), qty: {} };
   }
+  if (view === "mypubs") STATE.pubsOffset = 0;   // входимо завжди в поточний місяць
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
   // Черга і стрічка могли змінитись у колеги — перечитуємо при кожному вході
   if (view === "alerts") {
@@ -476,12 +479,14 @@ function nav(view, arg) {
     person: arg, project: undefined, type: null, platform: "telegram",
     theme_id: null, qty: 1, note: "", deadline: "",
   };
+  paintNav();
   // KPI і його підекрани більше не пункт нижнього меню — заходять із
   // Головної, тож і підсвічуємо Головну
   const navKey = view === "preview" ? "home"
     : view === "kpi" || view === "kpinorm" ? "home"
     : view === "project" || view === "bulk" ? "projects"
-    : view === "person" || view === "personhist" ? "home" : view;
+    : view === "person" || view === "personhist" ? "home"
+    : view === "mydone" || view === "myhist" ? "home" : view;
   document.querySelectorAll("#bottomnav .bn").forEach((b) =>
     b.classList.toggle("on", b.dataset.view === navKey));
   render();
@@ -499,6 +504,7 @@ function render() {
   else if (v === "mydone") renderMyDone();
   else if (v === "myfeed") renderMyFeed();
   else if (v === "myhist") renderMyHistory();
+  else if (v === "mypubs") renderMyPubs();
   else if (v === "contacts") renderContacts();
   else if (v === "away") renderAway();
   else if (v === "home") renderHome();
@@ -3364,15 +3370,58 @@ function patchPendingOptions(tasks) {
   });
 }
 
-/* Лічильник на пункті меню «Сповіщення»: спірні + непрочитані події */
+/* Нижнє меню журналістки (Олег, 29.07: «може, треба таки меню журналісту —
+   мої публікації, блокнот, телефон, сповіщення?»).
+
+   Причина не в симетрії з менеджером, а в арифметиці: щойно до «Виконаних»,
+   «Подій», «KPI по місяцях», «Контактів» і «Не буду на роботі» додались
+   «Публікації», головна перетворилась на список із шести посилань. У меню
+   пішло те, що відкривають РЕГУЛЯРНО і що не має числа; на головній лишились
+   двері, які без числа не мають сенсу («Виконані ×3», «66%»).
+
+   У перегляді чужими очима меню теж журналістське — інакше половина її
+   екрана була б менеджеру недосяжна. «Події» там вимкнено: /api/notifications
+   віддає стрічку того, хто дивиться, і це була б чужа стрічка під її іменем. */
+const NAV_JOURNALIST = [
+  ["home", "home", "Головна"],
+  ["mypubs", "trending-up", "Публікації"],
+  ["contacts", "book", "Контакти"],
+  ["myfeed", "bell", "Події"],
+];
+
+function paintNav() {
+  const nav = $("bottomnav");
+  // Менеджерське меню лежить у розмітці — запамʼятовуємо його ДО першої
+  // перемальовки, інакше повернення з перегляду лишало б порожню смугу
+  if (!STATE.navManager) STATE.navManager = nav.innerHTML;
+  const preview = inPreview();
+  const role = preview ? "p" : (STATE.me.manager ? "m" : "j");
+  if (nav.dataset.role === role) return;
+  nav.dataset.role = role;
+  if (role === "m") { nav.innerHTML = STATE.navManager; syncAlertsBadge(); return; }
+  nav.innerHTML = NAV_JOURNALIST.map(([v, ic, label]) => {
+    const dead = preview && v === "myfeed";
+    return `<button class="bn${dead ? " off" : ""}"
+      ${dead ? 'disabled aria-disabled="true"' : `data-view="${v}"`}>
+      <svg class="ic"><use href="#i-${ic}"/></svg><span>${label}</span></button>`;
+  }).join("");
+  syncAlertsBadge();
+}
+
+/* Лічильник на пункті меню «Сповіщення»: спірні + непрочитані події.
+   У журналістки той самий пункт зветься «Події» — лічильник має знайти саме
+   його, інакше вона не бачила б, що їй щось зарахували. */
 function syncAlertsBadge() {
-  const btn = document.querySelector('#bottomnav [data-view="alerts"]');
+  const btn = document.querySelector('#bottomnav [data-view="alerts"]')
+    || document.querySelector('#bottomnav [data-view="myfeed"]');
   if (!btn) return;
   // Прострочені теж просять дії, тож і в лічильнику вони мають бути: інакше
   // Катя бачила б «0» на пункті меню, у якому лежить п'ять завислих завдань
-  const n = (STATE.pendingCount || 0) + (STATE.unread || 0)
-    + (STATE.me && STATE.me.manager
-       ? overdueTasks().length + (STATE.absenceRequests || []).length : 0);
+  const n = STATE.me && !STATE.me.manager
+    ? ((STATE.myFeed && STATE.myFeed.unread) || 0)
+    : (STATE.pendingCount || 0) + (STATE.unread || 0)
+      + (STATE.me && STATE.me.manager
+         ? overdueTasks().length + (STATE.absenceRequests || []).length : 0);
   let dot = btn.querySelector(".bn-badge");
   if (!n) { if (dot) dot.remove(); return; }
   if (!dot) {
@@ -4136,16 +4185,23 @@ function deptSheet(p) {
    числа екран-хаб перетворюється на витрачений екран. */
 
 /* Двері: іконка в мʼякій плашці, назва, підпис і число праворуч. */
-function doorHtml(view, iconName, tone, title, meta, n) {
+/* off — двері видно, але вони не відкриваються. Це для перегляду чужими очима:
+   Олег, 29.07 — «я хочу бачити все, що у неї, просто нехай не натискається
+   там, де сенситивне, бо мені так складно з тобою кодити наосліп». Ховати
+   двері не можна (екран перестає бути тим самим екраном), відкривати теж:
+   «Події» позначились би прочитаними за людину, а «Не буду на роботі» подало
+   б запит на відпустку від її імені. */
+function doorHtml(view, iconName, tone, title, meta, n, off) {
   return `
-    <button class="door ${tone}" data-nav="${view}">
+    <button class="door ${tone}${off ? " off" : ""}"
+      ${off ? 'disabled aria-disabled="true"' : `data-nav="${view}"`}>
       <span class="door-ic">${icon(iconName)}</span>
       <span class="door-txt">
         <span class="door-t">${esc(title)}</span>
         ${meta ? `<span class="door-m">${esc(meta)}</span>` : ""}
       </span>
       ${n ? `<span class="door-n">${esc(String(n))}</span>` : ""}
-      ${icon("chevron-right", "ic chev")}
+      ${off ? `<span class="door-off">перегляд</span>` : icon("chevron-right", "ic chev")}
     </button>`;
 }
 
@@ -4154,8 +4210,17 @@ function doorHtml(view, iconName, tone, title, meta, n) {
    дивитись перший екран обраного журналіста, так дебажити легше» (Олег,
    29.07). Перегляд лише читає: чужу стрічку подій не показуємо і прочитаною
    не робимо. */
+/* Підекрани журналістського режиму. Поки Олег ходить ними, перегляд лишається
+   переглядом: раніше «preview» жив рівно один екран, і тап у «Публікації»
+   мовчки перемикав його на власні дані. */
+const J_SUBVIEWS = new Set(["preview", "mypubs", "myhist", "mydone", "myfeed"]);
+
+function inPreview() {
+  return !!STATE.previewPerson && J_SUBVIEWS.has(STATE.view);
+}
+
 function viewPerson() {
-  if (STATE.view === "preview" && STATE.previewPerson) {
+  if (inPreview()) {
     const name = STATE.previewPerson;
     return { name, first_name: name.split(" ")[0],
              entry: personEntry(name) || {}, preview: true };
@@ -4274,35 +4339,30 @@ function renderJournalist() {
       </div>`;
     }).join("")}</div>`
       : `<div class="empty-hint">Відкритих завдань немає.</div>`}
-    ${/* У перегляді чужими очима лишаємо ЛИШЕ двері, які нічого не роблять
-          від імені людини: історія KPI і спільна база контактів. «Події»
-          позначались би прочитаними за неї, а «Не буду на роботі» подало б
-          запит на відпустку від її імені. Без цих двох дверей Олег у прев'ю
-          взагалі не бачив телефонної книги і питав, де вона (29.07). */""}
-    ${me.preview ? `<div class="doors">
-      ${doorHtml("myhist", "bar-chart", "c-sky", "KPI по місяцях",
-        "як іде місяць до місяця", "")}
-      ${doorHtml("contacts", "book", "c-blue", "Контакти редакції",
-        "телефони редакції — спільні на всіх", "")}
-    </div>` : `<div class="doors">
+    ${/* На головній лишаються лише двері, які без числа не мають сенсу:
+          «Виконані ×3», «66%». Регулярне — «Публікації», «Контакти», «Події» —
+          переїхало в нижнє меню (див. NAV_JOURNALIST), інакше екран був би
+          списком із шести посилань.
+
+          Перегляд чужими очима показує ТОЙ САМИЙ екран (Олег, 29.07: «я хочу
+          бачити все, що у неї»). Не відкривається лише «Не буду на роботі» —
+          воно подало б запит на відпустку від її імені. */""}
+    <div class="doors">
       ${closed.length ? doorHtml("mydone", "check", "c-good", "Виконані",
         "завдання, які вже закрито", closed.length) : ""}
-      ${doorHtml("myfeed", "bell", "c-blue", "Події",
-        feed && feed.unread ? "є нові" : "що зарахували і що поставили",
-        feed ? (feed.unread || (feed.items || []).length) : "")}
       ${doorHtml("myhist", "bar-chart", "c-sky", "KPI по місяцях",
         "як іде місяць до місяця", "")}
-      ${doorHtml("contacts", "book", "c-blue", "Контакти редакції",
-        contactsDoorMeta(), STATE.contactsMine ? STATE.contactsMine.total : "")}
-      <button class="door c-good" data-ask>
+      <button class="door c-good${me.preview ? " off" : ""}"
+        ${me.preview ? 'disabled aria-disabled="true"' : "data-ask"}>
         <span class="door-ic">${icon("calendar")}</span>
         <span class="door-txt">
           <span class="door-t">Не буду на роботі</span>
           <span class="door-m">відпустка · лікарняна · відрядження</span>
         </span>
-        ${icon("chevron-right", "ic chev")}
+        ${me.preview ? `<span class="door-off">перегляд</span>`
+          : icon("chevron-right", "ic chev")}
       </button>
-    </div>`}`;
+    </div>`;
   $("content").querySelectorAll("[data-nav]").forEach((b) =>
     b.onclick = () => nav(b.dataset.nav));
   const ask = $("content").querySelector("[data-ask]");
@@ -4319,6 +4379,9 @@ async function loadMyFeed() {
   try {
     STATE.myFeed = await api("/api/notifications");
   } catch (e) { return; }
+  // Непрочитані тепер живуть не на дверях, а числом на пункті меню «Події» —
+  // двері з головної переїхали в нижнє меню
+  syncAlertsBadge();
   if (STATE.view === "home") renderJournalist();
 }
 
@@ -4356,6 +4419,86 @@ function renderMyDone() {
     }).join("")}</div>` : `<div class="empty-hint">Поки нічого не закрито.</div>`}`;
   $("content").querySelectorAll("[data-nav]").forEach((b) =>
     b.onclick = () => nav(b.dataset.nav));
+}
+
+/* ---------- Мої публікації ----------
+
+   Олег, 29.07: «дати можливість журналістці в своєму інтерфейсі бачити кнопку
+   "Мої публікації"». Джерело — ті самі `nodes`, що рахують факт KPI, тож
+   перелік і кружечок норми не можуть розійтися: якщо вона бачить тут 34
+   матеріали, у нормі теж 34, і сперечатися нема про що.
+
+   Соцмереж тут немає. /stat по кожному рядку — це походи у Facebook,
+   Instagram, TikTok, YouTube і GA4 на КОЖЕН матеріал; екран, який відкривають
+   щодня, так робити не можна. Лічильник переглядів — власний, сайтовий, і він
+   ЗА ВЕСЬ ЧАС, а не за місяць: тому підпис «на сайті», без «за липень».
+
+   Гортання місяців тут таке саме, як у «Звіті» менеджера: людина хоче
+   побачити не лише поточний місяць, а й «а скільки було в червні». */
+async function renderMyPubs() {
+  const me = viewPerson();
+  const off = STATE.pubsOffset || 0;
+  const q = me.preview ? `&person=${encodeURIComponent(me.name)}` : "";
+  $("content").innerHTML = `
+    <button class="back" data-back>${icon("chevron-left")} Назад</button>
+    <div class="h-big">${me.preview ? esc(me.first_name) + " · публікації" : "Мої публікації"}</div>
+    <div class="h-sub">що вийшло під твоїм іменем</div>
+    <div id="pubs-body">${skeleton("rows", 4)}</div>`;
+  $("content").querySelectorAll("[data-nav]").forEach((b) =>
+    b.onclick = () => nav(b.dataset.nav));
+  let data;
+  try {
+    data = await api(`/api/publications?offset=${off}${q}`);
+  } catch (e) {
+    data = { error: e.message };
+  }
+  if (STATE.view !== "mypubs") return;
+  const body = $("pubs-body");
+  if (!body) return;
+  if (data.error) {
+    body.innerHTML = `<div class="empty-hint">${esc(data.error)}</div>`;
+    return;
+  }
+  const items = data.items || [];
+  const bits = [`${data.total} ${plural(data.total, "матеріал", "матеріали", "матеріалів")}`];
+  if (data.own) bits.push(`${data.own} ${plural(data.own, "власний", "власні", "власних")}`);
+  if (data.articles) bits.push(`${data.articles} ${plural(data.articles, "стаття", "статті", "статей")}`);
+  body.innerHTML = `
+    ${periodStrip(data.label, off)}
+    <div class="pub-hero">
+      <div class="pub-n">${data.views == null ? data.total : fmtNum(data.views)}</div>
+      <div class="pub-l">${data.views == null ? "матеріалів за місяць" : "переглядів на сайті"}</div>
+      <div class="pub-s">${esc(bits.join(" · "))}</div>
+    </div>
+    ${items.length ? `<div class="soft-card">${items.map(pubRow).join("")}</div>`
+      : `<div class="empty-hint">Цього місяця публікацій ще немає.</div>`}
+    ${data.capped ? `<div class="tl-note">Показано перші ${items.length} — за місяць вийшло більше.</div>` : ""}
+    <div class="tl-note">Лічильник переглядів сайту — за весь час матеріалу, не за місяць.</div>`;
+  body.querySelectorAll("[data-poff]").forEach((b) => b.onclick = () => {
+    STATE.pubsOffset = +b.dataset.poff;
+    renderMyPubs();
+  });
+}
+
+function periodStrip(label, off) {
+  return `<div class="per-strip">
+    <button class="per-arrow" data-poff="${off - 1}">${icon("chevron-left")}</button>
+    <span class="per-lbl">${esc(label || "")}</span>
+    <button class="per-arrow${off >= 0 ? " off" : ""}"
+      ${off >= 0 ? "disabled" : `data-poff="${off + 1}"`}>${icon("chevron-right")}</button>
+  </div>`;
+}
+
+function pubRow(p) {
+  return `
+    <a class="cnt-row" data-ext="${esc(p.url)}" href="${esc(p.url)}">
+      <span class="pk-txt">
+        <span class="pk-name">${esc(p.title)}</span>
+        <span class="pk-meta">${esc(p.date)} · ${esc(p.time)}${
+          p.own ? " · власний" : ""}${p.kind === "article" ? " · стаття" : ""}</span>
+      </span>
+      ${p.views ? `<span class="pub-v">${fmtNum(p.views)}</span>` : ""}
+    </a>`;
 }
 
 /* Стрічка подій — окремий екран. Два названі блоки лишились: «Виконані» це
@@ -4415,7 +4558,10 @@ async function renderMyHistory() {
   wire();
   let data;
   try {
-    data = await api("/api/kpi/person");   // сервер сам підставить мене
+    // Без person сервер підставляє того, хто дивиться; у перегляді чужими
+    // очима це була б історія менеджера під її іменем
+    const who = inPreview() ? `?person=${encodeURIComponent(STATE.previewPerson)}` : "";
+    data = await api("/api/kpi/person" + who);
   } catch (e) {
     $("content").innerHTML = back +
       `<div class="empty-hint">${esc(e.message)}</div>`;
@@ -4904,8 +5050,8 @@ async function boot() {
     $("screen-error").classList.add("hidden");
     $("screen-loading").classList.add("hidden");
     $("screen-main").classList.remove("hidden");
+    $("bottomnav").classList.remove("hidden");
     if (STATE.me.manager) {
-      $("bottomnav").classList.remove("hidden");
       // startapp із прямого лінка: кнопка «Дедлайни в апці» під нагадуванням
       // у чаті фінансів має відкривати одразу «Звітність», а не Головну
       // Куди відкривати: ?screen= від web_app-кнопки (пінг Лиса) або

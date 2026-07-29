@@ -1238,6 +1238,43 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   border-radius: 8px; padding: 1px 6px; white-space: nowrap;
 }
 
+/* ---------- Мої публікації ---------- */
+.pub-hero {
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 18px 16px; text-align: center; margin-bottom: 14px;
+}
+.pub-n { font-size: 34px; font-weight: 800; line-height: 1.05; }
+.pub-l { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.pub-s { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.pub-v { font-size: 12.5px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+/* Рядок публікації — це посилання, але виглядати має рядком: синє з
+   підкресленням у списку з сорока заголовків читається як суцільна каша */
+a.cnt-row { color: inherit; text-decoration: none; }
+
+/* Гортання періодів: стрілка ‹ назад, › вперед — те саме, що у «Звіті» */
+.per-strip {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  margin-bottom: 12px;
+}
+.per-lbl { font-size: 14px; font-weight: 700; min-width: 120px; text-align: center; }
+.per-arrow {
+  width: 34px; height: 34px; border-radius: 50%; background: var(--card);
+  box-shadow: var(--shadow); display: inline-flex; align-items: center;
+  justify-content: center; color: var(--blue);
+}
+.per-arrow.off { opacity: .35; color: var(--muted); box-shadow: none; }
+.per-arrow .ic { width: 18px; height: 18px; }
+
+/* Пункт нижнього меню, який видно, але не натискається (перегляд чужими очима) */
+.bn.off { opacity: .4; }
+
+/* Двері, які видно, але не відкриваються (перегляд чужими очима) */
+.door.off { opacity: .55; cursor: default; }
+.door-off {
+  font-size: 10.5px; font-weight: 700; color: var(--muted);
+  background: var(--fill); border-radius: 7px; padding: 2px 7px; white-space: nowrap;
+}
+
 /* ---------- Хто коли відсутній ---------- */
 /* Імена стоять окремою НЕРУХОМОЮ колонкою: у проєктів підпис живе всередині
    смуги, бо смуга там одна на рядок і довга, а відпустка — це три дні десь

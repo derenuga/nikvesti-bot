@@ -52,7 +52,7 @@ except ImportError:  # локальний dev без aiohttp — модуль п
 
 from handlers import (
     bot_db, team_analytics, team_contacts, team_kpi, team_matches,
-    team_notifications,
+    team_notifications, team_publications,
     team_projects, team_roster, team_tasks,
 )
 from handlers.helpers import normalize_https_url
@@ -1249,6 +1249,22 @@ async def api_kpi_person(request):
     return web.json_response(data)
 
 
+async def api_publications(request):
+    """«Мої публікації» за місяць. Та сама межа, що в історії KPI: менеджер
+    може подивитись будь-кого (перегляд чужими очима), журналістка — тільки
+    себе, тож підмінити person і зазирнути в чужий вихід не вийде."""
+    person, info, _ = await _authenticate(request)
+    who = request.query.get("person") if info["manager"] else person
+    if who not in team_roster.ROSTER:
+        raise web.HTTPBadRequest(text="Невідома людина")
+    try:
+        offset = max(-24, min(0, int(request.query.get("offset", "0"))))
+    except ValueError:
+        offset = 0
+    data = await _in_session(team_publications.my_publications, who, offset)
+    return web.json_response(data)
+
+
 async def api_kpi_norm_create(request):
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
@@ -1498,6 +1514,7 @@ async def start_webapp(application):
         web.get("/api/kpi", api_kpi),
         web.get("/api/kpi/dashboard", api_kpi_dashboard),
         web.get("/api/kpi/person", api_kpi_person),
+        web.get("/api/publications", api_publications),
         web.post("/api/kpi/norms", api_kpi_norm_create),
         web.patch("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_patch),
         web.delete("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_delete),
