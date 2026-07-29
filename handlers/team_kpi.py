@@ -538,7 +538,13 @@ def month_week_steps(norm, target, absences, uid, today=None):
         steps.append({
             "label": f"{day.day}–{last.day}",
             "fact": fact, "fact_cum": fact_cum, "expected_cum": expected_cum,
-            "done": fact_cum >= expected_cum,
+            # Поріг ТОЙ САМИЙ, що в кільця (PACE_TOLERANCE). Було жорстке
+            # «>= очікуваного», і виходила суперечність на рівному місці:
+            # 7 із очікуваних 8 — це 87%, кільце каже «в темпі», а кружечок
+            # стоїть порожній. Два індикатори про одне й те саме сперечались
+            # через 0,8 новини й округлення (реальний випадок, /kpi_debug
+            # Квітко за липень 2026).
+            "done": fact_cum >= expected_cum * PACE_TOLERANCE,
             "is_current": day <= today < wk_end,
             "future": day > today,
             "away": _available_workdays(day, wk_end, absences) == 0,
