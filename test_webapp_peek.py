@@ -16,7 +16,9 @@
   прочитаною не робиться;
 - «Назад» повертає на профіль;
 - ціль правки можна ввести з клавіатури, і на сервер їде саме введене число;
-- межі поля ті самі, що у кнопок: відʼємне і понад стелю не зберігаються.
+- межі поля ті самі, що у кнопок: відʼємне і понад стелю не зберігаються;
+- СТАВКА людини (пів ставки) — окремо від правки цілі: діє назавжди, видна на
+  екрані людини і зберігається одним тапом.
 
 Запуск (потрібні playwright + chromium):
     python test_webapp_peek.py
@@ -94,6 +96,10 @@ window.fetch = async (url, opts = {}) => {
   const json = (o) => new Response(JSON.stringify(o),
     { headers: { "Content-Type": "application/json" } });
   if (url === "/api/bootstrap") return json(window.BOOT);
+  if (url === "/api/rate") {
+    window.__rate = JSON.parse(opts.body);
+    return json({ rate: window.__rate });
+  }
   if (url === "/api/kpi/override") {
     window.__saved = JSON.parse(opts.body);
     return json({ ok: true });
@@ -241,6 +247,25 @@ async def main():
             await page.wait_for_timeout(300)
             saved = await page.evaluate("window.__saved")
             check("понад стелю не зберігається", saved and saved["target"] == 500)
+
+            # --- ставка людини (постійна, на відміну від правки періоду) ---
+            await page.evaluate("closeSheet(); nav('person', 'Кристина Леонова')")
+            await page.wait_for_selector("#person-rate", timeout=5000)
+            check("на екрані людини видно її ставку",
+                  "Ставка · 100%" in await page.inner_text("#person-rate"))
+            await page.click("#person-rate")
+            await page.wait_for_selector("#rt-val", timeout=3000)
+            sheet_txt = await page.inner_text("#sheet")
+            check("шторка пояснює різницю з правкою цілі",
+                  "назавжди" in sheet_txt and "один період" in sheet_txt)
+            await page.click('[data-rt="50"]')
+            check("швидкий вибір ставить 50%",
+                  await page.input_value("#rt-val") == "50")
+            await page.click("#rt-save")
+            await page.wait_for_timeout(400)
+            rate = await page.evaluate("window.__rate")
+            check("ставка їде на сервер саме для цієї людини",
+                  rate and rate["person"] == "Кристина Леонова" and rate["rate"] == 50)
         finally:
             await browser.close()
 

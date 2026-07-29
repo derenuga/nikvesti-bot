@@ -15,6 +15,8 @@
   всією базою;
 - пересланий контакт із тим самим номером не плодить другу картку;
 - порожня база каже, ЩО зробити, а не просто «нічого немає»;
+- у журналістки книга — дверима на головній, у менеджера — в утилітах у шапці
+  (нижнє меню не чіпаємо: там пʼять пунктів робочого потоку);
 - «Підтягнути з архіву» пропонує посаду з сутнісного шару, показує, кого саме
   архів має на увазі (однофамільці), підставляє в поле, але НЕ зберігає само;
   а коли не знайшов — чесно каже про межу покриття (2–3 роки).
@@ -251,9 +253,21 @@ async def main():
         finally:
             await browser.close()
 
-        # --- менеджер може видаляти ---
+        # --- менеджер: книга живе в утилітах у шапці Головної ---
         browser, page = await _open(pw, MANAGER)
         try:
+            await page.wait_for_selector("#home-tools", timeout=5000)
+            check("у менеджера в шапці є кнопка утиліт",
+                  await page.locator("#home-tools").count() == 1)
+            await page.click("#home-tools")
+            await page.wait_for_selector('[data-tool="contacts"]', timeout=3000)
+            check("серед утиліт — телефонна книга",
+                  "Контакти редакції" in await page.inner_text("#sheet"))
+            await page.click('[data-tool="contacts"]')
+            await page.wait_for_selector(".cnt-row", timeout=5000)
+            check("з утиліт відкривається сама база",
+                  await page.evaluate("() => STATE.view") == "contacts")
+
             await page.evaluate("nav('contacts')")
             await page.wait_for_selector(".cnt-row", timeout=5000)
             await page.click(".cnt-row")

@@ -160,6 +160,19 @@ _SCHEMA_STATEMENTS.append(
     "CREATE INDEX IF NOT EXISTS idx_team_absence_requests_status "
     "ON team_absence_requests (status, start_date)")
 
+# Ставка людини у відсотках (Олег, 29.07). Кристина на пів ставки — це
+# ПОСТІЙНА властивість, а не разова правка місяця: правка (team_kpi_overrides)
+# живе рівно в тому періоді, на який поставлена, тож першого числа норма
+# поверталась би до відділової, і Катя вбивала б 100 замість 200 щомісяця.
+_SCHEMA_STATEMENTS.append("""
+    CREATE TABLE IF NOT EXISTS team_rates (
+        person     TEXT PRIMARY KEY,
+        rate       SMALLINT NOT NULL DEFAULT 100,
+        updated_by TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+""")
+
 # Скільки новин «важить» одна стаття у нормі на новини (Олег, 28.07).
 # Причина: норма є лише на новини, а стаття коштує в рази дорожче за часом.
 # Людям дозволено забивати на новини, коли вони в статті — але кружечок
@@ -575,6 +588,48 @@ def month_week_steps(norm, target, absences, uid, today=None):
     return steps
 
 
+# ---------- Ставка людини ----------
+
+RATE_CACHE_TTL = 60
+_rates_cache = {"at": 0.0, "map": {}}
+
+
+def list_rates(fresh=False):
+    """{людина: відсоток ставки}. Тільки ті, у кого не 100 — решта дефолт."""
+    ensure_kpi_schema()
+    if not fresh and _rates_cache["at"] > time.time() - RATE_CACHE_TTL:
+        return _rates_cache["map"]
+    out = {r["person"]: int(r["rate"]) for r in bot_db.query(
+        "SELECT person, rate FROM team_rates WHERE rate <> 100")}
+    _rates_cache.update({"at": time.time(), "map": out})
+    return out
+
+
+def set_rate(person, rate, actor=None):
+    ensure_kpi_schema()
+    rate = max(0, min(100, int(rate)))
+    bot_db.execute(
+        "INSERT INTO team_rates (person, rate, updated_by) VALUES (%s, %s, %s) "
+        "ON CONFLICT (person) DO UPDATE SET rate = EXCLUDED.rate, "
+        "updated_by = EXCLUDED.updated_by, updated_at = now()",
+        (person, rate, actor),
+    )
+    _rates_cache["at"] = 0.0
+    _fact_cache.clear()
+    return {"person": person, "rate": rate}
+
+
+def rate_target(base_target, rate):
+    """Ціль із урахуванням ставки. Округлюємо вниз, але не нижче 1, поки
+    ставка не нульова — та сама логіка, що у відпустки (scaled_target):
+    інакше чверть ставки перетворювала б норму на нуль і «виконано»."""
+    if rate is None or rate >= 100:
+        return base_target
+    if rate <= 0:
+        return 0
+    return max(1, int(base_target * rate / 100))
+
+
 def weighted_facts(metric, period, own=False, offset=0):
     """({людина: зважений факт}, {людина: скільки статей}) для норми.
 
@@ -860,6 +915,7 @@ def kpi_payload(for_person=None):
                       if not i["manager"]
                       and team_roster.effective_dept(p, depts) == n["dept"]]
         overrides = _overrides_for(n["id"], n["period"])
+        rates = list_rates()
         facts, article_bonus = weighted_facts(n["metric"], n["period"], n["own"])
         # «Новини в стрічку» показуємо ЛИШЕ якщо їх не рахує інша норма цього
         # ж відділу: інакше в людини були б і смуга прогресу, і надпис про те
@@ -879,7 +935,11 @@ def kpi_payload(for_person=None):
             # руками, відпустку поверх неї не перераховуємо
             factor, missed = (1.0, 0) if ov else absence_factor(
                 person, p_start, p_end, absences.get(person, []))
-            target = ov["target"] if ov else scaled_target(n["target"], factor)
+            # Порядок множників: відділова норма → СТАВКА (постійна) →
+            # відсутність (разова) → ручна правка (найсильніша)
+            rate = rates.get(person, 100)
+            target = (ov["target"] if ov
+                      else scaled_target(rate_target(n["target"], rate), factor))
             fact = None if facts is None else facts.get(person)
             pace = period_pace(n["period"], 0, absences.get(person, []))
             away = [a for a in absences.get(person, [])
@@ -897,6 +957,7 @@ def kpi_payload(for_person=None):
                     (f"{away[0]['title']} · написала {fact} понад норму"
                      if missed and fact else
                      (away[0]["title"] if missed else None))),
+                "rate": rate,
                 "excused": bool(ov and ov["target"] == 0) or (not ov and target == 0),
                 "absence": away[0] if away else None,
                 "missed_days": missed,
@@ -964,6 +1025,8 @@ def kpi_person_history(person, months=12):
     uid = resolve_site_user_id(person) if db.is_configured() else None
     buckets = _person_month_buckets(uid, months) if uid else {}
     person_absences = list_absences(person)
+    # Ставка — постійна властивість людини, тож діє і в історії місяців
+    person_rate = list_rates().get(person, 100)
 
     out_months = []
     for off in range(-(months - 1), 1):
@@ -977,7 +1040,8 @@ def kpi_person_history(person, months=12):
                 continue  # звільнена того місяця
             factor, _missed = (1.0, 0) if ov else absence_factor(
                 person, start, month_end, person_absences)
-            target = ov["target"] if ov else scaled_target(n["target"], factor)
+            target = (ov["target"] if ov else scaled_target(
+                rate_target(n["target"], person_rate), factor))
             if not ov and target == 0:
                 continue  # весь місяць у відпустці
             def bucket_count(metric):
@@ -1031,6 +1095,7 @@ def kpi_dashboard(period, offset=0):
     depts = team_roster.dept_overrides()
 
     # факти рахуємо раз на (metric, own) — не на кожну людину
+    rates = list_rates()
     fact_cache = {}
     def facts_for(n):
         key = (n["metric"], n["own"])
@@ -1054,7 +1119,8 @@ def kpi_dashboard(period, offset=0):
             # Відпустка пропорційно знижує ціль (правка руками — сильніша)
             factor, missed = (1.0, 0) if ov else absence_factor(
                 person, p_start, p_end, absences.get(person, []))
-            target = ov["target"] if ov else scaled_target(n["target"], factor)
+            target = (ov["target"] if ov else scaled_target(
+                rate_target(n["target"], rates.get(person, 100)), factor))
             fact = None if facts is None else facts.get(person)
             # Весь період у відпустці — у звіті їй нічого робити. АЛЕ якщо вона
             # все ж щось опублікувала (буває: дописала матеріал із відпустки),

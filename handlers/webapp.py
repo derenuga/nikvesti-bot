@@ -733,6 +733,24 @@ async def api_absence_create(request):
     return web.json_response({"absence": absence})
 
 
+async def api_rate(request):
+    """{person, rate} — ПОСТІЙНА ставка людини у відсотках (Олег, 29.07).
+
+    Не плутати з правкою цілі: правка живе один період, ставка діє завжди —
+    саме тому «пів ставки» тепер не треба вбивати щомісяця заново."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    who = payload.get("person")
+    if who not in team_roster.ROSTER:
+        raise web.HTTPBadRequest(text="Невідома людина")
+    try:
+        rate = int(payload.get("rate"))
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="rate: число 0…100")
+    saved = await _in_session(team_kpi.set_rate, who, rate, person)
+    return web.json_response({"rate": saved})
+
+
 async def api_absence_delete(request):
     person, info, _ = await _require_manager(request)
     deleted = await _in_session(
@@ -1468,6 +1486,7 @@ async def start_webapp(application):
         web.post("/api/contacts", api_contact_create),
         web.patch("/api/contacts/{contact_id:\\d+}", api_contact_patch),
         web.delete("/api/contacts/{contact_id:\\d+}", api_contact_delete),
+        web.put("/api/rate", api_rate),
         web.post("/api/absences/request", api_absence_request_create),
         web.get("/api/absences/requests", api_absence_requests),
         web.post("/api/absences/requests/{request_id:\\d+}/decide",

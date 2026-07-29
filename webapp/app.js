@@ -519,6 +519,35 @@ function donorOf(t) {
   return tp.partner || tp.projName || "Позапроєктні";
 }
 
+/* Шапка Головної менеджера: привітання + кнопка утиліт (Олег, 29.07 —
+   «навпроти імені хай буде кнопка з утилітами, там поки що книга, потім ще
+   блокнот»). Утиліти живуть НЕ в нижньому меню: там п'ять пунктів робочого
+   потоку, і додавати шосте заради довідника — розмивати головне. */
+function homeHead() {
+  return `
+    <div class="head-row">
+      <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
+      <button class="icon-btn" id="home-tools" aria-label="Утиліти">
+        ${icon("grid")}</button>
+    </div>`;
+}
+
+function toolsSheet() {
+  openSheet(`
+    <h2>Утиліти</h2>
+    <button class="pick-row" data-tool="contacts">
+      <span class="door-ic c-blue-ic">${icon("book")}</span>
+      <span class="pk-txt">
+        <span class="pk-name">Контакти редакції</span>
+        <span class="pk-meta">телефони, які вже не треба шукати в чаті</span>
+      </span>
+    </button>`);
+  $("sheet").querySelectorAll("[data-tool]").forEach((b) => b.onclick = () => {
+    closeSheet();
+    nav(b.dataset.tool);
+  });
+}
+
 /* Головна редактора: перемикач Завдання/Звіт. Завдання — команда кружечками
    зі скільки в кого відкритих завдань і по яких донорах (тап → трекер).
    Звіт — дашборд виконання KPI з кільцями і гортанням по періодах. */
@@ -526,12 +555,16 @@ function renderHome() {
   const seg = segment("data-hv",
     [["analytics", "Аналітика"], ["tasks", "Завдання"], ["report", "Звіт"]],
     STATE.homeView);
-  const wire = () => $("content").querySelectorAll("[data-hv]").forEach((b) =>
-    b.onclick = () => { setHomeView(b.dataset.hv); renderHome(); });
+  const wire = () => {
+    $("content").querySelectorAll("[data-hv]").forEach((b) =>
+      b.onclick = () => { setHomeView(b.dataset.hv); renderHome(); });
+    const tools = $("home-tools");
+    if (tools) tools.onclick = toolsSheet;
+  };
 
   if (STATE.homeView === "analytics") {
     $("content").innerHTML = `
-      <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
+      ${homeHead()}
       ${seg}
       <div id="an-body">${skeleton("rows", 4)}</div>`;
     wire();
@@ -541,7 +574,7 @@ function renderHome() {
 
   if (STATE.homeView === "report") {
     $("content").innerHTML = `
-      <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
+      ${homeHead()}
       ${seg}
       <div id="dash-body">${skeleton("rings", 8)}</div>`;
     wire();
@@ -583,7 +616,7 @@ function renderHome() {
     </button>`;
   }).join("");
   $("content").innerHTML = `
-    <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
+    ${homeHead()}
     ${seg}
     <div class="sub-row">
       <span class="h-sub">відкритих завдань: ${open.length}</span>
@@ -1111,14 +1144,79 @@ function renderPerson() {
       ? (kpiRows ? `<div class="soft-card" style="margin-top:16px"><div class="sc-t">Загальні задачі</div>${kpiRows}</div>` : "")
       : `<div class="soft-card" style="margin-top:16px"><div class="sc-t">Загальні задачі</div>${skeleton("rows", 2)}</div>`}</div>
     <button class="link-btn" id="person-away">${icon("calendar")} Відпустка / лікарняна / відрядження</button>
+    <button class="link-btn" id="person-rate">${icon("target")} Ставка · ${personRate(person)}%</button>
     <div class="f-label" style="margin-top:20px;font-size:14px;color:var(--ink)">Проєктні задачі</div>
     ${donorSections || `<div class="empty-hint">Відкритих проєктних задач немає.</div>`}
     ${closed.length ? `<div class="dept-title">Закриті недавно · ${closed.length}</div>
       <div class="soft-card">${closed.map(taskRow).join("")}</div>` : ""}`;
 
   $("person-away").onclick = () => absenceSheet(person);
+  $("person-rate").onclick = () => rateSheet(person);
   wirePersonKpi(person);
   if (!kpiReady) loadPersonKpi(person);
+}
+
+/* Ставка людини у відсотках. Олег, 29.07: «давай % ставки вказувати людині».
+
+   Це ПОСТІЙНА властивість, а не правка місяця: правка цілі живе рівно в тому
+   періоді, на який поставлена, тож першого числа норма поверталась би до
+   відділової — і «пів ставки» довелось би вбивати щомісяця заново. Ставка
+   множить норму відділу назавжди, а відпустка й ручна правка лягають поверх. */
+function personRate(person) {
+  const rows = ((STATE.kpi && STATE.kpi.norms) || [])
+    .map((n) => (n.rows || []).find((r) => r.person === person))
+    .filter(Boolean);
+  const withRate = rows.find((r) => r.rate != null);
+  return withRate ? withRate.rate : 100;
+}
+
+function rateSheet(person) {
+  let rate = personRate(person);
+  openSheet(`
+    <h2>${esc(person)}</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 14px">
+      Ставка множить норму відділу назавжди — на відміну від правки цілі,
+      яка діє один період.</p>
+    <div class="chips" id="rt-quick">
+      ${[100, 75, 50, 25].map((v) => `<button class="chip${v === rate ? " on" : ""}"
+        data-rt="${v}">${v}%</button>`).join("")}
+    </div>
+    <div class="f-label">Або точно</div>
+    <div class="stepper with-input">
+      <button id="rt-minus">${icon("minus")}</button>
+      <input id="rt-val" type="number" inputmode="numeric" min="0" max="100" value="${rate}">
+      <button id="rt-plus">${icon("plus")}</button>
+    </div>
+    <div class="sheet-actions">
+      <button class="sbtn" id="rt-cancel">Скасувати</button>
+      <button class="sbtn primary" id="rt-save">Зберегти</button>
+    </div>`);
+  const paint = () => {
+    if ($("rt-val").value !== String(rate)) $("rt-val").value = rate;
+    $("rt-quick").querySelectorAll("[data-rt]").forEach((b) =>
+      b.classList.toggle("on", +b.dataset.rt === rate));
+  };
+  $("rt-quick").querySelectorAll("[data-rt]").forEach((b) =>
+    b.onclick = () => { rate = +b.dataset.rt; paint(); });
+  $("rt-minus").onclick = () => { rate = Math.max(0, rate - 5); paint(); };
+  $("rt-plus").onclick = () => { rate = Math.min(100, rate + 5); paint(); };
+  $("rt-val").oninput = () => {
+    const v = parseInt($("rt-val").value, 10);
+    rate = Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0;
+  };
+  $("rt-cancel").onclick = closeSheet;
+  $("rt-save").onclick = async () => {
+    try {
+      await api("/api/rate", { method: "PUT",
+        body: JSON.stringify({ person, rate }) });
+      closeSheet();
+      haptic("success");
+      STATE.kpi = null;          // цілі змінились назавжди — зведення протухло
+      STATE.dash.data = null;
+      await loadKpi();
+      render();
+    } catch (e) { toast(e.message); }
+  };
 }
 
 /* Відпустка / лікарняна / відрядження. Це факт про ЛЮДИНУ, а не про окрему
@@ -3003,7 +3101,9 @@ function normTitle(n, row) {
 function normWhy(n, row) {
   if (!row || row.target == null || row.base_target == null) return "";
   if (row.target === row.base_target) return "";
-  const why = row.absence ? row.absence.title : (row.overridden ? "правка" : null);
+  const why = row.absence ? row.absence.title
+    : row.overridden ? "правка"
+    : (row.rate != null && row.rate < 100) ? `ставка ${row.rate}%` : null;
   return `<span class="mk-why">${why ? esc(why) + " · " : ""}замість ${row.base_target}</span>`;
 }
 
