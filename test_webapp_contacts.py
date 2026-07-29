@@ -39,12 +39,15 @@ CHROMIUM_CANDIDATES = [
 
 CONTACTS = [
     {"id": 1, "name": "Ігор Луков", "role": "віцемер Миколаєва",
-     "phone": "+380501112233", "telegram": None, "email": None,
+     "phone": "+380501112233",
+     "phones": ["+380501112233", "0512 555 000 приймальня"],
+     "telegram": None, "email": None,
      "tags": "міськрада, бюджет", "note": None,
      "added_by": "Аліна Квітко", "updated_by": "Аліна Квітко",
      "updated_at": "2026-07-20T10:00:00+03:00"},
     {"id": 2, "name": "Олена Приходько", "role": "прессекретарка обленерго",
-     "phone": "+380671234567", "telegram": "@olena", "email": None,
+     "phone": "+380671234567", "phones": ["+380671234567"],
+     "telegram": "@olena", "email": None,
      "tags": "енергетика, відключення", "note": "після 10:00",
      "added_by": "Юлія Бойченко", "updated_by": "Юлія Бойченко",
      "updated_at": "2026-07-21T10:00:00+03:00"},
@@ -103,7 +106,8 @@ window.fetch = async (url, opts = {}) => {
     const needle = (q.get("q") || "").toLowerCase();
     const list = window.CONTACTS.filter((c) => !needle ||
       ["name", "role", "tags", "phone", "note"].some((f) =>
-        (c[f] || "").toLowerCase().includes(needle)));
+        (c[f] || "").toLowerCase().includes(needle)) ||
+      (c.phones || []).some((p) => p.toLowerCase().includes(needle)));
     return json({ contacts: list, mine: window.MINE, nora: true });
   }
   if (url === "/api/kpi") return json({ norms: [], week_label: "т",
@@ -204,6 +208,37 @@ async def main():
             await page.wait_for_timeout(600)
             check("порожній результат не лякає",
                   "нікого" in await page.inner_text("#content"))
+
+            # --- кілька номерів ---
+            await page.fill("#cnt-q", "")
+            await page.wait_for_timeout(600)
+            check("у списку видно, що номерів більше одного",
+                  await page.locator(".cnt-more").count() == 1)
+            check("і скільки саме ще", "+1" in await page.inner_text(".cnt-more"))
+
+            await page.fill("#cnt-q", "0512")
+            await page.wait_for_timeout(600)
+            check("пошук знаходить і за ДРУГИМ номером",
+                  "Луков" in await page.inner_text("#content"))
+            await page.fill("#cnt-q", "")
+            await page.wait_for_timeout(600)
+
+            await page.click(".cnt-row")
+            await page.wait_for_selector("#c-phones", timeout=3000)
+            check("у картці всі номери окремими полями",
+                  await page.locator("#c-phones .c-phone").count() == 2)
+            await page.click("#c-addphone")
+            check("«ще номер» додає порожнє поле",
+                  await page.locator("#c-phones .c-phone").count() == 3)
+            await page.locator("#c-phones .c-phone").nth(2).fill("+380931234567")
+            await page.click("#c-save")
+            await page.wait_for_timeout(400)
+            saved = await page.evaluate("window.__saved")
+            check("на сервер їде масив номерів",
+                  saved and isinstance(saved["body"].get("phones"), list)
+                  and len(saved["body"]["phones"]) == 3)
+            check("порожні поля у масив не потрапляють",
+                  saved and all(p.strip() for p in saved["body"]["phones"]))
 
             # --- редагування картки ---
             await page.fill("#cnt-q", "")

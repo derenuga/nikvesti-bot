@@ -2474,8 +2474,10 @@ function contactRow(c) {
         <span class="cnt-n">${esc(c.name)}</span>
         ${meta ? `<span class="cnt-m">${esc(meta)}</span>` : ""}
       </span>
-      ${c.phone ? `<a class="cnt-tel" href="tel:${esc(c.phone.replace(/\s/g, ""))}"
-        onclick="event.stopPropagation()">${icon("phone")}</a>` : ""}
+      ${c.phone ? `<a class="cnt-tel" href="tel:${esc(telHref(c.phone))}"
+        onclick="event.stopPropagation()">${icon("phone")}${
+        (c.phones || []).length > 1
+          ? `<i class="cnt-more">+${(c.phones || []).length - 1}</i>` : ""}</a>` : ""}
       ${icon("chevron-right", "ic chev")}
     </div>`;
 }
@@ -2532,6 +2534,45 @@ function wireContactControls() {
   };
 }
 
+/* Кілька номерів на людину (Олег, 29.07). У чиновника зазвичай мобільний,
+   приймальня і прессекретар — і саме той, що потрібен зараз, найчастіше не
+   перший. Мітки не вигадуємо: люди пишуть по-своєму («0512… приймальня»), і
+   словник міток змусив би їх воювати з формою. Пошук іде по всіх номерах. */
+function telHref(phone) {
+  // У tel: лишаємо тільки те, що набирається: підпис «приймальня» в номері
+  // не заважає людині, але заважає телефону
+  return (phone || "").replace(/[^\d+]/g, "");
+}
+
+function phoneInputs(c) {
+  const list = (c && c.phones && c.phones.length ? c.phones : [""]);
+  return list.map((p, i) => phoneRow(p, i)).join("");
+}
+
+function phoneRow(value, i) {
+  return `
+    <div class="c-phone-row">
+      <input class="c-phone" type="tel" maxlength="60" value="${esc(value || "")}"
+        placeholder="${i ? "0512… приймальня" : "+380…"}">
+      ${i ? `<button class="c-phone-del" aria-label="Прибрати">${icon("x")}</button>` : ""}
+    </div>`;
+}
+
+function collectPhones() {
+  return Array.from(document.querySelectorAll("#c-phones .c-phone"))
+    .map((i) => i.value.trim()).filter(Boolean);
+}
+
+function wirePhoneRows() {
+  const box = $("c-phones");
+  if (!box) return;
+  box.querySelectorAll(".c-phone-del").forEach((b) => b.onclick = () => {
+    b.closest(".c-phone-row").remove();
+    if (!box.querySelector(".c-phone-row")) box.innerHTML = phoneRow("", 0);
+    wirePhoneRows();
+  });
+}
+
 /* «Чик-чик» — підтягнути посаду з архіву (Олег, 29.07: «щоб я міг натиснути
    на сірого Миколу Логвинова, і йому підтяглася сутність, що він директор
    Миколаївобтеплоенерго»).
@@ -2586,9 +2627,9 @@ function contactSheet(c) {
       placeholder="віцемер Миколаєва">
     <button class="link-btn" id="c-lookup">${icon("search")} Підтягнути з архіву</button>
     <div id="c-found" class="cnt-found"></div>
-    <div class="f-label">Телефон</div>
-    <input id="c-phone" type="tel" maxlength="40" value="${v("phone")}"
-      placeholder="+380…">
+    <div class="f-label">Телефони</div>
+    <div id="c-phones">${phoneInputs(c)}</div>
+    <button class="link-btn" id="c-addphone">${icon("plus")} Ще номер</button>
     <div class="f-label">Telegram</div>
     <input id="c-tg" maxlength="60" value="${v("telegram")}" placeholder="@нік">
     <div class="f-label">Теми — через кому</div>
@@ -2602,11 +2643,20 @@ function contactSheet(c) {
         ? `<button class="sbtn danger" id="c-del">Видалити</button>` : ""}
       <button class="sbtn primary" id="c-save">Зберегти</button>
     </div>`);
+  wirePhoneRows();
+  $("c-addphone").onclick = () => {
+    const box = $("c-phones");
+    box.insertAdjacentHTML("beforeend",
+      phoneRow("", box.querySelectorAll(".c-phone-row").length));
+    wirePhoneRows();
+    const rows = box.querySelectorAll(".c-phone");
+    rows[rows.length - 1].focus();
+  };
   $("c-lookup").onclick = lookupEntity;
   $("c-save").onclick = async () => {
     const body = {
       name: $("c-name").value.trim(), role: $("c-role").value.trim(),
-      phone: $("c-phone").value.trim(), telegram: $("c-tg").value.trim(),
+      phones: collectPhones(), telegram: $("c-tg").value.trim(),
       tags: $("c-tags").value.trim(), note: $("c-note").value.trim(),
     };
     if (!body.name) { toast("Без імені картка не має сенсу"); return; }

@@ -50,6 +50,14 @@ _SCHEMA_STATEMENTS = [
     # база редакції — це сотні рядків, а не мільйони.
     "CREATE INDEX IF NOT EXISTS idx_team_contacts_name "
     "ON team_contacts (lower(name))",
+    # Кілька номерів на людину (Олег, 29.07): у чиновника зазвичай мобільний,
+    # приймальня і прессекретар. Масив вільних рядків, а не окремі поля з
+    # мітками: люди все одно пишуть по-своєму («0512… приймальня»), і
+    # вигадувати їм словник міток означає змусити воювати з формою.
+    "ALTER TABLE team_contacts ADD COLUMN IF NOT EXISTS phones TEXT[] DEFAULT '{}'",
+    # Разова міграція наявних карток: старий phone стає першим у списку
+    "UPDATE team_contacts SET phones = ARRAY[phone] "
+    "WHERE phone IS NOT NULL AND (phones IS NULL OR cardinality(phones) = 0)",
 ]
 
 _schema_lock = threading.Lock()
@@ -70,9 +78,15 @@ def ensure_contacts_schema():
 
 
 def _row(r):
+    phones = [p for p in (r.get("phones") or []) if p]
+    if not phones and r.get("phone"):
+        phones = [r["phone"]]
     return {
         "id": r["id"], "name": r["name"], "role": r["role"],
-        "phone": r["phone"], "telegram": r["telegram"], "email": r["email"],
+        # phone лишається — це ПЕРШИЙ номер: на ньому тримається і пошук, і
+        # кнопка дзвінка в списку, і сумісність зі старими картками
+        "phone": phones[0] if phones else None, "phones": phones,
+        "telegram": r["telegram"], "email": r["email"],
         "tags": r["tags"], "note": r["note"],
         "added_by": r["added_by"], "updated_by": r["updated_by"],
         "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
@@ -80,6 +94,9 @@ def _row(r):
 
 
 SEARCH_FIELDS = ("name", "role", "tags", "phone", "note")
+# Шукати треба по ВСІХ номерах, а не лише по першому — інакше картка з трьома
+# номерами знаходилась би тільки за одним із них
+_SEARCH_EXTRA = "lower(coalesce(array_to_string(phones, ' '), ''))"
 
 
 def list_contacts(query=None, limit=200):
@@ -93,10 +110,12 @@ def list_contacts(query=None, limit=200):
         return [_row(r) for r in bot_db.query(
             "SELECT * FROM team_contacts ORDER BY lower(name) LIMIT %s", (limit,))]
     like = f"%{q.lower()}%"
-    where = " OR ".join(f"lower(coalesce({f}, '')) LIKE %s" for f in SEARCH_FIELDS)
+    parts = [f"lower(coalesce({f}, '')) LIKE %s" for f in SEARCH_FIELDS]
+    parts.append(f"{_SEARCH_EXTRA} LIKE %s")
     return [_row(r) for r in bot_db.query(
-        f"SELECT * FROM team_contacts WHERE {where} ORDER BY lower(name) LIMIT %s",
-        tuple([like] * len(SEARCH_FIELDS) + [limit]),
+        f"SELECT * FROM team_contacts WHERE {' OR '.join(parts)} "
+        f"ORDER BY lower(name) LIMIT %s",
+        tuple([like] * len(parts) + [limit]),
     )]
 
 
@@ -115,25 +134,30 @@ def find_by_phone(phone):
         return None
     tail = digits[-9:]      # національна частина без коду країни
     for r in bot_db.query(
-            "SELECT * FROM team_contacts WHERE phone IS NOT NULL"):
-        other = "".join(c for c in (r["phone"] or "") if c.isdigit())
-        if other and other[-9:] == tail:
-            return _row(r)
+            "SELECT * FROM team_contacts "
+            "WHERE phone IS NOT NULL OR cardinality(coalesce(phones, '{}')) > 0"):
+        row = _row(r)
+        for p in row["phones"]:
+            other = "".join(c for c in p if c.isdigit())
+            if other and other[-9:] == tail:
+                return row
     return None
 
 
 def add_contact(actor, name, role=None, phone=None, telegram=None,
-                email=None, tags=None, note=None):
+                email=None, tags=None, note=None, phones=None):
     ensure_contacts_schema()
     name = (name or "").strip()
     if not name:
         raise ValueError("Без імені картка не має сенсу")
+    nums = _phones(phones) if phones is not None else _phones(phone) or []
     rows = bot_db.query(
-        "INSERT INTO team_contacts (name, role, phone, telegram, email, tags, "
-        "note, added_by, updated_by) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
-        "RETURNING *",
-        (name, _clean(role), _clean(phone), _clean(telegram), _clean(email),
-         _clean(tags), _clean(note), actor, actor),
+        "INSERT INTO team_contacts (name, role, phone, phones, telegram, email, "
+        "tags, note, added_by, updated_by) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
+        (name, _clean(role), nums[0] if nums else None, nums,
+         _clean(telegram), _clean(email), _clean(tags), _clean(note),
+         actor, actor),
     )
     return _row(rows[0])
 
@@ -141,14 +165,33 @@ def add_contact(actor, name, role=None, phone=None, telegram=None,
 _EDITABLE = ("name", "role", "phone", "telegram", "email", "tags", "note")
 
 
+def _phones(value):
+    """Список номерів із того, що прийшло: масив або один рядок. Порожні
+    рядки відкидаємо — інакше «+ ще номер» без тексту лишав би дірку."""
+    if value is None:
+        return None
+    items = value if isinstance(value, (list, tuple)) else [value]
+    return [str(p).strip() for p in items if str(p or "").strip()]
+
+
 def update_contact(contact_id, actor, **fields):
     ensure_contacts_schema()
     sets, params = [], []
+    if "phones" in fields:
+        # phone тримаємо синхронним із першим номером: на ньому пошук,
+        # кнопка дзвінка в списку і старі картки
+        nums = _phones(fields["phones"]) or []
+        sets += ["phones = %s", "phone = %s"]
+        params += [nums, nums[0] if nums else None]
     for key in _EDITABLE:
-        if key in fields:
+        if key in fields and key != "phone":
             sets.append(f"{key} = %s")
             params.append(_clean(fields[key]) if key != "name"
                           else (fields[key] or "").strip() or None)
+        elif key == "phone" and "phone" in fields and "phones" not in fields:
+            nums = _phones(fields["phone"]) or []
+            sets += ["phones = %s", "phone = %s"]
+            params += [nums, nums[0] if nums else None]
     if not sets:
         return None
     sets.append("updated_by = %s")

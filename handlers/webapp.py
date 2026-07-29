@@ -861,10 +861,13 @@ async def api_contact_create(request):
     person, info, _ = await _authenticate(request)
     payload = await _json(request)
     try:
-        contact = await _in_session(
-            team_contacts.add_contact, person, payload.get("name"),
-            payload.get("role"), payload.get("phone"), payload.get("telegram"),
-            payload.get("email"), payload.get("tags"), payload.get("note"))
+        def run():
+            return team_contacts.add_contact(
+                person, payload.get("name"), payload.get("role"),
+                payload.get("phone"), payload.get("telegram"),
+                payload.get("email"), payload.get("tags"), payload.get("note"),
+                phones=payload.get("phones"))
+        contact = await asyncio.to_thread(lambda: _with_session(run))
     except ValueError as e:
         raise web.HTTPBadRequest(text=str(e))
     return web.json_response({"contact": contact})

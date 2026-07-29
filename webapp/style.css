@@ -1254,3 +1254,21 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 .pick-row .door-ic { width: 40px; height: 40px; border-radius: 13px; }
 .pick-row .c-blue-ic { background: var(--blue-soft); color: var(--blue); }
 .pick-row .pk-txt { flex: 1; min-width: 0; }
+
+/* Кілька номерів у картці контакту */
+.c-phone-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.c-phone-row input { flex: 1; min-width: 0; }
+.c-phone-del {
+  width: 38px; height: 38px; flex-shrink: 0; border-radius: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--fill); color: var(--muted);
+}
+.c-phone-del .ic { width: 16px; height: 16px; }
+/* «+2» на кнопці дзвінка: у людини більше одного номера */
+.cnt-tel { position: relative; }
+.cnt-more {
+  position: absolute; top: -4px; right: -4px; font-style: normal;
+  font-size: 9.5px; font-weight: 800; line-height: 15px; text-align: center;
+  min-width: 15px; height: 15px; border-radius: 8px; padding: 0 3px;
+  background: var(--blue); color: var(--blue-fg);
+}
