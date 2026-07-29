@@ -135,7 +135,7 @@ async def main():
         browser, page = await _open(pw, ME_JOURNALIST)
         try:
             check("у журналістки зʼявилось нижнє меню",
-                  await page.locator("#bottomnav:not(.hidden) .bn").count() == 4)
+                  await page.locator("#bottomnav:not(.hidden) .bn").count() == 5)
             nav_txt = await page.inner_text("#bottomnav")
             check("у меню є «Публікації»", "Публікації" in nav_txt)
             check("і телефонна книга — та сама, про яку питав Олег",
@@ -203,8 +203,9 @@ async def main():
             await page.wait_for_selector(".doors", timeout=5000)
             nav_txt = await page.inner_text("#bottomnav")
             check("у перегляді меню теж журналістське", "Публікації" in nav_txt)
-            check("але «Події» не натискаються — стрічка була б чужою",
-                  await page.locator('#bottomnav .bn.off').count() == 1)
+            # «Події» — чужа стрічка, «Блокнот» — чужі особисті записи
+            check("а «Події» і «Блокнот» не натискаються — це чуже",
+                  await page.locator('#bottomnav .bn.off').count() == 2)
             doors = await page.inner_text(".doors")
             check("двері видно всі, як у неї", "Не буду на роботі" in doors)
             check("і саме вони позначені як тільки перегляд",

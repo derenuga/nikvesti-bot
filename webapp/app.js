@@ -438,6 +438,7 @@ function backTarget() {
     case "myfeed":
     case "myhist":
     case "mypubs":
+    case "todo":
     case "away":
     case "contacts": return ["home"];
     case "preview": return ["personhist", STATE.previewPerson];
@@ -478,6 +479,8 @@ function nav(view, arg) {
     STATE.bulk = { ...arg, y: now.getFullYear(), m: now.getMonth(), qty: {} };
   }
   if (view === "mypubs") STATE.pubsOffset = 0;   // входимо завжди в поточний місяць
+  // Блокнот перечитуємо при кожному вході: запис міг прилетіти з /todo у чаті
+  if (view === "todo") STATE.todos = null;
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
   // Черга і стрічка могли змінитись у колеги — перечитуємо при кожному вході
   if (view === "alerts") {
@@ -513,6 +516,7 @@ function render() {
   else if (v === "myfeed") renderMyFeed();
   else if (v === "myhist") renderMyHistory();
   else if (v === "mypubs") renderMyPubs();
+  else if (v === "todo") renderTodos();
   else if (v === "contacts") renderContacts();
   else if (v === "away") renderAway();
   else if (v === "home") renderHome();
@@ -566,6 +570,13 @@ function toolsSheet() {
       <span class="pk-txt">
         <span class="pk-name">Контакти редакції</span>
         <span class="pk-meta">телефони, які вже не треба шукати в чаті</span>
+      </span>
+    </button>
+    <button class="pick-row" data-tool="todo">
+      <span class="door-ic c-blue-ic">${icon("check")}</span>
+      <span class="pk-txt">
+        <span class="pk-name">Блокнот</span>
+        <span class="pk-meta">особистий список справ · /todo у чаті</span>
       </span>
     </button>
     <button class="pick-row" data-tool="away">
@@ -2603,7 +2614,7 @@ async function markNotifsRead() {
 /* З якого екрана починати. web_app-кнопка не вміє start_param (це не
    t.me-лінк), тож екран передається звичайним query-параметром до URL апки —
    так пінг «записав контакт» відкриває одразу базу, а не головну. */
-const START_SCREENS = ["contacts", "reports", "alerts"];
+const START_SCREENS = ["contacts", "reports", "alerts", "todo"];
 
 function startScreen() {
   try {
@@ -3416,6 +3427,7 @@ function patchPendingOptions(tasks) {
 const NAV_JOURNALIST = [
   ["home", "home", "Головна"],
   ["mypubs", "trending-up", "Публікації"],
+  ["todo", "check", "Блокнот"],
   ["contacts", "book", "Контакти"],
   ["myfeed", "bell", "Події"],
 ];
@@ -3431,7 +3443,9 @@ function paintNav() {
   nav.dataset.role = role;
   if (role === "m") { nav.innerHTML = STATE.navManager; syncAlertsBadge(); return; }
   nav.innerHTML = NAV_JOURNALIST.map(([v, ic, label]) => {
-    const dead = preview && v === "myfeed";
+    // Блокнот приватний за задумом: у перегляді чужими очима його
+    // не показуємо навіть вимкненим змістом — це чужі особисті записи
+    const dead = preview && (v === "myfeed" || v === "todo");
     return `<button class="bn${dead ? " off" : ""}"
       ${dead ? 'disabled aria-disabled="true"' : `data-view="${v}"`}>
       <svg class="ic"><use href="#i-${ic}"/></svg><span>${label}</span></button>`;
@@ -4537,6 +4551,171 @@ function pubRow(p) {
       </span>
       ${p.views ? `<span class="pub-v">${fmtNum(p.views)}</span>` : ""}
     </a>`;
+}
+
+/* ---------- Блокнот ----------
+
+   Олег, 29.07: «блокнот to-do, адмінам теж його… почитай, які існують найкращі
+   практики todo-лістів, чому одні ефективні, а інші ні». Що з дослідження
+   перетворилось саме на цей екран (розгорнуто — у docstring team_todos.py):
+
+   1. 41% пунктів не роблять ніколи, а половину зроблених закривають у той
+      самий день, 10% — за хвилину після запису. Отже ЗАХОПЛЕННЯ важливіше за
+      все інше: поле зверху, Enter додає і лишає фокус, жодного діалогу,
+      жодного обовʼязкового поля. Плюс /todo просто в чаті.
+   2. Masicampo & Baumeister: незавершене вантажить память доти, доки не
+      СПЛАНОВАНЕ, а не доки не зроблене. Тому два кошики — «Сьогодні» і
+      «Потім»: це мінімальний план, який знімає вантаж, а не просто список.
+   3. Gollwitzer: намір «коли» подвоює шанс виконання. «Сьогодні чи потім» —
+      найдешевша його форма, яку люди справді заповнюють.
+   4. Айві Лі: сила в ЛІМІТІ, не в порядку. Тому мʼякий поріг на «Сьогодні»:
+      не забороняємо, а кажемо вголос.
+   5. Amabile: видимий прогрес — найсильніший драйвер. «Зроблено сьогодні · 4»
+      лишається на екрані до кінця дня.
+
+   Пріоритетів, дедлайнів, тегів і підзадач тут немає СВІДОМО — кожен із них
+   вимагає рішення в момент захоплення, тобто платить саме там, де має бути
+   безкоштовно. Для зобовʼязань перед редакцією є creative tasks. */
+async function renderTodos() {
+  const head = `
+    <button class="back" data-back>${icon("chevron-left")} Назад</button>
+    <div class="h-big">Блокнот</div>
+    <div class="h-sub">особистий список — його не бачить ніхто, крім тебе</div>
+    <form class="td-add" id="td-form">
+      <input id="td-text" maxlength="300" autocomplete="off"
+        placeholder="Що зробити?">
+      <button class="td-plus" type="submit" aria-label="Додати">${icon("plus")}</button>
+    </form>`;
+  if (!STATE.todos) {
+    $("content").innerHTML = head + `<div id="td-body">${skeleton("rows", 3)}</div>`;
+    wireTodoForm();
+    try {
+      STATE.todos = await api("/api/todos");
+    } catch (e) {
+      const b = $("td-body");
+      if (b) b.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+      return;
+    }
+    if (STATE.view !== "todo") return;
+  } else {
+    $("content").innerHTML = head + `<div id="td-body"></div>`;
+    wireTodoForm();
+  }
+  paintTodos();
+}
+
+function paintTodos() {
+  const d = STATE.todos || { today: [], later: [], done: [], done_today: 0 };
+  const body = $("td-body");
+  if (!body) return;
+  const over = d.today.length > (d.soft_max || 6);
+  const empty = !d.today.length && !d.later.length && !d.done.length;
+  body.innerHTML = empty ? `<div class="empty-hint">Порожньо.<br>
+      Запиши перше — або кинь Лису в приват <code>/todo передзвонити Луковій</code>.</div>` : `
+    ${d.today.length ? `
+      <div class="dept-title">Сьогодні · ${d.today.length}</div>
+      ${over ? `<div class="td-note">Більше шести справ на день майже ніколи
+        не встигається — перенеси зайве в «Потім», щоб список лишався тим,
+        у який заглядаєш.</div>` : ""}
+      <div class="soft-card">${d.today.map(todoRow).join("")}</div>` : ""}
+    ${d.later.length ? `
+      <div class="dept-title">Потім · ${d.later.length}</div>
+      <div class="soft-card">${d.later.map(todoRow).join("")}</div>` : ""}
+    ${d.done.length ? `
+      <div class="dept-title">${d.done_today
+        ? `Зроблено сьогодні · ${d.done_today}` : "Зроблено"}</div>
+      <div class="soft-card">${d.done.map(todoRow).join("")}</div>` : ""}`;
+  wireTodos();
+}
+
+/* Вік пункту — без червоного і без докорів. Це інформація для рішення
+   «роблю чи викидаю», а не оцінка людини: половину списків кидають саме тому,
+   що вони почали виглядати як звинувачення. */
+function todoAge(t) {
+  if (t.done || !t.age) return "";
+  if (t.bucket === "today") {
+    return t.age === 1 ? "з учора"
+      : `${t.age} ${plural(t.age, "день", "дні", "днів")} у списку`;
+  }
+  return t.stale ? `висить ${Math.round(t.age / 7)} тиж.` : "";
+}
+
+function todoRow(t) {
+  const age = todoAge(t);
+  return `
+    <div class="td-row${t.done ? " is-done" : ""}" data-todo="${t.id}">
+      <button class="td-check" data-tdone="${t.id}" aria-label="Готово">
+        ${t.done ? icon("check") : ""}</button>
+      <span class="td-t">
+        <span class="td-text">${esc(t.text)}</span>
+        ${age ? `<span class="td-age">${esc(age)}</span>` : ""}
+      </span>
+      ${t.done ? `<button class="td-act" data-tdel="${t.id}"
+          aria-label="Видалити">${icon("trash")}</button>`
+        : `<button class="td-act" data-tmove="${t.id}"
+          aria-label="${t.bucket === "today" ? "У «Потім»" : "Зробити сьогодні"}"
+          >${icon(t.bucket === "today" ? "inbox" : "chevron-up")}</button>`}
+    </div>`;
+}
+
+function wireTodoForm() {
+  const form = $("td-form");
+  if (!form) return;
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const input = $("td-text");
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    input.focus();          // фокус лишається — підряд записують кілька справ
+    try {
+      const { todo } = await api("/api/todos", { method: "POST",
+        body: JSON.stringify({ text, bucket: "today" }) });
+      STATE.todos = STATE.todos || { today: [], later: [], done: [], done_today: 0 };
+      STATE.todos.today.push(todo);
+      paintTodos();
+      // фокус міг злетіти на перемальовці — повертаємо
+      const fresh = $("td-text");
+      if (fresh) fresh.focus();
+    } catch (err) { toast(err.message); }
+  };
+}
+
+function wireTodos() {
+  const body = $("td-body");
+  if (!body) return;
+  const patch = async (id, payload) => {
+    try {
+      await api(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+      STATE.todos = await api("/api/todos");
+      if (STATE.view === "todo") paintTodos();
+    } catch (e) { toast(e.message); }
+  };
+  body.querySelectorAll("[data-tdone]").forEach((b) => b.onclick = () => {
+    const id = +b.dataset.tdone;
+    const t = allTodos().find((x) => x.id === id);
+    if (!t) return;
+    haptic("success");
+    patch(id, { done: !t.done });
+  });
+  body.querySelectorAll("[data-tmove]").forEach((b) => b.onclick = () => {
+    const id = +b.dataset.tmove;
+    const t = allTodos().find((x) => x.id === id);
+    if (!t) return;
+    patch(id, { bucket: t.bucket === "today" ? "later" : "today" });
+  });
+  body.querySelectorAll("[data-tdel]").forEach((b) => b.onclick = async () => {
+    try {
+      await api(`/api/todos/${b.dataset.tdel}`, { method: "DELETE" });
+      STATE.todos = await api("/api/todos");
+      if (STATE.view === "todo") paintTodos();
+    } catch (e) { toast(e.message); }
+  });
+}
+
+function allTodos() {
+  const d = STATE.todos || {};
+  return [...(d.today || []), ...(d.later || []), ...(d.done || [])];
 }
 
 /* Стрічка подій — окремий екран. Два названі блоки лишились: «Виконані» це

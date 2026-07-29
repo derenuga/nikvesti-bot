@@ -53,7 +53,7 @@ except ImportError:  # локальний dev без aiohttp — модуль п
 from handlers import (
     bot_db, team_analytics, team_contacts, team_kpi, team_matches,
     team_notifications, team_publications,
-    team_projects, team_roster, team_tasks,
+    team_projects, team_roster, team_tasks, team_todos,
 )
 from handlers.helpers import normalize_https_url
 
@@ -1265,6 +1265,50 @@ async def api_publications(request):
     return web.json_response(data)
 
 
+# ---------- Блокнот (особистий список справ) ----------
+#
+# Приватний повністю: person береться з initData і в кожному запиті йде у
+# WHERE. Менеджерського «подивитись чужий блокнот» немає й не буде — інакше це
+# вже не блокнот, а звітність, і в нього перестануть писати.
+
+async def api_todos(request):
+    person, info, _ = await _authenticate(request)
+    return web.json_response(await _in_session(team_todos.list_todos, person))
+
+
+async def api_todo_create(request):
+    person, info, _ = await _authenticate(request)
+    payload = await _json(request)
+    bucket = payload.get("bucket") if payload.get("bucket") in team_todos.BUCKETS else "today"
+    item = await _in_session(
+        team_todos.add_todo, person, payload.get("text") or "", bucket, "app")
+    if not item:
+        raise web.HTTPBadRequest(text="Порожній запис")
+    return web.json_response({"todo": item})
+
+
+async def api_todo_patch(request):
+    person, info, _ = await _authenticate(request)
+    payload = await _json(request)
+    bucket = payload.get("bucket") if payload.get("bucket") in team_todos.BUCKETS else None
+    done = payload.get("done")
+    item = await _in_session(
+        team_todos.update_todo, person, int(request.match_info["todo_id"]),
+        bucket, done if isinstance(done, bool) else None, payload.get("text"))
+    if not item:
+        raise web.HTTPNotFound(text="Запису немає")
+    return web.json_response({"todo": item})
+
+
+async def api_todo_delete(request):
+    person, info, _ = await _authenticate(request)
+    deleted = await _in_session(
+        team_todos.delete_todo, person, int(request.match_info["todo_id"]))
+    if not deleted:
+        raise web.HTTPNotFound(text="Запису немає")
+    return web.json_response({"ok": True})
+
+
 async def api_kpi_norm_create(request):
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
@@ -1515,6 +1559,10 @@ async def start_webapp(application):
         web.get("/api/kpi/dashboard", api_kpi_dashboard),
         web.get("/api/kpi/person", api_kpi_person),
         web.get("/api/publications", api_publications),
+        web.get("/api/todos", api_todos),
+        web.post("/api/todos", api_todo_create),
+        web.patch("/api/todos/{todo_id:\\d+}", api_todo_patch),
+        web.delete("/api/todos/{todo_id:\\d+}", api_todo_delete),
         web.post("/api/kpi/norms", api_kpi_norm_create),
         web.patch("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_patch),
         web.delete("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_delete),
@@ -1529,6 +1577,109 @@ async def start_webapp(application):
 
 
 # ---------- /team ----------
+
+async def todo_handler(update, context):
+    """/todo <текст> — записати в особистий блокнот прямо з чату.
+
+    Навіщо взагалі команда, коли є екран (Олег, 29.07: «щоб /todo у боті теж
+    записувало задачу»): думка приходить у чаті. За даними Todoist половину
+    зроблених пунктів закривають у той самий день, 10% — за хвилину після
+    запису; тобто виграє те захоплення, яке не вимагає перемикати застосунок.
+
+    Кладемо в «Потім», а не в «Сьогодні»: бот не знає плану людини на день, а
+    підкинути чуже в денний список — це зіпсувати єдиний кошик, який має
+    значення. Натомість поруч кнопка «Зробити сьогодні» — один тап просто в
+    чаті, і план готовий."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from handlers import team_roster, team_todos
+
+    user = update.effective_user
+    person = await asyncio.to_thread(
+        team_roster.resolve_person, user.id, user.username)
+    if not person:
+        await update.message.reply_text("Блокнот — для команди редакції.")
+        return
+    text = " ".join(context.args or []).strip()
+    if not text:
+        try:
+            today, later, done = await _in_session(team_todos.summary, person)
+        except Exception as e:
+            await update.message.reply_text(f"Блокнот недоступний: {e}")
+            return
+        lines = [f"🦊 <b>Блокнот</b>",
+                 f"Сьогодні: {today} · Потім: {later} · зроблено сьогодні: {done}",
+                 "",
+                 "Записати: <code>/todo передзвонити в департамент</code>"]
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML",
+                                        reply_markup=_todo_markup())
+        return
+    try:
+        item = await _in_session(team_todos.add_todo, person, text,
+                                 "later", "bot")
+    except Exception as e:
+        await update.message.reply_text(f"Не записав: {e}")
+        return
+    if not item:
+        await update.message.reply_text("Порожній запис — нічого записувати.")
+        return
+    await update.message.reply_text(
+        f"✍️ Записав у «Потім»:\n<b>{_esc(item['text'])}</b>",
+        parse_mode="HTML",
+        reply_markup=_todo_markup(item["id"]),
+    )
+
+
+def _esc(s):
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _todo_markup(todo_id=None):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows = []
+    if todo_id:
+        rows.append([InlineKeyboardButton("Зробити сьогодні",
+                                          callback_data=f"todo_today:{todo_id}")])
+    if WEBAPP_URL:
+        from telegram import WebAppInfo
+        rows.append([InlineKeyboardButton(
+            "Відкрити блокнот",
+            web_app=WebAppInfo(url=f"{WEBAPP_URL}?screen=todo"))])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+async def todo_today_callback(update, context):
+    """Кнопка «Зробити сьогодні» під записом у чаті — той самий один тап, що
+    в апці. Плану без переносу не буває, а переносити, відкриваючи апку, —
+    зайвий крок саме там, де людина вже тримає телефон у руках."""
+    from handlers import team_roster, team_todos
+
+    query = update.callback_query
+    user = query.from_user
+    person = await asyncio.to_thread(
+        team_roster.resolve_person, user.id, user.username)
+    if not person:
+        await query.answer("Блокнот — для команди редакції.", show_alert=True)
+        return
+    todo_id = int(query.data.split(":")[1])
+    try:
+        # _in_session передає лише позиційні аргументи
+        item = await _in_session(team_todos.update_todo, person, todo_id, "today")
+    except Exception as e:
+        await query.answer(f"Не вдалось: {e}", show_alert=True)
+        return
+    if not item:
+        await query.answer("Запису вже немає.", show_alert=True)
+        return
+    await query.answer("Перенесено в «Сьогодні»")
+    try:
+        await query.edit_message_text(
+            f"📌 Сьогодні:\n<b>{_esc(item['text'])}</b>",
+            parse_mode="HTML", reply_markup=_todo_markup())
+    except Exception:
+        pass
+
 
 async def team_handler(update, context):
     """/team — кнопка відкриття апки. У приваті — нативна web_app кнопка;

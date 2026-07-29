@@ -51,7 +51,8 @@ from handlers.builder_monitor import builder_handler, builder_test_handler, is_b
 from handlers.fb_missing import fbmissing_handler, fbmissing_test_handler
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
 from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, viber_test_handler
-from handlers.webapp import start_webapp, team_handler
+from handlers.webapp import (start_webapp, team_handler, todo_handler,
+                            todo_today_callback)
 from handlers.team_matching import (
     match_test_handler, match_scan_handler, match_estimate_handler,
     match_backfill_handler, match_tg_handler, match_cards_handler,
@@ -497,6 +498,7 @@ def main():
     app.add_handler(CommandHandler("youtube_backfill", youtube_backfill_handler))
     app.add_handler(CommandHandler("tiktok_auth", tiktok_auth_handler))
     app.add_handler(CommandHandler("team", team_handler))
+    app.add_handler(CommandHandler("todo", todo_handler))
     app.add_handler(CommandHandler("match_test", match_test_handler))
     app.add_handler(CommandHandler("match_scan", match_scan_handler))
     app.add_handler(CommandHandler("match_estimate", match_estimate_handler))
@@ -557,6 +559,7 @@ def main():
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_natural_language_query))
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, group_reply_to_bot))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
+    app.add_handler(CallbackQueryHandler(todo_today_callback, pattern="^todo_today:"))
     app.add_handler(CallbackQueryHandler(news_back_callback, pattern=f"^{BACK_CALLBACK_DATA}$"))
     app.add_handler(CallbackQueryHandler(news_select_callback, pattern=f"^{SELECT_CALLBACK_PREFIX}"))
     print("Bot started...")

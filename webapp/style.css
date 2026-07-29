@@ -1296,6 +1296,47 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   background: var(--fill); border-radius: 7px; padding: 2px 7px; white-space: nowrap;
 }
 
+/* ---------- Блокнот ---------- */
+/* Поле захоплення стоїть ЗВЕРХУ і завжди на видноті: половину зроблених
+   пунктів закривають у день запису, тож усе вирішує швидкість запису */
+.td-add { display: flex; gap: 8px; margin: 4px 0 16px; }
+.td-add input {
+  flex: 1 1 auto; min-width: 0; background: var(--card); border: 1px solid var(--line);
+  border-radius: 14px; padding: 12px 14px; font-size: 15px; color: var(--ink);
+}
+.td-plus {
+  flex: 0 0 46px; height: 46px; border-radius: 14px; background: var(--blue);
+  color: var(--blue-fg); display: inline-flex; align-items: center; justify-content: center;
+}
+.td-plus .ic { width: 20px; height: 20px; }
+
+.td-row {
+  display: flex; align-items: flex-start; gap: 11px; width: 100%;
+  padding: 10px 0; border-top: 1px solid var(--line);
+}
+.td-row:first-child { border-top: none; padding-top: 2px; }
+.td-check {
+  flex: 0 0 22px; width: 22px; height: 22px; margin-top: 1px;
+  border-radius: 50%; border: 2px solid var(--line); background: transparent;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.td-check .ic { width: 13px; height: 13px; stroke-width: 3; }
+.td-row.is-done .td-check { background: var(--good); border-color: var(--good); color: #fff; }
+.td-t { flex: 1 1 auto; min-width: 0; }
+.td-text { display: block; font-size: 15px; line-height: 1.35; }
+.td-row.is-done .td-text { color: var(--muted); text-decoration: line-through; }
+.td-age { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.td-act {
+  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--muted);
+}
+.td-act .ic { width: 17px; height: 17px; }
+.td-note {
+  font-size: 12.5px; color: var(--muted); background: var(--fill);
+  border-radius: 12px; padding: 9px 12px; margin-bottom: 8px;
+}
+
 /* ---------- Хто коли відсутній ---------- */
 /* Імена стоять окремою НЕРУХОМОЮ колонкою: у проєктів підпис живе всередині
    смуги, бо смуга там одна на рядок і довга, а відпустка — це три дні десь
