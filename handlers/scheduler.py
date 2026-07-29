@@ -26,6 +26,7 @@ from handlers.usage_report import send_daily_usage_report
 from handlers.weekly_digest import send_weekly_digest
 from handlers.report_reminders import check_report_deadlines
 from handlers.team_matching import run_matching_scan
+from handlers import team_tasks
 from handlers.social_sheet import run_monthly_snapshot, check_tiktok_health
 from handlers.social_store import run_weekly_capture
 from handlers import analytics_store
@@ -216,6 +217,17 @@ def _on_job_error(bot, event):
         print(f"scheduler: не вдалось запланувати алерт — {e}")
 
 
+async def run_overdue_scan():
+    """Щоденний тихий прогін прострочених завдань (див. team_tasks.notify_overdue).
+    Помилка не має валити планувальник: без Нори модуль просто спить."""
+    try:
+        made = await asyncio.to_thread(team_tasks.notify_overdue)
+        if made:
+            print(f"Прострочені завдання: нових карток — {made}")
+    except Exception as e:
+        print(f"Прогін прострочених завдань не вдався: {e}")
+
+
 def setup_scheduler(bot, last_channel_post_time=None):
     if last_channel_post_time is None:
         last_channel_post_time = {"time": datetime.now()}
@@ -298,5 +310,9 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # Тиха: пише в лог, у чат — лише на явний /match_scan. Без БД сайту або
     # без відкритих тасків не коштує нічого (AI вмикається лише при кандидатах).
     scheduler.add_job(run_matching_scan, "cron", minute=45, args=[bot])
+    # Прострочені завдання → картка Каті у «Сповіщеннях». РАЗ на добу, а не
+    # щогодини: це нагадування, а не тривога, і dedup усе одно не дасть
+    # надіслати те саме двічі. Тиха, без БД нічого не коштує.
+    scheduler.add_job(run_overdue_scan, "cron", hour=10, minute=25)
     scheduler.start()
     return scheduler

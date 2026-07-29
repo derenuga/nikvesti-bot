@@ -33,6 +33,7 @@ KINDS = {
     "task_assigned": "Нове завдання",
     "task_done": "Завдання виконано",
     "report_deadline": "Звітний дедлайн",
+    "task_overdue": "Дедлайн завдання минув",
 }
 
 AUDIENCE_MANAGERS = "managers"

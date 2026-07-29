@@ -2312,12 +2312,111 @@ async function markNotifsRead() {
   } catch (e) { /* лічильник просто оновиться наступного разу */ }
 }
 
+/* ---------- Прострочені завдання ----------
+   Олег, 29.07: «якщо дедлайн минув, треба щоб Каті приходила картка з
+   пропозицією продовжити дедлайн або зняти задачу».
+
+   Список рахуємо з того, що вже є в STATE (менеджер бачить усі таски) — це
+   нуль нових запитів. Подія в стрічку і лічильник приходять із сервера
+   (team_tasks.notify_overdue), щоб штовхнути Катю навіть тоді, коли апку не
+   відкривали. Дві дії, бо третьої не буває: строк або посунувся, або завдання
+   більше не актуальне. */
+
+function overdueTasks() {
+  const today = todayISO();
+  return (STATE.tasks || [])
+    .filter((t) => t.status === "open" && t.deadline && t.deadline < today)
+    .sort((a, b) => a.deadline.localeCompare(b.deadline));
+}
+
+function daysSince(iso) {
+  const ms = Date.parse(todayISO()) - Date.parse(iso);
+  return Math.max(0, Math.round(ms / 86400000));
+}
+
+function overdueCard(t) {
+  const d = daysSince(t.deadline);
+  const word = d === 1 ? "день" : (d >= 2 && d <= 4 ? "дні" : "днів");
+  return `
+    <div class="al-card">
+      <div class="al-head">
+        ${avatar(t.person, personEntry(t.person), 38)}
+        <div class="al-h-txt">
+          <span class="al-who">${esc(taskLine(t, { donor: true }))}</span>
+          <div class="al-date">${esc(t.person)} · строк був ${esc(shortDate(t.deadline))},
+            ${d} ${word} тому</div>
+        </div>
+        ${progressHtml(t)}
+      </div>
+      ${t.note ? `<div class="al-why">${esc(t.note)}</div>` : ""}
+      <div class="al-actions">
+        <button class="sbtn danger" data-odrop="${t.id}">Зняти</button>
+        <button class="sbtn primary" data-oext="${t.id}">Продовжити</button>
+      </div>
+    </div>`;
+}
+
+/* Продовження строку. Швидкі варіанти закривають майже всі випадки, але дата
+   лишається: «до кінця тижня» і «до кінця місяця» — не одне й те саме, коли
+   місяць закінчується в середу. */
+function extendSheet(t) {
+  const plus = (days) => {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const endOfMonth = () => {
+    const d = new Date();
+    const e = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    return `${e.getFullYear()}-${String(e.getMonth() + 1).padStart(2, "0")}-${String(e.getDate()).padStart(2, "0")}`;
+  };
+  openSheet(`
+    <h2>Продовжити строк</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+      ${esc(t.person)} · ${esc(taskLine(t, { donor: true }))}</p>
+    <div class="chips">
+      <button class="chip" data-od="${plus(3)}">+3 дні</button>
+      <button class="chip" data-od="${plus(7)}">+тиждень</button>
+      <button class="chip" data-od="${endOfMonth()}">до кінця місяця</button>
+    </div>
+    <div class="f-label">Або конкретна дата</div>
+    <input id="od-date" type="date" min="${todayISO()}" value="${esc(t.deadline)}">
+    <div class="sheet-actions">
+      <button class="sbtn" id="od-cancel">Скасувати</button>
+      <button class="sbtn primary" id="od-save">Зберегти</button>
+    </div>`);
+  const save = async (deadline) => {
+    try {
+      const res = await api(`/api/tasks/${t.id}`, {
+        method: "PATCH", body: JSON.stringify({ deadline }),
+      });
+      patchTask(res.task);
+      closeSheet();
+      haptic("success");
+      toast(`Строк — до ${shortDate(deadline)}`);
+      render();
+    } catch (e) { toast(e.message); }
+  };
+  $("sheet").querySelectorAll("[data-od]").forEach((b) =>
+    b.onclick = () => save(b.dataset.od));
+  $("od-cancel").onclick = closeSheet;
+  $("od-save").onclick = () => {
+    const v = $("od-date").value;
+    if (v) save(v);
+  };
+}
+
 function paintAlerts() {
   const list = STATE.pending || [];
   const feed = STATE.notifs || [];
   const box = $("alerts-body");
   if (!box) return;
+  const late = overdueTasks();
   box.innerHTML = `
+    ${late.length
+      ? `<div class="dept-title">Строк минув · ${late.length}</div>
+         ${late.map(overdueCard).join("")}`
+      : ""}
     ${list.length
       ? `<div class="dept-title">Звірити виконання · ${list.length}</div>
          ${list.map(matchCard).join("")}`
@@ -2334,6 +2433,23 @@ function paintAlerts() {
       <div class="al-line">Нове завдання і виконане завдання — авторові
         в приват від Лиса.</div>
     </div>`;
+  box.querySelectorAll("[data-oext]").forEach((b) => b.onclick = () => {
+    const t = (STATE.tasks || []).find((x) => x.id === +b.dataset.oext);
+    if (t) extendSheet(t);
+  });
+  box.querySelectorAll("[data-odrop]").forEach((b) => b.onclick = async () => {
+    const t = (STATE.tasks || []).find((x) => x.id === +b.dataset.odrop);
+    if (!t) return;
+    if (!(await confirmAction(`Зняти завдання «${taskLine(t)}» з ${t.person}?`))) return;
+    try {
+      const res = await api(`/api/tasks/${t.id}`, {
+        method: "PATCH", body: JSON.stringify({ status: "dropped" }),
+      });
+      patchTask(res.task);
+      haptic("success");
+      render();
+    } catch (e) { toast(e.message); }
+  });
   box.querySelectorAll("[data-mreject]").forEach((b) => b.onclick = async () => {
     const m = (STATE.pending || []).find((x) => x.id === +b.dataset.mreject);
     if (!m) return;
@@ -2461,7 +2577,10 @@ function patchPendingOptions(tasks) {
 function syncAlertsBadge() {
   const btn = document.querySelector('#bottomnav [data-view="alerts"]');
   if (!btn) return;
-  const n = (STATE.pendingCount || 0) + (STATE.unread || 0);
+  // Прострочені теж просять дії, тож і в лічильнику вони мають бути: інакше
+  // Катя бачила б «0» на пункті меню, у якому лежить п'ять завислих завдань
+  const n = (STATE.pendingCount || 0) + (STATE.unread || 0)
+    + (STATE.me && STATE.me.manager ? overdueTasks().length : 0);
   let dot = btn.querySelector(".bn-badge");
   if (!n) { if (dot) dot.remove(); return; }
   if (!dot) {

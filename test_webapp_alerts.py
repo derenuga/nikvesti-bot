@@ -165,6 +165,11 @@ window.fetch = async (url, opts = {}) => {
     return json({ ok: true, unread: 0 });
   }
   let m;
+  if ((m = url.match(/^\\/api\\/tasks\\/(\\d+)$/)) && opts.method === "PATCH") {
+    window.__posts.push({ patch: +m[1], body });
+    const t = (STATE.tasks || []).find((x) => x.id === +m[1]) || { id: +m[1] };
+    return json({ task: { ...t, ...body } });
+  }
   if ((m = url.match(/^\\/api\\/matches\\/(\\d+)\\/decide$/))) {
     window.__posts.push({ id: +m[1], body });
     // Сервер віддає ОНОВЛЕНІ таски (як справжній роут після attach_progress)
@@ -387,6 +392,45 @@ async def main():
             check("черга спорожніла спокійним станом",
                   "Спірних публікацій немає" in await page.inner_text("#content"))
             await page.screenshot(path="/tmp/alerts-empty.png", full_page=True)
+
+            # --- прострочені завдання (Олег, 29.07) ---
+            await page.evaluate("""() => {
+              STATE.tasks = [{ id: 901, person: 'Аліна Квітко',
+                creator: 'Катерина Середа', project_id: 1,
+                project_name: 'Голоси Миколаєва', partner_name: 'IMS',
+                platform: null, type: 'news', theme_id: 1,
+                theme_name: 'Тендери', qty: 2, note: '', deadline: '2020-01-31',
+                status: 'open', auto_done: false, done_count: 0, matches: [] }];
+              nav('alerts');
+            }""")
+            await page.wait_for_selector("[data-oext]", timeout=5000)
+            card = await page.inner_text("#alerts-body")
+            # .dept-title малює великими літерами — порівнюємо в одному регістрі
+            check("прострочене завдання підняте окремим блоком",
+                  "СТРОК МИНУВ" in card.upper())
+            check("сказано, чий строк і коли був",
+                  "31.01" in card and "Аліна" in card)
+            check("є дві дії — продовжити і зняти",
+                  await page.locator("[data-oext]").count() == 1
+                  and await page.locator("[data-odrop]").count() == 1)
+            check("прострочене потрапило в лічильник меню",
+                  await page.locator(
+                      '#bottomnav [data-view="alerts"] .bn-badge').count() == 1)
+
+            await page.click("[data-oext]")
+            await page.wait_for_selector("#od-date", timeout=3000)
+            check("у шторці є швидкі варіанти строку",
+                  await page.locator("[data-od]").count() == 3)
+            await page.locator("[data-od]").nth(1).click()
+            await page.wait_for_timeout(400)
+            sent = await page.evaluate("window.__posts.slice(-1)[0]")
+            check("продовження їде як PATCH дедлайну",
+                  bool(sent) and sent.get("patch") == 901
+                  and "deadline" in (sent.get("body") or {}))
+            check("новий строк у майбутньому",
+                  bool(sent) and sent["body"]["deadline"] > "2020-01-31")
+            check("картка зникла зі «Строк минув»",
+                  await page.locator("[data-oext]").count() == 0)
         finally:
             await browser.close()
 

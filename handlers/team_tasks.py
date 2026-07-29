@@ -27,7 +27,7 @@ team_creative_tasks, team_project_themes, team_task_events (журнал).
 import asyncio
 import os
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
@@ -689,3 +689,44 @@ async def ping_assigned(bot, task):
     if task["note"]:
         text += f"\n\n{task['note']}"
     await _ping(bot, task["person"], text)
+
+
+def overdue_tasks(today=None):
+    """Відкриті таски, у яких дедлайн уже минув. Без дедлайну — не прострочені
+    (їх ставили без строку свідомо)."""
+    ensure_team_schema()
+    today = today or datetime.now(KYIV_TZ).date()
+    return [_row_to_task(r) for r in bot_db.query(
+        "SELECT * FROM team_creative_tasks "
+        "WHERE status = 'open' AND deadline IS NOT NULL AND deadline < %s "
+        "ORDER BY deadline, person",
+        (today,),
+    )]
+
+
+def notify_overdue(today=None):
+    """Прострочені завдання → картка Каті у «Сповіщеннях» (Олег, 29.07:
+    «якщо дедлайн минув, треба щоб Каті приходила картка з пропозицією
+    продовжити дедлайн або зняти задачу»).
+
+    dedup_key включає САМ ДЕДЛАЙН, а не лише id: інакше подія про завдання
+    прийшла б рівно один раз за все життя. Продовжила дедлайн — ключ інший, і
+    якщо новий строк теж мине, Катю штовхнуть ще раз. Зняте чи виконане
+    завдання у вибірку не потрапляє взагалі.
+
+    Повертає, скільки НОВИХ подій створено (не скільки прострочених)."""
+    made = 0
+    for t in overdue_tasks(today):
+        days = (datetime.now(KYIV_TZ).date() - date.fromisoformat(t["deadline"])).days
+        word = "день" if days == 1 else ("дні" if 2 <= days <= 4 else "днів")
+        body = f"{t['person']} · дедлайн був {date.fromisoformat(t['deadline']).strftime('%d.%m')}"
+        if t.get("done_count"):
+            body += f" · зараховано {t['done_count']} із {t['qty']}"
+        if team_notifications.notify_safe(
+            "task_overdue", task_summary(t),
+            body=f"{body} · {days} {word} тому",
+            object_type="task", object_id=t["id"],
+            dedup_key=f"task_overdue:{t['id']}:{t['deadline']}",
+        ):
+            made += 1
+    return made
