@@ -57,7 +57,8 @@ from handlers.team_matching import (
     match_requeue_handler,
 )
 from handlers.team_kpi import kpi_debug, set_user_link
-from handlers import team_roster
+from handlers import team_contacts, team_roster
+from handlers.helpers import escape_html
 from handlers.notifier import notify_error
 from handlers.usage_report import usage_handler, display_name
 from handlers import storage
@@ -350,6 +351,38 @@ async def post_init(application):
     except Exception as e:
         print(f"webapp: не стартував — {e}")
 
+
+async def shared_contact_handler(update, context):
+    """Переслана в приват картка контакту → у базу редакції (Олег, 29.07).
+
+    Чат бот НЕ сканує — це свідоме рішення: у базу потрапляє тільки те, що
+    людина сама надіслала. Кладемо «як є», бо ПІБ і посаду все одно правлять
+    руками: у телефонах записано хто як («Луков мер», «Ігор Микол.»).
+    """
+    msg = update.effective_message
+    user = update.effective_user
+    person = team_roster.resolve_person(user.id, user.username) if user else None
+    if not person:
+        return                      # чужинцю база редакції не відкривається
+    c = msg.contact
+    try:
+        saved, is_new = await asyncio.to_thread(
+            team_contacts.save_shared_contact, person,
+            c.first_name, c.last_name, c.phone_number,
+            getattr(c, "username", None),
+        )
+    except Exception as e:
+        await msg.reply_text(f"🦊 Не вдалось зберегти контакт: {e}")
+        return
+    verb = "Записав" if is_new else "Такий номер уже був — доповнив картку"
+    await msg.reply_text(
+        f"🦊 {verb}: <b>{escape_html(saved['name'])}</b>\n"
+        f"{escape_html(saved.get('phone') or '')}\n\n"
+        "Відкрий «Контакти» в апці й додай посаду й теми — "
+        "за ними потім і шукатимуть.",
+        parse_mode="HTML",
+    )
+
 def main():
     # concurrent_updates: без цього PTB обробляє апдейти строго по черзі,
     # і тап по inline-кнопці висить у "Loading", доки не дожується попередній
@@ -460,6 +493,9 @@ def main():
     # ZIP пакета рішення в приват — без команд: бот сам розбирає і нашаровує
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.Document.ALL, budget_package_handler))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
+    # Переслана в приват картка контакту → у базу редакції. Ставимо ПЕРЕД
+    # текстовим NLQ: contact — не текст, тож перехопити його інакше нема де.
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, shared_contact_handler))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_natural_language_query))
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, group_reply_to_bot))
     app.add_handler(MessageReactionHandler(handle_message_reaction))

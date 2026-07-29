@@ -27,6 +27,8 @@ const STATE = {
   notifs: null,         // стрічка подій
   myFeed: null,         // стрічка журналістки (лічильник на дверях «Події»)
   absenceRequests: null, // запити на відпустку на погодження (менеджерам)
+  contactQuery: "",     // пошук у телефонній базі
+  contactsMine: null,   // скільки карток завела я (для подяки на головній)
   previewPerson: null,  // менеджерський перегляд екрана журналістки
   unread: 0,
   homeView: null,        // ставиться нижче: остання обрана таба Головної
@@ -417,7 +419,8 @@ function backTarget() {
     case "kpinorm": return ["kpi"];
     case "mydone":
     case "myfeed":
-    case "myhist": return ["home"];
+    case "myhist":
+    case "contacts": return ["home"];
     case "preview": return ["personhist", STATE.previewPerson];
     default: return null;      // корінь табів — назад нікуди
   }
@@ -485,6 +488,7 @@ function render() {
   else if (v === "mydone") renderMyDone();
   else if (v === "myfeed") renderMyFeed();
   else if (v === "myhist") renderMyHistory();
+  else if (v === "contacts") renderContacts();
   else if (v === "home") renderHome();
   else if (v === "person") renderPerson();
   else if (v === "personhist") renderPersonHistory();
@@ -2344,6 +2348,145 @@ async function markNotifsRead() {
   } catch (e) { /* лічильник просто оновиться наступного разу */ }
 }
 
+/* ---------- Телефонна база редакції ----------
+   Олег, 29.07: «у кого є телефон віцемера Лукова?» — хтось кидає в чат, а
+   через пів року питають знову. Два входи, обидва ручні: форма тут і
+   пересланий Лису контакт (чат бот не сканує — свідоме рішення).
+
+   Пошук один на все: реальне питання частіше «хто в нас по енергетиці?», ніж
+   «дай Лукова», тож теми шукаються нарівні з іменем і посадою. */
+
+/* Підпис на дверях бази. Подяка — саме тут, а не окремим блоком: людина
+   бачить її, коли база згадується, а не щодня по дорозі до завдань.
+   І це ПОДЯКА, а не очко: на KPI кількість контактів не впливає ніяк
+   (щойно за них дадуть бали, база наповниться сміттям заради лічильника). */
+function contactsDoorMeta() {
+  const m = STATE.contactsMine;
+  if (m && m.added) {
+    return `твоїх — ${m.added}, дякуємо 💙`;
+  }
+  return "телефони, які вже не треба шукати в чаті";
+}
+
+function contactRow(c) {
+  const meta = [c.role, c.tags].filter(Boolean).join(" · ");
+  return `
+    <div class="cnt-row" data-cedit="${c.id}">
+      <span class="cnt-main">
+        <span class="cnt-n">${esc(c.name)}</span>
+        ${meta ? `<span class="cnt-m">${esc(meta)}</span>` : ""}
+      </span>
+      ${c.phone ? `<a class="cnt-tel" href="tel:${esc(c.phone.replace(/\s/g, ""))}"
+        onclick="event.stopPropagation()">${icon("phone")}</a>` : ""}
+      ${icon("chevron-right", "ic chev")}
+    </div>`;
+}
+
+async function renderContacts() {
+  const q = STATE.contactQuery || "";
+  const head = `
+    <div class="head-row">
+      <div class="h-big">Контакти</div>
+      <button class="icon-btn" id="cnt-add" aria-label="Додати контакт">
+        ${icon("plus")}</button>
+    </div>
+    <div class="h-sub">телефони редакції — спільні на всіх</div>
+    ${searchBox("cnt-q", q, "імʼя, посада, тема, номер…")}`;
+  $("content").innerHTML = head + `<div id="cnt-body">${skeleton("rows", 4)}</div>`;
+  wireContactControls();
+  let data;
+  try {
+    data = await api(`/api/contacts?q=${encodeURIComponent(q)}`);
+  } catch (e) {
+    const b = $("cnt-body");
+    if (b) b.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+    return;
+  }
+  if (STATE.view !== "contacts") return;
+  STATE.contactsMine = data.mine || null;
+  const list = data.contacts || [];
+  const body = $("cnt-body");
+  if (!body) return;
+  body.innerHTML = list.length
+    ? `<div class="soft-card">${list.map(contactRow).join("")}</div>
+       ${data.mine ? `<div class="cnt-thanks">У базі ${data.mine.total} ${
+         esc(plural(data.mine.total, "контакт", "контакти", "контактів"))}.
+         ${data.mine.added ? `Твоїх — ${data.mine.added}. Дякуємо 💙` : ""}</div>` : ""}`
+    : `<div class="empty-hint">${q
+        ? "За таким запитом нікого."
+        : "База поки порожня.<br>Додай контакт кнопкою «＋» або перешли картку Лису в приват."}</div>`;
+  body.querySelectorAll("[data-cedit]").forEach((r) => r.onclick = () => {
+    const c = list.find((x) => x.id === +r.dataset.cedit);
+    if (c) contactSheet(c);
+  });
+}
+
+function wireContactControls() {
+  $("cnt-add").onclick = () => contactSheet(null);
+  const input = $("cnt-q");
+  if (!input) return;
+  let t = null;
+  input.oninput = () => {
+    STATE.contactQuery = input.value;
+    clearTimeout(t);
+    // Пошук іде в Нору — не смикаємо її на кожну літеру
+    t = setTimeout(() => { if (STATE.view === "contacts") renderContacts(); }, 300);
+  };
+}
+
+/* Картка контакту. Посада й теми — окремі поля, бо саме за ними шукають:
+   «хто в нас по енергетиці» — це пошук по темах, а не по імені. */
+function contactSheet(c) {
+  const v = (k) => esc((c && c[k]) || "");
+  openSheet(`
+    <h2>${c ? "Контакт" : "Новий контакт"}</h2>
+    <div class="f-label" style="margin-top:0">Імʼя</div>
+    <input id="c-name" maxlength="120" value="${v("name")}" placeholder="Ігор Луков">
+    <div class="f-label">Посада й орган</div>
+    <input id="c-role" maxlength="160" value="${v("role")}"
+      placeholder="віцемер Миколаєва">
+    <div class="f-label">Телефон</div>
+    <input id="c-phone" type="tel" maxlength="40" value="${v("phone")}"
+      placeholder="+380…">
+    <div class="f-label">Telegram</div>
+    <input id="c-tg" maxlength="60" value="${v("telegram")}" placeholder="@нік">
+    <div class="f-label">Теми — через кому</div>
+    <input id="c-tags" maxlength="200" value="${v("tags")}"
+      placeholder="міськрада, бюджет, енергетика">
+    <div class="f-label">Нотатка</div>
+    <input id="c-note" maxlength="200" value="${v("note")}"
+      placeholder="коли краще телефонувати, хто познайомив…">
+    <div class="sheet-actions">
+      ${c && STATE.me.manager
+        ? `<button class="sbtn danger" id="c-del">Видалити</button>` : ""}
+      <button class="sbtn primary" id="c-save">Зберегти</button>
+    </div>`);
+  $("c-save").onclick = async () => {
+    const body = {
+      name: $("c-name").value.trim(), role: $("c-role").value.trim(),
+      phone: $("c-phone").value.trim(), telegram: $("c-tg").value.trim(),
+      tags: $("c-tags").value.trim(), note: $("c-note").value.trim(),
+    };
+    if (!body.name) { toast("Без імені картка не має сенсу"); return; }
+    try {
+      await api(c ? `/api/contacts/${c.id}` : "/api/contacts", {
+        method: c ? "PATCH" : "POST", body: JSON.stringify(body),
+      });
+      closeSheet();
+      haptic("success");
+      renderContacts();
+    } catch (e) { toast(e.message); }
+  };
+  if (c && STATE.me.manager) $("c-del").onclick = async () => {
+    if (!(await confirmAction(`Видалити «${c.name}» з бази?`))) return;
+    try {
+      await api(`/api/contacts/${c.id}`, { method: "DELETE" });
+      closeSheet();
+      renderContacts();
+    } catch (e) { toast(e.message); }
+  };
+}
+
 /* ---------- Прострочені завдання ----------
    Олег, 29.07: «якщо дедлайн минув, треба щоб Каті приходила картка з
    пропозицією продовжити дедлайн або зняти задачу».
@@ -3558,6 +3701,8 @@ function renderJournalist() {
         feed ? (feed.unread || (feed.items || []).length) : "")}
       ${doorHtml("myhist", "bar-chart", "c-sky", "KPI по місяцях",
         "як іде місяць до місяця", "")}
+      ${doorHtml("contacts", "book", "c-blue", "Контакти редакції",
+        contactsDoorMeta(), STATE.contactsMine ? STATE.contactsMine.total : "")}
       <button class="door c-good" data-ask>
         <span class="door-ic">${icon("calendar")}</span>
         <span class="door-txt">
@@ -3572,7 +3717,7 @@ function renderJournalist() {
   const ask = $("content").querySelector("[data-ask]");
   if (ask) ask.onclick = absenceRequestSheet;
   renderMyKpi();
-  if (!me.preview) loadMyFeed();
+  if (!me.preview) { loadMyFeed(); loadContactsMine(); }
 }
 
 /* Лічильник на дверях «Події». Стрічку тягнемо ОДИН раз і кладемо в STATE:
@@ -3584,6 +3729,17 @@ async function loadMyFeed() {
     STATE.myFeed = await api("/api/notifications");
   } catch (e) { return; }
   if (STATE.view === "home") renderJournalist();
+}
+
+/* Скільки карток у базі і скільки з них її — для підпису на дверях. Тихо,
+   один раз за сеанс: без цього подяка не мала б звідки взятись. */
+async function loadContactsMine() {
+  if (STATE.contactsMine) return;
+  try {
+    const d = await api("/api/contacts?only=mine");
+    STATE.contactsMine = d.mine || null;
+  } catch (e) { return; }
+  if (STATE.view === "home" && STATE.contactsMine) renderJournalist();
 }
 
 /* Виконані завдання — окремий екран. На головній вони займали пів скрола, а

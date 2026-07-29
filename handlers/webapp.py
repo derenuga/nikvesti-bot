@@ -51,7 +51,8 @@ except ImportError:  # локальний dev без aiohttp — модуль п
     web = None
 
 from handlers import (
-    bot_db, team_analytics, team_kpi, team_matches, team_notifications,
+    bot_db, team_analytics, team_contacts, team_kpi, team_matches,
+    team_notifications,
     team_projects, team_roster, team_tasks,
 )
 from handlers.helpers import normalize_https_url
@@ -807,6 +808,64 @@ async def api_absence_request_decide(request):
     return web.json_response({"request": req})
 
 
+# ---------- Телефонна база редакції ----------
+
+async def api_contacts(request):
+    """Пошук по імені, посаді, темах, телефону. Доступна всій команді:
+    базу наповнюють усі, і закривати її від тих, хто наповнює, безглуздо."""
+    person, info, _ = await _authenticate(request)
+    q = request.query.get("q") or None
+    # ?only=mine — лише лічильники для підпису на дверях: тягнути заради них
+    # усю базу немає сенсу (головна відкривається частіше, ніж сама база)
+    only_mine = request.query.get("only") == "mine"
+    try:
+        items = [] if only_mine else await _in_session(team_contacts.list_contacts, q)
+        mine = await _in_session(team_contacts.contributions, person)
+    except Exception as e:
+        print(f"webapp: база контактів недоступна — {e}")
+        return web.json_response({"contacts": [], "mine": None, "nora": False})
+    return web.json_response({"contacts": items, "mine": mine, "nora": True})
+
+
+async def api_contact_create(request):
+    person, info, _ = await _authenticate(request)
+    payload = await _json(request)
+    try:
+        contact = await _in_session(
+            team_contacts.add_contact, person, payload.get("name"),
+            payload.get("role"), payload.get("phone"), payload.get("telegram"),
+            payload.get("email"), payload.get("tags"), payload.get("note"))
+    except ValueError as e:
+        raise web.HTTPBadRequest(text=str(e))
+    return web.json_response({"contact": contact})
+
+
+async def api_contact_patch(request):
+    person, info, _ = await _authenticate(request)
+    payload = await _json(request)
+    def run():
+        return team_contacts.update_contact(
+            int(request.match_info["contact_id"]), person, **payload)
+    contact = await asyncio.to_thread(lambda: _with_session(run))
+    if not contact:
+        raise web.HTTPNotFound(text="Контакту немає")
+    return web.json_response({"contact": contact})
+
+
+async def api_contact_delete(request):
+    person, info, _ = await _require_manager(request)
+    deleted = await _in_session(
+        team_contacts.delete_contact, int(request.match_info["contact_id"]))
+    if not deleted:
+        raise web.HTTPNotFound(text="Контакту немає")
+    return web.json_response({"ok": True})
+
+
+def _with_session(fn):
+    with bot_db.session():
+        return fn()
+
+
 # ---------- Черга звірки (спірні матчі) ----------
 
 def _pending_payload():
@@ -1392,6 +1451,10 @@ async def start_webapp(application):
         web.get("/api/absences", api_absences),
         web.post("/api/absences", api_absence_create),
         web.delete("/api/absences/{absence_id:\\d+}", api_absence_delete),
+        web.get("/api/contacts", api_contacts),
+        web.post("/api/contacts", api_contact_create),
+        web.patch("/api/contacts/{contact_id:\\d+}", api_contact_patch),
+        web.delete("/api/contacts/{contact_id:\\d+}", api_contact_delete),
         web.post("/api/absences/request", api_absence_request_create),
         web.get("/api/absences/requests", api_absence_requests),
         web.post("/api/absences/requests/{request_id:\\d+}/decide",
