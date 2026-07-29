@@ -1340,6 +1340,17 @@ body.dark .aw-chip.k-vac { background: #3987e5; }
 body.dark .aw-chip.k-sick { background: #c98500; }
 body.dark .aw-chip.k-trip { background: #199e70; }
 
+/* Рядок зіткнення. Кружечок мусить мати flex: 0 0 — інакше довгий текст
+   стискає його і кругла іконка стає вертикальним еліпсом (знімок Олега 29.07). */
+.aw-row {
+  display: flex; align-items: flex-start; gap: 11px; width: 100%;
+  padding: 11px 0; border-top: 1px solid var(--line);
+  text-align: left; color: inherit; cursor: pointer;
+}
+.aw-row:first-child { border-top: none; padding-top: 2px; }
+.aw-row .tl-mark.static { flex: 0 0 22px; margin-top: 2px; }
+.aw-row .chev { flex: 0 0 auto; margin-top: 4px; color: var(--muted); }
+
 .aw-warn {
   background: var(--red-soft); border-radius: var(--radius);
   padding: 12px 14px; margin-bottom: 12px;

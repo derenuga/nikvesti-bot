@@ -2949,15 +2949,38 @@ function awayClashHtml(clashes) {
   if (!clashes.length) {
     return `<div class="aw-ok">${icon("check")} Жоден відкритий дедлайн не припадає на відсутність.</div>`;
   }
-  const rows = clashes.map((c, i) => `
-    <button class="cnt-row" data-awclash="${i}">
-      <span class="tl-mark late static">${icon("file-text")}</span>
-      <span class="pk-txt">
-        <span class="pk-name">${esc(c.task.person.split(" ")[0])} · ${esc(shortDate(c.task.deadline))}</span>
-        <span class="pk-meta">${esc(taskLine(c.task, { donor: true }))} · ${esc(c.item.title.toLowerCase())}</span>
-      </span>
-      ${icon("chevron-right", "ic chev")}
-    </button>`).join("");
+  // Два рядки, а не один абзац: «Даріна · 31.07 3 матеріали · Новини з
+  // тендерів · Internews · відпустка» в одну стрічку не читається взагалі.
+  //
+  // І групуємо по відсутності: у Олега на екрані було девʼять зіткнень
+  // поспіль, і кожне повторювало «Даріна … відпустка». Хто і коли — це
+  // властивість ВІДПУСТКИ, а не кожного завдання; у рядку лишається те, чим
+  // вони різняться — саме завдання і донор.
+  const groups = [];
+  clashes.forEach((c, i) => {
+    const key = `${c.item.person}|${c.item.pending ? "r" : "a"}${c.item.id}`;
+    let g = groups.find((x) => x.key === key);
+    if (!g) groups.push(g = { key, item: c.item, list: [] });
+    g.list.push({ c, i });
+  });
+  const rows = groups.map((g) => `
+    <div class="dept-title">${esc(g.item.person.split(" ")[0])} · ${
+      esc(g.item.title.toLowerCase())} ${esc(shortDate(g.item.start))}–${
+      esc(shortDate(g.item.end))} · ${g.list.length}</div>
+    <div class="soft-card">${g.list.map(({ c, i }) => {
+      const { partner, projName } = taskProject(c.task);
+      const where = [shortDate(c.task.deadline), partner || projName]
+        .filter(Boolean).join(" · ");
+      return `
+      <button class="aw-row" data-awclash="${i}">
+        <span class="tl-mark late static">${icon("file-text")}</span>
+        <span class="pub-t">
+          <span class="pub-title">${esc(taskLine(c.task))}</span>
+          <span class="pub-tags">${esc(where)}</span>
+        </span>
+        ${icon("chevron-right", "ic chev")}
+      </button>`;
+    }).join("")}</div>`).join("");
   return `
     <div class="aw-warn">
       <div class="aw-warn-t">${plural(clashes.length, "Дедлайн припадає", "Дедлайни припадають",
@@ -2965,7 +2988,7 @@ function awayClashHtml(clashes) {
       <div class="aw-warn-s">KPI відпустка знижує сама, а завдання — ні: його треба
         або продовжити, або зняти, або передати.</div>
     </div>
-    <div class="soft-card">${rows}</div>`;
+    ${rows}`;
 }
 
 function awayTimelineHtml(items) {

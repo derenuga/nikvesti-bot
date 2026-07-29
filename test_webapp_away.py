@@ -176,9 +176,18 @@ async def main():
             check("зіткнення рівно одне — чужі й закриті таски не рахуються",
                   await page.locator("[data-awclash]").count() == 1)
             clash = await page.inner_text("[data-awclash]")
-            check("у картці зіткнення видно, хто і коли", "Кристина" in clash
-                  and "12.08" in clash)
+            # Хто і коли — це властивість ВІДПУСТКИ, тож воно в заголовку
+            # групи, а не повторюється в кожному рядку (Олег, 29.07: девʼять
+            # зіткнень поспіль повторювали «Даріна … відпустка»)
+            head = (await page.inner_text("#aw-body .dept-title")).lower()
+            check("хто і коли — у заголовку групи, один раз",
+                  "кристина" in head and "відпустка" in head and "10.08" in head)
+            check("а в рядку — дата дедлайну і донор", "12.08" in clash)
             check("і про яке завдання йдеться", "Енергетика" in clash)
+            box = await page.locator("[data-awclash] .tl-mark").bounding_box()
+            # Олег, 29.07: «скукожилась іконка» — кружечок стискався флексом
+            check("кружечок лишається круглим, а не еліпсом",
+                  box and abs(box["width"] - box["height"]) < 2)
 
             # --- шкала ---
             check("рядок на кожну людину з відсутністю",
