@@ -277,12 +277,25 @@ def delete_norm(norm_id):
 
 def set_override(creator, norm_id, person, target, note=None):
     """Ставить/оновлює правку людини на ПОТОЧНИЙ період норми.
-    target=0 — звільнена цього періоду (відпустка/відрядження)."""
+    target=0 — звільнена цього періоду (відпустка/відрядження).
+
+    Правка, яка нічого не міняє (та сама цифра, що вийшла б сама, і без
+    нотатки), НЕ зберігається — вона стирається. Інакше «зайшов у шторку,
+    нічого не змінив, натиснув Зберегти» лишало б невидимий запис, який потім
+    з'їдає ставку: правка сильніша за неї, а на екрані від правки ні сліду,
+    бо число збігається з відділовим (Олег, 29.07)."""
     ensure_kpi_schema()
     norm = next((n for n in list_norms() if n["id"] == int(norm_id)), None)
     if not norm:
         return None
-    start, _ = period_bounds(norm["period"])
+    start, p_end = period_bounds(norm["period"])
+    if not (note or "").strip():
+        factor, _missed = absence_factor(person, start, p_end)
+        auto = scaled_target(
+            rate_target(norm["target"], list_rates().get(person, 100)), factor)
+        if int(target) == auto:
+            clear_override(norm_id, person)
+            return True
     bot_db.execute(
         """
         INSERT INTO team_kpi_overrides (norm_id, person, period_start, target, note, created_by)
@@ -848,14 +861,44 @@ def kpi_debug(name_query):
     else:
         lines.append("  (нічого не опубліковано цього місяця під цими id)")
 
+    # Звідки взялась ціль: відділова норма → ставка → відсутність → правка.
+    # Без цього рядка «поставив ставку 60%, а ціль 200» не має відповіді:
+    # мовчазна правка на той самий період з'їдає ставку цілком (Олег, 29.07).
+    if person:
+        rate = list_rates(fresh=True).get(person, 100)
+        lines.append("\n<b>Ціль по нормах (звідки число):</b>")
+        dept = team_roster.effective_dept(person)
+        for n in [x for x in list_norms() if x["dept"] == dept]:
+            p_start, p_end = period_bounds(n["period"])
+            ov = _overrides_for(n["id"], n["period"]).get(person)
+            factor, missed = (1.0, 0) if ov else absence_factor(
+                person, p_start, p_end, away)
+            tgt = (ov["target"] if ov
+                   else scaled_target(rate_target(n["target"], rate), factor))
+            chain = [f"норма відділу {n['target']}"]
+            if rate != 100:
+                chain.append(f"ставка {rate}% → {rate_target(n['target'], rate)}")
+            if missed:
+                chain.append(f"відсутність {missed} дн. → {tgt}")
+            if ov:
+                chain.append(f"⚠️ РУЧНА ПРАВКА {ov['target']}"
+                             + (f" ({ov['note']})" if ov["note"] else "")
+                             + (" — вона сильніша за ставку" if rate != 100 else ""))
+            per = "тиждень" if n["period"] == "week" else "місяць"
+            lines.append(f"  {per} · {n['metric']}{' власні' if n['own'] else ''}: "
+                         f"<b>{tgt}</b> ({' → '.join(chain)})")
+
     # Кроки тижнів — по кожній місячній нормі відділу людини, з її реальною
     # ціллю: видно, який тиждень і ЧОМУ лишився незакритим
     if person and matched_id:
         p_start, p_end = period_bounds("month")
+        rate = list_rates().get(person, 100)
         factor, _missed = absence_factor(person, p_start, p_end, away)
         dept = team_roster.effective_dept(person)
         for n in [x for x in list_norms() if x["period"] == "month" and x["dept"] == dept]:
-            tgt = scaled_target(n["target"], factor)
+            ov = _overrides_for(n["id"], "month").get(person)
+            tgt = (ov["target"] if ov
+                   else scaled_target(rate_target(n["target"], rate), factor))
             steps = month_week_steps(n, tgt, away, matched_id)
             if not steps:
                 continue

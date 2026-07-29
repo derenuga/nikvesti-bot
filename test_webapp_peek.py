@@ -266,6 +266,40 @@ async def main():
             rate = await page.evaluate("window.__rate")
             check("ставка їде на сервер саме для цієї людини",
                   rate and rate["person"] == "Кристина Леонова" and rate["rate"] == 50)
+
+            # --- правка з'їдає ставку, і це має бути СКАЗАНО ---
+            # Олег, 29.07: «поставил Кристине ставку 60%, а 200 KPI не
+            # пересчиталось». Порядок множників такий і задуманий, але коли
+            # правка збігається з відділовою нормою, на екрані від неї не
+            # лишалось ані сліду — виглядало як зламана ставка.
+            await page.evaluate("""
+              window.__saved = null;
+              STATE.kpi = { norms: [Object.assign({}, window.NORM, { rows: [
+                Object.assign({}, window.NORM.rows[0],
+                  { target: 200, base_target: 200, rate: 60, overridden: true,
+                    note: null }),
+              ] })], week_label: 'т', month_label: 'липень 2026' };
+            """)
+            await page.evaluate("closeSheet(); nav('person', 'Кристина Леонова')")
+            await page.wait_for_selector("[data-kpn]", timeout=5000)
+            row_txt = await page.inner_text("[data-kpn]")
+            check("правку видно, навіть коли її число дорівнює відділовому",
+                  "правка" in row_txt)
+            check("і сказано, що ставка через неї не діє",
+                  "60%" in row_txt and "не діє" in row_txt)
+
+            await page.click("#person-rate")
+            await page.wait_for_selector("#rt-val", timeout=3000)
+            sheet_txt = await page.inner_text("#sheet")
+            check("шторка ставки застерігає про ручну правку",
+                  "сильніша за ставку" in sheet_txt)
+            check("і показує, яке саме число тримає правка", "200" in sheet_txt)
+            await page.click("#rt-clear")
+            await page.wait_for_timeout(400)
+            saved = await page.evaluate("window.__saved")
+            check("кнопка знімає саме правку цієї норми",
+                  saved and saved.get("clear") is True and saved["norm_id"] == 7
+                  and saved["person"] == "Кристина Леонова")
         finally:
             await browser.close()
 

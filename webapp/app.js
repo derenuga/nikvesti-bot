@@ -1170,13 +1170,30 @@ function personRate(person) {
   return withRate ? withRate.rate : 100;
 }
 
+/* Норми, де в людини стоїть РУЧНА правка цілі. Правка сильніша за ставку, і
+   поки вона є — ставка на цифри не впливає взагалі. Мовчати про це не можна:
+   менеджер ставить 60%, бачить 200 і думає, що зламалось. */
+function rateClashes(person) {
+  return ((STATE.kpi && STATE.kpi.norms) || []).map((n) => {
+    const r = (n.rows || []).find((x) => x.person === person);
+    return r && r.overridden ? { n, r } : null;
+  }).filter(Boolean);
+}
+
 function rateSheet(person) {
   let rate = personRate(person);
+  const clash = rateClashes(person);
   openSheet(`
     <h2>${esc(person)}</h2>
     <p style="color:var(--muted);font-size:13px;margin:-8px 0 14px">
       Ставка множить норму відділу назавжди — на відміну від правки цілі,
       яка діє один період.</p>
+    ${clash.length ? `<div class="rt-clash">
+      <div>Зараз ціль тримає ручна правка (${clash.map((c) =>
+        `${c.r.target} · ${c.n.period === "week" ? "тиждень" : "місяць"}`).join(", ")}),
+        а вона сильніша за ставку — тож ставка на ці цифри не вплине.</div>
+      <button class="link-btn" id="rt-clear">${icon("x")} Прибрати правку, лишити ставку</button>
+    </div>` : ""}
     <div class="chips" id="rt-quick">
       ${[100, 75, 50, 25].map((v) => `<button class="chip${v === rate ? " on" : ""}"
         data-rt="${v}">${v}%</button>`).join("")}
@@ -1205,6 +1222,19 @@ function rateSheet(person) {
     rate = Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0;
   };
   $("rt-cancel").onclick = closeSheet;
+  if (clash.length) $("rt-clear").onclick = async () => {
+    try {
+      for (const c of clash) {
+        await api("/api/kpi/override", { method: "PUT", body: JSON.stringify(
+          { norm_id: c.n.id, person, clear: true }) });
+      }
+      haptic("success");
+      STATE.kpi = null;
+      await loadKpi();
+      render();
+      rateSheet(person);        // та сама шторка, вже без застереження
+    } catch (e) { toast(e.message); }
+  };
   $("rt-save").onclick = async () => {
     try {
       await api("/api/rate", { method: "PUT",
@@ -3272,12 +3302,24 @@ function normTitle(n, row) {
 }
 
 /* Чому ціль не така, як у відділу: «відпустка · замість 60». Без цього
-   зменшена цифра виглядає помилкою. */
+   зменшена цифра виглядає помилкою.
+
+   Ручну правку показуємо ЗАВЖДИ — навіть коли її число збіглося з відділовим.
+   Саме мовчазна правка «рівно 200» з'їдала щойно виставлену ставку, і на
+   екрані не лишалось ані сліду причини (Олег, 29.07: «поставил Кристине
+   ставку 60%, а 200 KPI не пересчиталось»). Правка сильніша за ставку — це
+   задумано, але воно має бути СКАЗАНО. */
 function normWhy(n, row) {
   if (!row || row.target == null || row.base_target == null) return "";
-  if (row.target === row.base_target) return "";
+  const same = row.target === row.base_target;
+  if (row.overridden) {
+    const tail = row.rate != null && row.rate < 100
+      ? `ставка ${row.rate}% не діє`
+      : same ? "" : `замість ${row.base_target}`;
+    return `<span class="mk-why">правка${tail ? " · " + tail : ""}</span>`;
+  }
+  if (same) return "";
   const why = row.absence ? row.absence.title
-    : row.overridden ? "правка"
     : (row.rate != null && row.rate < 100) ? `ставка ${row.rate}%` : null;
   return `<span class="mk-why">${why ? esc(why) + " · " : ""}замість ${row.base_target}</span>`;
 }

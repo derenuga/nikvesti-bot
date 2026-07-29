@@ -1148,8 +1148,24 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 .help-body p { font-size: 14.5px; line-height: 1.5; margin-bottom: 12px; }
 .help-body p:last-child { margin-bottom: 0; }
 
-/* Чому ціль не така, як у відділу: «відпустка · замість 60» */
-.mk-why { font-size: 11.5px; color: var(--muted); margin-left: 6px; white-space: nowrap; }
+/* Чому ціль не така, як у відділу: «відпустка · замість 60». Переносити
+   дозволяємо: пояснення «правка · ставка 60% не діє» довше за «замість 60»,
+   а обрізати причину гірше, ніж перенести її на другий рядок. */
+.mk-why { font-size: 11.5px; color: var(--muted); margin-left: 6px; }
+
+/* Застереження у шторці ставки: правка цілі сильніша, і поки вона стоїть,
+   ставка нічого не змінює. Смужка кольору --warn, а не червона: це не
+   помилка, а порядок множників, про який треба сказати вголос. */
+.rt-clash {
+  background: var(--fill);
+  border-left: 3px solid var(--warn);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--ink);
+  margin: -4px 0 14px;
+}
+.rt-clash .link-btn { margin: 6px 0 0; padding: 0; font-size: 13px; }
 
 /* Кроки тижнів: зелений — «на кінець цього тижня була в графіку», порожній —
    була позаду, поточний обведено. Накопичувально, тому один слабкий тиждень
