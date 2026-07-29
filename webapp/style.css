@@ -1277,3 +1277,10 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 .cnt-author {
   font-size: 11.5px; color: var(--muted); margin-top: 12px; line-height: 1.5;
 }
+
+/* Підпис над рядом тижнів: без нього «1–5» читалось як кількість новин */
+.steps-cap {
+  font-size: 11.5px; font-weight: 700; color: var(--muted);
+  margin: 14px 0 -2px; letter-spacing: .02em;
+}
+.steps-cap + .steps { margin-top: 10px; }
