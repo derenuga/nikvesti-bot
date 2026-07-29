@@ -255,12 +255,19 @@ async def main():
                   await page.locator(".confetti").count() == 0)
 
             # --- запит на відпустку від самої журналістки ---
-            check("є кнопка попросити вихідні",
+            check("є кнопка запиту відсутності",
                   await page.locator("[data-ask]").count() == 1)
+            # Підпис має перелічувати всі три типи: спершу там стояло
+            # «Відпустка чи лікарняна», і відрядження виглядало відсутнім
+            ask_label = await page.inner_text("[data-ask]")
+            check("на кнопці перелічені всі три типи",
+                  all(w in ask_label.lower()
+                      for w in ("відпустка", "лікарняна", "відрядження")))
             await page.click("[data-ask]")
             await page.wait_for_selector("#ar-start", timeout=3000)
-            check("у шторці три типи відсутності",
-                  await page.locator("[data-ak]").count() == 3)
+            kinds = await page.locator("[data-ak]").all_inner_texts()
+            check(f"у шторці всі три типи ({', '.join(kinds)})",
+                  set(kinds) == {"Відпустка", "Лікарняна", "Відрядження"})
             await page.fill("#ar-start", "2026-08-10")
             await page.fill("#ar-end", "2026-08-17")
             await page.fill("#ar-note", "давно планувала")

@@ -453,7 +453,7 @@ async def main():
             await page.wait_for_selector("[data-aryes]", timeout=5000)
             ask = await page.inner_text("#alerts-body")
             check("запит на відпустку видно окремим блоком",
-                  "ПРОСЯТЬ ВИХІДНІ" in ask.upper())
+                  "ПРОСЯТЬ ВІДСУТНІСТЬ" in ask.upper())
             check("сказано хто, що і коли",
                   "Аліна" in ask and "відпустк" in ask and "10.08" in ask)
             check("коментар людини видно", "давно планувала" in ask)

@@ -2444,7 +2444,7 @@ function paintAlerts() {
   const asks = STATE.absenceRequests || [];
   box.innerHTML = `
     ${asks.length
-      ? `<div class="dept-title">Просять вихідні · ${asks.length}</div>
+      ? `<div class="dept-title">Просять відсутність · ${asks.length}</div>
          ${asks.map(absenceRequestCard).join("")}`
       : ""}
     ${late.length
@@ -3444,7 +3444,7 @@ function kpiSkeleton() {
 function absenceRequestSheet() {
   let kind = "vacation";
   openSheet(`
-    <h2>Попросити вихідні</h2>
+    <h2>Коли тебе не буде</h2>
     <p style="color:var(--muted);font-size:13px;margin:-8px 0 14px">
       Катя побачить запит у «Сповіщеннях» і погодить або відхилить.</p>
     <div class="chips" id="ar-kinds">
@@ -3536,8 +3536,8 @@ function renderJournalist() {
       <button class="door c-good" data-ask>
         <span class="door-ic">${icon("calendar")}</span>
         <span class="door-txt">
-          <span class="door-t">Відпустка чи лікарняна</span>
-          <span class="door-m">попросити в Каті</span>
+          <span class="door-t">Не буду на роботі</span>
+          <span class="door-m">відпустка · лікарняна · відрядження</span>
         </span>
         ${icon("chevron-right", "ic chev")}
       </button>
