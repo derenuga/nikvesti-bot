@@ -1721,6 +1721,18 @@ function renderProjects() {
     if (STATE.projView === "timeline") {
       const sc = $("tl-scroll");
       if (sc && sc.dataset.nowx) sc.scrollLeft = Math.max(0, +sc.dataset.nowx - sc.clientWidth * 0.45);
+      // Тап по засічці відкриває сам дедлайн, а не проєкт під нею. Слухач
+      // на самій кнопці + stopPropagation: смуга проєкту лежить у тому ж
+      // рядку, і без цього відкривався б проєкт.
+      box.querySelectorAll("[data-dlmark]").forEach((b) => b.onclick = (e) => {
+        e.stopPropagation();
+        const [pid, due] = b.dataset.dlmark.split(":");
+        const proj = projectById(+pid);
+        if (!proj) return;
+        const list = (proj.deadlines || []).filter((d) => d.due === due);
+        if (list.length === 1) dlSheet(proj, list[0]);
+        else if (list.length) dlPickSheet(proj, list);
+      });
     } else if (!STATE.projQuery.trim()) {
       // Порядок перетягуванням — тільки на ПОВНОМУ списку: перетягнути щось
       // у відфільтрованому означало б записати в Нору порядок із десятка
@@ -1870,6 +1882,76 @@ function enableProjectDrag() {
   list.addEventListener("pointercancel", cleanup);
 }
 
+/* Кілька звітів на одну дату — спершу питаємо, який саме відкрити. Інакше
+   тап по склеєному чипу «2» вів би навмання. */
+function dlPickSheet(project, list) {
+  openSheet(`
+    <h2>${esc(shortDate(list[0].due))}</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+      ${esc(project.partner || project.name)}</p>
+    ${list.map((d, i) => `
+      <button class="pick-row plain" data-dlpick="${i}">
+        <span class="pk-txt">
+          <span class="pk-name">${esc(dlLabel(d))}</span>
+          ${d.assignee ? `<span class="pk-meta">${esc(d.assignee)}</span>` : ""}
+        </span>
+      </button>`).join("")}`);
+  $("sheet").querySelectorAll("[data-dlpick]").forEach((b) => b.onclick = () => {
+    closeSheet();
+    dlSheet(project, list[+b.dataset.dlpick]);
+  });
+}
+
+/* ---------- Засічки звітності на таймлайні ----------
+   Олег, 29.07. Дані вже приїхали в bootstrap — сервер не чіпаємо.
+
+   Шар лежить ПОВЕРХ рядка, а не всередині смуги, і на це дві причини:
+   у .tl-bar стоїть overflow: clip (він потрібен липкому підпису), тож засічка
+   там просто обрізалась би; а фінальний звіт часто припадає на дату ПІЗНІШЕ
+   кінця проєкту — відзвітувати треба після закриття, і мітка мусить мати
+   право стояти за межами смуги.
+
+   Колір у нас уже зайнятий ідентичністю проєкту (вісім кольорів смуг), тому
+   вид звіту показуємо ФОРМОЮ гліфа, а сам чип малюємо кольором поверхні —
+   так він читається на будь-якій смузі без підбору під кожен колір. Те саме
+   рішення, що border: 2px solid var(--card) між сусідніми смугами.
+
+   Стан несе не колір проєкту, а сам чип: прострочене — єдине червоне на
+   екрані, і його видно з іншого кінця гант-діаграми. */
+
+const DL_GLYPH = { narrative: "file-text", financial: "bar-chart", milestone: "award" };
+
+function dlMarkState(d, today) {
+  if (d.status === "accepted") return "ok";
+  if (d.status === "submitted") return "sent";
+  return d.due < today ? "late" : "todo";
+}
+
+/* Збіги дат склеюємо: наративний і фінансовий звіти часто на одне число
+   (у чаті фінансів вони теж ідуть одним нагадуванням), а два чипи на одному
+   пікселі — це просто накладені один на одного кружечки. */
+function timelineMarks(p, x, today) {
+  const byDate = {};
+  (p.deadlines || []).forEach((d) => {
+    if (!d.due) return;
+    (byDate[d.due] = byDate[d.due] || []).push(d);
+  });
+  return Object.entries(byDate).map(([due, list]) => {
+    const ts = Date.parse(due + "T12:00:00") / 1000;
+    // найгірший стан групи визначає вигляд: якщо один звіт прострочено,
+    // група має світитись, навіть коли другий уже прийнято
+    const rank = { late: 0, todo: 1, sent: 2, ok: 3 };
+    const state = list.map((d) => dlMarkState(d, today))
+      .sort((a, b) => rank[a] - rank[b])[0];
+    const glyph = list.length > 1 ? null : DL_GLYPH[list[0].kind] || "calendar";
+    return `<button class="tl-mark ${state}" data-dlmark="${p.id}:${due}"
+      style="left:${x(ts).toFixed(1)}px"
+      title="${esc(list.map(dlLabel).join(" · "))}">
+      ${glyph ? icon(glyph) : `<i>${list.length}</i>`}
+    </button>`;
+  }).join("");
+}
+
 function timelineHtml() {
   const dated = STATE.projects
     .filter((p) => p.start_date && p.end_date)
@@ -1902,6 +1984,7 @@ function timelineHtml() {
     ticks += `<div class="tl-tick" style="left:${x(ts).toFixed(1)}px">${label}</div>`;
   }
 
+  const today = todayISO();
   const rows = dated.map((p, i) => {
     const left = x(p.start_date), w = Math.max(48, x(p.end_date) - left);
     const c = projectColorIdx(p.id);
@@ -1913,6 +1996,7 @@ function timelineHtml() {
           <span class="tl-lbl">${esc(p.partner || p.name)}</span>
         </span>
       </button>
+      ${timelineMarks(p, x, today)}
     </div>`;
   }).join("");
 
@@ -1926,6 +2010,13 @@ function timelineHtml() {
       </div>
     </div>
     <div class="tl-note">Смуга — строк проєкту, тап відкриває його. Скрольте вбік.</div>
+    <div class="tl-legend">
+      <span class="tl-lg"><i class="tl-mark todo static">${icon("file-text")}</i>наративний</span>
+      <span class="tl-lg"><i class="tl-mark todo static">${icon("bar-chart")}</i>фінансовий</span>
+      <span class="tl-lg"><i class="tl-mark todo static">${icon("award")}</i>майлстоун</span>
+      <span class="tl-lg"><i class="tl-mark late static">${icon("file-text")}</i>прострочено</span>
+      <span class="tl-lg"><i class="tl-mark ok static">${icon("check")}</i>прийнято</span>
+    </div>
     ${undated.length ? `<div class="tl-note">Без дат у CMS: ${undated.map((p) => esc(p.partner || p.name)).join(", ")}</div>` : ""}`;
 }
 

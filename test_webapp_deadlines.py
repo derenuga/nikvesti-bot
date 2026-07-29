@@ -13,6 +13,11 @@
 
 Запуск (потрібні playwright + chromium):
     python test_webapp_deadlines.py
+
+Заразом стереже засічки звітності на ТАЙМЛАЙНІ (29.07): вони є, прострочене
+видно окремим станом, прийняте приглушене, збіг дат склеюється в одну засічку
+з цифрою і питає, який звіт відкрити, а одиночна веде одразу в дедлайн (не в
+проєкт під нею).
 """
 
 import asyncio
@@ -214,6 +219,56 @@ async def main():
                   (await page.evaluate("window.__puts"))[-1]["body"] == {"clear": True})
             check("бейджів статусу не лишилось",
                   await page.locator(".rr-st").count() == 0)
+            # --- засічки звітності на таймлайні (Олег, 29.07) ---
+            # Стани доливаємо просто тут, а не у фікстуру: фікстура несуча —
+            # на ній тримаються перевірки сортування й статусів «Звітності»
+            await page.evaluate("""() => {
+              const p2 = STATE.projects.find((x) => x.id === 2);
+              p2.deadlines.push(
+                { id: 4, project_id: 2, kind: 'narrative', stage: 'interim',
+                  title: '', due: '2020-01-31', assignee: 'Катерина Середа',
+                  assignee_custom: false, status: null },
+                { id: 5, project_id: 2, kind: 'financial', stage: 'interim',
+                  title: '', due: '2020-03-31', assignee: 'Олена Бондаренко',
+                  assignee_custom: false, status: 'accepted' },
+                { id: 6, project_id: 2, kind: 'narrative', stage: 'final',
+                  title: '', due: '2026-08-05', assignee: 'Катерина Середа',
+                  assignee_custom: false, status: null });
+              nav('projects'); STATE.projView = 'timeline'; render();
+            }""")
+            await page.wait_for_selector(".tl-mark", timeout=5000)
+            check("засічки зʼявились на смугах",
+                  await page.locator(".tl-mark:not(.static)").count() >= 3)
+            check("прострочений звіт помічено окремо",
+                  await page.locator(".tl-mark.late:not(.static)").count() == 1)
+            check("прийнятий — приглушено",
+                  await page.locator(".tl-mark.ok:not(.static)").count() == 1)
+            check("два звіти на одну дату склеєні в одну засічку з цифрою",
+                  "2" in await page.locator(
+                      '[data-dlmark="2:2026-08-05"] i').inner_text())
+            check("під діаграмою є легенда",
+                  await page.locator(".tl-legend .tl-lg").count() == 5)
+
+            # тап по склеєній засічці має спитати, який саме звіт
+            await page.click('[data-dlmark="2:2026-08-05"]')
+            await page.wait_for_selector("[data-dlpick]", timeout=3000)
+            check("склеєна засічка питає, який звіт відкрити",
+                  await page.locator("[data-dlpick]").count() == 2)
+            await page.click('[data-dlpick="0"]')
+            await page.wait_for_timeout(300)
+            check("і відкриває саме дедлайн, а не проєкт під ним",
+                  "Звіт" in await page.inner_text("#sheet")
+                  or "звіт" in await page.inner_text("#sheet"))
+            await page.evaluate("closeSheet()")
+
+            # одиночна засічка відкриває дедлайн одразу
+            await page.click('[data-dlmark="1:2026-09-30"]')
+            await page.wait_for_timeout(300)
+            check("одиночна засічка відкриває дедлайн без зайвого кроку",
+                  await page.locator("[data-dlpick]").count() == 0
+                  and await page.locator("#sheet-backdrop:not(.hidden)").count() == 1)
+            await page.evaluate("closeSheet()")
+
         finally:
             await browser.close()
 

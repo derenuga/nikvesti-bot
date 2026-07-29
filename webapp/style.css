@@ -1284,3 +1284,39 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   margin: 14px 0 -2px; letter-spacing: .02em;
 }
 .steps-cap + .steps { margin-top: 10px; }
+
+/* ---------- Засічки звітності на таймлайні ----------
+   Чип малюється кольором ПОВЕРХНІ з гліфом чорнилом — так він читається на
+   всіх восьми кольорах смуг без підбору під кожен. Стоїть у шарі рядка, а не
+   всередині смуги: там overflow: clip, та й фінальний звіт часто припадає на
+   дату пізніше кінця проєкту. */
+.tl-mark {
+  position: absolute; top: 9px; z-index: 5;
+  width: 28px; height: 28px; margin-left: -14px;
+  border-radius: 50%; border: 2px solid var(--card);
+  background: var(--card); color: var(--ink);
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+}
+.tl-mark .ic { width: 14px; height: 14px; stroke-width: 2.4; }
+.tl-mark i { font-style: normal; font-size: 12px; font-weight: 800; }
+/* Прострочене — єдине червоне на екрані: видно з іншого кінця діаграми */
+.tl-mark.late { background: var(--red); color: #fff; border-color: var(--card); }
+.tl-mark.sent { color: var(--blue); }
+.tl-mark.ok { color: var(--good); opacity: .75; }
+.tl-mark.todo { color: var(--ink); }
+
+.tl-legend {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  justify-content: center; margin-top: 10px;
+}
+.tl-lg {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--muted);
+}
+.tl-mark.static {
+  position: static; margin: 0; width: 22px; height: 22px; box-shadow: none;
+  border-width: 0; background: var(--fill);
+}
+.tl-mark.static.late { background: var(--red); }
+.tl-mark.static .ic { width: 12px; height: 12px; }
