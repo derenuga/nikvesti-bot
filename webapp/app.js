@@ -26,6 +26,7 @@ const STATE = {
   pendingCount: 0,      // для лічильника на пункті меню
   notifs: null,         // стрічка подій
   myFeed: null,         // стрічка журналістки (лічильник на дверях «Події»)
+  previewPerson: null,  // менеджерський перегляд екрана журналістки
   unread: 0,
   homeView: null,        // ставиться нижче: остання обрана таба Головної
   kpiTab: "norms",
@@ -391,6 +392,7 @@ function backTarget() {
     case "mydone":
     case "myfeed":
     case "myhist": return ["home"];
+    case "preview": return ["personhist", STATE.previewPerson];
     default: return null;      // корінь табів — назад нікуди
   }
 }
@@ -420,6 +422,7 @@ function nav(view, arg) {
   if (view === "project") STATE.currentProject = arg;
   if (view === "kpinorm") STATE.currentNorm = arg;
   if (view === "person" || view === "personhist") STATE.currentPerson = arg;
+  if (view === "preview") STATE.previewPerson = arg;
   if (view === "bulk") {
     const now = new Date();
     STATE.bulk = { ...arg, y: now.getFullYear(), m: now.getMonth(), qty: {} };
@@ -433,7 +436,8 @@ function nav(view, arg) {
   };
   // KPI і його підекрани більше не пункт нижнього меню — заходять із
   // Головної, тож і підсвічуємо Головну
-  const navKey = view === "kpi" || view === "kpinorm" ? "home"
+  const navKey = view === "preview" ? "home"
+    : view === "kpi" || view === "kpinorm" ? "home"
     : view === "project" || view === "bulk" ? "projects"
     : view === "person" || view === "personhist" ? "home" : view;
   document.querySelectorAll("#bottomnav .bn").forEach((b) =>
@@ -448,7 +452,8 @@ function render() {
   // Журналістка ходить тим самим роутером, що менеджер: у неї зʼявились
   // підекрани («Виконані», «Події», «KPI по місяцях»), а без роутера їх не
   // було б куди повертати нативним «Назад».
-  if (v === "home" && STATE.me && !STATE.me.manager) renderJournalist();
+  if (v === "preview") renderJournalist();
+  else if (v === "home" && STATE.me && !STATE.me.manager) renderJournalist();
   else if (v === "mydone") renderMyDone();
   else if (v === "myfeed") renderMyFeed();
   else if (v === "myhist") renderMyHistory();
@@ -2860,7 +2865,12 @@ async function renderPersonHistory() {
       <div><div class="wn">${esc(person)}</div>
       <div class="wd">${esc((entry || {}).dept_title || "")}</div></div>
     </div>
+    <button class="peek-btn" data-peek="${esc(person)}">
+      ${icon("search")} Подивитись її екран
+    </button>
     <div id="hist-body">${skeleton("bars", 12)}</div>`;
+  $("content").querySelectorAll("[data-peek]").forEach((b) =>
+    b.onclick = () => nav("preview", b.dataset.peek));
   let data;
   try {
     data = await api(`/api/kpi/person?person=${encodeURIComponent(person)}`);
@@ -3065,19 +3075,21 @@ function normTargetSheet(n) {
 }
 
 function overrideSheet(n, row) {
+  // Ціль вводиться і кнопками, і з клавіатури: Кристина на пів ставки — 200
+  // треба замінити на 100, а це сто натискань на «мінус» (Олег, 29.07).
   let target = row.excused ? 0 : row.target;
   const paint = () => {
-    $("o-val").textContent = target;
+    if ($("o-val").value !== String(target)) $("o-val").value = target;
     $("o-hint").textContent = target === 0 ? "0 — звільнено від норми цього періоду" : "";
   };
   openSheet(`
     <h2>${esc(row.person)}</h2>
     <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
-      ${esc(normTitle(n))} · норма відділу: ${n.base_target || n.target}</p>
+      ${esc(normTitle(n, row))} · норма відділу: ${n.base_target || n.target}</p>
     <div class="f-label" style="margin-top:0">Ціль на цей ${n.period === "week" ? "тиждень" : "місяць"}</div>
-    <div class="stepper">
+    <div class="stepper with-input">
       <button id="o-minus">${icon("minus")}</button>
-      <b id="o-val">${target}</b>
+      <input id="o-val" type="number" inputmode="numeric" min="0" max="500" value="${target}">
       <button id="o-plus">${icon("plus")}</button>
     </div>
     <div id="o-hint" style="color:var(--muted);font-size:12px;margin-top:6px"></div>
@@ -3091,6 +3103,14 @@ function overrideSheet(n, row) {
   paint();
   $("o-minus").onclick = () => { target = Math.max(0, target - 1); paint(); };
   $("o-plus").onclick = () => { target = Math.min(500, target + 1); paint(); };
+  // Кнопки міняють число в полі, а поле — змінну; межі ті самі, щоб зберегти
+  // не можна було ні відʼємне, ні тризначне понад стелю
+  $("o-val").oninput = () => {
+    const v = parseInt($("o-val").value, 10);
+    target = Number.isFinite(v) ? Math.max(0, Math.min(500, v)) : 0;
+    $("o-hint").textContent = target === 0 ? "0 — звільнено від норми цього періоду" : "";
+  };
+  $("o-val").onblur = paint;
   const apply = async (body) => {
     try {
       await api("/api/kpi/override", { method: "PUT", body: JSON.stringify({ norm_id: n.id, person: row.person, ...body }) });
@@ -3204,14 +3224,34 @@ function doorHtml(view, iconName, tone, title, meta, n) {
     </button>`;
 }
 
+/* Чия «Головна» малюється. Зазвичай — власна; у менеджерському перегляді
+   (STATE.view === "preview") — обраної журналістки: «зроби мені можливість
+   дивитись перший екран обраного журналіста, так дебажити легше» (Олег,
+   29.07). Перегляд лише читає: чужу стрічку подій не показуємо і прочитаною
+   не робимо. */
+function viewPerson() {
+  if (STATE.view === "preview" && STATE.previewPerson) {
+    const name = STATE.previewPerson;
+    return { name, first_name: name.split(" ")[0],
+             entry: personEntry(name) || {}, preview: true };
+  }
+  return { name: STATE.me.name, first_name: STATE.me.first_name,
+           entry: STATE.me, preview: false };
+}
+
 function renderJournalist() {
-  const open = STATE.tasks.filter((t) => t.status === "open");
-  const closed = STATE.tasks.filter((t) => t.status === "done");
+  const me = viewPerson();
+  const mine = me.preview
+    ? STATE.tasks.filter((t) => t.person === me.name) : STATE.tasks;
+  const open = mine.filter((t) => t.status === "open");
+  const closed = mine.filter((t) => t.status === "done");
   const feed = STATE.myFeed;
   $("content").innerHTML = `
+    ${me.preview ? `<button class="back" data-back>${icon("chevron-left")} Профіль</button>
+      <div class="peek">Перегляд очима ${esc(me.first_name)} · вона цього не бачить</div>` : ""}
     <div class="me-head">
       <div class="me-txt">
-        <div class="h-big">Привіт, ${esc(STATE.me.first_name)}</div>
+        <div class="h-big">Привіт, ${esc(me.first_name)}</div>
         <div class="h-sub">твої завдання і KPI</div>
       </div>
       <div class="me-ring" id="me-ring">${meRingHtml(null)}</div>
@@ -3242,7 +3282,7 @@ function renderJournalist() {
       </div>`;
     }).join("")}</div>`
       : `<div class="empty-hint">Відкритих завдань немає.</div>`}
-    <div class="doors">
+    ${me.preview ? "" : `<div class="doors">
       ${closed.length ? doorHtml("mydone", "check", "c-good", "Виконані",
         "завдання, які вже закрито", closed.length) : ""}
       ${doorHtml("myfeed", "bell", "c-blue", "Події",
@@ -3250,11 +3290,11 @@ function renderJournalist() {
         feed ? (feed.unread || (feed.items || []).length) : "")}
       ${doorHtml("myhist", "bar-chart", "c-sky", "KPI по місяцях",
         "як іде місяць до місяця", "")}
-    </div>`;
+    </div>`}`;
   $("content").querySelectorAll("[data-nav]").forEach((b) =>
     b.onclick = () => nav(b.dataset.nav));
   renderMyKpi();
-  loadMyFeed();
+  if (!me.preview) loadMyFeed();
 }
 
 /* Лічильник на дверях «Події». Стрічку тягнемо ОДИН раз і кладемо в STATE:
@@ -3552,7 +3592,7 @@ function meRingHtml(info) {
   // говорить фраза — рівно те, чого просив Олег.
   const pct = info && !(info.pace === "start" && !info.fact) ? info.pct : null;
   return `
-    ${avatarRing(STATE.me.name, STATE.me, pct, 92,
+    ${avatarRing(viewPerson().name, viewPerson().entry, pct, 92,
       info ? PACE_COLOR[info.pace] || "var(--good)" : "var(--good)",
       { mark: info ? info.mark : null, animate: true })}
     <div class="me-cap">
@@ -3576,8 +3616,13 @@ function nextStepsHtml(norm, r) {
 }
 
 async function renderMyKpi() {
+  const me = viewPerson();
   let k;
-  try { k = await api("/api/kpi"); } catch (e) { return; }
+  try {
+    k = await api("/api/kpi" + (me.preview
+      ? `?person=${encodeURIComponent(me.name)}` : ""));
+  } catch (e) { return; }
+  if (me.preview && STATE.view !== "preview") return;
   // Обличчя екрана — МІСЯЧНА норма: тижнева стрибає надто різко (у вівторок
   // там завжди буде мало). Беремо провідну, а не середнє: фраза і засічка
   // мають говорити про одну конкретну норму, інакше вони ні про що.
@@ -3644,8 +3689,10 @@ async function renderMyKpi() {
   animateFill(box);
   wireHelp(box);
 
-  // Салют — рівно на перетин норми, один раз на місяць і норму
-  if (lr && lr.done && lead.period === "month") {
+  // Салют — рівно на перетин норми, один раз на місяць і норму. У
+  // менеджерському перегляді не стріляє: норма чужа, а ключ пам'яті згорів би
+  // на телефоні Олега замість телефона журналістки.
+  if (!me.preview && lr && lr.done && lead.period === "month") {
     celebrateOnce(`${k.month_label}:${lead.id}`);
   }
 }
@@ -3845,6 +3892,10 @@ async function boot() {
 /* ---------- Події ---------- */
 
 $("content").addEventListener("click", (e) => {
+  // Універсальне «назад» — окремим атрибутом, а НЕ data-nav="back": на
+  // [data-nav] висить оцей делегат, і він перебивав би локальний обробник,
+  // намагаючись перейти на неіснуючий екран «back».
+  if (e.target.closest("[data-back]")) { goBack(); return; }
   const navBtn = e.target.closest("[data-nav]");
   if (navBtn) { nav(navBtn.dataset.nav); return; }
   const navProj = e.target.closest("[data-nav-project]");

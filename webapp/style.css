@@ -1172,3 +1172,30 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 .step.cur.miss .sdot { box-shadow: inset 0 0 0 2px var(--warn), 0 0 0 4px var(--blue-soft); }
 .slbl { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .step.cur .slbl { color: var(--blue); font-weight: 700; }
+
+/* Ціль правки вводиться і кнопками, і з клавіатури: замінити 200 на 100
+   степером — це сто натискань (Олег, 29.07) */
+.stepper.with-input input {
+  width: 84px; border: 0; background: none; box-shadow: none;
+  text-align: center; font-size: 18px; font-weight: 700; padding: 6px 0;
+  font-variant-numeric: tabular-nums; -moz-appearance: textfield;
+}
+.stepper.with-input input::-webkit-outer-spin-button,
+.stepper.with-input input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper.with-input input:focus { outline: none; }
+
+/* Менеджерський перегляд екрана журналістки (Олег, 29.07: «так дебажити
+   легше»). Смуга обовʼязкова: інакше за секунду забуваєш, чий це екран, і
+   починаєш шукати в себе чужі завдання. */
+.peek {
+  background: var(--blue-soft); color: var(--blue);
+  border-radius: 12px; padding: 9px 13px; margin-bottom: 16px;
+  font-size: 12.5px; font-weight: 700;
+}
+.peek-btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; margin: 4px 0 18px; padding: 12px;
+  border-radius: 14px; background: var(--blue-soft); color: var(--blue);
+  font-size: 14px; font-weight: 700;
+}
+.peek-btn .ic { width: 17px; height: 17px; }

@@ -1045,9 +1045,15 @@ async def api_kpi(request):
     """Зведення KPI: менеджер — всі норми з людьми і прогресом; журналістка —
     норми свого відділу зі своїм рядком (для «Мої KPI»)."""
     person, info, _ = await _authenticate(request)
-    payload = await _in_session(
-        team_kpi.kpi_payload, None if info["manager"] else person
-    )
+    # ?person= — менеджерський перегляд екрана конкретної журналістки («так
+    # дебажити легше», Олег 29.07). Тільки для менеджера: журналістці чужий
+    # параметр нічого не дає, вона завжди бачить свій рядок.
+    who = request.query.get("person")
+    if info["manager"]:
+        target = who if who in team_roster.ROSTER else None
+    else:
+        target = person
+    payload = await _in_session(team_kpi.kpi_payload, target)
     return web.json_response(payload)
 
 
