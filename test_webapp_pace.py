@@ -266,6 +266,22 @@ async def main():
             check("смуги прогресу для них немає — це не норма",
                   await page.locator("#my-kpi .kbar").count() == 1)
 
+            # Дзеркало для Newsroom (Олег, 29.07): їхня норма рахує всі новини
+            # гуртом, тож власний матеріал у ній не видно взагалі
+            await page.evaluate("""
+              window.KPI_NORMS[0].rows[0].feed_news = 0;
+              window.KPI_NORMS[0].rows[0].own_news = 4;
+              renderMyKpi();
+            """)
+            await page.wait_for_timeout(250)
+            own_txt = await page.inner_text("#my-kpi")
+            check("власні матеріали видно окремим підписом",
+                  "4 власні матеріали" in own_txt)
+            check("і другої смуги для них теж немає",
+                  await page.locator("#my-kpi .kbar").count() == 1)
+            check("тон теплий, а не нейтральний, як у стрічки",
+                  await page.locator("#my-kpi .mk-own").count() == 1)
+
             nxt = await page.inner_text(".pace-next")
             check("«що далі» каже, скільки лишилось", "13" in nxt)
             check("і що стаття закриває три", "стаття закриє 3" in nxt)

@@ -333,6 +333,17 @@ function feedHint(row) {
   return `<span class="mk-feed">+${n} ${word} в стрічку</span>`;
 }
 
+/* Дзеркало feedHint для Newsroom (Олег, 29.07): їхня норма рахує всі новини
+   гуртом, і власний матеріал — найважча частина роботи — у цій купі не видно
+   зовсім. Тон тут теплий, а не нейтральний, як у стрічки: власний матеріал
+   норму не закриває, але це те, чим редакція пишається. */
+function ownHint(row) {
+  const n = row && row.own_news;
+  if (!n) return "";
+  const word = plural(n, "власний матеріал", "власні матеріали", "власних матеріалів");
+  return `<span class="mk-own">${n} ${word} 🔥</span>`;
+}
+
 /* Прогрес зарахованого виконання: «2/3». Порожньо там, де показувати нічого:
    на «1 новина» без жодного зарахування «0/1» був би шумом, а не інформацією. */
 function progressHtml(t) {
@@ -1098,7 +1109,7 @@ function renderPerson() {
     return `<button class="mykpi-row" data-kpn="${n.id}">
       <span class="mk-t">${esc(normTitle(n, r))}
         <span class="mk-p">· ${esc(n.period === "week" ? STATE.kpi.week_label : STATE.kpi.month_label)}</span>
-        ${normWhy(n, r)}${articleHint(r)}${feedHint(r)}</span>
+        ${normWhy(n, r)}${articleHint(r)}${feedHint(r)}${ownHint(r)}</span>
       <span class="kp-fact ${r.done ? "ok" : ""}">${r.fact === null ? "—" : `${r.fact}/${r.target}${r.done ? " ✓" : ""}`}</span>
       <span class="kbar wide"><i class="${r.done ? "ok" : ""}" style="width:${pct}%"></i></span>
     </button>`;
@@ -4500,7 +4511,7 @@ async function renderMyKpi() {
       return `<div class="mykpi-row">
         <span class="mk-t">${esc(normTitle(n, r))}
           <span class="mk-p">· ${esc(n.period === "week" ? k.week_label : k.month_label)}</span>
-          ${normWhy(n, r)}${articleHint(r)}${feedHint(r)}</span>
+          ${normWhy(n, r)}${articleHint(r)}${feedHint(r)}${ownHint(r)}</span>
         <span class="kp-fact ${r.done ? "ok" : ""}">${r.fact === null ? "—" : `${r.fact}/${r.target}${r.done ? " ✓" : ""}`}</span>
         <span class="kbar wide">
           <i class="${r.done ? "ok" : ""}" data-fill="${p}%" style="width:0%"></i>

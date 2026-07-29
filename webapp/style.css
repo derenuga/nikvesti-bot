@@ -1228,6 +1228,16 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   border-radius: 8px; padding: 1px 6px; white-space: nowrap;
 }
 
+/* «4 власні матеріали 🔥» — дзеркало .mk-feed для Newsroom, але теплим тоном.
+   Норму власний матеріал не закриває (вона рахує всі новини гуртом), проте це
+   не «просто видима праця», як стрічка, а те, чим редакція пишається — тому
+   зелений, а не сірий. */
+.mk-own {
+  display: inline-block; margin-left: 6px; font-size: 11.5px; font-weight: 700;
+  color: var(--good); background: var(--good-soft);
+  border-radius: 8px; padding: 1px 6px; white-space: nowrap;
+}
+
 /* ---------- Телефонна база редакції ---------- */
 .cnt-row {
   display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;

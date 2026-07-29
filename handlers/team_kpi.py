@@ -686,6 +686,21 @@ def feed_news_counts(period, offset=0):
     return out
 
 
+def own_news_counts(period, offset=0):
+    """{людина: скільки ВЛАСНИХ матеріалів} — дзеркало feed_news_counts.
+
+    Навіщо (Олег, 29.07): «ньюзруму треба за аналогією з креативом писати, що
+    вони зробили власних матеріалів стільки-то, поза KPI, і що це круто».
+    У Newsroom норма рахує всі новини гуртом, тож власний матеріал — важча
+    робота — розчиняється в загальній цифрі й ніде не помітний. Це не норма і
+    не додаткова смуга: просто сказати вголос, що воно було.
+
+    Запит той самий, що вже тягне weighted_facts (own=True), і він кешований —
+    зайвого походу в БД сайту немає."""
+    own = fact_counts("news", period, True, offset)
+    return {p: c for p, c in (own or {}).items() if c}
+
+
 def _overrides_for(norm_id, period, offset=0):
     start, _ = period_bounds(period, offset)
     return {
@@ -969,6 +984,15 @@ def kpi_payload(for_person=None):
                 and m["dept"] == n["dept"] and m["period"] == n["period"]
                 for m in norms):
             feed = feed_news_counts(n["period"])
+        # Дзеркальний випадок — Newsroom: норма рахує всі новини гуртом, і
+        # власний матеріал у ній не видно. Так само ховаємо, якщо власні вже
+        # рахує окрема норма цього ж відділу: тоді про них є смуга.
+        own_extra = {}
+        if n["metric"] == "news" and not n["own"] and not any(
+                m["metric"] == "news" and m["own"]
+                and m["dept"] == n["dept"] and m["period"] == n["period"]
+                for m in norms):
+            own_extra = own_news_counts(n["period"])
         p_start, p_end = period_bounds(n["period"])
         absences = _absences_by_person(set(people))
         rows = []
@@ -1007,6 +1031,7 @@ def kpi_payload(for_person=None):
                 "articles": article_bonus.get(person, 0),
                 "article_weight": ARTICLE_WEIGHT,
                 "feed_news": feed.get(person) or 0,
+                "own_news": own_extra.get(person) or 0,
                 "done": fact is not None and target > 0 and fact >= target,
                 "remaining": (max(0, target - fact)
                               if fact is not None and target > 0 else None),
