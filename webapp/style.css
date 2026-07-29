@@ -1153,3 +1153,17 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .door .chev { color: var(--muted); flex-shrink: 0; }
+
+/* Довідкове «?»: сіре, не синє (синій в апці означає дію — довідка не має
+   конкурувати з кнопками). Видимий кружечок маленький, зона натискання —
+   повноцінна. */
+.qmark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%; margin-left: 7px;
+  background: rgba(127, 143, 166, .22); color: var(--muted);
+  font-size: 11.5px; font-weight: 800; line-height: 1;
+  vertical-align: 2px; position: relative;
+}
+.qmark::after { content: ""; position: absolute; inset: -11px; }
+.help-body p { font-size: 14.5px; line-height: 1.5; margin-bottom: 12px; }
+.help-body p:last-child { margin-bottom: 0; }

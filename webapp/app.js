@@ -3362,6 +3362,52 @@ async function renderMyHistory() {
    беруться від відставання від графіка. У завершеному періоді очікування
    дорівнює цілі, тож минулі місяці виглядають рівно як раніше. */
 
+/* ---------- Довідка «?» ----------
+   Правило (28.07): спершу лагодимо ЗАГОЛОВОК, «?» ставимо лише туди, де сенс
+   не влазить у три слова — тобто де число ПОСАХОВАНЕ, зважене або відстає в
+   часі. Не більше двох на екран, сірий (синій = дія), тап відкриває звичну
+   шторку (hover на телефоні не існує). Тексти — одним словником, щоб їх можна
+   було вичитати як текст, а не виловлювати по розмітці. */
+const HELP = {
+  pace: ["Звідки «на сьогодні»",
+    "Ціль розкладена на робочі дні місяця. «7 із 9 на сьогодні» означає: за ті "
+    + "робочі дні, що вже минули, у середньому мало б вийти 9 матеріалів.\n\n"
+    + "День, що триває, не рахується — вимагати денну норму з ранку було б "
+    + "нечесно. Тому першого числа очікується нуль, і нуль там — це нормально.\n\n"
+    + "Відпустка, лікарняна й відрядження зменшують і ціль, і очікування: дні, "
+    + "коли тебе не було, не рахуються взагалі."],
+  weight: ["Чому цифра більша за кількість новин",
+    "Одна стаття зараховується як три новини.\n\nЗа правилами редакції можна "
+    + "не гнати стрічку, поки робиш велику статтю, — тож місяць зі статтею не "
+    + "має виглядати проваленим. У рядку KPI підписано, скільки саме статей "
+    + "додалось і з якою вагою."],
+  steps: ["Кроки тижнів",
+    "Місяць розкладено на тижні, і в кожного своя частка цілі — пропорційно "
+    + "його робочим дням (обрізані краї місяця вимагають менше).\n\n"
+    + "Тиждень стає галочкою, коли своя частка набрана. Це не окрема норма — "
+    + "просто видно, як іде місяць."],
+};
+
+function helpBtn(key) {
+  return `<button class="qmark" data-help="${key}" aria-label="Що це">?</button>`;
+}
+
+function wireHelp(root) {
+  (root || document).querySelectorAll("[data-help]").forEach((b) =>
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const [title, body] = HELP[b.dataset.help] || [];
+      if (!title) return;
+      openSheet(`<h2>${esc(title)}</h2>
+        <div class="help-body">${body.split("\n\n").map((p) =>
+          `<p>${esc(p)}</p>`).join("")}</div>
+        <div class="sheet-actions">
+          <button class="sbtn primary" id="help-ok">Зрозуміло</button>
+        </div>`);
+      $("help-ok").onclick = closeSheet;
+    });
+}
+
 function plural(n, one, few, many) {
   const a = Math.abs(n) % 100;
   if (a >= 11 && a <= 14) return many;
@@ -3546,13 +3592,16 @@ async function renderMyKpi() {
     word: qtyWord(lead.metric, lr.remaining || 0),
   }) : null;
 
+  const steps = stepsHtml(lead && lead.week_steps);
   box.innerHTML = `
     ${phrase ? `<div class="pace-card">
-      <div class="pace-say">${esc(phrase)}</div>
-      ${stepsHtml(lead.week_steps)}
+      <div class="pace-say">${esc(phrase)}${
+        lr.expected ? helpBtn("pace") : ""}</div>
+      ${steps}
       ${nextStepsHtml(lead, lr)}
     </div>` : ""}
-    <div class="soft-card"><div class="sc-t">Мої KPI</div>
+    <div class="soft-card"><div class="sc-t">Мої KPI${
+      k.norms.some((n) => (n.rows[0] || {}).articles) ? helpBtn("weight") : ""}</div>
     ${k.norms.map((n) => {
       const r = n.rows[0];
       if (!r) return "";
@@ -3574,6 +3623,7 @@ async function renderMyKpi() {
       </div>`;
     }).join("")}</div>`;
   animateFill(box);
+  wireHelp(box);
 
   // Салют — рівно на перетин норми, один раз на місяць і норму
   if (lr && lr.done && lead.period === "month") {

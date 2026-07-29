@@ -18,6 +18,7 @@
   інакше людина, що закрила норму 20-го, до кінця місяця відкриває апку під
   конфеті;
 - смуга й кільце приїжджають анімацією з нуля, а не малюються одразу повними;
+- біля фрази є довідкове «?», і воно пояснює саме нове поняття «на сьогодні»;
 - у менеджерському «Звіті» першого числа НІХТО не червоний.
 
 Запуск (потрібні playwright + chromium):
@@ -234,6 +235,21 @@ async def main():
 
             check("салюту без закритої норми немає",
                   await page.locator(".confetti").count() == 0)
+
+            # --- довідка «?»: пояснює саме те, що щойно ввели ---
+            check("біля фрази стоїть «?»",
+                  await page.locator('.qmark[data-help="pace"]').count() == 1)
+            check("вопросиків на екрані не більше двох",
+                  await page.locator(".qmark").count() <= 2)
+            await page.click('.qmark[data-help="pace"]')
+            await page.wait_for_selector("#sheet h2", timeout=2000)
+            hs = await page.inner_text("#sheet")
+            check("шторка пояснює, звідки «на сьогодні»", "робоч" in hs)
+            check("і що нуль першого числа — нормально", "нормально" in hs)
+            await page.click("#help-ok")
+            await page.wait_for_timeout(200)
+            check("шторка закрилась",
+                  await page.locator("#sheet-backdrop.hidden").count() == 1)
             await page.screenshot(path="/tmp/pace-behind.png", full_page=True)
         finally:
             await browser.close()
