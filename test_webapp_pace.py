@@ -322,10 +322,13 @@ async def main():
             await page.click('.qmark[data-help="pace"]')
             await page.wait_for_selector("#sheet h2", timeout=2000)
             hs = await page.inner_text("#sheet")
-            check("шторка пояснює кільце", "заповнення" in hs.lower())
-            check("і що означають кружечки", "тижні місяця" in hs)
-            check("і що порожнє кільце на початку — нормально", "нормально" in hs)
-            check("і що відпустка зменшує норму", "Відпустка" in hs)
+            check("шторка пояснює кільце", "Кільце" in hs and "рисочка" in hs.lower())
+            check("і що означають кружечки", "Кружечок" in hs)
+            # Олег, 29.07: «це ненормальна довідка, сильно дохера всього — ти
+            # ще Війну і мир туди засунь». Довідка мусить читатись за раз, без
+            # скролу: два абзаци, не більше.
+            check("довідка коротка — читається за раз",
+                  len(hs) < 320 and hs.count("\n\n") <= 3)
             await page.click("#help-ok")
             await page.wait_for_timeout(200)
             check("шторка закрилась",

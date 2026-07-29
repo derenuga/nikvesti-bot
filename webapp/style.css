@@ -1238,6 +1238,62 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   border-radius: 8px; padding: 1px 6px; white-space: nowrap;
 }
 
+/* ---------- Хто коли відсутній ---------- */
+/* Імена стоять окремою НЕРУХОМОЮ колонкою: у проєктів підпис живе всередині
+   смуги, бо смуга там одна на рядок і довга, а відпустка — це три дні десь
+   збоку шкали, і людина в такій смузі не підписалась би взагалі. */
+.aw-grid { display: flex; align-items: flex-start; gap: 8px; }
+.aw-names {
+  flex: 0 0 96px; padding-top: 34px;   /* 34px — висота смужки поділок */
+}
+.aw-name {
+  height: 46px; display: flex; align-items: center; gap: 7px;
+  font-size: 12.5px; font-weight: 600; overflow: hidden; white-space: nowrap;
+}
+.aw-grid .tl-scroll { flex: 1 1 auto; min-width: 0; }
+
+.aw-bar {
+  position: absolute; top: 8px; height: 30px; border-radius: 9px;
+  padding: 0; white-space: nowrap; z-index: 3; text-align: left;
+  border: 2px solid var(--card); overflow: clip;
+}
+.aw-bar .tl-lbl { font-size: 11.5px; font-weight: 700; }
+/* Три види відсутності — три різні заливки; форму лишаємо однакову, бо
+   вид уже сказано підписом і легендою */
+.aw-bar.k-vac { background: #2a78d6; color: #fff; }
+.aw-bar.k-sick { background: #e08a1e; color: #10202f; }
+.aw-bar.k-trip { background: #1baf7a; color: #0b2038; }
+body.dark .aw-bar.k-vac { background: #3987e5; }
+body.dark .aw-bar.k-sick { background: #c98500; }
+body.dark .aw-bar.k-trip { background: #199e70; }
+/* Непогоджений запит — контур, а не заливка: він ще не факт і на цілі KPI не
+   впливає, тож і виглядати як факт не має */
+.aw-bar.pending {
+  background: transparent; border: 2px dashed var(--blue); color: var(--ink);
+}
+.aw-chip {
+  width: 16px; height: 10px; border-radius: 4px; display: inline-block;
+}
+.aw-chip.k-vac { background: #2a78d6; }
+.aw-chip.k-sick { background: #e08a1e; }
+.aw-chip.k-trip { background: #1baf7a; }
+.aw-chip.pending { background: transparent; border: 2px dashed var(--blue); }
+body.dark .aw-chip.k-vac { background: #3987e5; }
+body.dark .aw-chip.k-sick { background: #c98500; }
+body.dark .aw-chip.k-trip { background: #199e70; }
+
+.aw-warn {
+  background: var(--red-soft); border-radius: var(--radius);
+  padding: 12px 14px; margin-bottom: 12px;
+}
+.aw-warn-t { font-weight: 700; font-size: 14.5px; color: var(--red); }
+.aw-warn-s { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+.aw-ok {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 12px;
+  font-size: 13px; color: var(--muted);
+}
+.aw-ok .ic { width: 16px; height: 16px; color: var(--good); }
+
 /* ---------- Телефонна база редакції ---------- */
 .cnt-row {
   display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;

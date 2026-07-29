@@ -500,6 +500,7 @@ function render() {
   else if (v === "myfeed") renderMyFeed();
   else if (v === "myhist") renderMyHistory();
   else if (v === "contacts") renderContacts();
+  else if (v === "away") renderAway();
   else if (v === "home") renderHome();
   else if (v === "person") renderPerson();
   else if (v === "personhist") renderPersonHistory();
@@ -551,6 +552,13 @@ function toolsSheet() {
       <span class="pk-txt">
         <span class="pk-name">Контакти редакції</span>
         <span class="pk-meta">телефони, які вже не треба шукати в чаті</span>
+      </span>
+    </button>
+    <button class="pick-row" data-tool="away">
+      <span class="door-ic c-blue-ic">${icon("calendar")}</span>
+      <span class="pk-txt">
+        <span class="pk-name">Хто коли відсутній</span>
+        <span class="pk-meta">відпустки й дедлайни завдань на одній шкалі</span>
       </span>
     </button>`);
   $("sheet").querySelectorAll("[data-tool]").forEach((b) => b.onclick = () => {
@@ -2845,6 +2853,207 @@ function contactSheet(c) {
   };
 }
 
+/* ---------- Хто коли відсутній ----------
+
+   Олег, 29.07: «утиліта — дивитись таймлайн відпусток, лікарняних і іншого, у
+   кого коли відпустки, і щоб на ній засічками були дедлайни тасків. Адже таски
+   не дивляться на відпустку і не перераховуються, і люди, йдучи у відпустку,
+   мають думати, що робити з їхніми тасками».
+
+   Ключове тут не «подивитись календар», а саме ЗІТКНЕННЯ: KPI відпустка
+   знижує сама (absence_factor), а creative task — ні, він просто мовчки
+   згорить. Тому екран відкривається списком колізій, а шкала під ним — це вже
+   доказ, а не головна дія.
+
+   Ні рядка нового на сервері: відсутності віддає той самий /api/absences, що
+   й картка людини, запити — /api/absences/requests, а дедлайни завдань уже
+   лежать у STATE.tasks із bootstrap. */
+
+const AWAY_KIND_CLS = { vacation: "k-vac", sick: "k-sick", trip: "k-trip" };
+
+function awayItems(absences, requests) {
+  // Показуємо те, що ще не закінчилось три тижні тому: історія відпусток за
+  // рік розтягнула б шкалу так, що найближчий місяць став би непомітним
+  const from = todayISO(-21);
+  return [
+    ...absences.filter((a) => a.end >= from).map((a) => ({ ...a, pending: false })),
+    ...requests.filter((r) => r.end >= from).map((r) => ({ ...r, pending: true })),
+  ].sort((a, b) => (a.start < b.start ? -1 : 1));
+}
+
+/* Завдання, дедлайн яких припадає на відсутність. Саме через них уся утиліта
+   й існує: людина у відпустці, а таск горить. Беремо лише відкриті — знятий
+   чи виконаний нікого вже не турбує. */
+function awayClashes(items, tasks) {
+  const out = [];
+  items.forEach((it) => {
+    tasks.forEach((t) => {
+      if (t.status !== "open" || !t.deadline) return;
+      if (t.person !== it.person) return;
+      if (t.deadline < it.start || t.deadline > it.end) return;
+      out.push({ item: it, task: t });
+    });
+  });
+  return out;
+}
+
+async function renderAway() {
+  const head = `
+    <button class="back" data-back>${icon("chevron-left")} Назад</button>
+    <div class="h-big">Хто коли відсутній</div>
+    <div class="h-sub">відпустки, лікарняні, відрядження · засічки — дедлайни завдань</div>`;
+  $("content").innerHTML = head + `<div id="aw-body">${skeleton("rows", 3)}</div>`;
+  let absences = [], requests = [];
+  try {
+    const [a, r] = await Promise.all([
+      api("/api/absences"),
+      api("/api/absences/requests").catch(() => ({ requests: [] })),
+    ]);
+    absences = a.absences || [];
+    requests = (r.requests || []).filter((x) => x.status === "pending");
+  } catch (e) {
+    const box = $("aw-body");
+    if (box) box.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+    return;
+  }
+  if (STATE.view !== "away") return;
+  const body = $("aw-body");
+  if (!body) return;
+
+  const items = awayItems(absences, requests);
+  if (!items.length) {
+    body.innerHTML = `<div class="empty-hint">Найближчим часом усі на місці.<br>
+      Відпустку заводять на екрані людини, запит від журналістки приходить у «Сповіщення».</div>`;
+    return;
+  }
+  const clashes = awayClashes(items, STATE.tasks);
+  body.innerHTML = awayClashHtml(clashes) + awayTimelineHtml(items);
+  wireAway(items, clashes);
+}
+
+function awayClashHtml(clashes) {
+  if (!clashes.length) {
+    return `<div class="aw-ok">${icon("check")} Жоден відкритий дедлайн не припадає на відсутність.</div>`;
+  }
+  const rows = clashes.map((c, i) => `
+    <button class="cnt-row" data-awclash="${i}">
+      <span class="tl-mark late static">${icon("file-text")}</span>
+      <span class="pk-txt">
+        <span class="pk-name">${esc(c.task.person.split(" ")[0])} · ${esc(shortDate(c.task.deadline))}</span>
+        <span class="pk-meta">${esc(taskLine(c.task, { donor: true }))} · ${esc(c.item.title.toLowerCase())}</span>
+      </span>
+      ${icon("chevron-right", "ic chev")}
+    </button>`).join("");
+  return `
+    <div class="aw-warn">
+      <div class="aw-warn-t">${plural(clashes.length, "Дедлайн припадає", "Дедлайни припадають",
+        "Дедлайнів припадає")} на відсутність — ${clashes.length}</div>
+      <div class="aw-warn-s">KPI відпустка знижує сама, а завдання — ні: його треба
+        або продовжити, або зняти, або передати.</div>
+    </div>
+    <div class="soft-card">${rows}</div>`;
+}
+
+function awayTimelineHtml(items) {
+  const today = todayISO();
+  const byPerson = {};
+  items.forEach((it) => (byPerson[it.person] = byPerson[it.person] || []).push(it));
+  const people = Object.keys(byPerson).sort();
+
+  const day = 86400000;
+  const stamp = (iso) => Date.parse(iso + "T12:00:00");
+  let min = Math.min(stamp(today), ...items.map((i) => stamp(i.start))) - 3 * day;
+  let max = Math.max(stamp(today) + 30 * day, ...items.map((i) => stamp(i.end))) + 3 * day;
+  const days = (max - min) / day;
+  const width = Math.max(660, Math.min(2600, Math.round(days * 11)));
+  const x = (ms) => ((ms - min) / (max - min)) * width;
+
+  // Поділки по тижнях, підпис — раз на стільки, щоб не злипались
+  let ticks = "";
+  const d = new Date(min);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + ((8 - d.getDay()) % 7));   // найближчий понеділок
+  let ti = 0;
+  const step = Math.max(1, Math.ceil(60 / (width / days * 7)));
+  for (; d.getTime() < max; d.setDate(d.getDate() + 7), ti++) {
+    const lbl = ti % step === 0
+      ? `<span>${d.getDate()}.${String(d.getMonth() + 1).padStart(2, "0")}</span>` : "";
+    ticks += `<div class="tl-tick" style="left:${x(d.getTime()).toFixed(1)}px">${lbl}</div>`;
+  }
+
+  const rows = people.map((person) => {
+    const bars = byPerson[person].map((it) => {
+      const left = x(stamp(it.start));
+      const w = Math.max(18, x(stamp(it.end)) - left + 11);
+      const cls = `${AWAY_KIND_CLS[it.kind] || "k-vac"}${it.pending ? " pending" : ""}`;
+      return `<button class="aw-bar ${cls}" data-awbar="${it.pending ? "r" : "a"}:${it.id}"
+        style="left:${left.toFixed(1)}px;width:${w.toFixed(1)}px"
+        title="${esc(it.title)} ${esc(shortDate(it.start))}–${esc(shortDate(it.end))}">
+        <span class="tl-inner"><span class="tl-lbl">${esc(it.title)}${
+          it.pending ? " · просить" : ""}</span></span>
+      </button>`;
+    }).join("");
+    // Засічки — дедлайни ВІДКРИТИХ завдань цієї людини у вікні шкали
+    const marks = STATE.tasks.filter((t) => t.person === person && t.status === "open"
+        && t.deadline && stamp(t.deadline) >= min && stamp(t.deadline) <= max)
+      .map((t) => {
+        const inside = byPerson[person].some(
+          (it) => t.deadline >= it.start && t.deadline <= it.end);
+        return `<button class="tl-mark ${inside ? "late" : "todo"}" data-awtask="${t.id}"
+          style="left:${x(stamp(t.deadline)).toFixed(1)}px"
+          title="${esc(taskLine(t, { donor: true }))} · ${esc(shortDate(t.deadline))}">
+          ${icon("file-text")}</button>`;
+      }).join("");
+    return `<div class="tl-row">${bars}${marks}</div>`;
+  }).join("");
+
+  const names = people.map((p) => {
+    const entry = personEntry(p) || {};
+    return `<div class="aw-name">${avatar(p, entry, 26)}<span>${esc(p.split(" ")[0])}</span></div>`;
+  }).join("");
+
+  const nowX = x(stamp(today));
+  return `
+    <div class="aw-grid">
+      <div class="aw-names">${names}</div>
+      <div class="tl-scroll" id="aw-scroll" data-nowx="${nowX.toFixed(0)}">
+        <div class="tl-canvas" style="width:${width}px;height:${people.length * 46 + 34}px">
+          ${ticks}
+          <div class="tl-now" style="left:${nowX.toFixed(1)}px"><span>сьогодні</span></div>
+          <div class="tl-rows">${rows}</div>
+        </div>
+      </div>
+    </div>
+    <div class="tl-legend">
+      <span class="tl-lg"><i class="aw-chip k-vac"></i>відпустка</span>
+      <span class="tl-lg"><i class="aw-chip k-sick"></i>лікарняна</span>
+      <span class="tl-lg"><i class="aw-chip k-trip"></i>відрядження</span>
+      <span class="tl-lg"><i class="aw-chip k-vac pending"></i>просить, не погоджено</span>
+      <span class="tl-lg"><i class="tl-mark late static">${icon("file-text")}</i>дедлайн у відсутності</span>
+    </div>
+    <div class="tl-note">Тап по смузі — картка людини, по засічці — завдання. Скрольте вбік.</div>`;
+}
+
+function wireAway(items, clashes) {
+  const box = $("aw-body");
+  box.querySelectorAll("[data-awclash]").forEach((b) => b.onclick = () => {
+    const c = clashes[+b.dataset.awclash];
+    if (c) taskSheet(c.task);
+  });
+  box.querySelectorAll("[data-awtask]").forEach((b) => b.onclick = () => {
+    const t = STATE.tasks.find((x) => x.id === +b.dataset.awtask);
+    if (t) taskSheet(t);
+  });
+  box.querySelectorAll("[data-awbar]").forEach((b) => b.onclick = () => {
+    const [kind, id] = b.dataset.awbar.split(":");
+    const it = items.find((x) => x.id === +id && x.pending === (kind === "r"));
+    if (it) nav("person", it.person);
+  });
+  // Скролимо до «сьогодні»: історія ліворуч потрібна рідше, ніж найближчі тижні
+  const sc = $("aw-scroll");
+  if (sc) sc.scrollLeft = Math.max(0, +sc.dataset.nowx - 90);
+}
+
 /* ---------- Прострочені завдання ----------
    Олег, 29.07: «якщо дедлайн минув, треба щоб Каті приходила картка з
    пропозицією продовжити дедлайн або зняти задачу».
@@ -4065,7 +4274,17 @@ function renderJournalist() {
       </div>`;
     }).join("")}</div>`
       : `<div class="empty-hint">Відкритих завдань немає.</div>`}
-    ${me.preview ? "" : `<div class="doors">
+    ${/* У перегляді чужими очима лишаємо ЛИШЕ двері, які нічого не роблять
+          від імені людини: історія KPI і спільна база контактів. «Події»
+          позначались би прочитаними за неї, а «Не буду на роботі» подало б
+          запит на відпустку від її імені. Без цих двох дверей Олег у прев'ю
+          взагалі не бачив телефонної книги і питав, де вона (29.07). */""}
+    ${me.preview ? `<div class="doors">
+      ${doorHtml("myhist", "bar-chart", "c-sky", "KPI по місяцях",
+        "як іде місяць до місяця", "")}
+      ${doorHtml("contacts", "book", "c-blue", "Контакти редакції",
+        "телефони редакції — спільні на всіх", "")}
+    </div>` : `<div class="doors">
       ${closed.length ? doorHtml("mydone", "check", "c-good", "Виконані",
         "завдання, які вже закрито", closed.length) : ""}
       ${doorHtml("myfeed", "bell", "c-blue", "Події",
@@ -4234,21 +4453,13 @@ async function renderMyHistory() {
    було вичитати як текст, а не виловлювати по розмітці. */
 const HELP = {
   pace: ["Кільце і кружечки",
-    "Кільце: заповнення — скільки вже зроблено від місячної норми, рисочка — "
-    + "приблизно там, де зазвичай буваєш у цей момент місяця. Кольором ми не "
-    + "оцінюємо, він лише підказує, чи варто додати темпу.\n\n"
-    + "Кружечки — тижні місяця. Зелений означає, що НА КІНЕЦЬ цього тижня ти "
-    + "була в графіку загалом. Це не окрема норма на тиждень: якщо один тиждень "
-    + "видався слабким, а наступний сильним — усі кружечки після нього стануть "
-    + "зеленими.\n\n"
-    + "На початку місяця порожньо — і це нормально, нічого ще й не мало "
-    + "з'явитись. Відпустка, лікарняна й відрядження зменшують норму: дні, коли "
-    + "тебе не було, не рахуються."],
+    "Кільце — скільки зроблено з місячної норми. Рисочка — де зазвичай "
+    + "буваєш у цей день місяця.\n\n"
+    + "Кружечок тижня зелений, якщо на його кінець ти була в графіку. "
+    + "Рахується накопичувально, тож сильний тиждень витягує слабкий."],
   weight: ["Чому цифра більша за кількість новин",
-    "Одна стаття зараховується як три новини.\n\nЗа правилами редакції можна "
-    + "не гнати стрічку, поки робиш велику статтю, — тож місяць зі статтею не "
-    + "має виглядати проваленим. У рядку KPI підписано, скільки саме статей "
-    + "додалось і з якою вагою."],
+    "Одна стаття зараховується як три новини — щоб місяць, у якому ти робила "
+    + "велику статтю, не виглядав проваленим."],
 };
 
 function helpBtn(key) {
