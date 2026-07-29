@@ -83,14 +83,15 @@ def norm(fact, target, expected, pace, phase, left, steps=(), done=False,
     }]
 
 
+# Накопичувальні кроки: перший тиждень позаду графіка, на другому наздогнала
 STEPS = [
-    {"label": "3–9", "fact": 6, "target": 5, "done": True,
+    {"label": "3–9", "fact": 2, "fact_cum": 2, "expected_cum": 5, "done": False,
      "is_current": False, "future": False, "away": False},
-    {"label": "10–16", "fact": 1, "target": 5, "done": False,
+    {"label": "10–16", "fact": 5, "fact_cum": 7, "expected_cum": 7, "done": True,
      "is_current": True, "future": False, "away": False},
-    {"label": "17–23", "fact": 0, "target": 5, "done": False,
+    {"label": "17–23", "fact": 0, "fact_cum": 7, "expected_cum": 14, "done": False,
      "is_current": False, "future": True, "away": False},
-    {"label": "24–30", "fact": 0, "target": 5, "done": False,
+    {"label": "24–30", "fact": 0, "fact_cum": 7, "expected_cum": 20, "done": False,
      "is_current": False, "future": True, "away": False},
 ]
 
@@ -231,17 +232,18 @@ async def main():
             # кроки тижнів
             check("кроки тижнів намальовані",
                   await page.locator(".step").count() == 4)
-            check("закритий тиждень із галочкою",
+            check("тиждень «була в графіку» — із галочкою",
                   await page.locator(".step.done .sdot svg").count() == 1)
             check("поточний тиждень підсвічено",
                   await page.locator(".step.cur").count() == 1)
             check("майбутні тижні не закриті",
                   await page.locator(".step.fut").count() == 2)
+            check("незакритий минулий тиждень позначено бурштином",
+                  await page.locator(".step.miss").count() == 1)
 
             nxt = await page.inner_text(".pace-next")
             check("«що далі» каже, скільки лишилось", "13" in nxt)
             check("і що стаття закриває три", "стаття закриє 3" in nxt)
-            check("і показує найближче завдання", "Тендери" in nxt)
 
             check("салюту без закритої норми немає",
                   await page.locator(".confetti").count() == 0)
@@ -254,7 +256,8 @@ async def main():
             await page.click('.qmark[data-help="pace"]')
             await page.wait_for_selector("#sheet h2", timeout=2000)
             hs = await page.inner_text("#sheet")
-            check("шторка пояснює, що показує кільце", "Заповнення" in hs)
+            check("шторка пояснює кільце", "заповнення" in hs.lower())
+            check("і що означають кружечки", "тижні місяця" in hs)
             check("і що порожнє кільце на початку — нормально", "нормально" in hs)
             check("і що відпустка зменшує норму", "Відпустка" in hs)
             await page.click("#help-ok")

@@ -374,6 +374,8 @@ async def main():
             await page.wait_for_selector(".door", timeout=3000)
 
             # --- вага статей у «Моїх KPI» ---
+            # KPI приїжджають асинхронно вже після повернення на головну
+            await page.wait_for_selector("#my-kpi .mykpi-row", timeout=3000)
             check("у рядку KPI пояснено, звідки цифра",
                   "+2 статті ×3" in await page.inner_text("#my-kpi"))
             check("сам факт зважений", "7/20" in await page.inner_text("#my-kpi"))

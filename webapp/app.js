@@ -1022,13 +1022,13 @@ function renderPerson() {
     const r = n.rows.find((x) => x.person === person);
     if (!r) return "";
     if (r.excused) return `<button class="mykpi-row" data-kpn="${n.id}">
-      <span class="mk-t">${esc(normTitle(n))}</span>
+      <span class="mk-t">${esc(normTitle(n, r))}</span>
       <span class="kp-excused">звільнено${r.note ? " · " + esc(r.note) : ""}</span></button>`;
     const pct = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
     return `<button class="mykpi-row" data-kpn="${n.id}">
-      <span class="mk-t">${esc(normTitle(n))}
+      <span class="mk-t">${esc(normTitle(n, r))}
         <span class="mk-p">· ${esc(n.period === "week" ? STATE.kpi.week_label : STATE.kpi.month_label)}</span>
-        ${articleHint(r)}</span>
+        ${normWhy(n, r)}${articleHint(r)}</span>
       <span class="kp-fact ${r.done ? "ok" : ""}">${r.fact === null ? "—" : `${r.fact}/${r.target}${r.done ? " ✓" : ""}`}</span>
       <span class="kbar wide"><i class="${r.done ? "ok" : ""}" style="width:${pct}%"></i></span>
     </button>`;
@@ -2591,9 +2591,27 @@ async function loadKpi() {
   STATE.kpi = await api("/api/kpi");
 }
 
-function normTitle(n) {
-  const own = n.own ? (n.target === 1 ? "власна " : "власних ") : "";
-  return `${n.target} ${own}${qtyWord(n.metric, n.target)} · ${n.period === "week" ? "щотижня" : "щомісяця"}`;
+/* Заголовок норми. row — рядок КОНКРЕТНОЇ людини, якщо він є: тоді число
+   беремо її, а не відділове.
+
+   Раніше заголовок завжди брав ціль відділу, а дріб праворуч — особисту, і на
+   екрані виходило «60 власних новин … 40/39» (Олег, 29.07: «ти щось розумієш
+   із цього табло?»). Два різні числа про одне й те саме в одному рядку
+   читаються як помилка, а причина розбіжності — відпустка — не була сказана
+   ніде. */
+function normTitle(n, row) {
+  const target = row && row.target != null ? row.target : n.target;
+  const own = n.own ? (target === 1 ? "власна " : "власних ") : "";
+  return `${target} ${own}${qtyWord(n.metric, target)} · ${n.period === "week" ? "щотижня" : "щомісяця"}`;
+}
+
+/* Чому ціль не така, як у відділу: «відпустка · замість 60». Без цього
+   зменшена цифра виглядає помилкою. */
+function normWhy(n, row) {
+  if (!row || row.target == null || row.base_target == null) return "";
+  if (row.target === row.base_target) return "";
+  const why = row.absence ? row.absence.title : (row.overridden ? "правка" : null);
+  return `<span class="mk-why">${why ? esc(why) + " · " : ""}замість ${row.base_target}</span>`;
 }
 
 function normById(id) {
@@ -3369,24 +3387,22 @@ async function renderMyHistory() {
    шторку (hover на телефоні не існує). Тексти — одним словником, щоб їх можна
    було вичитати як текст, а не виловлювати по розмітці. */
 const HELP = {
-  pace: ["Що показує кільце",
-    "Заповнення — скільки вже зроблено від місячної норми. Рисочка на кільці — "
-    + "приблизно там, де зазвичай буваєш у цей момент місяця.\n\n"
-    + "Кольором ми не оцінюємо: він просто підказує, чи варто додати темпу. "
-    + "На початку місяця порожнє кільце — це нормально, нічого ще й не мало "
-    + "з'явитись.\n\n"
-    + "Відпустка, лікарняна й відрядження зменшують норму — дні, коли тебе не "
-    + "було, не рахуються."],
+  pace: ["Кільце і кружечки",
+    "Кільце: заповнення — скільки вже зроблено від місячної норми, рисочка — "
+    + "приблизно там, де зазвичай буваєш у цей момент місяця. Кольором ми не "
+    + "оцінюємо, він лише підказує, чи варто додати темпу.\n\n"
+    + "Кружечки — тижні місяця. Зелений означає, що НА КІНЕЦЬ цього тижня ти "
+    + "була в графіку загалом. Це не окрема норма на тиждень: якщо один тиждень "
+    + "видався слабким, а наступний сильним — усі кружечки після нього стануть "
+    + "зеленими.\n\n"
+    + "На початку місяця порожньо — і це нормально, нічого ще й не мало "
+    + "з'явитись. Відпустка, лікарняна й відрядження зменшують норму: дні, коли "
+    + "тебе не було, не рахуються."],
   weight: ["Чому цифра більша за кількість новин",
     "Одна стаття зараховується як три новини.\n\nЗа правилами редакції можна "
     + "не гнати стрічку, поки робиш велику статтю, — тож місяць зі статтею не "
     + "має виглядати проваленим. У рядку KPI підписано, скільки саме статей "
     + "додалось і з якою вагою."],
-  steps: ["Кроки тижнів",
-    "Місяць розкладено на тижні, і в кожного своя частка цілі — пропорційно "
-    + "його робочим дням (обрізані краї місяця вимагають менше).\n\n"
-    + "Тиждень стає галочкою, коли своя частка набрана. Це не окрема норма — "
-    + "просто видно, як іде місяць."],
 };
 
 function helpBtn(key) {
@@ -3468,14 +3484,21 @@ function monthWord(label) {
   return w.charAt(0).toUpperCase() + w.slice(1);
 }
 
-/* Кроки тижнів місяця — та сама «стрічка кроків», що в онбордингах: рух
-   видно навіть тоді, коли до цілі ще далеко. Закритий тиждень схлопується в
-   галочку, поточний підсвічений, майбутні — порожні. */
+/* Кроки тижнів місяця — НАКОПИЧУВАЛЬНІ (Олег, 29.07: «поясни, чому перший і
+   третій кружечки не виконані» — дивлячись на екран із написом «Норму
+   закрито»). Пояснити було нічим: перша версія міряла РІВНОМІРНІСТЬ, якої від
+   людини ніхто не вимагає. Норма місячна: можна написати п'ятнадцять за
+   тиждень і два за наступний — це не порушення.
+
+   Тепер крок каже інше: чи була ти в графіку НА КІНЕЦЬ цього тижня. Тиждень,
+   коли набрала наперед, лишається зеленим і далі; незакритим лишається тільки
+   той відрізок, де справді була позаду. Це вже шлях — видно, де просіла і де
+   наздогнала, — і суперечити «Норму закрито» більше нічим. */
 function stepsHtml(steps) {
   if (!steps || steps.length < 2) return "";
   return `<div class="steps">${steps.map((s) => {
-    const cls = s.away ? "away" : s.done ? "done" : s.is_current ? "cur" : s.future ? "fut" : "miss";
-    return `<span class="step ${cls}">
+    const cls = s.away ? "away" : s.done ? "done" : s.future ? "fut" : "miss";
+    return `<span class="step ${cls}${s.is_current ? " cur" : ""}">
       <span class="sdot">${s.done ? icon("check") : ""}</span>
       <span class="slbl">${esc(s.label)}</span>
     </span>`;
@@ -3540,30 +3563,12 @@ function meRingHtml(info) {
    треба знати, що зробити: скільки лишилось, чим це можна закрити і що вже
    стоїть у чергу з дедлайном. */
 function nextStepsHtml(norm, r) {
-  const bits = [];
-  if (r && r.remaining) {
-    bits.push(`<b>${r.remaining} ${esc(qtyWord(norm.metric, r.remaining))}</b> до норми`);
-    if (norm.metric === "news" && r.article_weight > 1) {
-      bits.push(`одна стаття закриє ${r.article_weight}`);
-    }
+  if (!r || !r.remaining) return "";
+  const bits = [`<b>${r.remaining} ${esc(qtyWord(norm.metric, r.remaining))}</b> до норми`];
+  if (norm.metric === "news" && r.article_weight > 1) {
+    bits.push(`одна стаття закриє ${r.article_weight}`);
   }
-  const soon = STATE.tasks
-    .filter((t) => t.status === "open" && t.deadline)
-    .sort((a, b) => a.deadline.localeCompare(b.deadline))[0];
-  if (soon) {
-    bits.push(`найближче завдання — ${esc(taskLine(soon))}, ${esc(dlLabel_(soon.deadline))}`);
-  }
-  if (!bits.length) return "";
   return `<div class="pace-next">${bits.join(" · ")}</div>`;
-}
-
-/* «до 14.08» / «сьогодні» — короткий строк для рядка «що далі» */
-function dlLabel_(iso) {
-  const today = todayISO();
-  if (iso === today) return "сьогодні";
-  if (iso === todayISO(1)) return "завтра";
-  if (iso < today) return "прострочене";
-  return `до ${shortDate(iso)}`;
 }
 
 async function renderMyKpi() {
@@ -3603,12 +3608,11 @@ async function renderMyKpi() {
   const phrase = live && pace
     ? pacePhrase(lr.pace, pace.phase, monthWord(k.month_label)) : null;
 
-  const steps = stepsHtml(lead && lead.week_steps);
   box.innerHTML = `
     ${phrase ? `<div class="pace-card">
       <div class="pace-say">${esc(phrase)}${
         lr.expected ? helpBtn("pace") : ""}</div>
-      ${steps}
+      ${stepsHtml(lead && lead.week_steps)}
       ${nextStepsHtml(lead, lr)}
     </div>` : ""}
     <div class="soft-card"><div class="sc-t">Мої KPI${
@@ -3617,15 +3621,15 @@ async function renderMyKpi() {
       const r = n.rows[0];
       if (!r) return "";
       if (r.excused) return `<div class="mykpi-row">
-        <span class="mk-t">${esc(normTitle(n))}</span>
+        <span class="mk-t">${esc(normTitle(n, r))}</span>
         <span class="kp-excused">звільнено${r.note ? " · " + esc(r.note) : ""}</span></div>`;
       const p = r.fact === null || r.target <= 0 ? 0 : Math.min(100, Math.round(r.fact / r.target * 100));
       const m = r.expected != null && r.target > 0
         ? Math.min(100, Math.round(r.expected / r.target * 100)) : null;
       return `<div class="mykpi-row">
-        <span class="mk-t">${esc(normTitle(n))}
+        <span class="mk-t">${esc(normTitle(n, r))}
           <span class="mk-p">· ${esc(n.period === "week" ? k.week_label : k.month_label)}</span>
-          ${articleHint(r)}</span>
+          ${normWhy(n, r)}${articleHint(r)}</span>
         <span class="kp-fact ${r.done ? "ok" : ""}">${r.fact === null ? "—" : `${r.fact}/${r.target}${r.done ? " ✓" : ""}`}</span>
         <span class="kbar wide">
           <i class="${r.done ? "ok" : ""}" data-fill="${p}%" style="width:0%"></i>

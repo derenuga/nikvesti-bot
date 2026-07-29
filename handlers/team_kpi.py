@@ -492,11 +492,22 @@ def _person_week_facts(uid, start, end):
 
 
 def month_week_steps(norm, target, absences, uid, today=None):
-    """Кроки тижнів місяця: чи закрила людина свою частку кожного тижня.
+    """Кроки тижнів місяця — НАКОПИЧУВАЛЬНІ, а не «чи закрила тиждень свою частку».
 
-    Це та сама «стрічка кроків», що в онбордингах: рух видно навіть тоді, коли
-    до цілі ще далеко. Частка тижня — пропорційно його РОБОЧИМ дням (перший і
-    останній тижні місяця обрізані, і вимагати з них повну пʼятиденку не можна).
+    Перша версія рахувала кожен тиждень окремо, і 29.07 Олег спитав просте
+    питання: «поясни, чому перший і третій кружечки не виконані», дивлячись на
+    екран із написом «Норму закрито». Пояснити було нічим: така мітка міряла
+    РІВНОМІРНІСТЬ, якої від людини ніхто не вимагає. Норма місячна — можна
+    написати п'ятнадцять за тиждень і два за наступний, і це не порушення.
+    Тобто кружечки показували провал там, де провалу немає.
+
+    Тепер крок каже інше й чесне: «чи була ти в графіку НА КІНЕЦЬ цього тижня».
+    Порівнюємо накопичений факт із накопиченим очікуванням. Наслідки:
+    - закрита норма робить усі минулі кроки зеленими автоматично — суперечити
+      напису «Норму закрито» більше нічим;
+    - тиждень, коли людина набрала наперед, лишається зеленим і далі;
+    - незакритим лишається тільки той відрізок, де вона СПРАВДІ була позаду, —
+      і це вже шлях, а не оцінка кожного тижня окремо.
     """
     today = today or datetime.now(KYIV_TZ).date()
     start, end = period_bounds("month", 0, today)
@@ -504,18 +515,16 @@ def month_week_steps(norm, target, absences, uid, today=None):
     if not total_days or not uid or target <= 0:
         return []
     buckets = _person_week_facts(uid, start, end)
-    steps, day = [], start
+    steps, day, days_cum, fact_cum = [], start, 0, 0
     while day < end:
         wk_end = min(day + timedelta(days=7 - day.weekday()), end)
         raw = _workdays(day, wk_end)
         if not raw:
             # Хвіст місяця з самих вихідних (1–2 серпня — субота й неділя):
-            # робити там нічого, і сірий крок «1–2» був би шумом. Відпустка —
-            # інша річ: там робочі дні є, просто людини не було, і такий
-            # тиждень видно приглушеним.
+            # робити там нічого, і сірий крок був би шумом
             day = wk_end
             continue
-        days = _available_workdays(day, wk_end, absences)
+        days_cum += _available_workdays(day, wk_end, absences)
         monday = (day - timedelta(days=day.weekday())).isoformat()
         b = buckets.get(monday, {})
         count = lambda metric: (b.get((metric, 1), 0) if norm["own"]
@@ -523,17 +532,16 @@ def month_week_steps(norm, target, absences, uid, today=None):
         fact = count(norm["metric"])
         if norm["metric"] == "news":
             fact += count("article") * ARTICLE_WEIGHT
-        # Ціль тижня не може бути нулем, поки в ньому є хоч один робочий день:
-        # інакше обрізаний тиждень місяця виглядав би закритим сам собою
-        wk_target = max(1, round(target * days / total_days)) if days else 0
+        fact_cum += fact
+        expected_cum = round(target * days_cum / total_days)
         last = wk_end - timedelta(days=1)
         steps.append({
             "label": f"{day.day}–{last.day}",
-            "fact": fact, "target": wk_target,
-            "done": bool(wk_target) and fact >= wk_target,
+            "fact": fact, "fact_cum": fact_cum, "expected_cum": expected_cum,
+            "done": fact_cum >= expected_cum,
             "is_current": day <= today < wk_end,
             "future": day > today,
-            "away": days == 0,
+            "away": _available_workdays(day, wk_end, absences) == 0,
         })
         day = wk_end
     return steps

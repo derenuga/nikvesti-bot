@@ -18,9 +18,11 @@ month_week_steps).
 - ВІДПУСТКА зсуває і ціль, і темп: людина, що вийшла 17-го, не має виглядати
   безнадійною через дні, коли її не було;
 - поріг «в темпі» (PACE_TOLERANCE) працює саме як поріг, а не як рівність;
-- кроки тижнів ріжуть місяць по понеділках, обрізані тижні отримують меншу
-  частку цілі, тиждень із самих вихідних кроком не стає, а стаття важить три
-  новини так само, як у самій нормі;
+- поріг «в темпі» (PACE_TOLERANCE) працює саме як поріг, а не як рівність;
+- кроки тижнів НАКОПИЧУВАЛЬНІ: зелений означає «на кінець цього тижня була в
+  графіку загалом», а не «закрила частку саме цього тижня». Перша версія міряла
+  рівномірність, якої ніхто не вимагає, і при закритій нормі малювала провали
+  (Олег, 29.07). Тепер сильний тиждень зеленить і всі наступні;
 - один запит на всі кроки (ліміти БД сайту), і кеш його не подвоює.
 
 Запуск:  python test_team_kpi_pace.py
@@ -128,7 +130,7 @@ pa2 = kpi.period_pace("month", 0, away, date(2026, 8, 25))
 eq("до 25-го відпрацьовано доступних днів", pa2["elapsed"], 6)
 
 
-# ---------- кроки тижнів ----------
+# ---------- кроки тижнів (накопичувально) ----------
 
 print("\nКроки тижнів місяця:")
 
@@ -137,51 +139,39 @@ QUERIES = []
 
 def fake_query(sql, params=None):
     QUERIES.append((sql, params))
-    # 2 новини 5 серпня, 1 стаття 12 серпня (важить 3 новини)
-    def ts(d):
-        from datetime import datetime
-        return int(datetime(2026, 8, d, 12, tzinfo=kpi.KYIV_TZ).timestamp())
-    return [
-        {"published": ts(5), "type": "news", "own_material": 1},
-        {"published": ts(5), "type": "news", "own_material": 1},
-        {"published": ts(12), "type": "article", "own_material": 1},
-    ]
+    from datetime import datetime
+    ts = lambda d: int(datetime(2026, 7, d, 12, tzinfo=kpi.KYIV_TZ).timestamp())
+    rows = []
+    # слабкий старт, потім наздогнала і перевиконала
+    for day, count in ((2, 1), (8, 6), (9, 6), (15, 2), (22, 10), (23, 8), (28, 7)):
+        rows += [{"published": ts(day), "type": "news", "own_material": 1}] * count
+    return rows
 
 
 kpi.db.query = fake_query
 kpi._week_cache.clear()
 
 norm = {"metric": "news", "own": True}
-steps = kpi.month_week_steps(norm, 20, [], uid=42, today=date(2026, 8, 14))
+steps = kpi.month_week_steps(norm, 39, [], uid=42, today=date(2026, 7, 29))
 
-eq("серпень 2026 ріжеться на тижнів", len(steps), 5)
-check("тиждень із самих вихідних (1–2 серпня) кроком не стає",
-      all(s["label"] != "1–2" for s in steps))
-eq("перший крок — перший робочий тиждень", steps[0]["label"], "3–9")
-eq("останній обрізаний місяцем", steps[-1]["label"], "31–31")
-check("обрізаний тиждень отримує меншу частку цілі",
-      steps[-1]["target"] < steps[0]["target"])
-check("ціль тижня не нульова, поки в ньому є робочий день",
-      all(s["target"] >= 1 for s in steps if not s["away"]))
-eq("тиждень 3–9: факт 2 новини", steps[0]["fact"], 2)
-eq("тиждень 10–16: стаття важить три новини", steps[1]["fact"], 3)
-check("поточний тиждень позначено", steps[1]["is_current"])
-check("майбутні тижні позначено як майбутні",
-      steps[2]["future"] and steps[3]["future"])
-check("минулі — не майбутні", not steps[0]["future"])
-
+eq("липень 2026 ріжеться на тижнів", len(steps), 5)
+eq("перший крок", steps[0]["label"], "1–5")
+eq("останній обрізаний місяцем", steps[-1]["label"], "27–31")
+check("слабкий старт: позаду графіка", not steps[0]["done"])
+check("другий тиждень сильний, але сукупно ще позаду", not steps[1]["done"])
+check("наздогнала — крок зелений", steps[3]["done"])
+check("і далі лишається зеленим", steps[4]["done"])
+eq("накопичений факт останнього кроку", steps[-1]["fact_cum"], 40)
+eq("накопичене очікування останнього кроку", steps[-1]["expected_cum"], 39)
+check("поточний тиждень позначено", steps[4]["is_current"])
 eq("на всі кроки — ОДИН запит у БД сайту", len(QUERIES), 1)
-kpi.month_week_steps(norm, 20, [], uid=42, today=date(2026, 8, 14))
-eq("повторний виклик іде з кешу", len(QUERIES), 1)
 
-# норма на статті не множить статті на три (інакше потрійне зарахування)
-kpi._week_cache.clear()
-art = kpi.month_week_steps({"metric": "article", "own": True}, 3, [],
-                           uid=42, today=date(2026, 8, 14))
-eq("норма на статті: тиждень 10–16 — рівно одна стаття", art[1]["fact"], 1)
+# Головне: закрита норма не може лишити НЕЗАКРИТИМ останній крок — інакше
+# екран каже «Норму закрито» і тут же малює провал (з цього все й почалось)
+check("при закритій нормі останній крок зелений", steps[-1]["done"])
 
 check("без users.id кроків немає (факт нізвідки взяти)",
-      kpi.month_week_steps(norm, 20, [], uid=None) == [])
+      kpi.month_week_steps(norm, 39, [], uid=None) == [])
 
 
 print()

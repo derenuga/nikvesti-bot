@@ -1091,26 +1091,6 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 }
 .pace-next b { color: var(--ink); font-weight: 800; }
 
-/* Кроки тижнів місяця: закритий тиждень схлопується в галочку, поточний
-   підсвічений, майбутні порожні. Рух видно навіть коли до цілі далеко. */
-.steps { display: flex; gap: 8px; margin-top: 14px; }
-.step {
-  flex: 1; min-width: 0; display: flex; flex-direction: column;
-  align-items: center; gap: 5px;
-}
-.sdot {
-  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: var(--fill); color: #fff;
-}
-.sdot .ic { width: 15px; height: 15px; stroke-width: 3; }
-.step.done .sdot { background: var(--good); }
-.step.cur .sdot { background: var(--blue); box-shadow: 0 0 0 4px var(--blue-soft); }
-.step.miss .sdot { box-shadow: inset 0 0 0 2px var(--warn); }
-.step.away .sdot { opacity: .35; }
-.slbl { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.step.cur .slbl { color: var(--blue); font-weight: 700; }
-
 /* Салют на закриття норми. Без бібліотеки: CSP не пускає CDN, а тягнути пакет
    заради тридцяти квадратиків при статиці в 26 КБ немає сенсу. */
 .confetti { position: fixed; inset: 0; pointer-events: none; z-index: 90; overflow: hidden; }
@@ -1167,3 +1147,28 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 .qmark::after { content: ""; position: absolute; inset: -11px; }
 .help-body p { font-size: 14.5px; line-height: 1.5; margin-bottom: 12px; }
 .help-body p:last-child { margin-bottom: 0; }
+
+/* Чому ціль не така, як у відділу: «відпустка · замість 60» */
+.mk-why { font-size: 11.5px; color: var(--muted); margin-left: 6px; white-space: nowrap; }
+
+/* Кроки тижнів: зелений — «на кінець цього тижня була в графіку», порожній —
+   була позаду, поточний обведено. Накопичувально, тому один слабкий тиждень
+   не залишає по собі діри до кінця місяця (див. app.js). */
+.steps { display: flex; gap: 8px; margin-top: 14px; }
+.step {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  align-items: center; gap: 5px;
+}
+.sdot {
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--fill); color: #fff;
+}
+.sdot .ic { width: 15px; height: 15px; stroke-width: 3; }
+.step.done .sdot { background: var(--good); }
+.step.miss .sdot { box-shadow: inset 0 0 0 2px var(--warn); }
+.step.away .sdot { opacity: .35; }
+.step.cur .sdot { box-shadow: 0 0 0 4px var(--blue-soft); }
+.step.cur.miss .sdot { box-shadow: inset 0 0 0 2px var(--warn), 0 0 0 4px var(--blue-soft); }
+.slbl { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.step.cur .slbl { color: var(--blue); font-weight: 700; }
