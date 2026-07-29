@@ -2733,16 +2733,22 @@ function authorLine(c) {
 }
 
 /* Картка контакту. Посада й теми — окремі поля, бо саме за ними шукають:
-   «хто в нас по енергетиці» — це пошук по темах, а не по імені. */
+   «хто в нас по енергетиці» — це пошук по темах, а не по імені.
+
+   Підказки в полях — ЗАВЕДОМО вигадана людина («Степан Яблучко», «директор
+   ЖЕК №5»). Спершу там стояв «Ігор Луков · віцемер Миколаєва» — реальне
+   прізвище з вигаданим імʼям, і Олег одразу сказав: справжній Луков існує, а
+   Івана Лукова немає, такі підказки збивають. У базі, де лежать справжні
+   чиновники, підказка не має виглядати як запис. */
 function contactSheet(c) {
   const v = (k) => esc((c && c[k]) || "");
   openSheet(`
     <h2>${c ? "Контакт" : "Новий контакт"}</h2>
     <div class="f-label" style="margin-top:0">Імʼя</div>
-    <input id="c-name" maxlength="120" value="${v("name")}" placeholder="Ігор Луков">
+    <input id="c-name" maxlength="120" value="${v("name")}" placeholder="Степан Яблучко">
     <div class="f-label">Посада й орган</div>
     <input id="c-role" maxlength="160" value="${v("role")}"
-      placeholder="віцемер Миколаєва">
+      placeholder="директор ЖЕК №5">
     <button class="link-btn" id="c-lookup">${icon("search")} Підтягнути з архіву</button>
     <div id="c-found" class="cnt-found"></div>
     <div class="f-label">Телефони</div>

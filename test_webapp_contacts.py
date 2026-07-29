@@ -39,11 +39,11 @@ CHROMIUM_CANDIDATES = [
 ]
 
 CONTACTS = [
-    {"id": 1, "name": "Ігор Луков", "role": "віцемер Миколаєва",
+    {"id": 1, "name": "Степан Яблучко", "role": "директор ЖЕК №5",
      "phone": "+380501112233",
      "phones": ["+380501112233", "0512 555 000 приймальня"],
      "telegram": None, "email": None,
-     "tags": "міськрада, бюджет", "note": None,
+     "tags": "ЖКГ, будинки", "note": None,
      "added_by": "Аліна Квітко", "updated_by": "Аліна Квітко",
      "created_at": "2026-07-20T10:00:00+03:00",
      "updated_at": "2026-07-20T10:00:00+03:00"},
@@ -185,8 +185,8 @@ async def main():
             await page.click('.door[data-nav="contacts"]')
             await page.wait_for_selector(".cnt-row", timeout=5000)
             body = await page.inner_text("#content")
-            check("видно контакти", "Ігор Луков" in body and "Олена Приходько" in body)
-            check("під імʼям — посада й теми", "віцемер Миколаєва" in body)
+            check("видно контакти", "Степан Яблучко" in body and "Олена Приходько" in body)
+            check("під імʼям — посада й теми", "директор ЖЕК №5" in body)
             check("є кнопка дзвінка",
                   await page.locator(".cnt-tel").count() == 2)
 
@@ -195,17 +195,17 @@ async def main():
             await page.wait_for_timeout(600)
             body = await page.inner_text("#content")
             check("пошук за темою знаходить потрібного",
-                  "Олена Приходько" in body and "Луков" not in body)
+                  "Олена Приходько" in body and "Яблучко" not in body)
 
-            await page.fill("#cnt-q", "віцемер")
+            await page.fill("#cnt-q", "ЖЕК")
             await page.wait_for_timeout(600)
             check("пошук за посадою теж працює",
-                  "Луков" in await page.inner_text("#content"))
+                  "Яблучко" in await page.inner_text("#content"))
 
             await page.fill("#cnt-q", "0501112233")
             await page.wait_for_timeout(600)
             check("і за номером",
-                  "Луков" in await page.inner_text("#content"))
+                  "Яблучко" in await page.inner_text("#content"))
 
             await page.fill("#cnt-q", "щось чого немає")
             await page.wait_for_timeout(600)
@@ -222,7 +222,7 @@ async def main():
             await page.fill("#cnt-q", "0512")
             await page.wait_for_timeout(600)
             check("пошук знаходить і за ДРУГИМ номером",
-                  "Луков" in await page.inner_text("#content"))
+                  "Яблучко" in await page.inner_text("#content"))
             await page.fill("#cnt-q", "")
             await page.wait_for_timeout(600)
 
@@ -255,10 +255,10 @@ async def main():
             check("«переслано в Лиса» у нотатці більше не пишемо",
                   "переслано" not in await page.inner_text("#sheet"))
             check("у картці підтягнулись поля",
-                  await page.input_value("#c-role") == "віцемер Миколаєва")
+                  await page.input_value("#c-role") == "директор ЖЕК №5")
             check("журналістці кнопки видалення немає",
                   await page.locator("#c-del").count() == 0)
-            await page.fill("#c-tags", "міськрада, бюджет, тендери")
+            await page.fill("#c-tags", "ЖКГ, будинки, тендери")
             await page.click("#c-save")
             await page.wait_for_timeout(400)
             saved = await page.evaluate("window.__saved")
