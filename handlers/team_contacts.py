@@ -58,6 +58,18 @@ _SCHEMA_STATEMENTS = [
     # Разова міграція наявних карток: старий phone стає першим у списку
     "UPDATE team_contacts SET phones = ARRAY[phone] "
     "WHERE phone IS NOT NULL AND (phones IS NULL OR cardinality(phones) = 0)",
+    # Плюс до вже збережених міжнародних номерів: Telegram віддає
+    # phone_number БЕЗ нього, і перші картки лягли як «380501954887».
+    # Ідемпотентно й за тим самим правилом, що normalize_phone: чіпаємо лише
+    # суцільні цифри 11–15 не з нуля — місцевий «0501112233» лишається як є.
+    """
+    UPDATE team_contacts SET phones = ARRAY(
+        SELECT CASE WHEN p ~ '^[1-9][0-9]{10,14}$' THEN '+' || p ELSE p END
+        FROM unnest(phones) AS p)
+    WHERE EXISTS (SELECT 1 FROM unnest(phones) AS p WHERE p ~ '^[1-9][0-9]{10,14}$')
+    """,
+    "UPDATE team_contacts SET phone = '+' || phone "
+    "WHERE phone ~ '^[1-9][0-9]{10,14}$'",
 ]
 
 _schema_lock = threading.Lock()
@@ -89,6 +101,7 @@ def _row(r):
         "telegram": r["telegram"], "email": r["email"],
         "tags": r["tags"], "note": r["note"],
         "added_by": r["added_by"], "updated_by": r["updated_by"],
+        "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
         "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
     }
 
@@ -122,6 +135,23 @@ def list_contacts(query=None, limit=200):
 def _clean(v):
     v = (v or "").strip()
     return v or None
+
+
+def normalize_phone(value):
+    """«380501954887» → «+380501954887».
+
+    Telegram віддає phone_number БЕЗ плюса, і в картці це виглядало як набір
+    цифр, а tel:-посилання з такого номера набирає внутрішній, а не
+    міжнародний.
+
+    Плюс ставимо ЛИШЕ там, де номер уже міжнародний: самі цифри, довжина
+    11–15 і не з нуля. Місцевий «0501112233» так і лишається місцевим —
+    домислювати йому код країни ми не маємо права (номер може бути й не
+    український), а «+0501112233» був би просто зламаним."""
+    v = (value or "").strip()
+    if v.isdigit() and 11 <= len(v) <= 15 and not v.startswith("0"):
+        return "+" + v
+    return v
 
 
 def find_by_phone(phone):
@@ -232,26 +262,52 @@ def contributions(person):
             "total": int(r.get("total") or 0)}
 
 
-def save_shared_contact(actor, first_name, last_name, phone, username=None):
-    """Контакт, ПЕРЕСЛАНИЙ Лису в приват. Кладемо як є — правити ПІБ і посаду
-    все одно доведеться руками (у телефонах записано хто як). Якщо такий номер
-    уже є, доповнюємо картку, а не плодимо другу."""
+def save_shared_contact(actor, first_name, last_name, phone, vcard=None):
+    """Контакт, ПЕРЕСЛАНИЙ Лису в приват.
+
+    Працює і для тих, кого немає в Telegram: у скріпці «Контакт» віддає
+    будь-кого з адресної книги телефона, просто без user_id.
+
+    Із vCard дістаємо решту номерів, організацію і посаду — тобто частину
+    того, що інакше довелось би вбивати руками. ПІБ усе одно лишається як є:
+    у телефонах записано хто як («Луков мер»), і причісувати це автоматом —
+    гірше, ніж лишити людині.
+
+    Якщо такий номер уже є, доповнюємо картку, а не плодимо другу."""
     name = " ".join(p for p in ((first_name or "").strip(),
                                 (last_name or "").strip()) if p) or "Без імені"
+    card = parse_vcard(vcard)
+    numbers = []
+    for num in [phone] + card["phones"]:
+        num = normalize_phone(num)
+        if num and num not in numbers:
+            numbers.append(num)
+    role = " · ".join(p for p in (card["title"], card["org"]) if p) or None
+
     found = find_by_phone(phone)
     if found:
         patch = {}
-        if username and not found.get("telegram"):
-            patch["telegram"] = f"@{username.lstrip('@')}"
+        merged = list(found["phones"])
+        for num in numbers:
+            tail = "".join(c for c in num if c.isdigit())[-9:]
+            if not any("".join(c for c in m if c.isdigit())[-9:] == tail
+                       for m in merged):
+                merged.append(num)
+        if merged != found["phones"]:
+            patch["phones"] = merged
+        if role and not found.get("role"):
+            patch["role"] = role
+        if card["email"] and not found.get("email"):
+            patch["email"] = card["email"]
         if patch:
-            update_contact(found["id"], actor, **patch)
-            found.update(patch)
+            updated = update_contact(found["id"], actor, **patch)
+            if updated:
+                return updated, False
         return found, False
-    created = add_contact(
-        actor, name, phone=phone,
-        telegram=f"@{username.lstrip('@')}" if username else None,
-        note="переслано в Лиса",
-    )
+    # Нотатку «переслано в Лиса» не пишемо: вона займала єдине вільне поле
+    # і не казала нічого корисного. Хто додав — видно з added_by (Олег, 29.07).
+    created = add_contact(actor, name, role=role, phones=numbers,
+                          email=card["email"])
     return created, True
 
 
@@ -308,4 +364,40 @@ def lookup_entity(name, limit=5):
             "mentions": r.get("mentions") or 0,
             "last_year": year,
         })
+    return out
+
+
+def parse_vcard(vcard):
+    """Витяг корисного з vCard, яку Telegram шле разом із контактом.
+
+    Навіщо: у самої картки контакту Telegram є лише імʼя й ОДИН номер, а у
+    vCard з адресної книги телефона часто лежать усі номери, організація і
+    посада. Тобто половина того, що ми просимо дозаповнити руками, уже
+    приїхала — просто в іншому полі.
+
+    Розбираємо вручну і терпимо: vCard буває у різних кодуваннях і з
+    параметрами (TEL;TYPE=CELL;VALUE=uri:tel:+380…), а тягнути залежність
+    заради трьох рядків не варто. Чого не зрозуміли — просто не беремо."""
+    out = {"phones": [], "org": None, "title": None, "email": None}
+    if not vcard:
+        return out
+    for raw in str(vcard).replace("\r\n", "\n").split("\n"):
+        line = raw.strip()
+        if not line or ":" not in line:
+            continue
+        head, _, value = line.partition(":")
+        name = head.split(";")[0].upper()
+        value = value.strip()
+        if not value:
+            continue
+        if name == "TEL":
+            num = value.replace("tel:", "").strip()
+            if num and num not in out["phones"]:
+                out["phones"].append(num)
+        elif name == "ORG" and not out["org"]:
+            out["org"] = value.replace(";", " ").strip()
+        elif name == "TITLE" and not out["title"]:
+            out["title"] = value
+        elif name == "EMAIL" and not out["email"]:
+            out["email"] = value
     return out

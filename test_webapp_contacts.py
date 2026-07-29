@@ -17,6 +17,7 @@
 - порожня база каже, ЩО зробити, а не просто «нічого немає»;
 - у журналістки книга — дверима на головній, у менеджера — в утилітах у шапці
   (нижнє меню не чіпаємо: там пʼять пунктів робочого потоку);
+- у картці видно, ХТО її завів і коли (замість нотатки «переслано в Лиса»);
 - «Підтягнути з архіву» пропонує посаду з сутнісного шару, показує, кого саме
   архів має на увазі (однофамільці), підставляє в поле, але НЕ зберігає само;
   а коли не знайшов — чесно каже про межу покриття (2–3 роки).
@@ -44,12 +45,14 @@ CONTACTS = [
      "telegram": None, "email": None,
      "tags": "міськрада, бюджет", "note": None,
      "added_by": "Аліна Квітко", "updated_by": "Аліна Квітко",
+     "created_at": "2026-07-20T10:00:00+03:00",
      "updated_at": "2026-07-20T10:00:00+03:00"},
     {"id": 2, "name": "Олена Приходько", "role": "прессекретарка обленерго",
      "phone": "+380671234567", "phones": ["+380671234567"],
      "telegram": "@olena", "email": None,
      "tags": "енергетика, відключення", "note": "після 10:00",
-     "added_by": "Юлія Бойченко", "updated_by": "Юлія Бойченко",
+     "added_by": "Юлія Бойченко", "updated_by": "Катерина Середа",
+     "created_at": "2026-07-21T10:00:00+03:00",
      "updated_at": "2026-07-21T10:00:00+03:00"},
 ]
 
@@ -130,7 +133,7 @@ def _chromium_path():
     return None
 
 
-async def _open(pw, boot):
+async def _open(pw, boot, screen=None):
     launch = {}
     path = _chromium_path()
     if path:
@@ -139,13 +142,13 @@ async def _open(pw, boot):
     page = await browser.new_page(viewport={"width": 390, "height": 844})
     await page.route("**/static/*", lambda r: asyncio.ensure_future(
         r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
-    await page.route("https://app.local/", lambda r: asyncio.ensure_future(
+    await page.route("https://app.local/*", lambda r: asyncio.ensure_future(
         r.fulfill(path=str(WEBAPP / "index.html"), content_type="text/html")))
     await page.add_init_script(
         "window.BOOT = " + json.dumps(boot) + ";"
         "window.CONTACTS = " + json.dumps(CONTACTS) + ";"
         "window.MINE = " + json.dumps(MINE) + ";" + STUB)
-    await page.goto("https://app.local/")
+    await page.goto("https://app.local/" + (f"?screen={screen}" if screen else ""))
     await page.wait_for_selector("#screen-main:not(.hidden)", timeout=10000)
     return browser, page
 
@@ -245,6 +248,12 @@ async def main():
             await page.wait_for_timeout(600)
             await page.click(".cnt-row")
             await page.wait_for_selector("#c-name", timeout=3000)
+            author = await page.inner_text(".cnt-author")
+            check("у картці видно, ХТО її завів",
+                  "ти" in author or "Аліна" in author)
+            check("і коли", "20.07" in author)
+            check("«переслано в Лиса» у нотатці більше не пишемо",
+                  "переслано" not in await page.inner_text("#sheet"))
             check("у картці підтягнулись поля",
                   await page.input_value("#c-role") == "віцемер Миколаєва")
             check("журналістці кнопки видалення немає",
@@ -285,6 +294,15 @@ async def main():
             check("порожній результат не бреше", "не знайшов" in nf)
             check("і пояснює межу покриття архіву", "2–3 роки" in nf)
             await closeSheetSafely(page)
+        finally:
+            await browser.close()
+
+        # --- пінг «записав контакт» відкриває ОДРАЗУ базу ---
+        browser, page = await _open(pw, JOURNALIST, screen="contacts")
+        try:
+            await page.wait_for_selector(".cnt-row", timeout=5000)
+            check("кнопка з пінга веде одразу в базу, а не на головну",
+                  await page.evaluate("() => STATE.view") == "contacts")
         finally:
             await browser.close()
 

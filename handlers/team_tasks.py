@@ -623,11 +623,17 @@ def set_status(task_id, actor, status, auto=False):
 
 # ---------- Пінги від Лиса ----------
 
-def _open_app_markup():
+def _open_app_markup(text="Відкрити завдання", screen=None):
+    """Кнопка запуску апки. screen — на який екран одразу відкрити.
+
+    Передаємо звичайним query-параметром до URL: start_param із t.me-лінка тут
+    не працює, бо це web_app-кнопка, а не посилання. Апка читає його з
+    location.search на старті."""
     if not WEBAPP_URL:
         return None
+    url = WEBAPP_URL + (f"?screen={screen}" if screen else "")
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Відкрити завдання", web_app=WebAppInfo(url=WEBAPP_URL))]]
+        [[InlineKeyboardButton(text, web_app=WebAppInfo(url=url))]]
     )
 
 

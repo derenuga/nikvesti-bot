@@ -1272,3 +1272,8 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   min-width: 15px; height: 15px; border-radius: 8px; padding: 0 3px;
   background: var(--blue); color: var(--blue-fg);
 }
+
+/* Авторство картки контакту — підпис, а не поле: його не редагують */
+.cnt-author {
+  font-size: 11.5px; color: var(--muted); margin-top: 12px; line-height: 1.5;
+}

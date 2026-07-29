@@ -2446,6 +2446,18 @@ async function markNotifsRead() {
   } catch (e) { /* лічильник просто оновиться наступного разу */ }
 }
 
+/* З якого екрана починати. web_app-кнопка не вміє start_param (це не
+   t.me-лінк), тож екран передається звичайним query-параметром до URL апки —
+   так пінг «записав контакт» відкриває одразу базу, а не головну. */
+const START_SCREENS = ["contacts", "reports", "alerts"];
+
+function startScreen() {
+  try {
+    const v = new URLSearchParams(location.search).get("screen");
+    return START_SCREENS.includes(v) ? v : null;
+  } catch (e) { return null; }
+}
+
 /* ---------- Телефонна база редакції ----------
    Олег, 29.07: «у кого є телефон віцемера Лукова?» — хтось кидає в чат, а
    через пів року питають знову. Два входи, обидва ручні: форма тут і
@@ -2614,6 +2626,21 @@ async function lookupEntity() {
   });
 }
 
+/* Хто завів картку і хто правив востаннє. Олег, 29.07: «краще б тут писалось,
+   хто додав номер» — замість нотатки «переслано в Лиса», яка займала єдине
+   вільне поле і не казала нічого. Це підпис, а не поле: авторство не
+   редагується. */
+function authorLine(c) {
+  if (!c || !c.added_by) return "";
+  const when = c.created_at ? shortDate(c.created_at.slice(0, 10)) : "";
+  const parts = [`Додав${c.added_by === STATE.me.name ? "(ла) ти" : ": " + esc(c.added_by)}`];
+  if (when) parts.push(when);
+  if (c.updated_by && c.updated_by !== c.added_by) {
+    parts.push(`правив(ла) ${esc(c.updated_by)}`);
+  }
+  return `<div class="cnt-author">${parts.join(" · ")}</div>`;
+}
+
 /* Картка контакту. Посада й теми — окремі поля, бо саме за ними шукають:
    «хто в нас по енергетиці» — це пошук по темах, а не по імені. */
 function contactSheet(c) {
@@ -2638,6 +2665,7 @@ function contactSheet(c) {
     <div class="f-label">Нотатка</div>
     <input id="c-note" maxlength="200" value="${v("note")}"
       placeholder="коли краще телефонувати, хто познайомив…">
+    ${authorLine(c)}
     <div class="sheet-actions">
       ${c && STATE.me.manager
         ? `<button class="sbtn danger" id="c-del">Видалити</button>` : ""}
@@ -4498,10 +4526,12 @@ async function boot() {
       $("bottomnav").classList.remove("hidden");
       // startapp із прямого лінка: кнопка «Дедлайни в апці» під нагадуванням
       // у чаті фінансів має відкривати одразу «Звітність», а не Головну
+      // Куди відкривати: ?screen= від web_app-кнопки (пінг Лиса) або
+      // start_param від t.me-лінка (кнопка «Дедлайни в апці» у чаті фінансів)
       const start = (tg.initDataUnsafe || {}).start_param || "";
-      nav(start === "reports" ? "reports" : "home");
+      nav(startScreen() || (start === "reports" ? "reports" : "home"));
     } else {
-      nav("home");
+      nav(startScreen() || "home");
     }
     syncBackButton();
   } catch (e) {

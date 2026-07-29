@@ -1,4 +1,5 @@
 import asyncio
+import re
 import os
 import urllib.request
 from datetime import datetime
@@ -57,7 +58,7 @@ from handlers.team_matching import (
     match_requeue_handler,
 )
 from handlers.team_kpi import kpi_debug, set_user_link
-from handlers import team_contacts, team_roster
+from handlers import team_contacts, team_roster, team_tasks
 from handlers.helpers import escape_html
 from handlers.notifier import notify_error
 from handlers.usage_report import usage_handler, display_name
@@ -366,22 +367,73 @@ async def shared_contact_handler(update, context):
         return                      # чужинцю база редакції не відкривається
     c = msg.contact
     try:
+        # vcard, а не username: у Telegram-контакту поля username НЕМАЄ
+        # взагалі (є phone_number, first_name, last_name, user_id, vcard).
+        # Зате у vCard з адресної книги телефона часто лежать усі номери,
+        # організація і посада — половина того, що ми просили дозаповнити.
         saved, is_new = await asyncio.to_thread(
             team_contacts.save_shared_contact, person,
-            c.first_name, c.last_name, c.phone_number,
-            getattr(c, "username", None),
+            c.first_name, c.last_name, c.phone_number, getattr(c, "vcard", None),
         )
     except Exception as e:
         await msg.reply_text(f"🦊 Не вдалось зберегти контакт: {e}")
         return
+    await _reply_saved_contact(msg, saved, is_new)
+
+
+async def _reply_saved_contact(msg, saved, is_new):
     verb = "Записав" if is_new else "Такий номер уже був — доповнив картку"
+    lines = [f"🦊 {verb}: <b>{escape_html(saved['name'])}</b>"]
+    if saved.get("role"):
+        lines.append(escape_html(saved["role"]))
+    for num in saved.get("phones") or []:
+        lines.append(escape_html(num))
+    lines.append("")
+    lines.append("Додай теми — за ними потім і шукатимуть."
+                 if saved.get("role") else
+                 "Додай посаду й теми — за ними потім і шукатимуть.")
     await msg.reply_text(
-        f"🦊 {verb}: <b>{escape_html(saved['name'])}</b>\n"
-        f"{escape_html(saved.get('phone') or '')}\n\n"
-        "Відкрий «Контакти» в апці й додай посаду й теми — "
-        "за ними потім і шукатимуть.",
-        parse_mode="HTML",
+        "\n".join(lines), parse_mode="HTML",
+        # Кнопка веде ОДРАЗУ в базу, а не на головну: людина щойно надіслала
+        # контакт, і дозаповнювати вона йде саме його (Олег, 29.07)
+        reply_markup=team_tasks._open_app_markup("Відкрити контакти", "contacts"),
     )
+
+
+# Номер у 9–15 цифр — це телефон, а не рік і не id статті. Перевіряємо саме
+# кількість цифр, а не «схожість»: інакше «що було 2026-07-29» ловилось би як
+# контакт. Не схоже на номер — тихо віддаємо повідомлення Лису, як і раніше.
+_PHONE_RE = re.compile(r"\+?\d[\d\s\-()]{7,}\d")
+
+
+async def maybe_contact_text_handler(update, context):
+    """«А якщо абонента немає в телеграмі?» (Олег, 29.07) — тоді можна просто
+    надіслати номер текстом: «Ігор Луков +380501112233».
+
+    Хендлер стоїть ПЕРЕД природномовним шаром, тому мусить бути обережним:
+    усе, що не схоже на телефон, віддаємо далі руками, а не ковтаємо."""
+    msg = update.effective_message
+    text = (msg.text or "").strip()
+    match = _PHONE_RE.search(text)
+    digits = "".join(c for c in (match.group(0) if match else "") if c.isdigit())
+    if not match or not (9 <= len(digits) <= 15):
+        await handle_natural_language_query(update, context)
+        return
+    user = update.effective_user
+    person = team_roster.resolve_person(user.id, user.username) if user else None
+    if not person:
+        await handle_natural_language_query(update, context)
+        return
+    name = (text[:match.start()] + " " + text[match.end():]).strip(" ,-–—:")
+    try:
+        saved, is_new = await asyncio.to_thread(
+            team_contacts.save_shared_contact, person,
+            name or "Без імені", "", match.group(0).strip(), None,
+        )
+    except Exception as e:
+        await msg.reply_text(f"🦊 Не вдалось зберегти контакт: {e}")
+        return
+    await _reply_saved_contact(msg, saved, is_new)
 
 def main():
     # concurrent_updates: без цього PTB обробляє апдейти строго по черзі,
@@ -496,6 +548,12 @@ def main():
     # Переслана в приват картка контакту → у базу редакції. Ставимо ПЕРЕД
     # текстовим NLQ: contact — не текст, тож перехопити його інакше нема де.
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, shared_contact_handler))
+    # Текст із телефонним номером — теж контакт (коли абонента немає в
+    # Telegram і карткою його не переслати). Хендлер сам вирішує: не схоже на
+    # номер — передає далі в природномовний шар, тож NLQ нічого не втрачає.
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND
+        & filters.Regex(_PHONE_RE), maybe_contact_text_handler))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_natural_language_query))
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, group_reply_to_bot))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
