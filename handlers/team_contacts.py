@@ -210,3 +210,59 @@ def save_shared_contact(actor, first_name, last_name, phone, username=None):
         note="переслано в Лиса",
     )
     return created, True
+
+
+# ---------- Підтягнути з архіву (сутнісний шар) ----------
+#
+# Олег, 29.07: «щоб я міг натиснути на сірого Миколу Логвинова — і чик-чик,
+# йому підтяглася сутність, що він директор Миколаївобтеплоенерго».
+#
+# Джерело — таблиця entities сутнісного шару нори (17 років архіву, витяг
+# Haiku): там уже лежать імена, останні відомі посади (role_last), аліаси й
+# кількість згадок. Тобто редакція вже знає посаду — просто знання лежало не
+# там, де його питають.
+#
+# Чесна межа: сутності залито приблизно за останні 2–3 роки, тож знайдеться
+# не кожен. Порожню відповідь так і кажемо, а не вдаємо, що людини не існує.
+
+def lookup_entity(name, limit=5):
+    """Кандидати з архіву за іменем. Порядок слів не має значення: шукаємо
+    ВСІ токени в спільному сіні з name_ua + name_ru + аліасів — «Логвінов
+    Микола» і «Микола Логвінов» мають знаходитись однаково, і російське
+    написання теж (у сутності є обидві мови)."""
+    tokens = [t.lower() for t in (name or "").replace(".", " ").split()
+              if len(t) >= 3]
+    if not tokens:
+        return []
+    haystack = ("lower(coalesce(name_ua, '') || ' ' || coalesce(name_ru, '') "
+                "|| ' ' || coalesce(array_to_string(aliases, ' '), ''))")
+    where = " AND ".join([f"{haystack} LIKE %s"] * len(tokens))
+    try:
+        rows = bot_db.query(
+            f"SELECT id, kind, name_ua, name_ru, role_last, mentions, last_seen "
+            f"FROM entities WHERE {where} "
+            # спершу люди й ті, про кого писали більше: у сірої картки
+            # найімовірніший кандидат — той, хто частіше в новинах
+            f"ORDER BY (kind = 'person') DESC, mentions DESC NULLS LAST LIMIT %s",
+            tuple([f"%{t}%" for t in tokens] + [limit]),
+        )
+    except Exception as e:
+        # Сутнісного шару може не бути взагалі (порожня нора) — це не помилка
+        print(f"team_contacts: сутності недоступні — {e}")
+        return []
+    out = []
+    for r in rows:
+        year = None
+        if r.get("last_seen"):
+            try:
+                year = datetime.fromtimestamp(r["last_seen"], KYIV_TZ).year
+            except (ValueError, OSError, TypeError):
+                year = None
+        out.append({
+            "id": r["id"], "kind": r["kind"],
+            "name": r.get("name_ua") or r.get("name_ru"),
+            "role": r.get("role_last"),
+            "mentions": r.get("mentions") or 0,
+            "last_year": year,
+        })
+    return out

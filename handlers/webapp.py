@@ -827,6 +827,18 @@ async def api_contacts(request):
     return web.json_response({"contacts": items, "mine": mine, "nora": True})
 
 
+async def api_contact_lookup(request):
+    """«Чик-чик» — підтягнути посаду з архіву (Олег, 29.07).
+
+    Сутнісний шар нори вже знає, ким людина була в новинах: редакція має це
+    знання, воно просто лежало не там, де його питають. Нічого не зберігаємо —
+    лише пропонуємо, рішення за людиною."""
+    person, info, _ = await _authenticate(request)
+    name = request.query.get("name") or ""
+    found = await _in_session(team_contacts.lookup_entity, name)
+    return web.json_response({"candidates": found})
+
+
 async def api_contact_create(request):
     person, info, _ = await _authenticate(request)
     payload = await _json(request)
@@ -1452,6 +1464,7 @@ async def start_webapp(application):
         web.post("/api/absences", api_absence_create),
         web.delete("/api/absences/{absence_id:\\d+}", api_absence_delete),
         web.get("/api/contacts", api_contacts),
+        web.get("/api/contacts/lookup", api_contact_lookup),
         web.post("/api/contacts", api_contact_create),
         web.patch("/api/contacts/{contact_id:\\d+}", api_contact_patch),
         web.delete("/api/contacts/{contact_id:\\d+}", api_contact_delete),

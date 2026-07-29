@@ -14,7 +14,10 @@
 - лічильник для дверей тягнеться окремим дешевим запитом (?only=mine), а не
   всією базою;
 - пересланий контакт із тим самим номером не плодить другу картку;
-- порожня база каже, ЩО зробити, а не просто «нічого немає».
+- порожня база каже, ЩО зробити, а не просто «нічого немає»;
+- «Підтягнути з архіву» пропонує посаду з сутнісного шару, показує, кого саме
+  архів має на увазі (однофамільці), підставляє в поле, але НЕ зберігає само;
+  а коли не знайшов — чесно каже про межу покриття (2–3 роки).
 
 Запуск:  python test_webapp_contacts.py
 """
@@ -73,6 +76,16 @@ window.fetch = async (url, opts = {}) => {
   const json = (o) => new Response(JSON.stringify(o),
     { headers: { "Content-Type": "application/json" } });
   if (url === "/api/bootstrap") return json(window.BOOT);
+  if (url.startsWith("/api/contacts/lookup")) {
+    window.__calls.push({ url, method: "GET" });
+    const q = new URLSearchParams(url.split("?")[1] || "");
+    const name = (q.get("name") || "").toLowerCase();
+    return json({ candidates: name.includes("логвинов")
+      ? [{ id: 9, kind: "person", name: "Микола Логвінов",
+           role: "директор Миколаївобтеплоенерго", mentions: 47,
+           last_year: 2026 }]
+      : [] });
+  }
   if (url.startsWith("/api/contacts")) {
     window.__calls.push({ url, method: opts.method || "GET" });
     if (opts.method === "POST" || opts.method === "PATCH") {
@@ -97,6 +110,11 @@ window.fetch = async (url, opts = {}) => {
   return json({ ok: true });
 };
 """
+
+
+async def closeSheetSafely(page):
+    await page.evaluate("closeSheet()")
+    await page.wait_for_timeout(200)
 
 
 def _chromium_path():
@@ -203,6 +221,33 @@ async def main():
                   and saved["url"].endswith("/api/contacts/1"))
             check("і несе оновлені теми",
                   saved and "тендери" in saved["body"]["tags"])
+            # --- «чик-чик»: підтягнути посаду з архіву ---
+            await page.evaluate("STATE.contactQuery = ''; renderContacts()")
+            await page.wait_for_selector(".cnt-row", timeout=5000)
+            await page.click("[data-cnt-add], #cnt-add")
+            await page.wait_for_selector("#c-name", timeout=3000)
+            await page.fill("#c-name", "Николай Логвинов")
+            await page.click("#c-lookup")
+            await page.wait_for_selector(".cnt-cand", timeout=3000)
+            cand = await page.inner_text(".cnt-cand")
+            check("архів пропонує посаду",
+                  "директор Миколаївобтеплоенерго" in cand)
+            check("видно, кого саме архів має на увазі",
+                  "Логвінов" in cand and "47" in cand)
+            await page.click(".cnt-cand")
+            check("тап підставляє посаду в поле",
+                  await page.input_value("#c-role") == "директор Миколаївобтеплоенерго")
+            check("але не зберігає мовчки — просить перевірити",
+                  "перевір" in (await page.inner_text("#c-found")).lower())
+
+            # нікого не знайшли — кажемо чесно, з межею покриття
+            await page.fill("#c-name", "Хтось Невідомий")
+            await page.click("#c-lookup")
+            await page.wait_for_timeout(400)
+            nf = await page.inner_text("#c-found")
+            check("порожній результат не бреше", "не знайшов" in nf)
+            check("і пояснює межу покриття архіву", "2–3 роки" in nf)
+            await closeSheetSafely(page)
         finally:
             await browser.close()
 

@@ -2434,6 +2434,47 @@ function wireContactControls() {
   };
 }
 
+/* «Чик-чик» — підтягнути посаду з архіву (Олег, 29.07: «щоб я міг натиснути
+   на сірого Миколу Логвинова, і йому підтяглася сутність, що він директор
+   Миколаївобтеплоенерго»).
+
+   Сутнісний шар нори вже знає, ким людина була в новинах — знання просто
+   лежало не там, де його питають. Підставляємо в поле, але НЕ зберігаємо
+   самі: рішення за людиною, а посади змінюються.
+
+   Чесна межа: сутності залито приблизно за останні 2–3 роки, тож знайдеться
+   не кожен — так і кажемо, а не вдаємо, що людини не існує. */
+async function lookupEntity() {
+  const name = $("c-name").value.trim();
+  const box = $("c-found");
+  if (!name) { toast("Спершу імʼя"); return; }
+  box.innerHTML = `<span class="sk" style="display:block;height:14px;width:60%"></span>`;
+  let data;
+  try {
+    data = await api(`/api/contacts/lookup?name=${encodeURIComponent(name)}`);
+  } catch (e) { box.textContent = e.message; return; }
+  const found = (data.candidates || []).filter((c) => c.role);
+  if (!found.length) {
+    box.innerHTML = `<span class="cnt-nofound">В архіві не знайшов.
+      Сутності залито приблизно за останні 2–3 роки — старіших там ще немає.</span>`;
+    return;
+  }
+  box.innerHTML = found.map((c, i) => `
+    <button class="cnt-cand" data-cand="${i}">
+      <span class="cnt-cand-r">${esc(c.role)}</span>
+      <span class="cnt-cand-m">${esc(c.name || "")} · ${c.mentions} ${
+        esc(plural(c.mentions, "згадка", "згадки", "згадок"))}${
+        c.last_year ? ` · востаннє ${c.last_year}` : ""}</span>
+    </button>`).join("");
+  box.querySelectorAll("[data-cand]").forEach((b) => b.onclick = () => {
+    const c = found[+b.dataset.cand];
+    $("c-role").value = c.role;
+    box.innerHTML = `<span class="cnt-nofound">Підставив. Перевір і збережи —
+      посади змінюються.</span>`;
+    haptic("success");
+  });
+}
+
 /* Картка контакту. Посада й теми — окремі поля, бо саме за ними шукають:
    «хто в нас по енергетиці» — це пошук по темах, а не по імені. */
 function contactSheet(c) {
@@ -2445,6 +2486,8 @@ function contactSheet(c) {
     <div class="f-label">Посада й орган</div>
     <input id="c-role" maxlength="160" value="${v("role")}"
       placeholder="віцемер Миколаєва">
+    <button class="link-btn" id="c-lookup">${icon("search")} Підтягнути з архіву</button>
+    <div id="c-found" class="cnt-found"></div>
     <div class="f-label">Телефон</div>
     <input id="c-phone" type="tel" maxlength="40" value="${v("phone")}"
       placeholder="+380…">
@@ -2461,6 +2504,7 @@ function contactSheet(c) {
         ? `<button class="sbtn danger" id="c-del">Видалити</button>` : ""}
       <button class="sbtn primary" id="c-save">Зберегти</button>
     </div>`);
+  $("c-lookup").onclick = lookupEntity;
   $("c-save").onclick = async () => {
     const body = {
       name: $("c-name").value.trim(), role: $("c-role").value.trim(),
