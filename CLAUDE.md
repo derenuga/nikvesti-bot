@@ -351,7 +351,7 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
   },
   "bot_usage": {
     "2026-07-21": {
-      "56424866": {"name": "Катерина Середа (@sereda_ka)", "commands": {"stat": 2}, "nlq": 3, "questions": ["скільки трафіку за тиждень"], "tools": {"get_traffic_history": 2}, "backs": [{"topic": "Сєнкевич", "items": 3}]}
+      "56424866": {"name": "Катерина Середа (@sereda_ka)", "commands": {"stat": 2}, "nlq": 3, "questions": [{"q": "скільки трафіку за тиждень", "len": 26}], "tools": {"get_traffic_history": 2}, "backs": [{"topic": "Сєнкевич", "len": 8, "items": 3}]}
     }
   },
   "prozorro": { ... }

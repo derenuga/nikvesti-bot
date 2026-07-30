@@ -48,6 +48,15 @@ def _clip(text, limit=REPORT_TOPIC_CLIP):
     return text[:limit] + "…" if len(text) > limit else text
 
 
+def _fmt_clipped(text, full_len):
+    """Обрізаний текст + реальна довжина оригіналу, коли її видно не стало.
+    full_len пишеться в storage з 30.07; старі записи без нього — просто текст."""
+    clipped = _clip(text)
+    if full_len and full_len > REPORT_TOPIC_CLIP:
+        return f"«{clipped}» ({full_len} симв.)"
+    return f"«{clipped}»"
+
+
 def _fmt_counter(counter):
     """{'stat': 2, 'weekly': 1} → '/stat ×2, /weekly' (за спаданням)."""
     parts = []
@@ -94,7 +103,10 @@ def format_usage_report(day, exclude_user_id=None):
             lines.append(f"   Питання до Лиса: {nlq}")
             questions = rec.get("questions", [])
             for q in questions[:REPORT_QUESTIONS_SHOWN]:
-                lines.append(f"   • «{_clip(q)}»")
+                if isinstance(q, dict):
+                    lines.append(f"   • {_fmt_clipped(q.get('q'), q.get('len'))}")
+                else:
+                    lines.append(f"   • «{_clip(q)}»")
             if len(questions) > REPORT_QUESTIONS_SHOWN:
                 lines.append(f"   …і ще {len(questions) - REPORT_QUESTIONS_SHOWN}")
 
@@ -109,7 +121,8 @@ def format_usage_report(day, exclude_user_id=None):
             for b in backs[:REPORT_QUESTIONS_SHOWN]:
                 items = b.get("items")
                 suffix = f" ({items} новин)" if items else ""
-                lines.append(f"   📎 «{_clip(b.get('topic'))}»{suffix}")
+                topic = _fmt_clipped(b.get("topic"), b.get("len"))
+                lines.append(f"   📎 {topic}{suffix}")
 
     people = len(data)
     lines.append("")
