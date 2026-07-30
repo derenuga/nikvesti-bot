@@ -433,7 +433,8 @@ function backTarget() {
     case "bulk": return ["project", STATE.bulk && STATE.bulk.projectId];
     case "kpi": return ["home"];
     case "kpinorm": return ["kpi"];
-    case "impact": return [STATE.impactFrom === "myimpacts" ? "myimpacts" : "impacts"];
+    case "impact": return [STATE.impactFrom === "myimpacts" ? "myimpacts"
+      : STATE.impactFrom === "home" ? "home" : "impacts"];
     case "mydone":
     case "myfeed":
     case "myhist":
@@ -2519,24 +2520,28 @@ function notifRow(n) {
   // Розкладений рядок (Олег, 30.07: «тематику догори, далі завдання, автора
   // вниз, біля автора — донора з маленькою іконкою»). Старі події без meta
   // малюються як раніше, лише без обрізання в один рядок.
-  const main = m && (m.theme || m.task_line) ? `
+  // «1 із 1» не має рватись переносом посеред числа
+  const glue = (t) => esc(t).replace(/(\d+) із (\d+)/g, "$1\u00A0із\u00A0$2");
+  const structured = m && (m.theme || m.task_line);
+  const main = structured ? `
     <span class="tr-main">
       <span class="tr-who">${esc(m.theme || m.task_line)}</span>
-      <span class="tr-what">${m.theme ? esc(m.task_line) + " · " : ""}${esc(n.body || "")}</span>
-      ${m.person || m.donor ? `<span class="nt-by">
-        ${m.person ? `<span>${esc(m.person)}</span>` : ""}
-        ${m.donor ? `${donorChip(m.donor)}<span>${esc(m.donor)}</span>` : ""}
-      </span>` : ""}
+      <span class="tr-what">${m.theme ? esc(m.task_line) + " · " : ""}${glue(n.body || "")}</span>
+      <span class="nt-by">
+        ${m.person ? `<span class="nt-name">${esc(m.person)}</span>` : ""}
+        ${m.donor ? `${donorChip(m.donor)}<span class="nt-donor">${esc(m.donor)}</span>` : ""}
+        <span class="nt-when">${esc(when)}</span>
+      </span>
     </span>` : `
     <span class="tr-main">
       <span class="tr-who">${esc(n.title)}</span>
-      ${n.body ? `<span class="tr-what">${esc(n.body)}</span>` : ""}
+      ${n.body ? `<span class="tr-what">${glue(n.body)}</span>` : ""}
     </span>`;
   const inner = `
     <span class="st-mark ${NOTIF_GOOD.has(n.kind) ? "done" : "dropped"}">
       ${icon(NOTIF_ICON[n.kind] || "bell")}</span>
     ${main}
-    <span class="tr-right"><span class="mr-d">${esc(when)}</span></span>`;
+    ${structured ? "" : `<span class="tr-right"><span class="mr-d">${esc(when)}</span></span>`}`;
   const cls = `task-row nt-row${n.unread ? " unread" : ""}`;
   return n.url
     ? `<a class="${cls}" href="${esc(n.url)}" data-ext="${esc(n.url)}">${inner}</a>`
@@ -3073,11 +3078,13 @@ function impactAddSheet() {
 
 async function renderImpact() {
   const id = STATE.currentImpact;
+  // «Назад» — контекстний: з банера на головній вертає на головну, з «Моїх
+  // імпактів» — у них, з архіву — в архів (маршрут знає backTarget)
+  const backLabel = STATE.impactFrom === "myimpacts" ? "Мої імпакти"
+    : STATE.impactFrom === "home" ? "Назад" : "Імпакт-архів";
   $("content").innerHTML = `
-    <button class="back" data-nav="impacts">${icon("chevron-left")} Імпакт-архів</button>
+    <button class="back" data-back>${icon("chevron-left")} ${backLabel}</button>
     <div id="imd-body">${skeleton("rows", 4)}</div>`;
-  $("content").querySelectorAll("[data-nav]").forEach((b) =>
-    b.onclick = () => nav(b.dataset.nav));
   let im;
   try {
     im = await api(`/api/impacts/${id}`);
@@ -3123,7 +3130,8 @@ function paintImpact(im) {
   const donor = key && key.partner_name;
   // Читання без редагування: журналістка дивиться свій кейс, але чернетку,
   // медальки і серію правит лише менеджер зі свого входу
-  const ro = STATE.impactFrom === "myimpacts" || !STATE.me.manager;
+  const ro = STATE.impactFrom === "myimpacts" || STATE.impactFrom === "home"
+    || !STATE.me.manager;
   body.innerHTML = `
     ${im.image ? `<div class="imp-hero"><img src="${esc(im.image)}" alt=""
       onerror="this.parentNode.style.display='none'"></div>` : ""}
@@ -3387,6 +3395,30 @@ async function renderMyImpacts() {
     STATE.currentImpact = +b.dataset.impact;
     nav("impact");
   });
+}
+
+/* Банер над KPI: імпакт ПОТОЧНОГО місяця за участі людини (Олег, 30.07:
+   «нехай і у верхній панелі буде, якщо в поточному періоді відбувся»).
+   Це найкраща новина, яку екран може принести, — вона важливіша за цифри
+   норми, тому стоїть над ними. Тап веде просто в кейс. Один банер, не стек:
+   якщо кейсів кілька — найсвіжіший, решта за дверима «Мої імпакти». */
+function impactBannerHtml() {
+  const now = new Date();
+  const cur = (STATE.myImpacts || []).find((im) => {
+    if (!im.date) return false;
+    const [, mo, y] = im.date.split(".");
+    return +mo === now.getMonth() + 1 && +y === now.getFullYear();
+  });
+  if (!cur) return "";
+  return `
+    <button class="imp-banner" data-impbanner="${cur.id}">
+      <span class="st-mark done">${icon("award")}</span>
+      <span class="pk-txt">
+        <span class="pk-name">Імпакт за твоєї участі</span>
+        <span class="pk-meta">${esc(cur.title)}</span>
+      </span>
+      ${icon("chevron-right", "ic chev")}
+    </button>`;
 }
 
 /* Двері «Імпакти» на головній журналістки — лише коли медальки Є. Тихо, раз
@@ -4880,6 +4912,7 @@ function renderJournalist() {
       </div>
       <div class="me-ring" id="me-ring">${meRingHtml(null)}</div>
     </div>
+    ${me.preview ? "" : impactBannerHtml()}
     <div id="my-kpi">${kpiSkeleton()}</div>
     ${open.length ? `<div class="soft-card">${open.map((t) => {
       const tp = taskProject(t);
@@ -4938,6 +4971,12 @@ function renderJournalist() {
     b.onclick = () => nav(b.dataset.nav));
   const ask = $("content").querySelector("[data-ask]");
   if (ask) ask.onclick = absenceRequestSheet;
+  const banner = $("content").querySelector("[data-impbanner]");
+  if (banner) banner.onclick = () => {
+    STATE.currentImpact = +banner.dataset.impbanner;
+    STATE.impactFrom = "home";
+    nav("impact");
+  };
   renderMyKpi();
   if (!me.preview) { loadMyFeed(); loadMyImpacts(); }
 }

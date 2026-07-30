@@ -25,6 +25,7 @@
 """
 
 import asyncio
+import datetime
 import json
 import os
 import pathlib
@@ -133,9 +134,13 @@ window.fetch = async (url, opts = {}) => {
 };
 """
 
+# Дата — поточний місяць: банер на головній показує імпакт САМЕ поточного
+# періоду, і тест не має протухати першого числа
+TODAY = datetime.datetime.now().strftime("%d.%m.%Y")
+
 MINE = [{"id": 7, "title": READY["title"],
          "note": "вела серію, авторка ключового тексту", "articles": 3,
-         "date": "28.07.2026",
+         "date": TODAY,
          "image": "https://nikvesti.com/img/impact-300001.webp",
          "created_at": "2026-07-29T18:00:00+03:00"}]
 
@@ -418,6 +423,22 @@ async def main():
         await page.goto("https://app.local/")
         await page.wait_for_selector("#screen-main:not(.hidden)", timeout=10000)
         try:
+            # --- банер імпакту поточного місяця (Олег, 30.07: «нехай і у
+            # верхній панелі буде, якщо в поточному періоді відбувся») ---
+            await page.wait_for_selector(".imp-banner", timeout=5000)
+            ban = await page.inner_text(".imp-banner")
+            check("на головній — банер «Імпакт за твоєї участі»",
+                  "імпакт за твоєї участі" in ban.lower())   # CSS малює капсом
+            check("з назвою кейсу", "багатоповерхівок" in ban)
+            await page.click(".imp-banner")
+            await page.wait_for_selector("#imd-body .im-p", timeout=5000)
+            check("тап по банеру відкриває кейс на читання",
+                  await page.locator("[data-imart], #imd-edit").count() == 0)
+            await page.click("[data-back]")
+            await page.wait_for_timeout(300)
+            check("«Назад» з кейсу банера повертає на головну",
+                  await page.evaluate("STATE.view") == "home")
+
             await page.wait_for_selector('.door[data-nav="myimpacts"]', timeout=5000)
             door = await page.inner_text('.door[data-nav="myimpacts"]')
             check("двері «Мої імпакти» зʼявились — і з числом", "1" in door)
