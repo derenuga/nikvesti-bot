@@ -121,6 +121,22 @@ def ensure_impact_schema():
         with bot_db.session():
             for sql in _SCHEMA_STATEMENTS:
                 bot_db.execute(sql)
+            # Самолікування: підчистити події-медальки кейсів, яких уже немає.
+            # Каскад подій зʼявився пізніше за перші видалення (реальний кейс
+            # 29.07: Олег видалив кейс у вікні деплою каскаду), тож привиди
+            # могли лишитись. Ідемпотентно і дешево — раз на старт процесу.
+            try:
+                from handlers import team_notifications
+                team_notifications.ensure_notifications_schema()
+                bot_db.execute(
+                    "DELETE FROM team_notification_reads WHERE notification_id IN "
+                    "(SELECT id FROM team_notifications WHERE kind = 'impact_credit' "
+                    " AND object_id NOT IN (SELECT id::text FROM impacts))")
+                bot_db.execute(
+                    "DELETE FROM team_notifications WHERE kind = 'impact_credit' "
+                    "AND object_id NOT IN (SELECT id::text FROM impacts)")
+            except Exception as e:
+                print(f"impact: підчистка подій-сиріт не вдалась — {e}")
         _schema_done = True
 
 
