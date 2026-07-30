@@ -124,11 +124,13 @@ window.fetch = async (url, opts = {}) => {
 
 MINE = [{"id": 7, "title": READY["title"],
          "note": "вела серію, авторка ключового тексту", "articles": 3,
+         "date": "28.07.2026",
          "created_at": "2026-07-29T18:00:00+03:00"}]
 
 LIST = [
     {"id": 7, "title": READY["title"], "essence": READY["essence"],
      "status": "ready", "error": None, "articles": 3, "partners": "IMS",
+     "date": "28.07.2026",
      "source_url": READY["source_url"]},
     {"id": 8, "title": None, "essence": "тест", "status": "failed",
      "error": "Матеріалу 123 немає в норі", "articles": 0, "partners": None,
@@ -184,6 +186,9 @@ async def main():
             lst = await page.inner_text("#im-body")
             check("у списку видно готовий кейс із донором",
                   "багатоповерхівок" in lst and "IMS" in lst)
+            # Дата імпакту = дата новини-фіксації, не дата заведення в архів:
+            # старі кейси заливаються заднім числом і мають стати в історію
+            check("кейс підписано датою фіксації", "28.07.2026" in lst)
             check("і збитий кейс чесно підписано",
                   "не зібрався" in lst)
 

@@ -2932,7 +2932,8 @@ function paintImpacts() {
         <span class="pk-name">${esc(im.title || im.essence || im.source_url)}</span>
         <span class="pk-meta">${im.status === "building" ? "збирається…"
           : im.status === "failed" ? "не зібрався — відкрий і спробуй ще"
-          : `${im.articles} ${plural(im.articles, "матеріал", "матеріали", "матеріалів")}${
+          : `${im.date ? esc(im.date) + " · " : ""}${im.articles} ${
+              plural(im.articles, "матеріал", "матеріали", "матеріалів")}${
               im.partners ? " · " + esc(im.partners) : ""}`}</span>
       </span>
       ${im.status === "building" ? `<span class="im-spin"></span>` : icon("chevron-right", "ic chev")}
@@ -3195,7 +3196,8 @@ async function renderMyImpacts() {
       <span class="st-mark done">${icon("award")}</span>
       <span class="pk-txt">
         <span class="pk-name">${esc(im.title)}</span>
-        <span class="pk-meta">${im.note ? esc(im.note) + " · " : ""}${
+        <span class="pk-meta">${im.date ? esc(im.date) + " · " : ""}${
+          im.note ? esc(im.note) + " · " : ""}${
           im.articles} ${plural(im.articles, "матеріал", "матеріали", "матеріалів")}</span>
       </span>
       ${icon("chevron-right", "ic chev")}

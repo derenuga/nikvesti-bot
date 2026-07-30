@@ -517,16 +517,22 @@ def _story(row):
 
 
 def list_impacts():
+    """Сортування — за ДАТОЮ ІМПАКТУ (published новини-фіксації), не за
+    порядком заведення: архів наповнюється старими кейсами впереміш, і
+    «створено вчора» для імпакту дворічної давності перемішувало б історію.
+    Кейси, що ще збираються (фіксації немає), — згори: вони чекають дії."""
     ensure_impact_schema()
     rows = bot_db.query(
         """
         SELECT i.id, i.title, i.essence, i.status, i.error, i.source_url,
                i.created_by, i.created_at,
                COUNT(a.id) AS articles,
-               STRING_AGG(DISTINCT a.partner_name, ' · ') AS partners
+               STRING_AGG(DISTINCT a.partner_name, ' · ') AS partners,
+               MAX(a.published) FILTER (WHERE a.role = 'fixer') AS fixed_ts
         FROM impacts i
         LEFT JOIN impact_articles a ON a.impact_id = i.id
-        GROUP BY i.id ORDER BY i.id DESC
+        GROUP BY i.id
+        ORDER BY fixed_ts DESC NULLS FIRST, i.id DESC
         """)
     return [{
         "id": r["id"],
@@ -537,6 +543,8 @@ def list_impacts():
         "source_url": r["source_url"],
         "created_by": r["created_by"],
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "date": (datetime.fromtimestamp(int(r["fixed_ts"]), KYIV_TZ)
+                 .strftime("%d.%m.%Y") if r["fixed_ts"] else None),
         "articles": int(r["articles"] or 0),
         "partners": r["partners"] or None,
     } for r in rows]
@@ -549,15 +557,19 @@ def list_impacts_for(person):
     rows = bot_db.query(
         """
         SELECT i.id, i.title, i.created_at, c.note,
-               (SELECT COUNT(*) FROM impact_articles a WHERE a.impact_id = i.id) AS articles
+               (SELECT COUNT(*) FROM impact_articles a WHERE a.impact_id = i.id) AS articles,
+               (SELECT MAX(a.published) FROM impact_articles a
+                 WHERE a.impact_id = i.id AND a.role = 'fixer') AS fixed_ts
         FROM impacts i
         JOIN impact_credits c ON c.impact_id = i.id AND c.person = %s
         WHERE i.status = 'ready'
-        ORDER BY i.id DESC
+        ORDER BY fixed_ts DESC NULLS LAST, i.id DESC
         """, (person,))
     return [{
         "id": r["id"], "title": r["title"], "note": r["note"],
         "articles": int(r["articles"] or 0),
+        "date": (datetime.fromtimestamp(int(r["fixed_ts"]), KYIV_TZ)
+                 .strftime("%d.%m.%Y") if r["fixed_ts"] else None),
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
     } for r in rows]
 
