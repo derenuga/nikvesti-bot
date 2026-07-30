@@ -252,6 +252,25 @@ async def main():
                       and c["body"].get("person") == "Юлія Бойченко"
                       for c in calls))
 
+            # --- виправити слово в наративі: тап по самому абзацу ---
+            # Олег, 29.07: «нехай можна буде редагувати зміст — AI може
+            # згалюцинувати, і треба буде якесь слово виправити». Олівець був,
+            # але для «одного слова» він захований: тап по тексту чесніший.
+            await page.click('[data-imedit="ime-what"]')
+            await page.wait_for_selector("#ime-what", timeout=3000)
+            check("тап по абзацу відкриває правку і фокус у ньому",
+                  await page.evaluate("document.activeElement.id") == "ime-what")
+            check("текст уже в полі — правиться слово, а не пишеться заново",
+                  "переглянула плани" in await page.input_value("#ime-what"))
+            await page.fill("#ime-what", "Після публікацій влада ЗМІНИЛА плани.")
+            await page.click("#ime-save")
+            await page.wait_for_timeout(300)
+            calls = await page.evaluate("window.__calls")
+            check("виправлення їде PATCH-ем разом з рештою полів",
+                  any(c["method"] == "PATCH" and c["body"]
+                      and "ЗМІНИЛА" in (c["body"].get("what_happened") or "")
+                      for c in calls))
+
             # --- відправка файлом ---
             await page.click("#imd-send")
             await page.wait_for_timeout(300)
@@ -303,6 +322,8 @@ async def main():
                   "Значення та вплив" in det and "★ ключовий" in det)
             check("кнопок правки немає — це читання",
                   await page.locator("[data-imkey], [data-imdrop], #imd-edit, #imd-del").count() == 0)
+            check("і абзаци не редагуються",
+                  await page.locator("[data-imedit]").count() == 0)
             check("медальки підписані як команда кейсу",
                   "команда кейсу" in det.lower())
         finally:

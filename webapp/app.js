@@ -3046,9 +3046,11 @@ function paintImpact(im) {
       ${ro ? "" : `<button class="icon-btn" id="imd-edit" aria-label="Редагувати">${icon("edit")}</button>`}
     </div>
     <div class="soft-card" style="margin-top:12px">
-      <p class="im-p">${esc(im.what_happened)}</p>
+      <p class="im-p${ro ? "" : " im-editable"}" ${ro ? "" : 'data-imedit="ime-what"'}>${esc(im.what_happened)}</p>
       <div class="sc-t" style="margin-top:12px">Значення та вплив</div>
-      <p class="im-p">${esc(im.significance)}</p>
+      <p class="im-p${ro ? "" : " im-editable"}" ${ro ? "" : 'data-imedit="ime-sig"'}>${esc(im.significance)}</p>
+      ${ro ? "" : `<div class="mr-hint" style="margin-top:10px">тап по тексту — виправити:
+        AI міг згалюцинувати слово, останнє слово за людиною</div>`}
       ${donor ? `<div class="im-donor">Ключовий матеріал — у межах проєкту
         «${esc(key.project_name)}» за підтримки <b>${esc(donor)}</b>: цим кейсом
         можна порадувати донора.</div>` : ""}
@@ -3110,6 +3112,8 @@ function wireImpactDetail(im) {
     if (person) patch({ action: "add_credit", person });
   };
   $("imd-edit").onclick = () => impactEditSheet(im);
+  body.querySelectorAll("[data-imedit]").forEach((el) => el.onclick = () =>
+    impactEditSheet(im, el.dataset.imedit));
   $("imd-del").onclick = () => impactDelete(im.id);
   $("imd-send").onclick = async () => {
     $("imd-send").disabled = true;
@@ -3122,7 +3126,9 @@ function wireImpactDetail(im) {
   };
 }
 
-function impactEditSheet(im) {
+/* focusId — з якого поля почати: тап по абзацу «що сталось» не має змушувати
+   продиратись повз заголовок, щоб виправити одне слово саме там. */
+function impactEditSheet(im, focusId) {
   openSheet(`
     <h2>Редагувати кейс</h2>
     <div class="f-label">Заголовок</div>
@@ -3135,6 +3141,7 @@ function impactEditSheet(im) {
       <button class="sbtn" id="ime-cancel">Скасувати</button>
       <button class="sbtn primary" id="ime-save">Зберегти</button>
     </div>`);
+  if (focusId && $(focusId)) $(focusId).focus();
   $("ime-cancel").onclick = closeSheet;
   $("ime-save").onclick = async () => {
     try {
