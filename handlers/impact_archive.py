@@ -361,6 +361,33 @@ def _judge_prompt(trigger, candidates, essence):
 - credits: усі дотичні журналісти з поміткою ЩО саме зробив кожен; авторів ключового тексту назви першими. Автор тригера потрапляє в credits лише як «зафіксував(ла) результат», якщо не робив більшого."""
 
 
+def _split_leak(text):
+    """(чистий текст, хвіст-витік). Sonnet зрідка «прошиває» межу поля і пише
+    псевдо-XML виклику інструмента прямо у значення: реальний кейс 29.07 —
+    «…підзвітності.</significance> <parameter name="series_ids">[321487,
+    321494]» у полі significance, а сам параметр series_ids порожній. Ріжемо
+    по першому тегу; хвіст повертаємо окремо — з нього ще можна врятувати
+    загублені id серії."""
+    m = re.search(r"</?[a-zA-Z_][^>]*>", text or "")
+    if not m:
+        return (text or "").strip(), ""
+    return text[:m.start()].strip(), text[m.start():]
+
+
+def _delouse_verdict(verdict, known_ids):
+    """Чистить поля вердикту від витоку розмітки і повертає (вердикт,
+    рятівні series_ids з хвостів). Рятуємо лише числа, які є серед відомих
+    кандидатів — суми з наративу за id не зійдуть."""
+    rescued = []
+    for field in ("title", "what_happened", "significance"):
+        clean, leak = _split_leak(verdict.get(field))
+        verdict[field] = clean
+        for num in re.findall(r"\d{4,9}", leak):
+            if int(num) in known_ids and int(num) not in rescued:
+                rescued.append(int(num))
+    return verdict, rescued
+
+
 async def _run_judge(trigger, candidates, essence):
     from handlers.ai_messages import FOX_MODEL_SMART, async_client
 
@@ -448,7 +475,12 @@ async def build_impact(impact_id):
         verdict = await _run_judge(trigger, candidates, imp["essence"])
 
         by_id = {c["id"]: c for c in candidates}
-        series = [by_id[i] for i in verdict.get("series_ids", []) if i in by_id]
+        verdict, rescued = _delouse_verdict(verdict, set(by_id))
+        series_ids = list(verdict.get("series_ids") or [])
+        if not series_ids and rescued:
+            # серія втекла в текст разом із розміткою — беремо врятовані id
+            series_ids = rescued
+        series = [by_id[i] for i in series_ids if i in by_id]
         series = series[:MAX_SERIES]
         key_id = verdict.get("key_article_id")
         if key_id not in {s["id"] for s in series}:
