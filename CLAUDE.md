@@ -43,7 +43,7 @@ handlers/
   storage.py              — JSON-стан на Railway Volume (/data/prozorro_state.json)
   db.py                   — тонкий read-only адаптер до MySQL-БД сайту (SELECT only, SSL), /dbtest, /dbquery
   bot_db.py               — власна Postgres-БД бота (Railway): дзеркало архіву, tsvector FTS, sync_state, daily_stats (історія трафіку GA4), social_stats (тижневі зрізи соцмереж), social_monthly (місячна історія всіх мереж), article_stats (снімки /stat + object_id для швидкого шляху); таблиці team_* (Mini App «Команда») створюються ліниво у своїх модулях, не тут. Модель — з'єднання на запит, АЛЕ для складених операцій є два контексти: session() (одне з'єднання на весь блок — конект коштує ~99% часу запиту, критично для Mini App із десятками запитів на екран) і transaction() (одне з'єднання + одна транзакція, «або все, або нічого»)
-  archive_mirror.py       — синк дзеркала архіву з БД сайту: /archive_backfill (разово), інкремент щогодини :50
+  archive_mirror.py       — синк дзеркала архіву з БД сайту: /archive_backfill (разово), інкремент щогодини :50; /articles_backfill — разовий долив історичних статей (type='article'), які головний бекфіл проминув зі старим фільтром (свій курсор articles_backfill_last_id, основні курсори не чіпає)
   archive_search.py       — повнотекстовий пошук по дзеркалу (17 років, заголовки+текст), NLQ-tool search_archive_fulltext
   dossier.py              — /dossier <тема>: історія питання з архіву, таймлайн по роках з лінками
   entity_layer.py         — сутнісний шар нори (entities/article_entities, крок C ENTITY_LAYER_PLAN): бэкфіл через Batch API з бота — /entity_estimate (безкоштовна оцінка), /entity_backfill (платно, Haiku 4.5 −50%, полінг у фоні, стан у sync_state переживає редеплой), /entity_status, /entity_resume, /entity_resync (перечит конкретних статей після підміни вмісту ноди — зі зняттям старих зв'язків); злиття — entity_pipeline.write_results (корінь репо), промпт витягу — entity_extract_prompt.md
@@ -186,6 +186,7 @@ webapp/                   — SPA Mini App «Команда» без збірк�
 | /kg \<KG ID або запит\> | Картка сутності з Google Knowledge Graph Search API: name, @type, опис, Вікіпедія, сайт, score. По ID (/g/…, /m/…) або за назвою. Потребує GOOGLE_KG_API_KEY |
 | /archive_sample | Залити кілька старих+нових статей і показати збережений текст (перевірка чистки/розділення мов) |
 | /archive_backfill \[N\] | Заливка архіву в дзеркало; N — порція за запуск (фазування), без N — усе; resumable |
+| /articles_backfill \[N\] | Разовий долив історичних статей (type='article') у нору — головний бекфіл їх проминув, коли фільтр був type='news'. Свій курсор у sync_state (основних не чіпає), resumable, зупинка — /archive_stop; справа хвилин. Свіжі статті далі веде щогодинний інкремент |
 | /archive_stop | М'яко зупинити поточний бекфіл (після поточної пачки); resumable — повторний /archive_backfill продовжить з місця зупинки |
 | /archive_status | Стан дзеркала архіву: скільки статей, діапазон дат, курсори синку |
 | /archive_report | Здоровкове зведення нори для нагляду за бекфілом: розподіл по роках, мови, теги, рубрики, регіони, середня довжина тексту по роках (детектор проблем чистки) |

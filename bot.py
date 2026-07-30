@@ -33,7 +33,7 @@ from handlers.db import dbtest_handler, dbquery_handler
 from handlers.archive_mirror import (
     archive_backfill_handler, archive_status_handler, archive_sample_handler,
     archive_stop_handler, archive_report_handler, nora_sql_handler,
-    nora_resync_handler,
+    nora_resync_handler, articles_backfill_handler,
 )
 from handlers.dossier import dossier_handler
 from handlers.nora_article import nora_article_handler
@@ -456,6 +456,7 @@ def main():
     app.add_handler(CommandHandler("dbquery", dbquery_handler))
     app.add_handler(CommandHandler("dossier", dossier_handler))
     app.add_handler(CommandHandler("archive_backfill", archive_backfill_handler))
+    app.add_handler(CommandHandler("articles_backfill", articles_backfill_handler))
     app.add_handler(CommandHandler("archive_stop", archive_stop_handler))
     app.add_handler(CommandHandler("archive_sample", archive_sample_handler))
     app.add_handler(CommandHandler("archive_status", archive_status_handler))
