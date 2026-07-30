@@ -348,11 +348,13 @@ def _notify_done(task):
     team_notifications.notify_safe(
         "task_done", team_tasks.task_summary(task), audience="person",
         person=task["person"], body=body, url=links[0] if links else None,
+        meta=team_tasks.notify_meta(task),
         object_type="task", object_id=task["id"],
         dedup_key=f"task_done:{task['id']}")
     team_notifications.notify_safe(
         "task_done", f"{task['person']}: {team_tasks.task_summary(task)}",
         audience="managers", body=body, url=links[0] if links else None,
+        meta=team_tasks.notify_meta(task, with_person=True),
         object_type="task", object_id=task["id"],
         dedup_key=f"task_done_mgr:{task['id']}")
 

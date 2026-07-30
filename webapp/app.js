@@ -2515,13 +2515,27 @@ const NOTIF_GOOD = new Set(["task_done", "impact_credit"]);
 
 function notifRow(n) {
   const when = n.created_at ? shortDate(n.created_at) : "";
-  const inner = `
-    <span class="st-mark ${NOTIF_GOOD.has(n.kind) ? "done" : "dropped"}">
-      ${icon(NOTIF_ICON[n.kind] || "bell")}</span>
+  const m = n.meta || null;
+  // Розкладений рядок (Олег, 30.07: «тематику догори, далі завдання, автора
+  // вниз, біля автора — донора з маленькою іконкою»). Старі події без meta
+  // малюються як раніше, лише без обрізання в один рядок.
+  const main = m && (m.theme || m.task_line) ? `
+    <span class="tr-main">
+      <span class="tr-who">${esc(m.theme || m.task_line)}</span>
+      <span class="tr-what">${m.theme ? esc(m.task_line) + " · " : ""}${esc(n.body || "")}</span>
+      ${m.person || m.donor ? `<span class="nt-by">
+        ${m.person ? `<span>${esc(m.person)}</span>` : ""}
+        ${m.donor ? `${donorChip(m.donor)}<span>${esc(m.donor)}</span>` : ""}
+      </span>` : ""}
+    </span>` : `
     <span class="tr-main">
       <span class="tr-who">${esc(n.title)}</span>
       ${n.body ? `<span class="tr-what">${esc(n.body)}</span>` : ""}
-    </span>
+    </span>`;
+  const inner = `
+    <span class="st-mark ${NOTIF_GOOD.has(n.kind) ? "done" : "dropped"}">
+      ${icon(NOTIF_ICON[n.kind] || "bell")}</span>
+    ${main}
     <span class="tr-right"><span class="mr-d">${esc(when)}</span></span>`;
   const cls = `task-row nt-row${n.unread ? " unread" : ""}`;
   return n.url

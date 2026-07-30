@@ -532,6 +532,7 @@ def create_task(creator, person, type_, project_id=None, project_name=None,
     if notify:
         team_notifications.notify_safe(
             "task_assigned", task_summary(task), audience="person", person=person,
+            meta=notify_meta(task),
             body=f"поставив(ла) {creator.split()[0]}"
                  + (f" · до {task['deadline'][8:10]}.{task['deadline'][5:7]}"
                     if task["deadline"] else ""),
@@ -663,6 +664,30 @@ _QTY_WORDS = {
 }
 
 
+def task_qty_phrase(task):
+    """«2 новини» / «стаття» / «пост в Instagram» — саме завдання, без
+    тематики й донора. Окремо, бо стрічка подій розкладає рядок на частини."""
+    qty = task["qty"]
+    one, few, many = _QTY_WORDS.get(task["type"], _QTY_WORDS[None])
+    type_word = one if qty == 1 else (few if qty < 5 else many)
+    if task["type"] == "post" and task.get("platform") in PLATFORM_PHRASES:
+        type_word += f" {PLATFORM_PHRASES[task['platform']]}"
+    return f"{qty} {type_word}" if qty > 1 else type_word
+
+
+def notify_meta(task, with_person=False):
+    """Структуровані шматки таска для стрічки подій: тематика догори,
+    завдання рядком, автор і донор внизу (Олег, 30.07)."""
+    meta = {
+        "theme": task.get("theme_name") or None,
+        "task_line": task_qty_phrase(task),
+        "donor": task.get("partner_name") or None,
+    }
+    if with_person:
+        meta["person"] = task.get("person")
+    return {k: v for k, v in meta.items() if v}
+
+
 def task_summary(task):
     """Людський рядок таска: «3 новини · Критичні потреби · IMS».
 
@@ -671,12 +696,7 @@ def task_summary(task):
     немає й донора немає, і без неї рядок став би безадресним. Олег про це
     просив не раз: людині треба знати, ЩО писати, а назва проєкту («Fight
     for Facts – Stage 9-11») цього не каже і лише з'їдає рядок."""
-    qty = task["qty"]
-    one, few, many = _QTY_WORDS.get(task["type"], _QTY_WORDS[None])
-    type_word = one if qty == 1 else (few if qty < 5 else many)
-    if task["type"] == "post" and task.get("platform") in PLATFORM_PHRASES:
-        type_word += f" {PLATFORM_PHRASES[task['platform']]}"
-    parts = [f"{qty} {type_word}" if qty > 1 else type_word]
+    parts = [task_qty_phrase(task)]
     if task.get("theme_name"):
         parts.append(task["theme_name"])
     if task.get("partner_name"):

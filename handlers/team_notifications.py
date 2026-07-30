@@ -23,6 +23,7 @@
 його породила (поставити таску важливіше, ніж повідомити про неї).
 """
 
+import json
 import threading
 
 from handlers import bot_db
@@ -59,6 +60,10 @@ _SCHEMA_STATEMENTS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_team_notif_feed ON team_notifications (audience, person, id DESC)",
+    # Структуровані шматки події (тематика/завдання/автор/донор) — щоб екран
+    # міг розкласти рядок, а не тулити все в один обрізаний title (Олег,
+    # 30.07: «незрозуміло, що виконано; тематику догори, автора вниз»)
+    "ALTER TABLE team_notifications ADD COLUMN IF NOT EXISTS meta JSONB",
     """
     CREATE TABLE IF NOT EXISTS team_notification_reads (
         notification_id BIGINT NOT NULL,
@@ -90,6 +95,7 @@ def _row(r, unread=True):
     return {
         "id": r["id"],
         "kind": r["kind"],
+        "meta": r.get("meta") or None,
         "kind_title": KINDS.get(r["kind"], r["kind"]),
         "audience": r["audience"],
         "person": r["person"],
@@ -104,22 +110,25 @@ def _row(r, unread=True):
 
 
 def notify(kind, title, *, audience=AUDIENCE_MANAGERS, person=None, body=None,
-           url=None, object_type=None, object_id=None, dedup_key=None):
+           url=None, object_type=None, object_id=None, dedup_key=None, meta=None):
     """Кладе подію в стрічку. Повертає рядок або None, якщо така подія вже
-    була (dedup_key). Тихо: помилку ковтає викликач через notify_safe."""
+    була (dedup_key). Тихо: помилку ковтає викликач через notify_safe.
+    meta — структуровані шматки для екрана (тематика/завдання/автор/донор)."""
     ensure_notifications_schema()
     rows = bot_db.query(
         """
         INSERT INTO team_notifications
-            (kind, audience, person, object_type, object_id, title, body, url, dedup_key)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (kind, audience, person, object_type, object_id, title, body, url,
+             dedup_key, meta)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (dedup_key) DO NOTHING
         RETURNING id, kind, audience, person, object_type, object_id, title,
-                  body, url, created_at
+                  body, url, created_at, meta
         """,
         (kind, audience, person, object_type,
          str(object_id) if object_id is not None else None,
-         title, body, url, dedup_key),
+         title, body, url, dedup_key,
+         json.dumps(meta, ensure_ascii=False) if meta else None),
     )
     return _row(rows[0]) if rows else None
 
@@ -165,7 +174,7 @@ def feed(person, is_manager, limit=40):
     ensure_notifications_schema()
     rows = bot_db.query(
         f"""
-        SELECT n.id, n.kind, n.audience, n.person, n.object_type, n.object_id,
+        SELECT n.id, n.kind, n.audience, n.person, n.object_type, n.object_id, n.meta,
                n.title, n.body, n.url, n.created_at,
                (r.person IS NULL) AS unread
         FROM team_notifications n
