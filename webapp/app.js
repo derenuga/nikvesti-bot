@@ -2970,6 +2970,12 @@ function impactCard(im) {
     </button>`;
 }
 
+/* Рік кейсу — з дати фіксації «дд.мм.рррр». Без дати (ще збирається/збився)
+   року немає — такі картки видно за будь-якого фільтра: вони чекають дії. */
+function impactYear(im) {
+  return im.date ? im.date.slice(-4) : null;
+}
+
 function paintImpacts() {
   const body = $("im-body");
   if (!body) return;
@@ -2980,7 +2986,27 @@ function paintImpacts() {
       «повернули») — решту серії бот збере сам.</div>`;
     return;
   }
-  body.innerHTML = list.map(impactCard).join("");
+  // Фільтр по роках (Олег, 30.07: «поставил 2024 — видишь импакты за 2024»).
+  // Роки — лише ті, за які кейси Є; один рік — фільтр не потрібен, не малюємо
+  const years = [...new Set(list.map(impactYear).filter(Boolean))]
+    .sort((a, b) => b.localeCompare(a));
+  if (STATE.impactYear && !years.includes(STATE.impactYear)) STATE.impactYear = null;
+  const chips = years.length > 1 ? `
+    <div class="chips im-years">
+      <button class="chip${!STATE.impactYear ? " on" : ""}" data-imyear="">Всі</button>
+      ${years.map((y) => `<button class="chip${STATE.impactYear === y ? " on" : ""}"
+        data-imyear="${y}">${y}</button>`).join("")}
+    </div>` : "";
+  const shown = STATE.impactYear
+    ? list.filter((im) => !impactYear(im) || impactYear(im) === STATE.impactYear)
+    : list;
+  body.innerHTML = chips + (shown.length
+    ? shown.map(impactCard).join("")
+    : `<div class="empty-hint">За ${esc(STATE.impactYear)} рік кейсів немає.</div>`);
+  body.querySelectorAll("[data-imyear]").forEach((b) => b.onclick = () => {
+    STATE.impactYear = b.dataset.imyear || null;
+    paintImpacts();
+  });
   body.querySelectorAll("[data-impact]").forEach((b) => b.onclick = () => {
     STATE.currentImpact = +b.dataset.impact;
     nav("impact");

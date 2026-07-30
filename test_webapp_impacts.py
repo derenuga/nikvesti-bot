@@ -146,6 +146,10 @@ LIST = [
      "image": "https://nikvesti.com/img/impact-300001.webp",
      "people": ["Аліна Квітко", "Світлана Іванченко"],
      "source_url": READY["source_url"]},
+    {"id": 6, "title": "Ремонт дороги до Матвіївки після серії публікацій",
+     "essence": None, "status": "ready", "error": None, "articles": 4,
+     "partners": "IMS", "date": "16.07.2024", "image": None,
+     "people": ["Альона Коханчук"], "source_url": "y"},
     {"id": 8, "title": None, "essence": "тест", "status": "failed",
      "error": "Матеріалу 123 немає в норі", "articles": 0, "partners": None,
      "image": None, "people": [], "source_url": "x"},
@@ -216,6 +220,23 @@ async def main():
             check("заголовок імпакту — окремим рядком, не в одну кашу з метою",
                   await card.locator(".imp-title").count() == 1
                   and await card.locator(".imp-meta").count() == 1)
+
+            # --- фільтр по роках (Олег, 30.07: «поставил 2024 — видишь
+            # импакты за 2024») ---
+            check("над списком — річні чипи, включно з «Всі»",
+                  await page.locator(".im-years .chip").count() == 3)
+            await page.click('[data-imyear="2024"]')
+            await page.wait_for_timeout(200)
+            check("2024: видно кейс 2024-го",
+                  await page.locator("[data-impact='6']").count() == 1)
+            check("а кейс 2026-го схований",
+                  await page.locator("[data-impact='7']").count() == 0)
+            check("збитий кейс без дати видно завжди — він чекає дії",
+                  await page.locator("[data-impact='8']").count() == 1)
+            await page.click('[data-imyear=""]')
+            await page.wait_for_timeout(200)
+            check("«Всі» повертає повний список",
+                  await page.locator("[data-impact]").count() == 3)
             check("і збитий кейс чесно підписано",
                   "не зібрався" in lst)
 
