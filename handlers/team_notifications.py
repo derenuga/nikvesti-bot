@@ -36,6 +36,7 @@ KINDS = {
     "task_overdue": "Дедлайн завдання минув",
     "absence_request": "Запит на відпустку",
     "absence_decided": "Відповідь на запит",
+    "impact_credit": "Імпакт за твоєї участі",
 }
 
 AUDIENCE_MANAGERS = "managers"

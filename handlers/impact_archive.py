@@ -372,6 +372,30 @@ async def _run_judge(trigger, candidates, essence):
     raise RuntimeError("Суддя не віддав impact_case")
 
 
+def _notify_credit(impact_id, impact_title, person, note):
+    """Медалька в стрічку «Події» людини (Олег, 29.07: «я зарахував імпакт
+    Аліні — їй має прийти це у події»). dedup_key тримає «раз на кейс на
+    людину»: перезбір серії чи повторне додавання не смикає вдруге.
+
+    Тихо пропускає людей поза ростером: суддя пише імена як у users сайту,
+    і колишні чи позаштатні автори в апку не заходять — сповіщення в нікуди
+    не потрібне, а медалька в кейсі однаково лишається."""
+    from handlers import team_notifications, team_roster
+
+    if person not in team_roster.ROSTER:
+        return
+    team_notifications.notify_safe(
+        "impact_credit",
+        impact_title or "Імпакт-кейс",
+        audience=team_notifications.AUDIENCE_PERSON,
+        person=person,
+        body=note,
+        object_type="impact",
+        object_id=str(impact_id),
+        dedup_key=f"impact_credit:{impact_id}:{person}",
+    )
+
+
 # ---------- Публічне API модуля ----------
 
 def create_impact(actor, source_url, essence):
@@ -448,15 +472,18 @@ async def build_impact(impact_id):
                          art.get("project_id"), art.get("project_name"),
                          art.get("partner_name")),
                     )
+                impact_title = (verdict.get("title") or trigger["title"]).strip()
                 for cr in (verdict.get("credits") or [])[:10]:
                     person = (cr.get("person") or "").strip()
                     if not person:
                         continue
+                    note = (cr.get("note") or "").strip() or None
                     bot_db.execute(
                         "INSERT INTO impact_credits (impact_id, person, note) "
                         "VALUES (%s, %s, %s) ON CONFLICT (impact_id, person) DO NOTHING",
-                        (int(impact_id), person, (cr.get("note") or "").strip() or None),
+                        (int(impact_id), person, note),
                     )
+                    _notify_credit(impact_id, impact_title, person, note)
 
         await asyncio.to_thread(_save)
     except Exception as e:
@@ -513,6 +540,34 @@ def list_impacts():
         "articles": int(r["articles"] or 0),
         "partners": r["partners"] or None,
     } for r in rows]
+
+
+def list_impacts_for(person):
+    """Кейси, у яких людина має медальку (лише готові) — блок «Мої імпакти»
+    в її інтерфейсі. Віддає і нотатку «за що» — це і є текст медальки."""
+    ensure_impact_schema()
+    rows = bot_db.query(
+        """
+        SELECT i.id, i.title, i.created_at, c.note,
+               (SELECT COUNT(*) FROM impact_articles a WHERE a.impact_id = i.id) AS articles
+        FROM impacts i
+        JOIN impact_credits c ON c.impact_id = i.id AND c.person = %s
+        WHERE i.status = 'ready'
+        ORDER BY i.id DESC
+        """, (person,))
+    return [{
+        "id": r["id"], "title": r["title"], "note": r["note"],
+        "articles": int(r["articles"] or 0),
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+    } for r in rows]
+
+
+def person_credited(impact_id, person):
+    """Чи має людина медальку в кейсі — пропуск журналістки до читання."""
+    ensure_impact_schema()
+    return bool(bot_db.query(
+        "SELECT 1 FROM impact_credits WHERE impact_id = %s AND person = %s",
+        (int(impact_id), person)))
 
 
 def get_impact(impact_id):
@@ -605,10 +660,13 @@ def add_credit(impact_id, person, note=None):
     person = (person or "").strip()[:120]
     if not person:
         return None
+    note = (note or "").strip()[:200] or None
     bot_db.execute(
         "INSERT INTO impact_credits (impact_id, person, note) VALUES (%s, %s, %s) "
         "ON CONFLICT (impact_id, person) DO UPDATE SET note = EXCLUDED.note",
-        (int(impact_id), person, (note or "").strip()[:200] or None))
+        (int(impact_id), person, note))
+    imp = bot_db.query("SELECT title FROM impacts WHERE id = %s", (int(impact_id),))
+    _notify_credit(impact_id, imp[0]["title"] if imp else None, person, note)
     return True
 
 

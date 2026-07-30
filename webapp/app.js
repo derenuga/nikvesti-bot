@@ -433,10 +433,11 @@ function backTarget() {
     case "bulk": return ["project", STATE.bulk && STATE.bulk.projectId];
     case "kpi": return ["home"];
     case "kpinorm": return ["kpi"];
-    case "impact": return ["impacts"];
+    case "impact": return [STATE.impactFrom === "myimpacts" ? "myimpacts" : "impacts"];
     case "mydone":
     case "myfeed":
     case "myhist":
+    case "myimpacts":
     case "mypubs":
     case "todo":
     case "away":
@@ -479,6 +480,7 @@ function nav(view, arg) {
     const now = new Date();
     STATE.bulk = { ...arg, y: now.getFullYear(), m: now.getMonth(), qty: {} };
   }
+  if (view === "impacts" || view === "myimpacts") STATE.impactFrom = view;
   if (view === "mypubs") STATE.pubsOffset = 0;   // входимо завжди в поточний місяць
   // Блокнот перечитуємо при кожному вході: запис міг прилетіти з /todo у чаті
   if (view === "todo") STATE.todos = null;
@@ -521,6 +523,7 @@ function render() {
   else if (v === "contacts") renderContacts();
   else if (v === "away") renderAway();
   else if (v === "impacts") renderImpacts();
+  else if (v === "myimpacts") renderMyImpacts();
   else if (v === "impact") renderImpact();
   else if (v === "home") renderHome();
   else if (v === "person") renderPerson();
@@ -2504,12 +2507,16 @@ function longDate(iso) {
    розповідає, що сталось). Прочитане не зникає, а приглушується. */
 const NOTIF_ICON = {
   task_assigned: "plus", task_done: "check", report_deadline: "calendar",
+  impact_credit: "award",
 };
+/* Події-нагороди мають виглядати нагородою, а не відмовою: у st-mark лише
+   два стани, і все, що не «зроблено», малювалось червоним хрестом */
+const NOTIF_GOOD = new Set(["task_done", "impact_credit"]);
 
 function notifRow(n) {
   const when = n.created_at ? shortDate(n.created_at) : "";
   const inner = `
-    <span class="st-mark ${n.kind === "task_done" ? "done" : "dropped"}">
+    <span class="st-mark ${NOTIF_GOOD.has(n.kind) ? "done" : "dropped"}">
       ${icon(NOTIF_ICON[n.kind] || "bell")}</span>
     <span class="tr-main">
       <span class="tr-who">${esc(n.title)}</span>
@@ -3030,10 +3037,13 @@ function paintImpact(im) {
 
   const key = im.articles.find((a) => a.role === "key");
   const donor = key && key.partner_name;
+  // Читання без редагування: журналістка дивиться свій кейс, але чернетку,
+  // медальки і серію правит лише менеджер зі свого входу
+  const ro = STATE.impactFrom === "myimpacts" || !STATE.me.manager;
   body.innerHTML = `
     <div class="head-row">
       <div class="h-big" style="font-size:20px">${esc(im.title)}</div>
-      <button class="icon-btn" id="imd-edit" aria-label="Редагувати">${icon("edit")}</button>
+      ${ro ? "" : `<button class="icon-btn" id="imd-edit" aria-label="Редагувати">${icon("edit")}</button>`}
     </div>
     <div class="soft-card" style="margin-top:12px">
       <p class="im-p">${esc(im.what_happened)}</p>
@@ -3044,27 +3054,27 @@ function paintImpact(im) {
         можна порадувати донора.</div>` : ""}
     </div>
     <div class="dept-title">Серія · ${im.articles.length}</div>
-    <div class="soft-card">${im.articles.map(impactArticleRow).join("")}</div>
-    <div class="mr-hint">зірочка — призначити ключовим (він важить найбільше), хрестик — прибрати з серії</div>
-    <div class="dept-title">Кому записати</div>
+    <div class="soft-card">${im.articles.map((a) => impactArticleRow(a, ro)).join("")}</div>
+    ${ro ? "" : `<div class="mr-hint">зірочка — призначити ключовим (він важить найбільше), хрестик — прибрати з серії</div>`}
+    <div class="dept-title">${ro ? "Команда кейсу" : "Кому записати"}</div>
     <div class="soft-card" id="imd-credits">
       ${im.credits.map((c) => `
         <div class="td-row">
           <span class="td-t"><span class="td-text">${esc(c.person)}</span>
             ${c.note ? `<span class="td-age">${esc(c.note)}</span>` : ""}</span>
-          <button class="td-act" data-imcredit-del="${c.id}" aria-label="Зняти">${icon("x")}</button>
+          ${ro ? "" : `<button class="td-act" data-imcredit-del="${c.id}" aria-label="Зняти">${icon("x")}</button>`}
         </div>`).join("") || `<div class="empty-hint">Поки нікого.</div>`}
-      <form class="td-add" id="imd-credit-form" style="margin:10px 0 2px">
+      ${ro ? "" : `<form class="td-add" id="imd-credit-form" style="margin:10px 0 2px">
         <input id="imd-credit-name" maxlength="120" placeholder="Додати людину…">
         <button class="td-plus" type="submit" aria-label="Додати">${icon("plus")}</button>
-      </form>
+      </form>`}
     </div>
-    <button class="cta" id="imd-send">Надіслати файлом у приват</button>
-    <button class="link-btn" id="imd-del" style="margin-top:4px">${icon("trash")} Видалити кейс</button>`;
-  wireImpactDetail(im);
+    ${ro ? "" : `<button class="cta" id="imd-send">Надіслати файлом у приват</button>
+    <button class="link-btn" id="imd-del" style="margin-top:4px">${icon("trash")} Видалити кейс</button>`}`;
+  if (!ro) wireImpactDetail(im);
 }
 
-function impactArticleRow(a) {
+function impactArticleRow(a, ro) {
   const meta = [a.date, a.authors, a.partner_name].filter(Boolean).join(" · ");
   return `
     <div class="td-row">
@@ -3073,7 +3083,7 @@ function impactArticleRow(a) {
         <span class="pub-tags">${a.role === "fixer" ? "новина-фіксація · " :
           a.role === "key" ? "★ ключовий · " : ""}${esc(meta)}</span>
       </span>
-      ${a.role === "fixer" ? "" : `
+      ${a.role === "fixer" || ro ? "" : `
         <button class="td-act${a.role === "key" ? " on" : ""}" data-imkey="${a.id}"
           aria-label="Ключовий">${icon("award")}</button>
         <button class="td-act" data-imdrop="${a.id}" aria-label="Прибрати">${icon("x")}</button>`}
@@ -3143,6 +3153,63 @@ async function impactDelete(id) {
     await api(`/api/impacts/${id}`, { method: "DELETE" });
     nav("impacts");
   } catch (e) { toast(e.message); }
+}
+
+/* ---------- Мої імпакти (журналістський бік архіву) ----------
+
+   Олег, 29.07: «зарахував імпакт Аліні — їй має прийти це у події, і має
+   зʼявитись блок про свої імпакти: натиснула і переглянула». Подія летить із
+   impact_archive (kind=impact_credit), а тут — двері на головній (лише коли
+   медальки Є: двері без числа не мають сенсу) і список кейсів, у яких людина
+   має медальку. Кейс відкривається ТОЙ САМИЙ, що в менеджера, але читанням:
+   чужі оцінки внесків і чернетки правити з цього боку не можна. */
+async function renderMyImpacts() {
+  const me = viewPerson();
+  const q = me.preview ? `?person=${encodeURIComponent(me.name)}` : "";
+  $("content").innerHTML = `
+    <button class="back" data-back>${icon("chevron-left")} Назад</button>
+    <div class="h-big">${me.preview ? esc(me.first_name) + " · імпакти" : "Мої імпакти"}</div>
+    <div class="h-sub">кейси, де є твій внесок — те, що змінилось завдяки текстам</div>
+    <div id="mi-body">${skeleton("rows", 2)}</div>`;
+  let data;
+  try {
+    data = await api("/api/impacts/mine" + q);
+  } catch (e) {
+    const b = $("mi-body");
+    if (b) b.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+    return;
+  }
+  if (STATE.view !== "myimpacts") return;
+  const list = data.impacts || [];
+  const body = $("mi-body");
+  if (!body) return;
+  body.innerHTML = list.length ? `<div class="soft-card">${list.map((im) => `
+    <button class="cnt-row" data-impact="${im.id}">
+      <span class="st-mark done">${icon("award")}</span>
+      <span class="pk-txt">
+        <span class="pk-name">${esc(im.title)}</span>
+        <span class="pk-meta">${im.note ? esc(im.note) + " · " : ""}${
+          im.articles} ${plural(im.articles, "матеріал", "матеріали", "матеріалів")}</span>
+      </span>
+      ${icon("chevron-right", "ic chev")}
+    </button>`).join("")}</div>`
+    : `<div class="empty-hint">Поки жодного кейсу.<br>
+        Медальки зʼявляються, коли редакція фіксує вплив твоїх текстів.</div>`;
+  body.querySelectorAll("[data-impact]").forEach((b) => b.onclick = () => {
+    STATE.currentImpact = +b.dataset.impact;
+    nav("impact");
+  });
+}
+
+/* Двері «Імпакти» на головній журналістки — лише коли медальки Є. Тихо, раз
+   на сеанс, як стрічка подій: нуль медальок → нуль дверей, а не двері з
+   нулем. */
+async function loadMyImpacts() {
+  if (STATE.myImpacts) return;
+  try {
+    STATE.myImpacts = (await api("/api/impacts/mine")).impacts || [];
+  } catch (e) { return; }
+  if (STATE.view === "home" && STATE.myImpacts.length) renderJournalist();
 }
 
 /* ---------- Хто коли відсутній ----------
@@ -4525,7 +4592,7 @@ function doorHtml(view, iconName, tone, title, meta, n, off) {
 /* Підекрани журналістського режиму. Поки Олег ходить ними, перегляд лишається
    переглядом: раніше «preview» жив рівно один екран, і тап у «Публікації»
    мовчки перемикав його на власні дані. */
-const J_SUBVIEWS = new Set(["preview", "mypubs", "myhist", "mydone", "myfeed"]);
+const J_SUBVIEWS = new Set(["preview", "mypubs", "myhist", "mydone", "myfeed", "myimpacts", "impact"]);
 
 function inPreview() {
   return !!STATE.previewPerson && J_SUBVIEWS.has(STATE.view);
@@ -4664,6 +4731,10 @@ function renderJournalist() {
         "завдання, які вже закрито", closed.length) : ""}
       ${doorHtml("myhist", "bar-chart", "c-sky", "KPI по місяцях",
         "як іде місяць до місяця", "")}
+      ${(me.preview ? null : STATE.myImpacts) && STATE.myImpacts.length
+        ? doorHtml("myimpacts", "award", "c-good", "Мої імпакти",
+            "що змінилось завдяки твоїм текстам", STATE.myImpacts.length)
+        : ""}
       <button class="door c-good${me.preview ? " off" : ""}"
         ${me.preview ? 'disabled aria-disabled="true"' : "data-ask"}>
         <span class="door-ic">${icon("calendar")}</span>
@@ -4680,7 +4751,7 @@ function renderJournalist() {
   const ask = $("content").querySelector("[data-ask]");
   if (ask) ask.onclick = absenceRequestSheet;
   renderMyKpi();
-  if (!me.preview) loadMyFeed();
+  if (!me.preview) { loadMyFeed(); loadMyImpacts(); }
 }
 
 /* Лічильник на дверях «Події». Стрічку тягнемо ОДИН раз і кладемо в STATE:
@@ -4977,6 +5048,7 @@ function allTodos() {
 /* Стрічка подій — окремий екран. Два названі блоки лишились: «Виконані» це
    СТАН тасків, а тут ПОДІЇ (що зарахували, що поставили). */
 const MY_FEED_BLOCKS = [
+  { kind: "impact_credit", title: "Імпакти за твоєї участі" },
   { kind: "task_done", title: "Нещодавно зараховані" },
   { kind: null, title: "Нові завдання" },   // решта стрічки
 ];
@@ -4997,7 +5069,8 @@ async function renderMyFeed() {
   const items = (data.items || []).slice(0, 20);
   $("content").innerHTML = back + (items.length
     ? MY_FEED_BLOCKS.map((b) => {
-        const rows = items.filter((n) => b.kind ? n.kind === b.kind : n.kind !== "task_done");
+        const named = MY_FEED_BLOCKS.filter((x) => x.kind).map((x) => x.kind);
+        const rows = items.filter((n) => b.kind ? n.kind === b.kind : !named.includes(n.kind));
         if (!rows.length) return "";
         return `<div class="soft-card">
           <div class="sc-t">${b.title}</div>

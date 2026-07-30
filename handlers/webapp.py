@@ -1324,11 +1324,31 @@ async def api_impacts(request):
 
 
 async def api_impact_get(request):
-    person, info, _ = await _require_manager(request)
-    imp = await _in_session(impact_archive.get_impact, int(request.match_info["impact_id"]))
+    """Менеджер читає будь-який кейс; журналістка — лише ті, де має медальку
+    (блок «Мої імпакти»). Чужі кейси їй не віддаємо — там чернетки і чужі
+    оцінки внесків."""
+    person, info, _ = await _authenticate(request)
+    impact_id = int(request.match_info["impact_id"])
+    if not info["manager"]:
+        allowed = await _in_session(impact_archive.person_credited, impact_id, person)
+        if not allowed:
+            raise web.HTTPForbidden(text="Це не твій кейс")
+    imp = await _in_session(impact_archive.get_impact, impact_id)
     if not imp:
         raise web.HTTPNotFound(text="Кейсу немає")
     return web.json_response(imp)
+
+
+async def api_impacts_mine(request):
+    """«Мої імпакти» — кейси з медалькою людини. Журналістка бачить тільки
+    себе; менеджер може передати person (перегляд чужими очима)."""
+    person, info, _ = await _authenticate(request)
+    who = request.query.get("person") if info["manager"] else person
+    who = who or person
+    if who not in team_roster.ROSTER:
+        raise web.HTTPBadRequest(text="Невідома людина")
+    return web.json_response(
+        {"impacts": await _in_session(impact_archive.list_impacts_for, who)})
 
 
 async def api_impact_create(request):
@@ -1658,6 +1678,7 @@ async def start_webapp(application):
         web.get("/api/kpi/person", api_kpi_person),
         web.get("/api/publications", api_publications),
         web.get("/api/impacts", api_impacts),
+        web.get("/api/impacts/mine", api_impacts_mine),
         web.post("/api/impacts", api_impact_create),
         web.get("/api/impacts/{impact_id:\\d+}", api_impact_get),
         web.patch("/api/impacts/{impact_id:\\d+}", api_impact_patch),

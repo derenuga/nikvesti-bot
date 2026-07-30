@@ -44,6 +44,16 @@ BOOT = {
     "assignees": [], "managers": [], "tasks": [],
 }
 
+BOOT_J = {
+    "me": {"name": "Аліна Квітко", "first_name": "Аліна", "dept": "creative",
+           "dept_title": "Creative", "manager": False},
+    "site_db": True, "nora": True,
+    "people": [{"name": "Аліна Квітко", "dept": "creative",
+                "dept_title": "Creative", "photo": None, "photo_sm": None,
+                "photo_orig": None}],
+    "projects": [], "assignees": [], "managers": [], "tasks": [],
+}
+
 READY = {
     "id": 7, "status": "ready", "error": None,
     "title": "Зміна підходу до відновлення зруйнованих багатоповерхівок у Миколаєві",
@@ -89,6 +99,7 @@ window.fetch = async (url, opts = {}) => {
   const method = opts.method || "GET";
   window.__calls.push({ url, method, body: opts.body ? JSON.parse(opts.body) : null });
   if (url === "/api/bootstrap") return json(window.BOOT);
+  if (url.startsWith("/api/impacts/mine")) return json({ impacts: window.MINE });
   if (url === "/api/impacts" && method === "GET") return json({ impacts: window.LIST });
   if (url === "/api/impacts" && method === "POST") {
     window.LIST = [{ id: 9, title: null, essence: JSON.parse(opts.body).essence,
@@ -110,6 +121,10 @@ window.fetch = async (url, opts = {}) => {
   return json({ ok: true });
 };
 """
+
+MINE = [{"id": 7, "title": READY["title"],
+         "note": "вела серію, авторка ключового тексту", "articles": 3,
+         "created_at": "2026-07-29T18:00:00+03:00"}]
 
 LIST = [
     {"id": 7, "title": READY["title"], "essence": READY["essence"],
@@ -154,6 +169,7 @@ async def main():
         await page.add_init_script(
             "window.BOOT = " + json.dumps(BOOT) + ";"
             "window.LIST = " + json.dumps(LIST) + ";"
+            "window.MINE = [];"
             "window.READY = " + json.dumps(READY) + ";" + STUB)
         await page.goto("https://app.local/")
         await page.wait_for_selector("#screen-main:not(.hidden)", timeout=10000)
@@ -254,6 +270,41 @@ async def main():
             calls = await page.evaluate("window.__calls")
             check("«спробувати ще» перезапускає збір",
                   any("/api/impacts/8/retry" in c["url"] for c in calls))
+        finally:
+            await browser.close()
+
+        # ---------- журналістка: двері, список, read-only ----------
+        browser = await pw.chromium.launch(**launch)
+        page = await browser.new_page(viewport={"width": 390, "height": 844})
+        await page.route("**/static/*", lambda r: asyncio.ensure_future(
+            r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
+        await page.route("https://app.local/", lambda r: asyncio.ensure_future(
+            r.fulfill(path=str(WEBAPP / "index.html"), content_type="text/html")))
+        await page.add_init_script(
+            "window.BOOT = " + json.dumps(BOOT_J) + ";"
+            "window.LIST = [];"
+            "window.MINE = " + json.dumps(MINE) + ";"
+            "window.READY = " + json.dumps(READY) + ";" + STUB)
+        await page.goto("https://app.local/")
+        await page.wait_for_selector("#screen-main:not(.hidden)", timeout=10000)
+        try:
+            await page.wait_for_selector('.door[data-nav="myimpacts"]', timeout=5000)
+            door = await page.inner_text('.door[data-nav="myimpacts"]')
+            check("двері «Мої імпакти» зʼявились — і з числом", "1" in door)
+            await page.click('.door[data-nav="myimpacts"]')
+            await page.wait_for_selector("#mi-body [data-impact]", timeout=5000)
+            mine = await page.inner_text("#mi-body")
+            check("у списку видно кейс і нотатку медальки",
+                  "багатоповерхівок" in mine and "вела серію" in mine)
+            await page.click("[data-impact]")
+            await page.wait_for_selector("#imd-body .im-p", timeout=5000)
+            det = await page.inner_text("#imd-body")
+            check("кейс відкривається на читання — наратив і серія на місці",
+                  "Значення та вплив" in det and "★ ключовий" in det)
+            check("кнопок правки немає — це читання",
+                  await page.locator("[data-imkey], [data-imdrop], #imd-edit, #imd-del").count() == 0)
+            check("медальки підписані як команда кейсу",
+                  "команда кейсу" in det.lower())
         finally:
             await browser.close()
 
