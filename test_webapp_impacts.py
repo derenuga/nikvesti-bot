@@ -90,7 +90,7 @@ window.__calls = [];
 window.Telegram = { WebApp: {
   initData: "stub", colorScheme: "light",
   ready(){}, expand(){}, onEvent(){}, disableVerticalSwipes(){},
-  openLink(){}, showConfirm(m, c){ c(true); },
+  openLink(){}, showConfirm(m, c){ (window.__confirms = window.__confirms || []).push(m); c(true); },
   BackButton: { show(){}, hide(){}, onClick(f){ window.__back = f; } },
   HapticFeedback: { notificationOccurred(){} } } };
 window.fetch = async (url, opts = {}) => {
@@ -221,30 +221,49 @@ async def main():
                   "IMS" in det and "порадувати донора" in det)
             check("серія з датами й авторами",
                   "03.02.2026" in det and "Аліна Квітко" in det)
-            check("новина-фіксація підписана і без кнопок",
-                  "новина-фіксація" in det
-                  and await page.locator("[data-imdrop]").count() == 2)
             check("ключовий позначено", "ключовий" in det)
             check("медальки: видно кому і за що",
                   "вела серію" in det and "зафіксувала результат" in det)
+            check("підпис каже, що робить тап — без іконок-загадок",
+                  "тап по матеріалу" in det)
 
-            # --- перепризначити ключовий ---
-            await page.click('[data-imkey="43"]')
+            # --- дії над матеріалом: шторка зі словами (Олег, 29.07:
+            # «нажал крестик — материал удалился без вопроса; как поставить
+            # звездочку — непонятно») ---
+            await page.click('[data-imart="43"]')
+            await page.wait_for_selector("#ia-key", timeout=3000)
+            sheet = await page.inner_text("#sheet")
+            check("дії підписані словами",
+                  "Зробити ключовим" in sheet and "Прибрати з серії" in sheet
+                  and "Відкрити матеріал" in sheet)
+            await page.click("#ia-key")
             await page.wait_for_timeout(300)
             calls = await page.evaluate("window.__calls")
             patch = [c for c in calls if c["method"] == "PATCH"]
-            check("зірочка перепризначає ключовий — останнє слово за людиною",
+            check("«Зробити ключовим» перепризначає — останнє слово за людиною",
                   patch and patch[-1]["body"]["action"] == "set_key"
                   and patch[-1]["body"]["row_id"] == 43)
 
-            # --- прибрати зайвий матеріал ---
-            await page.click('[data-imdrop="43"]')
+            # у фіксації дій «ключовий/прибрати» немає — її не викинути
+            await page.click('[data-imart="41"]')
+            await page.wait_for_selector("#ia-open", timeout=3000)
+            check("новина-фіксація: лише «відкрити», прибрати її не можна",
+                  await page.locator("#ia-drop, #ia-key").count() == 0)
+            await page.click("#ia-cancel")
+
+            # --- прибрати зайвий матеріал: тепер із підтвердженням ---
+            await page.click('[data-imart="43"]')
+            await page.wait_for_selector("#ia-drop", timeout=3000)
+            await page.click("#ia-drop")
             await page.wait_for_timeout(300)
             calls = await page.evaluate("window.__calls")
-            check("хрестик прибирає матеріал із серії",
+            check("«Прибрати з серії» справді прибирає",
                   any(c["method"] == "PATCH" and c["body"]
                       and c["body"].get("action") == "remove_article"
                       for c in calls))
+            confirms = await page.evaluate("window.__confirms || []")
+            check("але спершу питає, чи впевнений",
+                  any("Прибрати" in m for m in confirms))
 
             # --- медальки ---
             await page.fill("#imd-credit-name", "Юлія Бойченко")
@@ -326,7 +345,7 @@ async def main():
             check("кейс відкривається на читання — наратив і серія на місці",
                   "Значення та вплив" in det and "★ ключовий" in det)
             check("кнопок правки немає — це читання",
-                  await page.locator("[data-imkey], [data-imdrop], #imd-edit, #imd-del").count() == 0)
+                  await page.locator("[data-imart], #imd-edit, #imd-del").count() == 0)
             check("і абзаци не редагуються",
                   await page.locator("[data-imedit]").count() == 0)
             check("медальки підписані як команда кейсу",

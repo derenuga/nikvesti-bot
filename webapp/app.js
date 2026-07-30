@@ -3058,7 +3058,7 @@ function paintImpact(im) {
     </div>
     <div class="dept-title">Серія · ${im.articles.length}</div>
     <div class="soft-card">${im.articles.map((a) => impactArticleRow(a, ro)).join("")}</div>
-    ${ro ? "" : `<div class="mr-hint">зірочка — призначити ключовим (він важить найбільше), хрестик — прибрати з серії</div>`}
+    ${ro ? "" : `<div class="mr-hint">тап по матеріалу — відкрити, зробити ключовим або прибрати з серії</div>`}
     <div class="dept-title">${ro ? "Команда кейсу" : "Кому записати"}</div>
     <div class="soft-card" id="imd-credits">
       ${im.credits.map((c) => `
@@ -3077,20 +3077,63 @@ function paintImpact(im) {
   if (!ro) wireImpactDetail(im);
 }
 
+/* Рядок серії. У читанні заголовок — лінк на матеріал; у редакторському
+   режимі весь рядок відкриває шторку з ПІДПИСАНИМИ діями. Дві голі іконки
+   (медалька і хрестик) провалились у житті першого ж дня: Олег видалив
+   матеріал, не зрозумівши, що це видалення, а «як поставити ключовий» не
+   зрозумів узагалі. Іконка без слова — це загадка, а не кнопка. */
 function impactArticleRow(a, ro) {
   const meta = [a.date, a.authors, a.partner_name].filter(Boolean).join(" · ");
-  return `
+  const tags = `${a.role === "fixer" ? "новина-фіксація · " :
+    a.role === "key" ? "★ ключовий · " : ""}${esc(meta)}`;
+  if (ro) {
+    return `
     <div class="td-row">
       <span class="pub-t">
         <a class="pub-title" href="${esc(a.url)}" data-ext="${esc(a.url)}">${esc(a.title || a.url)}</a>
-        <span class="pub-tags">${a.role === "fixer" ? "новина-фіксація · " :
-          a.role === "key" ? "★ ключовий · " : ""}${esc(meta)}</span>
+        <span class="pub-tags">${tags}</span>
       </span>
-      ${a.role === "fixer" || ro ? "" : `
-        <button class="td-act${a.role === "key" ? " on" : ""}" data-imkey="${a.id}"
-          aria-label="Ключовий">${icon("award")}</button>
-        <button class="td-act" data-imdrop="${a.id}" aria-label="Прибрати">${icon("x")}</button>`}
     </div>`;
+  }
+  return `
+    <button class="td-row imd-art" data-imart="${a.id}">
+      <span class="pub-t">
+        <span class="pub-title">${esc(a.title || a.url)}</span>
+        <span class="pub-tags">${tags}</span>
+      </span>
+      ${icon("chevron-right", "ic chev")}
+    </button>`;
+}
+
+/* Дії над матеріалом серії — шторка зі словами замість іконок-загадок. */
+function impactArticleSheet(im, a, patch) {
+  const meta = [a.date, a.authors, a.partner_name].filter(Boolean).join(" · ");
+  openSheet(`
+    <h2>${esc(a.title || a.url)}</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(meta)}${
+      a.role === "fixer" ? " · новина-фіксація" : a.role === "key" ? " · ключовий" : ""}</p>
+    <button class="link-btn" id="ia-open">${icon("link")} Відкрити матеріал</button>
+    ${a.role === "series" ? `<button class="link-btn" id="ia-key">
+      ${icon("award")} Зробити ключовим — він важить найбільше</button>` : ""}
+    ${a.role === "fixer" ? "" : `<button class="link-btn" id="ia-drop" style="color:var(--red)">
+      ${icon("trash")} Прибрати з серії</button>`}
+    <div class="sheet-actions">
+      <button class="sbtn" id="ia-cancel">Закрити</button>
+    </div>`);
+  $("ia-cancel").onclick = closeSheet;
+  $("ia-open").onclick = () => {
+    try { tg.openLink(a.url); } catch (e) { window.open(a.url, "_blank"); }
+  };
+  const key = $("ia-key");
+  if (key) key.onclick = () => { closeSheet(); patch({ action: "set_key", row_id: a.id }); };
+  const drop = $("ia-drop");
+  if (drop) drop.onclick = async () => {
+    // Підтвердження обовʼязкове: прибраний матеріал назад не додається
+    // (лише повним перезбором), тож мовчазне видалення — втрата роботи
+    if (!await confirmAction(`Прибрати «${a.title || a.url}» з серії?`)) return;
+    closeSheet();
+    patch({ action: "remove_article", row_id: a.id });
+  };
 }
 
 function wireImpactDetail(im) {
@@ -3101,12 +3144,15 @@ function wireImpactDetail(im) {
     } catch (e) { toast(e.message); }
   };
   const body = $("imd-body");
-  body.querySelectorAll("[data-imkey]").forEach((b) => b.onclick = () =>
-    patch({ action: "set_key", row_id: +b.dataset.imkey }));
-  body.querySelectorAll("[data-imdrop]").forEach((b) => b.onclick = () =>
-    patch({ action: "remove_article", row_id: +b.dataset.imdrop }));
-  body.querySelectorAll("[data-imcredit-del]").forEach((b) => b.onclick = () =>
-    patch({ action: "remove_credit", credit_id: +b.dataset.imcreditDel }));
+  body.querySelectorAll("[data-imart]").forEach((b) => b.onclick = () => {
+    const a = im.articles.find((x) => x.id === +b.dataset.imart);
+    if (a) impactArticleSheet(im, a, patch);
+  });
+  body.querySelectorAll("[data-imcredit-del]").forEach((b) => b.onclick = async () => {
+    const c = im.credits.find((x) => x.id === +b.dataset.imcreditDel);
+    if (!await confirmAction(`Зняти медальку${c ? " з " + c.person : ""}?`)) return;
+    patch({ action: "remove_credit", credit_id: +b.dataset.imcreditDel });
+  });
   $("imd-credit-form").onsubmit = (e) => {
     e.preventDefault();
     const person = $("imd-credit-name").value.trim();
