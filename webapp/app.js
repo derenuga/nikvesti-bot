@@ -2916,6 +2916,60 @@ async function renderImpacts() {
   paintImpacts();
 }
 
+/* Логотип донора за назвою партнера — з уже завантажених проєктів CMS.
+   Немає лого (чи проєкт закінчився і випав зі списку) — чипом з назвою. */
+function donorChip(name) {
+  const proj = (STATE.projects || []).find((p) => p.partner === name && p.logo);
+  return proj
+    ? `<span class="imp-donor" title="${esc(name)}">${imgHtml(proj.logo, proj.logo_orig)}</span>`
+    : `<span class="imp-donor imp-donor-txt" title="${esc(name)}">${esc(_initials(name))}</span>`;
+}
+
+function _initials(name) {
+  // лише літери й цифри: «ГО «ІНТЕРНЬЮЗ-УКРАЇНА»» давало ініціали «Г«»
+  const words = (name || "").split(/\s+/)
+    .map((w) => (w.match(/[\p{L}\d]/u) || [""])[0]).filter(Boolean);
+  return words.slice(0, 2).join("").toUpperCase();
+}
+
+/* Стек кружечків авторів кейсу: до трьох, далі «+2». Фото — з ростера. */
+function creditAvatars(people) {
+  const list = (people || []).slice(0, 3);
+  if (!list.length) return "";
+  const more = (people || []).length - list.length;
+  return `<span class="imp-avs">${list.map((name) =>
+    `<span class="imp-av">${avatar(name, personEntry(name) || {}, 28)}</span>`).join("")}${
+    more > 0 ? `<span class="imp-av imp-av-more">+${more}</span>` : ""}</span>`;
+}
+
+/* Картка кейсу (Олег, 29.07: «некрасиво выглядит — давай фотку основної
+   новини, окремо заголовок, кружечки авторів, кружечок донора, дату,
+   кількість публікацій»). Фото — og:image новини-фіксації; зникне на
+   сайті — картка тихо стає текстовою (onerror ховає блок). */
+function impactCard(im) {
+  const building = im.status === "building";
+  const failed = im.status === "failed";
+  const partners = (im.partners || "").split(" · ").filter(Boolean);
+  return `
+    <button class="imp-card" data-impact="${im.id}">
+      ${im.image && !building && !failed ? `<span class="imp-img">
+        <img src="${esc(im.image)}" alt="" loading="lazy"
+          onerror="this.parentNode.style.display='none'"></span>` : ""}
+      <span class="imp-body">
+        <span class="imp-title">${esc(im.title || im.essence || im.source_url)}</span>
+        <span class="imp-meta">${building ? "збирається…"
+          : failed ? "не зібрався — відкрий і спробуй ще"
+          : `${im.date ? esc(im.date) + " · " : ""}${im.articles} ${
+              plural(im.articles, "матеріал", "матеріали", "матеріалів")}`}</span>
+        ${building || failed ? "" : `<span class="imp-foot">
+          ${creditAvatars(im.people)}
+          <span class="imp-donors">${partners.slice(0, 2).map(donorChip).join("")}</span>
+        </span>`}
+      </span>
+      ${building ? `<span class="im-spin imp-spin"></span>` : ""}
+    </button>`;
+}
+
 function paintImpacts() {
   const body = $("im-body");
   if (!body) return;
@@ -2926,18 +2980,7 @@ function paintImpacts() {
       «повернули») — решту серії бот збере сам.</div>`;
     return;
   }
-  body.innerHTML = `<div class="soft-card">${list.map((im) => `
-    <button class="cnt-row" data-impact="${im.id}">
-      <span class="pk-txt">
-        <span class="pk-name">${esc(im.title || im.essence || im.source_url)}</span>
-        <span class="pk-meta">${im.status === "building" ? "збирається…"
-          : im.status === "failed" ? "не зібрався — відкрий і спробуй ще"
-          : `${im.date ? esc(im.date) + " · " : ""}${im.articles} ${
-              plural(im.articles, "матеріал", "матеріали", "матеріалів")}${
-              im.partners ? " · " + esc(im.partners) : ""}`}</span>
-      </span>
-      ${im.status === "building" ? `<span class="im-spin"></span>` : icon("chevron-right", "ic chev")}
-    </button>`).join("")}</div>`;
+  body.innerHTML = list.map(impactCard).join("");
   body.querySelectorAll("[data-impact]").forEach((b) => b.onclick = () => {
     STATE.currentImpact = +b.dataset.impact;
     nav("impact");
@@ -3042,6 +3085,8 @@ function paintImpact(im) {
   // медальки і серію правит лише менеджер зі свого входу
   const ro = STATE.impactFrom === "myimpacts" || !STATE.me.manager;
   body.innerHTML = `
+    ${im.image ? `<div class="imp-hero"><img src="${esc(im.image)}" alt=""
+      onerror="this.parentNode.style.display='none'"></div>` : ""}
     <div class="head-row">
       <div class="h-big" style="font-size:20px">${esc(im.title)}</div>
       ${ro ? "" : `<button class="icon-btn" id="imd-edit" aria-label="Редагувати">${icon("edit")}</button>`}
@@ -3252,17 +3297,17 @@ async function renderMyImpacts() {
   const list = data.impacts || [];
   const body = $("mi-body");
   if (!body) return;
-  body.innerHTML = list.length ? `<div class="soft-card">${list.map((im) => `
-    <button class="cnt-row" data-impact="${im.id}">
-      <span class="st-mark done">${icon("award")}</span>
-      <span class="pk-txt">
-        <span class="pk-name">${esc(im.title)}</span>
-        <span class="pk-meta">${im.date ? esc(im.date) + " · " : ""}${
-          im.note ? esc(im.note) + " · " : ""}${
+  body.innerHTML = list.length ? list.map((im) => `
+    <button class="imp-card" data-impact="${im.id}">
+      ${im.image ? `<span class="imp-img"><img src="${esc(im.image)}" alt=""
+        loading="lazy" onerror="this.parentNode.style.display='none'"></span>` : ""}
+      <span class="imp-body">
+        <span class="imp-title">${esc(im.title)}</span>
+        <span class="imp-meta">${im.date ? esc(im.date) + " · " : ""}${
           im.articles} ${plural(im.articles, "матеріал", "матеріали", "матеріалів")}</span>
+        ${im.note ? `<span class="imp-note">${icon("award")} ${esc(im.note)}</span>` : ""}
       </span>
-      ${icon("chevron-right", "ic chev")}
-    </button>`).join("")}</div>`
+    </button>`).join("")
     : `<div class="empty-hint">Поки жодного кейсу.<br>
         Медальки зʼявляються, коли редакція фіксує вплив твоїх текстів.</div>`;
   body.querySelectorAll("[data-impact]").forEach((b) => b.onclick = () => {

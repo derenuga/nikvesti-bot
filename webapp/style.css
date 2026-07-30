@@ -1338,6 +1338,58 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 }
 
 /* ---------- Імпакт-архів ---------- */
+/* Картка кейсу: фото новини-фіксації зверху, заголовок, метарядок, футер
+   з кружечками авторів ліворуч і донорами праворуч */
+.imp-card {
+  display: block; width: 100%; text-align: left; overflow: hidden;
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  margin-bottom: 14px; padding: 0; position: relative; cursor: pointer;
+}
+.imp-img { display: block; height: 132px; overflow: hidden; background: var(--fill); }
+.imp-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.imp-body { display: block; padding: 12px 14px 13px; }
+.imp-title {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; font-size: 15px; font-weight: 700; line-height: 1.35;
+}
+.imp-meta { display: block; font-size: 12.5px; color: var(--muted); margin-top: 5px; }
+.imp-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 10px; min-height: 28px;
+}
+.imp-avs { display: inline-flex; }
+.imp-av {
+  display: inline-flex; border-radius: 50%; border: 2px solid var(--card);
+  margin-left: -8px;
+}
+.imp-av:first-child { margin-left: 0; }
+.imp-av .ava { width: 28px; height: 28px; font-size: 11px; }
+.imp-av-more {
+  width: 28px; height: 28px; border-radius: 50%; background: var(--fill);
+  color: var(--muted); font-size: 11px; font-weight: 700;
+  align-items: center; justify-content: center;
+}
+.imp-donors { display: inline-flex; gap: 6px; }
+.imp-donor {
+  width: 28px; height: 28px; border-radius: 50%; overflow: hidden;
+  background: var(--fill); display: inline-flex; align-items: center;
+  justify-content: center; border: 1px solid var(--line);
+}
+.imp-donor img { width: 100%; height: 100%; object-fit: cover; }
+.imp-donor-txt { font-size: 10px; font-weight: 800; color: var(--muted); }
+.imp-note {
+  display: inline-flex; align-items: center; gap: 5px; margin-top: 8px;
+  font-size: 12px; font-weight: 600; color: var(--good);
+}
+.imp-note .ic { width: 14px; height: 14px; }
+.imp-spin { position: absolute; top: 14px; right: 14px; }
+/* Фото в детальці кейсу */
+.imp-hero {
+  border-radius: var(--radius); overflow: hidden; margin-bottom: 14px;
+  max-height: 180px; background: var(--fill);
+}
+.imp-hero img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
 .im-p { font-size: 14.5px; line-height: 1.5; }
 /* Редагований абзац: пунктир знизу — єдина ненавʼязлива ознака «можна
    тапнути», яка не фарбує весь текст у синє посилання */

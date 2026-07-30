@@ -105,6 +105,10 @@ _SCHEMA_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_impact_articles_impact "
     "ON impact_articles (impact_id, published)",
+    # Фото кейсу — og:image новини-фіксації. Тримаємо URL, а не байти: картинки
+    # роздає сайт (як і в картках черги матчингу), а Нора — не файлосховище.
+    # Зникне картинка на сайті — картка деградує в текстову, нічого не ламається.
+    "ALTER TABLE impacts ADD COLUMN IF NOT EXISTS image TEXT",
 ]
 
 _schema_lock = threading.Lock()
@@ -142,11 +146,10 @@ def ensure_impact_schema():
 
 # ---------- Збір кандидатів ----------
 
-def _page_backlinks(url):
-    """Внутрішні лінки з ЖИВОЇ сторінки матеріалу. Нора тримає чистий текст
-    без розмітки, тож беклінки — а це готова передісторія від самих
-    журналістів — можна взяти лише зі сторінки. Збій → порожньо, не виняток:
-    FTS-кандидати все одно будуть."""
+def _page_scrape(url):
+    """(беклінки, og:image) з ЖИВОЇ сторінки матеріалу. Нора тримає чистий
+    текст без розмітки, тож і передісторія-беклінки, і фото беруться лише зі
+    сторінки. Збій → ([], None), не виняток: FTS-кандидати все одно будуть."""
     try:
         import requests
         from bs4 import BeautifulSoup
@@ -154,6 +157,8 @@ def _page_backlinks(url):
         resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (nikvesti-bot)"})
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
+        og = soup.find("meta", property="og:image")
+        image = (og.get("content") or "").strip() if og else None
         # лише лінки з тіла статті; якщо контейнер не знайшли — з усієї
         # сторінки, зайве відсіється відсутністю id матеріалу
         body = soup.find("article") or soup.find(class_=re.compile("article|content|news-text")) or soup
@@ -171,10 +176,10 @@ def _page_backlinks(url):
             if h not in seen:
                 seen.add(h)
                 uniq.append(h)
-        return uniq
+        return uniq, image or None
     except Exception as e:
-        print(f"impact: беклінки зі сторінки не зібрались — {e}")
-        return []
+        print(f"impact: сторінка не зчиталась — {e}")
+        return [], None
 
 
 def _nora_article(article_id):
@@ -242,8 +247,9 @@ def _collect_candidates(source_url):
         raise ValueError(f"Матеріалу {src_id} немає в норі — якщо він щойно "
                          "вийшов, зачекай годинний синк або /nora_resync")
 
+    links, image = _page_scrape(source_url)
     ordered_ids, from_backlink = [], set()
-    for href in _page_backlinks(source_url):
+    for href in links:
         aid = extract_article_id(href)
         if aid and int(aid) != int(src_id) and int(aid) not in from_backlink:
             from_backlink.add(int(aid))
@@ -287,6 +293,7 @@ def _collect_candidates(source_url):
         "published": src_published,
         "date": datetime.fromtimestamp(src_published, KYIV_TZ).strftime("%d.%m.%Y") if src_published else "—",
         "text": ((src.get("text_ua") or src.get("text_ru") or "")[:4000]),
+        "image": image,
         **(meta.get(int(src_id)) or {"authors": None, "project_id": None,
                                      "project_name": None, "partner_name": None}),
     }
@@ -496,10 +503,10 @@ async def build_impact(impact_id):
         def _save():
             with bot_db.transaction():
                 bot_db.execute(
-                    "UPDATE impacts SET title = %s, story = %s, "
+                    "UPDATE impacts SET title = %s, story = %s, image = %s, "
                     "status = 'ready', error = NULL, updated_at = now() WHERE id = %s",
                     ((verdict.get("title") or trigger["title"]).strip(),
-                     story, int(impact_id)),
+                     story, trigger.get("image"), int(impact_id)),
                 )
                 # перезбір починає серію з нуля — інакше «спробувати ще»
                 # подвоювало б рядки
@@ -573,12 +580,14 @@ def list_impacts():
     rows = bot_db.query(
         """
         SELECT i.id, i.title, i.essence, i.status, i.error, i.source_url,
-               i.created_by, i.created_at,
-               COUNT(a.id) AS articles,
+               i.created_by, i.created_at, i.image,
+               COUNT(DISTINCT a.id) AS articles,
                STRING_AGG(DISTINCT a.partner_name, ' · ') AS partners,
+               STRING_AGG(DISTINCT c.person, '|') AS people,
                MAX(a.published) FILTER (WHERE a.role = 'fixer') AS fixed_ts
         FROM impacts i
         LEFT JOIN impact_articles a ON a.impact_id = i.id
+        LEFT JOIN impact_credits c ON c.impact_id = i.id
         GROUP BY i.id
         ORDER BY fixed_ts DESC NULLS FIRST, i.id DESC
         """)
@@ -595,6 +604,8 @@ def list_impacts():
                  .strftime("%d.%m.%Y") if r["fixed_ts"] else None),
         "articles": int(r["articles"] or 0),
         "partners": r["partners"] or None,
+        "image": r["image"] or None,
+        "people": [p for p in (r["people"] or "").split("|") if p],
     } for r in rows]
 
 
@@ -604,7 +615,7 @@ def list_impacts_for(person):
     ensure_impact_schema()
     rows = bot_db.query(
         """
-        SELECT i.id, i.title, i.created_at, c.note,
+        SELECT i.id, i.title, i.created_at, i.image, c.note,
                (SELECT COUNT(*) FROM impact_articles a WHERE a.impact_id = i.id) AS articles,
                (SELECT MAX(a.published) FROM impact_articles a
                  WHERE a.impact_id = i.id AND a.role = 'fixer') AS fixed_ts
@@ -615,6 +626,7 @@ def list_impacts_for(person):
         """, (person,))
     return [{
         "id": r["id"], "title": r["title"], "note": r["note"],
+        "image": r["image"] or None,
         "articles": int(r["articles"] or 0),
         "date": (datetime.fromtimestamp(int(r["fixed_ts"]), KYIV_TZ)
                  .strftime("%d.%m.%Y") if r["fixed_ts"] else None),

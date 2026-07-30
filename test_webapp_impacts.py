@@ -40,8 +40,14 @@ CHROMIUM_CANDIDATES = [
 BOOT = {
     "me": {"name": "Олег Деренюга", "first_name": "Олег", "dept": "admin",
            "dept_title": "Адміністративний", "manager": True},
-    "site_db": True, "nora": True, "people": [], "projects": [],
-    "assignees": [], "managers": [], "tasks": [],
+    "site_db": True, "nora": True,
+    "people": [{"name": "Аліна Квітко", "dept": "creative",
+                "dept_title": "Creative", "photo": None, "photo_sm": None,
+                "photo_orig": None},
+               {"name": "Світлана Іванченко", "dept": "newsroom",
+                "dept_title": "Newsroom", "photo": None, "photo_sm": None,
+                "photo_orig": None}],
+    "projects": [], "assignees": [], "managers": [], "tasks": [],
 }
 
 BOOT_J = {
@@ -60,6 +66,7 @@ READY = {
     "essence": "після нас реконструкція замість демонтажу",
     "source_url": "https://nikvesti.com/news/public/300001",
     "created_by": "Олег Деренюга", "created_at": "2026-07-29T18:00:00+03:00",
+    "image": "https://nikvesti.com/img/impact-300001.webp",
     "what_happened": "Матеріали висвітлили проблеми відновлення трьох будинків, "
                      "акцентуючи на конфлікті між позицією влади та мешканців. "
                      "Після публікацій влада переглянула плани.",
@@ -126,16 +133,19 @@ window.fetch = async (url, opts = {}) => {
 MINE = [{"id": 7, "title": READY["title"],
          "note": "вела серію, авторка ключового тексту", "articles": 3,
          "date": "28.07.2026",
+         "image": "https://nikvesti.com/img/impact-300001.webp",
          "created_at": "2026-07-29T18:00:00+03:00"}]
 
 LIST = [
     {"id": 7, "title": READY["title"], "essence": READY["essence"],
      "status": "ready", "error": None, "articles": 3, "partners": "IMS",
      "date": "28.07.2026",
+     "image": "https://nikvesti.com/img/impact-300001.webp",
+     "people": ["Аліна Квітко", "Світлана Іванченко"],
      "source_url": READY["source_url"]},
     {"id": 8, "title": None, "essence": "тест", "status": "failed",
      "error": "Матеріалу 123 немає в норі", "articles": 0, "partners": None,
-     "source_url": "x"},
+     "image": None, "people": [], "source_url": "x"},
 ]
 
 
@@ -185,11 +195,24 @@ async def main():
             await page.click('[data-tool="impacts"]')
             await page.wait_for_selector("[data-impact]", timeout=5000)
             lst = await page.inner_text("#im-body")
-            check("у списку видно готовий кейс із донором",
-                  "багатоповерхівок" in lst and "IMS" in lst)
+            check("у списку видно готовий кейс", "багатоповерхівок" in lst)
+            check("донор на картці — кружечком, підписаним іменем",
+                  await page.locator("[data-impact='7'] .imp-donor[title='IMS']").count() == 1)
             # Дата імпакту = дата новини-фіксації, не дата заведення в архів:
             # старі кейси заливаються заднім числом і мають стати в історію
             check("кейс підписано датою фіксації", "28.07.2026" in lst)
+            # Олег, 29.07: «давай фотку основної новини, кружечки авторів,
+            # кружечок донора» — картка замість рядка тексту
+            card = page.locator("[data-impact='7']")
+            check("на картці — фото новини-фіксації",
+                  await card.locator(".imp-img img").count() == 1)
+            check("кружечки дотичних авторів",
+                  await card.locator(".imp-av").count() == 2)
+            check("і кружечок донора",
+                  await card.locator(".imp-donor").count() == 1)
+            check("заголовок імпакту — окремим рядком, не в одну кашу з метою",
+                  await card.locator(".imp-title").count() == 1
+                  and await card.locator(".imp-meta").count() == 1)
             check("і збитий кейс чесно підписано",
                   "не зібрався" in lst)
 
