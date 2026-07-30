@@ -184,15 +184,49 @@ def _page_scrape(url):
 
 def _nora_article(article_id):
     rows = bot_db.query(
-        "SELECT id, published, own_material, owner_id, title_ua, title_ru, "
+        "SELECT id, published, own_material, owner_id, kind, title_ua, title_ru, "
         "slug, category, text_ua, text_ru FROM articles WHERE id = %s",
         (int(article_id),),
     )
     return rows[0] if rows else None
 
 
+def _site_article(article_id):
+    """Фолбек: матеріал прямо з БД сайту, у формі рядка нори. Потрібен, коли
+    в норі матеріалу (ще) немає: статті історично не дзеркалились (виправлено
+    30.07, але старі доїдуть лише бекфілом), а свіжа новина чекає годинний
+    синк. Кейс через це падати не має — БД сайту знає все."""
+    if not db.is_configured():
+        return None
+    try:
+        rows = db.query(
+            "SELECT id, published, own_material, owner_id, type, title_ua, title, "
+            "slug_ua, slug, category, content_ua, content FROM nodes "
+            "WHERE id = %s AND status = 1", (int(article_id),))
+    except Exception as e:
+        print(f"impact: фолбек у БД сайту не вдався — {e}")
+        return None
+    if not rows:
+        return None
+    from handlers.archive_mirror import html_to_text
+
+    r = rows[0]
+    return {
+        "id": r["id"], "published": r.get("published"),
+        "own_material": r.get("own_material"), "owner_id": r.get("owner_id"),
+        "kind": (r.get("type") or "news"),
+        "title_ua": r.get("title_ua"), "title_ru": r.get("title"),
+        "slug": (r.get("slug_ua") or r.get("slug") or "").strip() or None,
+        "category": r.get("category"),
+        "text_ua": html_to_text(r.get("content_ua")),
+        "text_ru": html_to_text(r.get("content")),
+    }
+
+
 def _nora_url(row):
     tail = (row.get("slug") or "").strip() or str(row["id"])
+    if (row.get("kind") or "news") == "article":
+        return f"{BASE_URL}/articles/{tail}"
     cat = (row.get("category") or "").strip()
     return f"{BASE_URL}/news/{cat}/{tail}" if cat else f"{BASE_URL}/news/{tail}"
 
@@ -242,10 +276,10 @@ def _collect_candidates(source_url):
     src_id = extract_article_id(source_url)
     if not src_id:
         raise ValueError("Не впізнав URL — треба лінк на матеріал nikvesti.com")
-    src = _nora_article(src_id)
+    src = _nora_article(src_id) or _site_article(src_id)
     if not src:
-        raise ValueError(f"Матеріалу {src_id} немає в норі — якщо він щойно "
-                         "вийшов, зачекай годинний синк або /nora_resync")
+        raise ValueError(f"Матеріалу {src_id} не знайшов ні в норі, ні в БД "
+                         "сайту — перевір лінк")
 
     links, image = _page_scrape(source_url)
     ordered_ids, from_backlink = [], set()
@@ -268,7 +302,10 @@ def _collect_candidates(source_url):
 
     candidates = []
     for aid in ordered_ids:
-        row = _nora_article(aid)
+        # беклінки — ручна праця журналістів, їх не кидаємо через дірку в
+        # норі: добираємо з БД сайту (їх мало, ліміти MySQL не страждають)
+        row = _nora_article(aid) or (
+            _site_article(aid) if aid in from_backlink else None)
         if not row:
             continue
         published = int(row.get("published") or 0)
@@ -280,7 +317,8 @@ def _collect_candidates(source_url):
             "date": datetime.fromtimestamp(published, KYIV_TZ).strftime("%d.%m.%Y") if published else "—",
             "own": bool(row.get("own_material")),
             "backlink": aid in from_backlink,
-            "excerpt": excerpts.get(aid, ""),
+            "excerpt": excerpts.get(aid)
+                or ((row.get("text_ua") or row.get("text_ru") or "")[:EXCERPT_CHARS]),
             **(meta.get(aid) or {"authors": None, "project_id": None,
                                  "project_name": None, "partner_name": None}),
         })

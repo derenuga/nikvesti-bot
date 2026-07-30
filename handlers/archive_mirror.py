@@ -1,7 +1,7 @@
 """
 Дзеркало архіву новин сайту у власній БД бота (хвиля A, ARCHIVE_INTELLIGENCE.md).
 
-Тягне nodes (type='news') з production-MySQL сайту (handlers/db.py, read-only)
+Тягне nodes (type news І article — статті теж корпус, з 30.07) з production-MySQL сайту (handlers/db.py, read-only)
 у Postgres бота (handlers/bot_db.py, таблиця articles): id, дати, заголовки
 ua/ru, slug і ЧИСТИЙ ТЕКСТ тіла (HTML → текст конвертується один раз тут,
 а не при кожному пошуку). Поверх дзеркала працює archive_search (FTS) і /dossier.
@@ -49,7 +49,7 @@ INCREMENTAL_LIMIT = 500
 CURSOR_OVERLAP_SEC = 120
 
 _NODE_COLUMNS = (
-    "id, published, updated, status, own_material, owner_id, "
+    "id, published, updated, status, own_material, owner_id, type, "
     "title_ua, title, slug_ua, slug, content_ua, content, category, region"
 )
 
@@ -128,6 +128,7 @@ def _row_to_tuple(row, tags_text=None):
         (row.get("category") or "").strip() or None,
         row.get("region"),
         tags_text or None,
+        (row.get("type") or "news").strip() or "news",
     )
 
 
@@ -294,7 +295,7 @@ async def run_backfill(limit=None, progress_cb=None):
             # у майбутньому) в нору не беремо (за рішенням Олега, 04.07).
             rows = await db.aquery(
                 f"SELECT {_NODE_COLUMNS} FROM nodes "
-                "WHERE type = 'news' AND status = 1 AND published > 0 AND published <= %s "
+                "WHERE type IN ('news', 'article') AND status = 1 AND published > 0 AND published <= %s "
                 "AND id > %s ORDER BY id LIMIT %s",
                 (now_ts, last_id, batch),
                 conn=conn,
@@ -345,7 +346,7 @@ async def load_sample():
 
     async def grab(extra_where, params, order, limit):
         rows = await db.aquery(
-            f"SELECT {_NODE_COLUMNS} FROM nodes WHERE type='news' AND status=1 "
+            f"SELECT {_NODE_COLUMNS} FROM nodes WHERE type IN ('news', 'article') AND status=1 "
             f"AND published > 0 AND published <= %s {extra_where} "
             f"ORDER BY published {order} LIMIT %s",
             params,
@@ -384,7 +385,7 @@ async def sync_incremental():
     # (status 1→0) та відкладені, і прибрати їх з нори.
     rows = await db.aquery(
         f"SELECT {_NODE_COLUMNS} FROM nodes "
-        "WHERE type = 'news' AND GREATEST(COALESCE(updated,0), COALESCE(published,0)) >= %s "
+        "WHERE type IN ('news', 'article') AND GREATEST(COALESCE(updated,0), COALESCE(published,0)) >= %s "
         "ORDER BY GREATEST(COALESCE(updated,0), COALESCE(published,0)) ASC LIMIT %s",
         (since, INCREMENTAL_LIMIT),
     )

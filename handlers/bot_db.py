@@ -104,6 +104,11 @@ _SCHEMA_STATEMENTS = [
         True,  # обов'язковий statement — без нього модуль не працює
     ),
     ("CREATE INDEX IF NOT EXISTS idx_articles_published ON articles (published DESC)", True),
+    # Тип матеріалу: news чи article. До 30.07 нора тримала ЛИШЕ новини, і
+    # статті — найвагоміші тексти, ключові в імпакт-серіях — не існували ні
+    # для FTS, ні для досьє (реальний кейс: імпакт від статті 311397 не
+    # збирався). kind, а не type — щоб не плутати з БД сайту при читанні коду.
+    ("ALTER TABLE articles ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'news'", True),
     (
         "CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value TEXT)",
         True,
@@ -486,7 +491,7 @@ def execute(sql, params=None):
 _UPSERT_SQL = """
 INSERT INTO articles
     (id, published, updated, status, own_material, owner_id,
-     title_ua, title_ru, slug, text_ua, text_ru, category, region, tags_text, synced_at)
+     title_ua, title_ru, slug, text_ua, text_ru, category, region, tags_text, kind, synced_at)
 VALUES %s
 ON CONFLICT (id) DO UPDATE SET
     published = EXCLUDED.published,
@@ -502,10 +507,11 @@ ON CONFLICT (id) DO UPDATE SET
     category = EXCLUDED.category,
     region = EXCLUDED.region,
     tags_text = EXCLUDED.tags_text,
+    kind = EXCLUDED.kind,
     synced_at = now()
 """
 
-_UPSERT_TEMPLATE = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())"
+_UPSERT_TEMPLATE = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())"
 
 
 def upsert_articles(rows):

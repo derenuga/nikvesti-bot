@@ -88,7 +88,10 @@ def _fmt_item(n, row):
     # (category) все одно вставляємо: /news/politics/269222, а не /news/269222,
     # інакше двіжок редиректить і в беку плодяться голі лінки без рубрики.
     tail = slug or str(row["id"])
-    if category:
+    # Статті живуть на /articles/, новини — на /news/{рубрика}/
+    if (row.get("kind") or "news") == "article":
+        url = f"{BASE_URL}/articles/{tail}"
+    elif category:
         url = f"{BASE_URL}/news/{category}/{tail}"
     else:
         url = f"{BASE_URL}/news/{tail}"
@@ -153,7 +156,7 @@ def search_items(query, limit=10, year_from=None, year_to=None,
         sql = f"""
             WITH q AS (SELECT to_tsquery('simple', %s) AS query),
             ranked AS (
-                SELECT a.id, a.published, a.title_ua, a.title_ru, a.slug, a.category, a.own_material,
+                SELECT a.id, a.published, a.title_ua, a.title_ru, a.slug, a.category, a.kind, a.own_material,
                        ts_rank(a.fts, q.query) AS rank,
                        EXTRACT(YEAR FROM to_timestamp(a.published))::int AS yr,
                        ROW_NUMBER() OVER (
@@ -163,7 +166,7 @@ def search_items(query, limit=10, year_from=None, year_to=None,
                 FROM articles a, q
                 WHERE {where}
             )
-            SELECT id, published, title_ua, title_ru, slug, category, own_material
+            SELECT id, published, title_ua, title_ru, slug, category, kind, own_material
             FROM ranked WHERE rn <= %s
             ORDER BY yr ASC, rank DESC
             LIMIT %s
@@ -177,7 +180,7 @@ def search_items(query, limit=10, year_from=None, year_to=None,
         sql = f"""
             WITH q AS (SELECT to_tsquery('simple', %s) AS query),
             matches AS (
-                SELECT a.id, a.published, a.title_ua, a.title_ru, a.slug, a.category, a.own_material,
+                SELECT a.id, a.published, a.title_ua, a.title_ru, a.slug, a.category, a.kind, a.own_material,
                        ts_rank(a.fts, q.query) AS rank
                 FROM articles a, q
                 WHERE {where}
@@ -191,7 +194,7 @@ def search_items(query, limit=10, year_from=None, year_to=None,
                 ORDER BY rank DESC, published DESC
                 LIMIT %s
             )
-            SELECT id, published, title_ua, title_ru, slug, category, own_material
+            SELECT id, published, title_ua, title_ru, slug, category, kind, own_material
             FROM matches
             WHERE id IN (SELECT id FROM fresh UNION SELECT id FROM top_ranked)
         """
@@ -386,7 +389,7 @@ def get_excerpts(ids, max_chars=EXCERPT_CHARS):
     if not ids:
         return []
     rows = bot_db.query(
-        "SELECT id, published, title_ua, title_ru, slug, category, "
+        "SELECT id, published, title_ua, title_ru, slug, category, kind, "
         "left(coalesce(text_ua, text_ru), %s) AS excerpt "
         "FROM articles WHERE id = ANY(%s)",
         (int(max_chars), [int(i) for i in ids]),

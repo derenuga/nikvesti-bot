@@ -33,7 +33,7 @@ BASE_URL = "https://nikvesti.com"
 TITLE_SEARCH_LIMIT = 10
 
 _COLUMNS = (
-    "id, published, updated, status, own_material, owner_id, "
+    "id, published, updated, status, own_material, owner_id, kind, "
     "title_ua, title_ru, slug, text_ua, text_ru, category, region, tags_text, synced_at"
 )
 
@@ -55,8 +55,10 @@ def _fmt_ts(value):
 
 
 def article_url(row):
-    """Канонічний URL матеріалу: /news/{рубрика}/{slug або id}."""
+    """Канонічний URL матеріалу: /news/{рубрика}/{slug або id}, статті — /articles/."""
     tail = (row.get("slug") or "").strip() or str(row["id"])
+    if (row.get("kind") or "news") == "article":
+        return f"{BASE_URL}/articles/{tail}"
     cat = (row.get("category") or "").strip()
     return f"{BASE_URL}/news/{cat}/{tail}" if cat else f"{BASE_URL}/news/{tail}"
 
