@@ -519,12 +519,15 @@ def save_seen_competitor_ids(source_id, ids):
 #       "name": "Катерина Середа (@sereda_ka)",
 #       "commands": {"stat": 2},
 #       "nlq": 3,
-#       "questions": ["скільки трафіку за тиждень", ...],
+#       "questions": [{"q": "скільки трафіку за тиждень", "len": 26}, ...],
 #       "tools": {"get_traffic_history": 2},
-#       "backs": [{"topic": "Сєнкевич марафон", "items": 3}]
+#       "backs": [{"topic": "Сєнкевич марафон", "len": 16, "items": 3}]
 #     }
 #   }
 # }
+# len — довжина ПОВНОГО тексту до обрізки USAGE_TEXT_MAX (детектор «стін
+# тексту» в NLQ: сам обрізаний текст не каже, було там 250 символів чи 5000).
+# Старі записи questions — прості рядки без len, звіт розуміє обидва формати.
 
 USAGE_MAX_DAYS = 30        # тримаємо місяць історії
 USAGE_QUESTIONS_MAX = 40   # питань на користувача на день (захист від роздування)
@@ -568,9 +571,11 @@ def record_usage_nlq(user_id, user_name, question, tools=None):
         state = _read_state()
         rec = _usage_day_rec(state, user_id, user_name)
         rec["nlq"] = rec.get("nlq", 0) + 1
-        q = _usage_clip(question)
-        if q and len(rec["questions"]) < USAGE_QUESTIONS_MAX:
-            rec["questions"].append(q)
+        q_full = " ".join((question or "").split())
+        if q_full and len(rec["questions"]) < USAGE_QUESTIONS_MAX:
+            # Зберігаємо і реальну довжину: обрізаний текст не дає відрізнити
+            # довге питання від вставленої стіни тексту на тисячі символів
+            rec["questions"].append({"q": _usage_clip(q_full), "len": len(q_full)})
         for t in tools or []:
             rec["tools"][t] = rec["tools"].get(t, 0) + 1
         _write_state(state)
@@ -582,7 +587,10 @@ def record_usage_back(user_id, user_name, topic, items_count=None):
         state = _read_state()
         rec = _usage_day_rec(state, user_id, user_name)
         if len(rec["backs"]) < USAGE_BACKS_MAX:
-            rec["backs"].append({"topic": _usage_clip(topic), "items": items_count})
+            t_full = " ".join((topic or "").split())
+            rec["backs"].append({
+                "topic": _usage_clip(t_full), "len": len(t_full), "items": items_count,
+            })
         _write_state(state)
 
 
