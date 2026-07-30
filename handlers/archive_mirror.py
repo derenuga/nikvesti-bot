@@ -10,13 +10,16 @@ ua/ru, slug і ЧИСТИЙ ТЕКСТ тіла (HTML → текст конве�
 не створиш), лімітована (5 з'єднань, 10 000 запитів/год), і кожен важкий LIKE
 по longtext — ризик для сайту. Дзеркало знімає всі три обмеження.
 
-Два режими:
+Режими:
 1. Первинний бекфіл — /archive_backfill: порціями по BACKFILL_BATCH за id,
    з паузами (повага до лімітів KEY4), resumable (курсор у sync_state,
    при обриві продовжує з місця зупинки). Сотні тисяч статей ≈ 1-2 години.
 2. Інкрементальний sync — щогодини о :50 (scheduler): добирає створене
    і відредаговане з моменту останнього запуску (курсор по max(updated,
    published), з перекриттям — краще двічі upsert-нути, ніж пропустити).
+3. Разовий бекфіл статей — /articles_backfill: долити історичні
+   type='article', які головний бекфіл проминув зі старим фільтром
+   type='news' (свій курсор articles_backfill_last_id, основні не чіпає).
 
 Обидва тихо пропускаються, якщо не налаштована будь-яка з двох БД.
 """
@@ -327,6 +330,79 @@ async def run_backfill(limit=None, progress_cb=None):
                 pass
 
 
+# ---------- Разовий бекфіл історичних статей (type='article') ----------
+#
+# Дірка (стан 30.07.2026): нора з народження дзеркалила лише type='news'.
+# 30.07 фільтр розширено на статті, але головний бекфіл на той момент уже
+# пройшов усі id до кінця (reached_end, курсор на максимумі) — повторний
+# /archive_backfill нічого не дасть, а інкремент бачить лише свіжі зміни.
+# Історичні статті (їх торкались роками тому) не заїдуть ніколи — цей прогін
+# добирає САМЕ їх. Свій курсор ARTICLES_CURSOR_KEY; backfill_last_id,
+# mirror_cursor і backfill_done_at НЕ чіпаємо — вони тримають головний бекфіл
+# та інкремент, і їх зсув зламав би дзеркало.
+
+ARTICLES_CURSOR_KEY = "articles_backfill_last_id"
+
+
+async def run_articles_backfill(limit=None, progress_cb=None):
+    """Разовий бекфіл статей (nodes.type='article'). Resumable: курсор
+    ARTICLES_CURSOR_KEY у sync_state. limit — скільки залити ЗА ЦЕЙ ЗАПУСК
+    (None — усі решта). Ділить прапорці запуску/стопу з головним бекфілом:
+    два прогони паралельно в одну БД сайту не потрібні, а /archive_stop
+    зупиняє і цей. Повертає (done, reached_end, first_id, last_id)."""
+    if _backfill_running["flag"]:
+        raise RuntimeError("Бекфіл уже запущено — другий паралельно не потрібен.")
+    _backfill_running["flag"] = True
+    _backfill_stop["flag"] = False
+    conn = None
+    try:
+        await asyncio.to_thread(bot_db.ensure_schema)
+        # ОДНЕ з'єднання на весь прогін — та сама повага до лімітів KEY4,
+        # що й у головному бекфілі (1000 з'єднань/год).
+        conn = await asyncio.to_thread(db.open_bulk_connection)
+        tags_ctx = await _refresh_tags(conn)
+        last_id = int(await asyncio.to_thread(bot_db.get_state, ARTICLES_CURSOR_KEY, "0"))
+        done = 0
+        first_id = None
+        reached_end = False
+        while limit is None or done < limit:
+            if _backfill_stop["flag"]:
+                break
+            batch = BACKFILL_BATCH if limit is None else min(BACKFILL_BATCH, limit - done)
+            now_ts = int(datetime.now().timestamp())
+            # Ті самі критерії «реально опубліковане», що й у головному бекфілі,
+            # лише тип звужено до article.
+            rows = await db.aquery(
+                f"SELECT {_NODE_COLUMNS} FROM nodes "
+                "WHERE type = 'article' AND status = 1 AND published > 0 AND published <= %s "
+                "AND id > %s ORDER BY id LIMIT %s",
+                (now_ts, last_id, batch),
+                conn=conn,
+            )
+            if not rows:
+                reached_end = True
+                break
+            await _sync_rows(rows, tags_ctx, conn=conn)
+            if first_id is None:
+                first_id = rows[0]["id"]
+            last_id = rows[-1]["id"]
+            done += len(rows)
+            await asyncio.to_thread(bot_db.set_state, ARTICLES_CURSOR_KEY, last_id)
+            if progress_cb:
+                await progress_cb(done, last_id)
+            await asyncio.sleep(BACKFILL_PAUSE)
+        # Жодних позначок «дзеркало повне» тут не ставимо: mirror_cursor і
+        # backfill_done_at — власність головного бекфілу.
+        return done, reached_end, first_id, last_id
+    finally:
+        _backfill_running["flag"] = False
+        if conn is not None:
+            try:
+                await asyncio.to_thread(conn.close)
+            except Exception:
+                pass
+
+
 # ---------- Тестовий зразок (перевірка чистки і розділення мов) ----------
 #
 # Беремо статті з РІЗНИХ ЕПОХ, а не тільки з країв: найстаріші — часто порожні
@@ -513,6 +589,82 @@ async def archive_backfill_handler(update, context):
     asyncio.create_task(task())
 
 
+async def articles_backfill_handler(update, context):
+    """/articles_backfill [N] — разовий бекфіл історичних статей (resumable).
+    N — порція за запуск, без N — до кінця. Запускається у фоні, прогрес —
+    редагуванням повідомлення. Зупинити — /archive_stop."""
+    if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 БД бота не налаштована (BOT_DATABASE_URL).")
+        return
+    if not db.is_configured():
+        await update.message.reply_text("🦊 БД сайту не налаштована (DB_* env) — нема звідки лити.")
+        return
+    if _backfill_running["flag"]:
+        await update.message.reply_text("🦊 Бекфіл уже йде — дивись прогрес у попередньому повідомленні.")
+        return
+
+    limit = None
+    if context.args:
+        try:
+            limit = max(1, int(context.args[0]))
+        except ValueError:
+            pass
+    scope = f"порцію на {limit} статей" if limit else "всі історичні статті (справа хвилин)"
+    msg = await update.message.reply_text(f"🦊 Доливаю в нору {scope}, resumable…")
+    state = {"last_edit": 0.0}
+
+    async def progress(done, last_id):
+        # Не частіше ніж раз на ~20 сек, щоб не впертись у rate limit Telegram
+        now = asyncio.get_event_loop().time()
+        if now - state["last_edit"] < 20:
+            return
+        state["last_edit"] = now
+        try:
+            await msg.edit_text(f"🦊 Доливаю статті: {done} за цей запуск, дійшов до id {last_id}…")
+        except Exception:
+            pass
+
+    async def task():
+        try:
+            done, reached_end, first_id, last_id = await run_articles_backfill(
+                limit=limit, progress_cb=progress
+            )
+            total = await asyncio.to_thread(
+                bot_db.query, "SELECT count(*) AS c FROM articles WHERE kind = 'article'"
+            )
+            kind_total = total[0]["c"] if total else "?"
+            span = f" (id {first_id}—{last_id})" if first_id else ""
+            if reached_end:
+                head = f"✅ Бекфіл статей завершено: +{done} за цей запуск{span}."
+                tail = ("Свіжі статті далі підхоплює щогодинний інкремент о :50 — "
+                        "повторний запуск не потрібен.")
+            elif _backfill_stop["flag"]:
+                head = f"⏹ Зупинено вручну: +{done} статей{span}."
+                tail = f"Наступний /articles_backfill [N] продовжить з id {last_id}."
+            else:
+                head = f"✅ Порцію залито: +{done} статей{span}."
+                tail = f"Наступний /articles_backfill [N] продовжить з id {last_id}."
+            await msg.edit_text(
+                f"{head}\n"
+                f"Статей (kind='article') у норі всього: {kind_total}.\n"
+                f"{tail}"
+            )
+        except Exception as e:
+            try:
+                await msg.edit_text(
+                    f"❌ Бекфіл статей обірвався: {e}\n"
+                    "Повторний /articles_backfill продовжить з місця зупинки (курсор збережено)."
+                )
+            except Exception:
+                pass
+
+    # У фон: команда відповідає одразу, заливка живе своїм життям.
+    asyncio.create_task(task())
+
+
 async def archive_stop_handler(update, context):
     """/archive_stop — м'яко зупинити поточний бекфіл (після поточної пачки).
     Resumable: повторний /archive_backfill продовжить з місця зупинки."""
@@ -614,6 +766,7 @@ async def archive_status_handler(update, context):
         f"Діапазон публікацій: {_fmt_ts(info['oldest_published'])} — {_fmt_ts(info['newest_published'])}",
         f"Бекфіл завершено: {_fmt_ts(sync.get('backfill_done_at'))}",
         f"Бекфіл дійшов до id: {sync.get('backfill_last_id', '—')} (зараз іде: {running})",
+        f"Бекфіл статей дійшов до id: {sync.get(ARTICLES_CURSOR_KEY, '—')}",
         f"Курсор інкременту: {_fmt_ts(sync.get('mirror_cursor'))}",
     ]
     await msg.edit_text("\n".join(lines), parse_mode="HTML")
