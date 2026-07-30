@@ -683,15 +683,49 @@ def add_credit(impact_id, person, note=None):
 
 
 def remove_credit(impact_id, credit_id):
+    """Зняти медальку — разом із її подією в «Подіях» людини. Інакше в стрічці
+    висів би привид: «імпакт за твоєї участі», якого в «Моїх імпактах» немає.
+    Якщо медальку потім повернуть, подія прийде заново — і це правильно."""
     ensure_impact_schema()
-    return bot_db.execute(
-        "DELETE FROM impact_credits WHERE impact_id = %s AND id = %s",
+    rows = bot_db.query(
+        "SELECT person FROM impact_credits WHERE impact_id = %s AND id = %s",
         (int(impact_id), int(credit_id)))
+    with bot_db.transaction():
+        deleted = bot_db.execute(
+            "DELETE FROM impact_credits WHERE impact_id = %s AND id = %s",
+            (int(impact_id), int(credit_id)))
+        if rows:
+            _drop_credit_events(impact_id, rows[0]["person"])
+    return deleted
+
+
+def _drop_credit_events(impact_id, person=None):
+    """Прибирає події impact_credit кейсу (однієї людини або всіх) разом із
+    позначками прочитання — сироти в reads нікому не заважають, але й не
+    потрібні."""
+    from handlers import team_notifications
+
+    # на свіжій базі таблиць сповіщень могло ще не бути
+    team_notifications.ensure_notifications_schema()
+    if person is not None:
+        cond, params = "dedup_key = %s", (f"impact_credit:{impact_id}:{person}",)
+    else:
+        cond, params = ("object_type = 'impact' AND object_id = %s",
+                        (str(int(impact_id)),))
+    bot_db.execute(
+        f"DELETE FROM team_notification_reads WHERE notification_id IN "
+        f"(SELECT id FROM team_notifications WHERE {cond})", params)
+    bot_db.execute(f"DELETE FROM team_notifications WHERE {cond}", params)
 
 
 def delete_impact(impact_id):
+    """Видалення кейсу тягне за собою і його події-медальки: серія і медальки
+    падають каскадом БД, а сповіщення живуть в іншій таблиці без FK — без
+    цього кроку в Аліни лишалась би медалька про кейс, якого немає."""
     ensure_impact_schema()
-    return bot_db.execute("DELETE FROM impacts WHERE id = %s", (int(impact_id),))
+    with bot_db.transaction():
+        _drop_credit_events(impact_id)
+        return bot_db.execute("DELETE FROM impacts WHERE id = %s", (int(impact_id),))
 
 
 # ---------- Експорт ----------
