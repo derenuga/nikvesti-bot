@@ -283,11 +283,27 @@ def _collect_candidates(source_url):
 
     links, image = _page_scrape(source_url)
     ordered_ids, from_backlink = [], set()
-    for href in links:
+
+    def _take(href):
         aid = extract_article_id(href)
         if aid and int(aid) != int(src_id) and int(aid) not in from_backlink:
             from_backlink.add(int(aid))
             ordered_ids.append(int(aid))
+
+    for href in links:
+        _take(href)
+    # Другий рівень: сторінки перших беклінків. Реальний кейс 30.07 — ключова
+    # стаття про автошколу була злінкована не з новини-фіксації, а з середини
+    # ланцюжка, і серія її не побачила (FTS теж ні: статті ще без бекфілу).
+    # Обмежено п'ятьма сторінками — це передісторія, а не павук.
+    first_level = list(ordered_ids)
+    for aid in first_level[:5]:
+        row = _nora_article(aid) or _site_article(aid)
+        if not row:
+            continue
+        deeper, _img = _page_scrape(_nora_url(row))
+        for href in deeper:
+            _take(href)
 
     title = (src.get("title_ua") or src.get("title_ru") or "").strip()
     for it in search_items(title, limit=MAX_CANDIDATES):
@@ -742,6 +758,35 @@ def update_impact(impact_id, title=None, essence=None,
     params.append(int(impact_id))
     bot_db.execute(f"UPDATE impacts SET {', '.join(sets)} WHERE id = %s", tuple(params))
     return get_impact(impact_id)
+
+
+def add_article(impact_id, url):
+    """Додати матеріал у серію руками. Рятівний вхід, коли збір не побачив
+    текст (стаття поза норою, беклінка немає): людина знає свій ключовий
+    матеріал краще за будь-який пошук. Метадані (автор, проєкт, донор) —
+    ті самі, що при автозборі."""
+    from handlers.helpers import extract_article_id
+
+    ensure_impact_schema()
+    aid = extract_article_id(url or "")
+    if not aid:
+        return None, "Не впізнав URL — треба лінк на матеріал nikvesti.com"
+    row = _nora_article(aid) or _site_article(aid)
+    if not row:
+        return None, f"Матеріалу {aid} не знайшов ні в норі, ні в БД сайту"
+    meta = _site_meta([int(aid)]).get(int(aid)) or {}
+    bot_db.execute(
+        "INSERT INTO impact_articles (impact_id, article_id, url, title, "
+        "published, role, authors, project_id, project_name, partner_name) "
+        "VALUES (%s, %s, %s, %s, %s, 'series', %s, %s, %s, %s) "
+        "ON CONFLICT (impact_id, url) DO NOTHING",
+        (int(impact_id), int(aid), _nora_url(row),
+         (row.get("title_ua") or row.get("title_ru") or "").strip(),
+         int(row.get("published") or 0), meta.get("authors"),
+         meta.get("project_id"), meta.get("project_name"),
+         meta.get("partner_name")),
+    )
+    return True, None
 
 
 def set_key_article(impact_id, row_id):

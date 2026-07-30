@@ -275,6 +275,22 @@ async def main():
                   await page.locator("#ia-drop, #ia-key").count() == 0)
             await page.click("#ia-cancel")
 
+            # --- додати матеріал руками (кейс 30.07: стаття про автошколу
+            # без беклінка і поза норою — і з нею донор Sigrid Rausing) ---
+            check("під серією є «Додати матеріал за лінком»",
+                  await page.locator("#imd-add-art").count() == 1)
+            await page.click("#imd-add-art")
+            await page.wait_for_selector("#ia-url", timeout=3000)
+            await page.fill("#ia-url", "https://nikvesti.com/articles/313776-avtoshkola")
+            await page.click("#ia-add-save")
+            await page.wait_for_timeout(300)
+            calls = await page.evaluate("window.__calls")
+            check("лінк їде PATCH-ем add_article",
+                  any(c["method"] == "PATCH" and c["body"]
+                      and c["body"].get("action") == "add_article"
+                      and "313776" in (c["body"].get("url") or "")
+                      for c in calls))
+
             # --- прибрати зайвий матеріал: тепер із підтвердженням ---
             await page.click('[data-imart="43"]')
             await page.wait_for_selector("#ia-drop", timeout=3000)

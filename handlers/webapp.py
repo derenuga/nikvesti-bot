@@ -1377,7 +1377,12 @@ async def api_impact_patch(request):
     payload = await _json(request)
     impact_id = int(request.match_info["impact_id"])
     action = payload.get("action")
-    if action == "set_key":
+    if action == "add_article":
+        ok, err = await _in_session(
+            impact_archive.add_article, impact_id, payload.get("url"))
+        if not ok:
+            raise web.HTTPBadRequest(text=err or "Не вдалось додати")
+    elif action == "set_key":
         await _in_session(impact_archive.set_key_article, impact_id, int(payload.get("row_id")))
     elif action == "remove_article":
         await _in_session(impact_archive.remove_article, impact_id, int(payload.get("row_id")))

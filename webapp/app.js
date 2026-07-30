@@ -3103,7 +3103,8 @@ function paintImpact(im) {
     </div>
     <div class="dept-title">Серія · ${im.articles.length}</div>
     <div class="soft-card">${im.articles.map((a) => impactArticleRow(a, ro)).join("")}</div>
-    ${ro ? "" : `<div class="mr-hint">тап по матеріалу — відкрити, зробити ключовим або прибрати з серії</div>`}
+    ${ro ? "" : `<div class="mr-hint">тап по матеріалу — відкрити, зробити ключовим або прибрати з серії</div>
+    <button class="link-btn" id="imd-add-art">${icon("plus")} Додати матеріал за лінком</button>`}
     <div class="dept-title">${ro ? "Команда кейсу" : "Кому записати"}</div>
     <div class="soft-card" id="imd-credits">
       ${im.credits.map((c) => `
@@ -3204,6 +3205,37 @@ function wireImpactDetail(im) {
     e.preventDefault();
     const person = $("imd-credit-name").value.trim();
     if (person) patch({ action: "add_credit", person });
+  };
+  // Збір не всесильний: стаття поза норою чи без беклінка лишається
+  // невидимою (реальний кейс 30.07 — стаття про автошколу, і з нею донор
+  // Sigrid Rausing Trust). Людина знає свою серію — хай додає лінком.
+  $("imd-add-art").onclick = () => {
+    openSheet(`
+      <h2>Додати матеріал</h2>
+      <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+        Лінк на матеріал nikvesti.com — автора і проєкт/донора бот
+        підтягне сам.</p>
+      <input id="ia-url" inputmode="url" placeholder="https://nikvesti.com/…">
+      <div class="sheet-actions">
+        <button class="sbtn" id="ia-add-cancel">Скасувати</button>
+        <button class="sbtn primary" id="ia-add-save">Додати</button>
+      </div>`);
+    $("ia-add-cancel").onclick = closeSheet;
+    $("ia-add-save").onclick = async () => {
+      const url = $("ia-url").value.trim();
+      if (!url.includes("nikvesti.com")) { toast("Потрібен лінк nikvesti.com"); return; }
+      $("ia-add-save").disabled = true;
+      try {
+        const fresh = await api(`/api/impacts/${im.id}`, { method: "PATCH",
+          body: JSON.stringify({ action: "add_article", url }) });
+        closeSheet();
+        haptic("success");
+        paintImpact(fresh);
+      } catch (e) {
+        $("ia-add-save").disabled = false;
+        toast(e.message);
+      }
+    };
   };
   $("imd-edit").onclick = () => impactEditSheet(im);
   // Перезбір готового кейсу: рятує, коли з серії прибрали зайве (назад
