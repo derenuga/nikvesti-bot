@@ -3073,7 +3073,9 @@ function paintImpact(im) {
       </form>`}
     </div>
     ${ro ? "" : `<button class="cta" id="imd-send">Надіслати файлом у приват</button>
-    <button class="link-btn" id="imd-del" style="margin-top:4px">${icon("trash")} Видалити кейс</button>`}`;
+    <button class="link-btn" id="imd-rebuild" style="margin-top:4px">
+      ${icon("chevron-right")} Перезібрати кейс заново</button>
+    <button class="link-btn" id="imd-del" style="margin-top:4px;color:var(--red)">${icon("trash")} Видалити кейс</button>`}`;
   if (!ro) wireImpactDetail(im);
 }
 
@@ -3159,6 +3161,19 @@ function wireImpactDetail(im) {
     if (person) patch({ action: "add_credit", person });
   };
   $("imd-edit").onclick = () => impactEditSheet(im);
+  // Перезбір готового кейсу: рятує, коли з серії прибрали зайве (назад
+  // матеріал інакше не повернути) або сюжет доріс новими текстами. Раніше
+  // «спробувати ще» жило тільки на збитих кейсах — і Олег, шукаючи його на
+  // готовому, видалив кейс цілком (29.07). Перезбір перезаписує ручні правки
+  // тексту й серії, тому питаємо прямо.
+  $("imd-rebuild").onclick = async () => {
+    if (!await confirmAction(
+      "Перезібрати кейс з нуля? Серію збере заново, ручні правки тексту буде перезаписано.")) return;
+    try {
+      await api(`/api/impacts/${im.id}/retry`, { method: "POST" });
+      renderImpact();
+    } catch (e) { toast(e.message); }
+  };
   body.querySelectorAll("[data-imedit]").forEach((el) => el.onclick = () =>
     impactEditSheet(im, el.dataset.imedit));
   $("imd-del").onclick = () => impactDelete(im.id);

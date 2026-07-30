@@ -108,6 +108,7 @@ window.fetch = async (url, opts = {}) => {
     return json({ id: 9, status: "building" });
   }
   if (url.startsWith("/api/impacts/7/send")) return json({ ok: true });
+  if (url.startsWith("/api/impacts/7/retry")) return json({ id: 7, status: "building" });
   if (url.startsWith("/api/impacts/8/retry")) return json({ id: 8, status: "building" });
   if (url === "/api/impacts/7" && method === "PATCH") return json(window.READY);
   if (url === "/api/impacts/7") return json(window.READY);
@@ -294,6 +295,25 @@ async def main():
                   any(c["method"] == "PATCH" and c["body"]
                       and "ЗМІНИЛА" in (c["body"].get("what_happened") or "")
                       for c in calls))
+
+            # --- перезбір готового кейсу ---
+            # Олег, 29.07: «удалил импакт, нигде не было кнопки "спробувати
+            # ще"» — вона жила лише на збитих кейсах, і шукаючи її на
+            # готовому, він видалив кейс. Тепер перезбір є і тут, з прямим
+            # попередженням, що ручні правки перезапишуться.
+            check("на готовому кейсі є «Перезібрати заново»",
+                  await page.locator("#imd-rebuild").count() == 1)
+            await page.click("#imd-rebuild")
+            await page.wait_for_timeout(300)
+            confirms = await page.evaluate("window.__confirms || []")
+            check("перед перезбором чесно попереджає про втрату правок",
+                  any("перезаписано" in m for m in confirms))
+            calls = await page.evaluate("window.__calls")
+            check("і перезапускає збір тим самим retry",
+                  any("/api/impacts/7/retry" in c["url"] for c in calls))
+            # стаб на retry/7 віддає building — повертаємось на готовий кейс
+            await page.evaluate("STATE.currentImpact = 7; nav('impact')")
+            await page.wait_for_selector("#imd-send", timeout=5000)
 
             # --- відправка файлом ---
             await page.click("#imd-send")
