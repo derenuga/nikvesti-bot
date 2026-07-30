@@ -75,15 +75,18 @@ READY = {
     "articles": [
         {"id": 41, "article_id": 300001, "url": "https://nikvesti.com/news/public/300001",
          "title": "Замість демонтажу — реконструкція: влада переглянула плани",
-         "date": "28.07.2026", "role": "fixer", "authors": "Світлана Іванченко",
+         "date": "28.07.2026", "role": "fixer", "is_key": False,
+         "authors": "Світлана Іванченко",
          "project_name": None, "partner_name": None},
         {"id": 42, "article_id": 279936, "url": "https://nikvesti.com/articles/279936",
          "title": "Знести не можна відновити: три будинки між владою і мешканцями",
-         "date": "03.02.2026", "role": "key", "authors": "Аліна Квітко",
+         "date": "03.02.2026", "role": "series", "is_key": True,
+         "authors": "Аліна Квітко",
          "project_name": "Голоси Миколаєва", "partner_name": "IMS"},
         {"id": 43, "article_id": 294960, "url": "https://nikvesti.com/news/public/294960",
          "title": "Будівельники почали зносити будинок на Погранічній",
-         "date": "11.04.2026", "role": "series", "authors": "Аліса Мелікадамян",
+         "date": "11.04.2026", "role": "series", "is_key": False,
+         "authors": "Аліса Мелікадамян",
          "project_name": None, "partner_name": None},
     ],
     "credits": [
@@ -268,11 +271,15 @@ async def main():
                   patch and patch[-1]["body"]["action"] == "set_key"
                   and patch[-1]["body"]["row_id"] == 43)
 
-            # у фіксації дій «ключовий/прибрати» немає — її не викинути
+            # фіксацію не викинути, але КЛЮЧОВОЮ вона бути може: це той
+            # лінк, що кинули в «+», і він же буває головним текстом серії
+            # (Олег, 30.07: «в чем прикол?» — прикол був у моделі, виправлено)
             await page.click('[data-imart="41"]')
             await page.wait_for_selector("#ia-open", timeout=3000)
-            check("новина-фіксація: лише «відкрити», прибрати її не можна",
-                  await page.locator("#ia-drop, #ia-key").count() == 0)
+            check("фіксацію не можна прибрати з серії",
+                  await page.locator("#ia-drop").count() == 0)
+            check("але зробити ключовою — можна",
+                  await page.locator("#ia-key").count() == 1)
             await page.click("#ia-cancel")
 
             # --- додати матеріал руками (кейс 30.07: стаття про автошколу

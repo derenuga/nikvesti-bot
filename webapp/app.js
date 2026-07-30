@@ -3079,7 +3079,7 @@ function paintImpact(im) {
     return;
   }
 
-  const key = im.articles.find((a) => a.role === "key");
+  const key = im.articles.find((a) => a.is_key);
   const donor = key && key.partner_name;
   // Читання без редагування: журналістка дивиться свій кейс, але чернетку,
   // медальки і серію правит лише менеджер зі свого входу
@@ -3132,8 +3132,8 @@ function paintImpact(im) {
    зрозумів узагалі. Іконка без слова — це загадка, а не кнопка. */
 function impactArticleRow(a, ro) {
   const meta = [a.date, a.authors, a.partner_name].filter(Boolean).join(" · ");
-  const tags = `${a.role === "fixer" ? "новина-фіксація · " :
-    a.role === "key" ? "★ ключовий · " : ""}${esc(meta)}`;
+  const tags = `${a.role === "fixer" ? "новина-фіксація · " : ""}${
+    a.is_key ? "★ ключовий · " : ""}${esc(meta)}`;
   if (ro) {
     return `
     <div class="td-row">
@@ -3159,10 +3159,11 @@ function impactArticleSheet(im, a, patch) {
   openSheet(`
     <h2>${esc(a.title || a.url)}</h2>
     <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(meta)}${
-      a.role === "fixer" ? " · новина-фіксація" : a.role === "key" ? " · ключовий" : ""}</p>
+      a.role === "fixer" ? " · новина-фіксація" : ""}${
+      a.is_key ? " · ключовий" : ""}</p>
     <button class="link-btn" id="ia-open">${icon("link")} Відкрити матеріал</button>
-    ${a.role === "series" ? `<button class="link-btn" id="ia-key">
-      ${icon("award")} Зробити ключовим — він важить найбільше</button>` : ""}
+    ${a.is_key ? "" : `<button class="link-btn" id="ia-key">
+      ${icon("award")} Зробити ключовим — він важить найбільше</button>`}
     ${a.role === "fixer" ? "" : `<button class="link-btn" id="ia-drop" style="color:var(--red)">
       ${icon("trash")} Прибрати з серії</button>`}
     <div class="sheet-actions">

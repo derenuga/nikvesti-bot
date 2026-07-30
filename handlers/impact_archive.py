@@ -109,6 +109,12 @@ _SCHEMA_STATEMENTS = [
     # роздає сайт (як і в картках черги матчингу), а Нора — не файлосховище.
     # Зникне картинка на сайті — картка деградує в текстову, нічого не ламається.
     "ALTER TABLE impacts ADD COLUMN IF NOT EXISTS image TEXT",
+    # Ключовість — ОКРЕМИЙ прапорець, а не роль: новина-фіксація (лінк, який
+    # кинули в «+») цілком може бути і головним текстом серії. Поки key жив у
+    # role, зірочку на фіксацію повісити було неможливо (Олег, 30.07: «в чем
+    # прикол?» — прикол був у моделі). Міграція нижче переносить старі кейси.
+    "ALTER TABLE impact_articles ADD COLUMN IF NOT EXISTS is_key BOOLEAN NOT NULL DEFAULT FALSE",
+    "UPDATE impact_articles SET is_key = TRUE, role = 'series' WHERE role = 'key'",
 ]
 
 _schema_lock = threading.Lock()
@@ -568,18 +574,18 @@ async def build_impact(impact_id):
                     "DELETE FROM impact_articles WHERE impact_id = %s", (int(impact_id),))
                 bot_db.execute(
                     "DELETE FROM impact_credits WHERE impact_id = %s", (int(impact_id),))
-                rows = [(trigger, "fixer")] + [
-                    (s, "key" if s["id"] == key_id else "series") for s in series]
+                rows = [(trigger, "fixer")] + [(s, "series") for s in series]
                 for art, role in rows:
                     bot_db.execute(
                         "INSERT INTO impact_articles (impact_id, article_id, url, "
-                        "title, published, role, authors, project_id, project_name, partner_name) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                        "title, published, role, is_key, authors, project_id, "
+                        "project_name, partner_name) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                         "ON CONFLICT (impact_id, url) DO NOTHING",
                         (int(impact_id), art["id"], art["url"], art["title"],
-                         art["published"], role, art.get("authors"),
-                         art.get("project_id"), art.get("project_name"),
-                         art.get("partner_name")),
+                         art["published"], role, art["id"] == key_id,
+                         art.get("authors"), art.get("project_id"),
+                         art.get("project_name"), art.get("partner_name")),
                     )
                 impact_title = (verdict.get("title") or trigger["title"]).strip()
                 for cr in (verdict.get("credits") or [])[:10]:
@@ -725,7 +731,8 @@ def get_impact(impact_id):
             "title": a["title"],
             "date": (datetime.fromtimestamp(int(a["published"]), KYIV_TZ)
                      .strftime("%d.%m.%Y") if a["published"] else "—"),
-            "role": a["role"], "authors": a["authors"],
+            "role": a["role"], "is_key": bool(a.get("is_key")),
+            "authors": a["authors"],
             "project_name": a["project_name"], "partner_name": a["partner_name"],
         } for a in arts],
         "credits": [{"id": c["id"], "person": c["person"], "note": c["note"]}
@@ -791,15 +798,16 @@ def add_article(impact_id, url):
 
 def set_key_article(impact_id, row_id):
     """Перепризначити ключовий текст: вага в серії різна, і останнє слово за
-    людиною, не за суддею."""
+    людиною, не за суддею. Фіксація теж може бути ключовою — це незалежні
+    позначки (Олег, 30.07)."""
     ensure_impact_schema()
     with bot_db.transaction():
         bot_db.execute(
-            "UPDATE impact_articles SET role = 'series' "
-            "WHERE impact_id = %s AND role = 'key'", (int(impact_id),))
+            "UPDATE impact_articles SET is_key = FALSE WHERE impact_id = %s",
+            (int(impact_id),))
         return bot_db.execute(
-            "UPDATE impact_articles SET role = 'key' "
-            "WHERE impact_id = %s AND id = %s AND role <> 'fixer'",
+            "UPDATE impact_articles SET is_key = TRUE "
+            "WHERE impact_id = %s AND id = %s",
             (int(impact_id), int(row_id)))
 
 
@@ -883,13 +891,13 @@ def export_html(impact_id):
     imp = get_impact(impact_id)
     if not imp or imp["status"] != "ready":
         return None, None
-    key = next((a for a in imp["articles"] if a["role"] == "key"), None)
+    key = next((a for a in imp["articles"] if a.get("is_key")), None)
     fixer = next((a for a in imp["articles"] if a["role"] == "fixer"), None)
     links = "\n".join(
         f'<li><a href="{_esc(a["url"])}">{_esc(a["title"] or a["url"])}</a>'
         f'<span class="m"> — {_esc(a["date"])}'
         f'{" · " + _esc(a["authors"]) if a["authors"] else ""}'
-        f'{" · ключовий матеріал" if a["role"] == "key" else ""}'
+        f'{" · ключовий матеріал" if a.get("is_key") else ""}'
         f'{" · " + _esc(a["partner_name"]) if a["partner_name"] else ""}</span></li>'
         for a in imp["articles"])
     credits = ", ".join(
