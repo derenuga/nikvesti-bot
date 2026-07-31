@@ -428,12 +428,19 @@ async def main():
                   "СТРОК МИНУВ" in card.upper())
             check("сказано, чий строк і коли був",
                   "31.01" in card and "Аліна" in card)
-            check("є дві дії — «зарахувати скільки є» і продовжити",
+            check("тематика першою: «Тендери × 2 новини» (Олег, 01.08)",
+                  "Тендери × 2 новини" in card)
+            check("донор окремим рядком з міні-лого",
+                  "IMS" in card
+                  and await page.locator(".al-card .od-donor .imp-donor").count() == 1)
+            check("є дві дії — зарахувати/зняти і новий дедлайн",
                   await page.locator("[data-oext]").count() == 1
-                  and await page.locator("[data-oclose]").count() == 1)
-            check("кнопки «Зняти» на картці немає (Олег, 01.08)",
-                  await page.locator("[data-odrop]").count() == 0
-                  and "Зарахувати скільки є" in card)
+                  and await page.locator("[data-oclose]").count() == 1
+                  and "Новий дедлайн" in card)
+            check("старої кнопки «Зняти» гуртом немає",
+                  await page.locator("[data-odrop]").count() == 0)
+            check("при нулі зарахованого кнопка чесно каже «Зняти (0 з 2)»",
+                  "Зняти (0 з 2)" in card)
             check("прострочене потрапило в лічильник меню",
                   await page.locator(
                       '#bottomnav [data-view="alerts"] .bn-badge').count() == 1)
@@ -461,6 +468,12 @@ async def main():
               nav('alerts');
             }""")
             await page.wait_for_selector("[data-oclose]", timeout=5000)
+            card9 = await page.inner_text("#alerts-body")
+            check("з зарахованим кнопка називається «Зарахувати 9 з 10»",
+                  "Зарахувати 9 з 10" in card9)
+            check("кнопка зелена (good), не червона і не синя",
+                  await page.locator("[data-oclose].good").count() == 1
+                  and await page.locator("[data-oclose].danger").count() == 0)
             await page.click("[data-oclose]")
             await page.wait_for_timeout(300)
             sent = await page.evaluate("window.__posts.slice(-1)[0]")

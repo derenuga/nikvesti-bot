@@ -870,6 +870,11 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 }
 .al-actions .sbtn.primary { background: var(--blue); color: var(--blue-fg); }
 .al-actions .sbtn.danger { background: var(--red-soft); color: var(--red); }
+/* «Зарахувати N з M» — дія позитивна, тож не червона і не синя (Олег,
+   01.08): зелений тон зарахованого, той самий, що в «9/10 ok» */
+.al-actions .sbtn.good { background: var(--good-soft); color: var(--good); }
+/* Донор із міні-лого в картці прострочки — між заголовком і рядком людини */
+.al-h-txt .od-donor { margin: 3px 0 1px; }
 
 /* Рядок стрічки подій. Непрочитане — синя крапка збоку: помітно, але без
    кричущих кольорів, бо це не тривога, а хроніка. */

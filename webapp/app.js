@@ -3701,15 +3701,27 @@ function daysSince(iso) {
   return Math.max(0, Math.round(ms / 86400000));
 }
 
+/* Заголовок картки — ЩО писати першим (Олег, 01.08): «Новини з тендерів ×
+   3 матеріали», а не кількість поперед тематики; донор — окремим рядком з
+   міні-лого, як у стрічці подій. */
+function overdueTitle(t) {
+  const what = t.qty > 1 ? `${t.qty} ${typePhrase(t, t.qty)}` : typePhrase(t, 1);
+  const topic = t.theme_name || taskProject(t).projName || "позапроєктне";
+  return t.qty > 1 ? `${topic} × ${what}` : `${topic} · ${what}`;
+}
+
 function overdueCard(t) {
   const d = daysSince(t.deadline);
   const word = d === 1 ? "день" : (d >= 2 && d <= 4 ? "дні" : "днів");
+  const done = t.done_count || 0;
+  const { partner } = taskProject(t);
   return `
     <div class="al-card">
       <div class="al-head">
         ${avatar(t.person, personEntry(t.person), 38)}
         <div class="al-h-txt">
-          <span class="al-who">${esc(taskLine(t, { donor: true }))}</span>
+          <span class="al-who">${esc(overdueTitle(t))}</span>
+          ${partner ? `<span class="nt-by od-donor">${donorChip(partner)}<span class="nt-donor">${esc(partner)}</span></span>` : ""}
           <div class="al-date">${esc(t.person)} · строк був ${esc(shortDate(t.deadline))},
             ${d} ${word} тому</div>
         </div>
@@ -3717,8 +3729,9 @@ function overdueCard(t) {
       </div>
       ${t.note ? `<div class="al-why">${esc(t.note)}</div>` : ""}
       <div class="al-actions">
-        <button class="sbtn" data-oclose="${t.id}">Зарахувати скільки є</button>
-        <button class="sbtn primary" data-oext="${t.id}">Продовжити</button>
+        <button class="sbtn ${done > 0 ? "good" : "danger"}" data-oclose="${t.id}">
+          ${done > 0 ? `Зарахувати ${done} з ${t.qty}` : `Зняти (0 з ${t.qty})`}</button>
+        <button class="sbtn primary" data-oext="${t.id}">Новий дедлайн</button>
       </div>
     </div>`;
 }
