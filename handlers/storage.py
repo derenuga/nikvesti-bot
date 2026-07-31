@@ -408,10 +408,12 @@ def save_traffic_spikes_state(spikes_state):
 
 
 def get_fb_missing_state():
-    """Стан монітора власних новин без Facebook-публікації (fb_missing.py):
-    {"alerted": [node_id, ...], "baseline_done": bool}. alerted — новини, про
-    які вже нагадали (нагадуємо РІВНО раз); baseline_done — чи пройдено перший
-    тихий baseline (щоб перший запуск не завалив чат добовою історією).
+    """Стан монітора миколаївських новин без Facebook-публікації (fb_missing.py):
+    {"alerted": [node_id, ...], "baseline_done": bool, "baseline_ver": int}.
+    alerted — новини, про які вже нагадали (нагадуємо РІВНО раз); baseline_ver —
+    версія тихого baseline: перший запуск після зміни фільтра вибірки позначає
+    вікно баченим без розсилки (щоб не завалити чат добовою історією);
+    baseline_done — легасі-флаг перших версій, більше не читається.
     Порожній dict = перший запуск."""
     with _lock:
         state = _read_state()
