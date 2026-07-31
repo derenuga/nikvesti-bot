@@ -3680,8 +3680,14 @@ function wireAway(items, clashes) {
    Список рахуємо з того, що вже є в STATE (менеджер бачить усі таски) — це
    нуль нових запитів. Подія в стрічку і лічильник приходять із сервера
    (team_tasks.notify_overdue), щоб штовхнути Катю навіть тоді, коли апку не
-   відкривали. Дві дії, бо третьої не буває: строк або посунувся, або завдання
-   більше не актуальне. */
+   відкривали.
+
+   Дії — «Зарахувати скільки є» і «Продовжити», БЕЗ «Зняти» (Олег, 01.08):
+   на «9/10» зняття виглядало як списання недостачі, а насправді дропало весь
+   таск — дев'ять зарахованих переставали рахуватись виконанням. Тепер:
+   є зараховане → закрити як виконане з тим, що є (руками закритий таск
+   auto-reopen не чіпає); зарахованого нуль → те саме, що зняти, і втрачати
+   нічого. Справжнє «Зняти» живе в картці таска в «Завданнях». */
 
 function overdueTasks() {
   const today = todayISO();
@@ -3711,7 +3717,7 @@ function overdueCard(t) {
       </div>
       ${t.note ? `<div class="al-why">${esc(t.note)}</div>` : ""}
       <div class="al-actions">
-        <button class="sbtn danger" data-odrop="${t.id}">Зняти</button>
+        <button class="sbtn" data-oclose="${t.id}">Зарахувати скільки є</button>
         <button class="sbtn primary" data-oext="${t.id}">Продовжити</button>
       </div>
     </div>`;
@@ -3847,16 +3853,26 @@ function paintAlerts() {
     const t = (STATE.tasks || []).find((x) => x.id === +b.dataset.oext);
     if (t) extendSheet(t);
   });
-  box.querySelectorAll("[data-odrop]").forEach((b) => b.onclick = async () => {
-    const t = (STATE.tasks || []).find((x) => x.id === +b.dataset.odrop);
+  // «Зарахувати скільки є»: із зарахованим — закрити як виконане (публікації
+  // лишаються прикріпленими, «9/10» видно в закритому); без жодного
+  // зарахованого закривати «виконаним» було б брехнею — таск знімається,
+  // і це рівноцінно, бо втрачати нічого.
+  box.querySelectorAll("[data-oclose]").forEach((b) => b.onclick = async () => {
+    const t = (STATE.tasks || []).find((x) => x.id === +b.dataset.oclose);
     if (!t) return;
-    if (!(await confirmAction(`Зняти завдання «${taskLine(t)}» з ${t.person}?`))) return;
+    const done = t.done_count || 0;
+    const status = done > 0 ? "done" : "dropped";
+    const q = done > 0
+      ? `Закрити завдання «${taskLine(t)}» як виконане з тим, що є (${done}/${t.qty})?`
+      : `Зарахованого нічого немає — зняти завдання «${taskLine(t)}» з ${t.person}?`;
+    if (!(await confirmAction(q))) return;
     try {
       const res = await api(`/api/tasks/${t.id}`, {
-        method: "PATCH", body: JSON.stringify({ status: "dropped" }),
+        method: "PATCH", body: JSON.stringify({ status }),
       });
       patchTask(res.task);
       haptic("success");
+      toast(done > 0 ? `Закрито · зараховано ${done}/${t.qty}` : "Завдання знято");
       render();
     } catch (e) { toast(e.message); }
   });

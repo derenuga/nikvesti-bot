@@ -428,13 +428,57 @@ async def main():
                   "СТРОК МИНУВ" in card.upper())
             check("сказано, чий строк і коли був",
                   "31.01" in card and "Аліна" in card)
-            check("є дві дії — продовжити і зняти",
+            check("є дві дії — «зарахувати скільки є» і продовжити",
                   await page.locator("[data-oext]").count() == 1
-                  and await page.locator("[data-odrop]").count() == 1)
+                  and await page.locator("[data-oclose]").count() == 1)
+            check("кнопки «Зняти» на картці немає (Олег, 01.08)",
+                  await page.locator("[data-odrop]").count() == 0
+                  and "Зарахувати скільки є" in card)
             check("прострочене потрапило в лічильник меню",
                   await page.locator(
                       '#bottomnav [data-view="alerts"] .bn-badge').count() == 1)
 
+            # «Зарахувати скільки є» при НУЛІ зарахованого = зняти:
+            # закривати «виконаним» порожнє завдання було б брехнею
+            await page.evaluate("window.__posts = []")
+            await page.click("[data-oclose]")
+            await page.wait_for_timeout(300)
+            sent = await page.evaluate("window.__posts.slice(-1)[0]")
+            check("нуль зарахованого → таск знімається (dropped)",
+                  bool(sent) and sent.get("patch") == 901
+                  and (sent.get("body") or {}).get("status") == "dropped")
+
+            # А з зарахованим — закривається як виконане, дев'ятка не губиться
+            await page.evaluate("""() => {
+              STATE.tasks = [{ id: 902, person: 'Юлія Лук\\'яненко',
+                creator: 'Катерина Середа', project_id: 2,
+                project_name: 'КІП', partner_name: 'Internews',
+                platform: null, type: 'news', theme_id: 2,
+                theme_name: 'Критичні інформаційні потреби', qty: 10,
+                note: '', deadline: '2020-01-31', status: 'open',
+                auto_done: false, done_count: 9, matches: [] }];
+              window.__posts = [];
+              nav('alerts');
+            }""")
+            await page.wait_for_selector("[data-oclose]", timeout=5000)
+            await page.click("[data-oclose]")
+            await page.wait_for_timeout(300)
+            sent = await page.evaluate("window.__posts.slice(-1)[0]")
+            check("9/10 → закривається як done, зараховане лишається",
+                  bool(sent) and sent.get("patch") == 902
+                  and (sent.get("body") or {}).get("status") == "done")
+
+            # --- продовження строку ---
+            await page.evaluate("""() => {
+              STATE.tasks = [{ id: 901, person: 'Аліна Квітко',
+                creator: 'Катерина Середа', project_id: 1,
+                project_name: 'Голоси Миколаєва', partner_name: 'IMS',
+                platform: null, type: 'news', theme_id: 1,
+                theme_name: 'Тендери', qty: 2, note: '', deadline: '2020-01-31',
+                status: 'open', auto_done: false, done_count: 0, matches: [] }];
+              nav('alerts');
+            }""")
+            await page.wait_for_selector("[data-oext]", timeout=5000)
             await page.click("[data-oext]")
             await page.wait_for_selector("#od-date", timeout=3000)
             check("у шторці є швидкі варіанти строку",
