@@ -1,12 +1,16 @@
 """
-Монітор власних новин без Facebook-публікації.
+Монітор миколаївських новин без Facebook-публікації.
 
-Раз на годину (у робочі години) дивиться СВІЖІ власні (own_material=1) новини
+Раз на годину (у робочі години) дивиться СВІЖІ миколаївські (region=1) новини
 сайту напряму в БД (nodes) і для кожної перевіряє, чи є вона у Facebook — ТІЄЮ Ж
 логікою, що /stat (`get_fb_stats`: пост/рілз із посиланням на статтю у вікні
-дат). Якщо свіжої власної новини у ФБ досі немає — раз (і лише раз) підказує
-редакції в чат: дає лінк на новину + згенерований чернетковий пост для ФБ
-окремим блоком коду (готовий до копіювання).
+дат). Якщо свіжої миколаївської новини у ФБ досі немає — раз (і лише раз)
+підказує редакції в чат: дає лінк на новину + згенерований чернетковий пост для
+ФБ окремим блоком коду (готовий до копіювання).
+
+До 31.07.2026 монітор дивився лише власні новини (own_material=1); тепер —
+усі миколаївські, незалежно від own_material (коди регіонів у nodes.region:
+1 Миколаїв, 2 Україна, 3 Світ, 4 Херсон, 5 Одеса).
 
 Вікно свіжості [now − MAX_AGE, now − MIN_AGE]:
 - MIN_AGE — грейс: не смикати за новину, яку ще фізично не встигли запостити
@@ -28,13 +32,17 @@ datePublished ще не настав (плюс той самий грейс MIN_
 
 Стан (storage 'fb_missing'):
 - alerted — id новин, про які вже сказали → нагадуємо РІВНО раз;
-- baseline_done — перший запуск проходить ТИХО: усі новини поточного вікна
-  позначаються баченими без розсилки (інакше редакцію завалило б добовою
-  історією власних матеріалів). Перевірити формат можна командою /fbmissing_test.
+- baseline_ver — версія baseline-фільтра: перший запуск ПІСЛЯ зміни фільтра
+  проходить ТИХО — усі новини поточного вікна позначаються баченими без
+  розсилки (інакше редакцію завалило б добовою історією; і без перевірки ФБ
+  казати «поста немає» не можна). Baseline тут свідомо без тестової відправки
+  (N=0): формат перевіряється /fbmissing_test, а надіслати «алерт» про новину,
+  не перевіривши ФБ, означало б збрехати. Старий флаг baseline_done лишається
+  в стані, але вже не читається.
 
 Перевірку ФБ робимо лише для НОВИХ (не в alerted) новин, тож за годину це
-кілька запитів Graph API — стільки ж, скільки власних новин щойно перетнули
-поріг MIN_AGE.
+кілька запитів Graph API — стільки ж, скільки миколаївських новин щойно
+перетнули поріг MIN_AGE.
 """
 
 import asyncio
@@ -58,6 +66,12 @@ BASE_URL = "https://nikvesti.com"
 
 MIN_AGE_HOURS = 3      # грейс: не чіпати новину молодшу за це (SMM постить не миттєво)
 MAX_AGE_HOURS = 24     # «свіжі» — старіше не піднімаємо
+# nodes.region: 1 Миколаїв, 2 Україна, 3 Світ, 4 Херсон, 5 Одеса
+REGION_MYKOLAIV = 1
+# Версія baseline: інкрементувати при зміні фільтра вибірки — наступний прогін
+# тихо позначить усе нове вікно баченим замість зливу історії в чат.
+# 2 = перехід own_material=1 → region=1 (31.07.2026).
+BASELINE_VER = 2
 WORK_HOUR_START = 9    # гейт на робочі години (Київ), як у моніторі білдера
 WORK_HOUR_END = 21
 ALERTED_CAP = 3000     # запобіжник росту стану
@@ -66,12 +80,13 @@ FOX_LINE_CHANCE = 0.15 # з невеликим шансом Лис жартує 
 _FOX_LINE = "😔 Я б міг і сам запостити, але Олег ще мені поки не дозволяє...(("
 
 
-# ---------- БД: свіжі власні новини ----------
+# ---------- БД: свіжі миколаївські новини ----------
 
-def _fetch_recent_own_news():
-    """Свіжі власні опубліковані новини у вікні [now−MAX, now−MIN], найновіші
-    перші. Автор — за owner_id (колонка author на сайті порожня); тягнемо ім'я
-    і username (сайтовий логін = «юзернейм»). Порожній список без БД сайту."""
+def _fetch_recent_news():
+    """Свіжі миколаївські (region=1) опубліковані новини у вікні
+    [now−MAX, now−MIN], найновіші перші. Автор — за owner_id (колонка author на
+    сайті порожня); тягнемо ім'я і username (сайтовий логін = «юзернейм»).
+    Порожній список без БД сайту."""
     if not db.is_configured():
         return []
     now = int(datetime.now().timestamp())
@@ -83,11 +98,11 @@ def _fetch_recent_own_news():
         "n.published AS published, n.owner_id AS owner_id, "
         "TRIM(CONCAT(COALESCE(u.first_name,''), ' ', COALESCE(u.last_name,''))) AS name "
         "FROM nodes n LEFT JOIN users u ON u.id = n.owner_id "
-        "WHERE n.type = 'news' AND n.status = 1 AND n.own_material = 1 "
+        "WHERE n.type = 'news' AND n.status = 1 AND n.region = %s "
         "AND n.published >= %s AND n.published <= %s "
         "ORDER BY n.published DESC LIMIT 100"
     )
-    return db.query(sql, (since, until))
+    return db.query(sql, (REGION_MYKOLAIV, since, until))
 
 
 def _article_url(row):
@@ -333,7 +348,7 @@ async def _send_alert(bot, chat_id, row, note=None, page_html=None):
     сторінка статті, щоб не тягти її вдруге."""
     url = _article_url(row)
     lines = [
-        "🦊 Ось цієї власної новини досі немає у Facebook. "
+        "🦊 Ось цієї миколаївської новини досі немає у Facebook. "
         "Можливо, так і треба, а можливо, й ні — дивіться самі...",
     ]
     if random.random() < FOX_LINE_CHANCE:
@@ -376,21 +391,24 @@ async def check_fb_missing(bot, chat_id=None, force=False):
         if hour < WORK_HOUR_START or hour >= WORK_HOUR_END:
             return None
 
-    rows = await asyncio.to_thread(_fetch_recent_own_news)
+    rows = await asyncio.to_thread(_fetch_recent_news)
     if not rows:
-        return "Свіжих власних новин у вікні немає."
+        return "Свіжих миколаївських новин у вікні немає."
 
     state = storage.get_fb_missing_state()
     alerted = set(state.get("alerted", []))
-    baseline_done = state.get("baseline_done", False)
 
-    # Перший запуск — тихо позначаємо все поточне вікно баченим (без розсилки
-    # добової історії). Формат перевіряється /fbmissing_test.
-    if not baseline_done:
+    # Перший запуск (і перший після зміни фільтра — baseline_ver < BASELINE_VER,
+    # напр. перехід own→region=1 враз додає у вікно десятки «небачених» новин) —
+    # тихо позначаємо все поточне вікно баченим, без розсилки добової історії.
+    # Формат перевіряється /fbmissing_test.
+    if state.get("baseline_ver", 1 if state.get("baseline_done") else 0) < BASELINE_VER:
         for row in rows:
             alerted.add(row["id"])
-        storage.save_fb_missing_state({"alerted": _cap(alerted), "baseline_done": True})
-        return f"Baseline: {len(rows)} власних новин позначено баченими (без розсилки)."
+        storage.save_fb_missing_state(
+            {"alerted": _cap(alerted), "baseline_done": True, "baseline_ver": BASELINE_VER}
+        )
+        return f"Baseline: {len(rows)} миколаївських новин позначено баченими (без розсилки)."
 
     flagged = 0
     checked = 0
@@ -425,8 +443,10 @@ async def check_fb_missing(bot, chat_id=None, force=False):
             await _send_alert(bot, chat_id, row, page_html=page_html)
             flagged += 1
 
-    storage.save_fb_missing_state({"alerted": _cap(alerted), "baseline_done": True})
-    summary = f"Перевірено {checked} нових власних новин, без ФБ — {flagged}."
+    storage.save_fb_missing_state(
+        {"alerted": _cap(alerted), "baseline_done": True, "baseline_ver": BASELINE_VER}
+    )
+    summary = f"Перевірено {checked} нових миколаївських новин, без ФБ — {flagged}."
     if postponed:
         summary += f" Відкладено (час не настав / сторінка не читається) — {postponed}."
     return summary
@@ -438,7 +458,7 @@ async def fbmissing_handler(update, context):
     """/fbmissing — прогнати монітор зараз (ігнорує гейт годин, поважає «раз»).
     Алерти йдуть у чат, де викликано."""
     chat_id = update.effective_chat.id
-    msg = await update.message.reply_text("⏳ Перевіряю власні новини у Facebook...")
+    msg = await update.message.reply_text("⏳ Перевіряю миколаївські новини у Facebook...")
     try:
         summary = await check_fb_missing(context.bot, chat_id=chat_id, force=True)
     except Exception as e:
@@ -448,32 +468,32 @@ async def fbmissing_handler(update, context):
 
 
 async def fbmissing_test_handler(update, context):
-    """/fbmissing_test — прев'ю формату: бере найсвіжішу власну новину (за
-    ~48 год) і шле блок підказки+чернетки в поточний чат, НЕ чіпаючи стан
-    (можна ганяти скільки завгодно). Перевірка рендеру без спаму редакції."""
+    """/fbmissing_test — прев'ю формату: бере найсвіжішу миколаївську новину і
+    шле блок підказки+чернетки в поточний чат, НЕ чіпаючи стан (можна ганяти
+    скільки завгодно). Перевірка рендеру без спаму редакції."""
     chat_id = update.effective_chat.id
     if not db.is_configured():
         await update.message.reply_text("БД сайту не налаштована.")
         return
     msg = await update.message.reply_text("⏳ Готую прев'ю...")
 
-    def _newest_own():
+    def _newest():
         now = int(datetime.now().timestamp())
         sql = (
             "SELECT n.id AS id, n.slug_ua AS slug_ua, n.slug AS slug, "
             "n.category AS category, n.published AS published, n.owner_id AS owner_id, "
             "TRIM(CONCAT(COALESCE(u.first_name,''), ' ', COALESCE(u.last_name,''))) AS name "
             "FROM nodes n LEFT JOIN users u ON u.id = n.owner_id "
-            "WHERE n.type = 'news' AND n.status = 1 AND n.own_material = 1 "
+            "WHERE n.type = 'news' AND n.status = 1 AND n.region = %s "
             "AND n.published <= %s ORDER BY n.published DESC LIMIT 1"
         )
-        rows = db.query(sql, (now,))
+        rows = db.query(sql, (REGION_MYKOLAIV, now))
         return rows[0] if rows else None
 
     try:
-        row = await asyncio.to_thread(_newest_own)
+        row = await asyncio.to_thread(_newest)
         if not row:
-            await msg.edit_text("Власних новин не знайдено.")
+            await msg.edit_text("Миколаївських новин не знайдено.")
             return
         await msg.delete()
         await _send_alert(context.bot, chat_id, row, note="(тест формату — стан не змінено)")
