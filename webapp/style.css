@@ -1449,6 +1449,62 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   animation: imspin .9s linear infinite; flex: 0 0 auto;
 }
 @keyframes imspin { to { transform: rotate(360deg); } }
+/* Серія кейсу — вертикальний таймлайн: рейка зліва, точки-дати, заголовок
+   жирним і ВЛІВО (кнопка центрувала текст — виглядало як каша), донор
+   пігулкою, автор із кружечком фото */
+.itl { padding-top: 14px; }
+.itl-item {
+  display: flex; gap: 12px; width: 100%; text-align: left; position: relative;
+  padding: 0 0 20px; cursor: pointer; color: inherit; text-decoration: none;
+  align-items: stretch;
+}
+.itl-item:last-child { padding-bottom: 4px; }
+.itl-rail { flex: 0 0 14px; position: relative; }
+.itl-rail::before {
+  content: ""; position: absolute; left: 6px; top: 16px; bottom: -4px;
+  width: 2px; background: var(--line);
+}
+.itl-item:last-child .itl-rail::before { display: none; }
+.itl-dot {
+  position: absolute; top: 4px; left: 0; width: 14px; height: 14px;
+  border-radius: 50%; background: var(--card); border: 3px solid var(--blue);
+}
+.itl-dot.key { background: var(--good); border-color: var(--good); }
+.itl-body { flex: 1 1 auto; min-width: 0; }
+.itl-date {
+  display: block; font-size: 11.5px; font-weight: 700; color: var(--muted);
+  font-variant-numeric: tabular-nums; margin-bottom: 3px;
+}
+.itl-title { display: block; font-size: 14.5px; font-weight: 700; line-height: 1.35; }
+.itl-badges { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.itl-badge {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  background: var(--fill); border-radius: 7px; padding: 2px 7px;
+}
+.itl-badge.key { color: var(--good); background: var(--good-soft); }
+.itl-foot {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px; min-width: 0;
+}
+.itl-author {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  color: var(--muted); white-space: nowrap; flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.itl-author .imp-av { margin-left: 0; flex: 0 0 auto; }
+.itl-author .ava { width: 20px; height: 20px; font-size: 8px; }
+.itl-donor {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: auto;
+  background: var(--blue-soft); border-radius: 9px; padding: 3px 8px 3px 4px;
+  flex: 0 0 auto; max-width: 55%;
+}
+.itl-donor .imp-donor { width: 18px; height: 18px; }
+.itl-donor .imp-donor-txt { font-size: 8px; }
+.itl-donor-name {
+  font-size: 11.5px; font-weight: 700; color: var(--blue);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.itl-chev { position: absolute; right: 0; top: 22px; color: var(--muted); }
+
 /* Заголовок у серії — лінк на матеріал, але без підкреслення: у списку з
    десяти рядків підкреслене синє зливається в кашу */
 #imd-body a.pub-title { text-decoration: none; }

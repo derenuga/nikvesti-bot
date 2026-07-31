@@ -3150,7 +3150,7 @@ function paintImpact(im) {
         можна порадувати донора.</div>` : ""}
     </div>
     <div class="dept-title">Серія · ${im.articles.length}</div>
-    <div class="soft-card">${im.articles.map((a) => impactArticleRow(a, ro)).join("")}</div>
+    <div class="soft-card itl">${im.articles.map((a) => impactTimelineItem(a, ro)).join("")}</div>
     ${ro ? "" : `<div class="mr-hint">тап по матеріалу — відкрити, зробити ключовим або прибрати з серії</div>
     <button class="link-btn" id="imd-add-art">${icon("plus")} Додати матеріал за лінком</button>`}
     <div class="dept-title">${ro ? "Команда кейсу" : "Кому записати"}</div>
@@ -3173,32 +3173,37 @@ function paintImpact(im) {
   if (!ro) wireImpactDetail(im);
 }
 
-/* Рядок серії. У читанні заголовок — лінк на матеріал; у редакторському
-   режимі весь рядок відкриває шторку з ПІДПИСАНИМИ діями. Дві голі іконки
-   (медалька і хрестик) провалились у житті першого ж дня: Олег видалив
-   матеріал, не зрозумівши, що це видалення, а «як поставити ключовий» не
-   зрозумів узагалі. Іконка без слова — це загадка, а не кнопка. */
-function impactArticleRow(a, ro) {
-  const meta = [a.date, a.authors, a.partner_name].filter(Boolean).join(" · ");
-  const tags = `${a.role === "fixer" ? "новина-фіксація · " : ""}${
-    a.is_key ? "★ ключовий · " : ""}${esc(meta)}`;
-  if (ro) {
-    return `
-    <div class="td-row">
-      <span class="pub-t">
-        <a class="pub-title" href="${esc(a.url)}" data-ext="${esc(a.url)}">${esc(a.title || a.url)}</a>
-        <span class="pub-tags">${tags}</span>
-      </span>
-    </div>`;
-  }
-  return `
-    <button class="td-row imd-art" data-imart="${a.id}">
-      <span class="pub-t">
-        <span class="pub-title">${esc(a.title || a.url)}</span>
-        <span class="pub-tags">${tags}</span>
-      </span>
-      ${icon("chevron-right", "ic chev")}
-    </button>`;
+/* Матеріал серії — пункт ВЕРТИКАЛЬНОГО таймлайна (Олег, 30.07: «не понятно,
+   что это серия — полоска зліва, на ній точки-дати, заголовок виділити,
+   донора виділити, автора не скопом»). Зліва рейка з точкою (зелена повна —
+   ключовий, контурна — решта), праворуч: дата, заголовок, бейджі ролі,
+   внизу автор із кружечком фото і донор кольоровою пігулкою.
+
+   У читанні пункт — лінк на матеріал; у редакторському режимі відкриває
+   шторку з підписаними діями (іконки-загадки провалились першого ж дня). */
+function impactTimelineItem(a, ro) {
+  const badges = [
+    a.is_key ? `<span class="itl-badge key">★ ключовий</span>` : "",
+    a.role === "fixer" ? `<span class="itl-badge">фіксація результату</span>` : "",
+  ].filter(Boolean).join("");
+  const inner = `
+    <span class="itl-rail"><i class="itl-dot${a.is_key ? " key" : ""}"></i></span>
+    <span class="itl-body">
+      <span class="itl-date">${esc(a.date)}</span>
+      <span class="itl-title">${esc(a.title || a.url)}</span>
+      ${badges ? `<span class="itl-badges">${badges}</span>` : ""}
+      ${a.authors || a.partner_name ? `<span class="itl-foot">
+        ${a.authors ? `<span class="itl-author">
+          <span class="imp-av">${avatar(a.authors, personEntry(a.authors) || {}, 20)}</span>
+          ${esc(a.authors)}</span>` : ""}
+        ${a.partner_name ? `<span class="itl-donor">${donorChip(a.partner_name)}
+          <span class="itl-donor-name">${esc(a.partner_name)}</span></span>` : ""}
+      </span>` : ""}
+    </span>`;
+  return ro
+    ? `<a class="itl-item" href="${esc(a.url)}" data-ext="${esc(a.url)}">${inner}</a>`
+    : `<button class="itl-item" data-imart="${a.id}">${inner}
+        ${icon("chevron-right", "ic chev itl-chev")}</button>`;
 }
 
 /* Дії над матеріалом серії — шторка зі словами замість іконок-загадок. */
@@ -3402,9 +3407,9 @@ async function renderMyImpacts() {
    Це найкраща новина, яку екран може принести, — вона важливіша за цифри
    норми, тому стоїть над ними. Тап веде просто в кейс. Один банер, не стек:
    якщо кейсів кілька — найсвіжіший, решта за дверима «Мої імпакти». */
-function impactBannerHtml() {
+function impactBannerHtml(me) {
   const now = new Date();
-  const cur = (STATE.myImpacts || []).find((im) => {
+  const cur = myImpactsFresh(me).find((im) => {
     if (!im.date) return false;
     const [, mo, y] = im.date.split(".");
     return +mo === now.getMonth() + 1 && +y === now.getFullYear();
@@ -3423,13 +3428,25 @@ function impactBannerHtml() {
 
 /* Двері «Імпакти» на головній журналістки — лише коли медальки Є. Тихо, раз
    на сеанс, як стрічка подій: нуль медальок → нуль дверей, а не двері з
-   нулем. */
+   нулем. У перегляді чужими очима вантажимо імпакти ОБРАНОЇ людини (Олег,
+   30.07: «где на этом экране импакты журналиста?» — прев'ю їх не вантажило
+   взагалі). Кеш підписаний, чиї це імпакти, — зміна людини перечитує. */
+function myImpactsFresh(me) {
+  const key = me.preview ? me.name : "@me";
+  return STATE.myImpactsFor === key ? (STATE.myImpacts || []) : [];
+}
+
 async function loadMyImpacts() {
-  if (STATE.myImpacts) return;
+  const me = viewPerson();
+  const key = me.preview ? me.name : "@me";
+  if (STATE.myImpactsFor === key && STATE.myImpacts) return;
   try {
-    STATE.myImpacts = (await api("/api/impacts/mine")).impacts || [];
+    const q = me.preview ? `?person=${encodeURIComponent(me.name)}` : "";
+    STATE.myImpacts = (await api("/api/impacts/mine" + q)).impacts || [];
+    STATE.myImpactsFor = key;
   } catch (e) { return; }
-  if (STATE.view === "home" && STATE.myImpacts.length) renderJournalist();
+  if ((STATE.view === "home" || STATE.view === "preview")
+      && STATE.myImpacts.length) renderJournalist();
 }
 
 /* ---------- Хто коли відсутній ----------
@@ -4912,7 +4929,7 @@ function renderJournalist() {
       </div>
       <div class="me-ring" id="me-ring">${meRingHtml(null)}</div>
     </div>
-    ${me.preview ? "" : impactBannerHtml()}
+    ${impactBannerHtml(me)}
     <div id="my-kpi">${kpiSkeleton()}</div>
     ${open.length ? `<div class="soft-card">${open.map((t) => {
       const tp = taskProject(t);
@@ -4952,9 +4969,9 @@ function renderJournalist() {
         "завдання, які вже закрито", closed.length) : ""}
       ${doorHtml("myhist", "bar-chart", "c-sky", "KPI по місяцях",
         "як іде місяць до місяця", "")}
-      ${(me.preview ? null : STATE.myImpacts) && STATE.myImpacts.length
+      ${myImpactsFresh(me).length
         ? doorHtml("myimpacts", "award", "c-good", "Мої імпакти",
-            "що змінилось завдяки твоїм текстам", STATE.myImpacts.length)
+            "що змінилось завдяки твоїм текстам", myImpactsFresh(me).length)
         : ""}
       <button class="door c-good${me.preview ? " off" : ""}"
         ${me.preview ? 'disabled aria-disabled="true"' : "data-ask"}>
@@ -4978,7 +4995,8 @@ function renderJournalist() {
     nav("impact");
   };
   renderMyKpi();
-  if (!me.preview) { loadMyFeed(); loadMyImpacts(); }
+  if (!me.preview) loadMyFeed();
+  loadMyImpacts();
 }
 
 /* Лічильник на дверях «Події». Стрічку тягнемо ОДИН раз і кладемо в STATE:

@@ -408,6 +408,36 @@ async def main():
         finally:
             await browser.close()
 
+        # ---------- перегляд чужими очима: імпакти видно і там ----------
+        # Олег, 30.07: «где на этом экране импакты журналиста?» — прев'ю їх
+        # не вантажило взагалі, хоча правило «я хочу бачити все, що у неї»
+        browser = await pw.chromium.launch(**launch)
+        page = await browser.new_page(viewport={"width": 390, "height": 844})
+        await page.route("**/static/*", lambda r: asyncio.ensure_future(
+            r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
+        await page.route("https://app.local/", lambda r: asyncio.ensure_future(
+            r.fulfill(path=str(WEBAPP / "index.html"), content_type="text/html")))
+        await page.add_init_script(
+            "window.BOOT = " + json.dumps(BOOT) + ";"
+            "window.LIST = [];"
+            "window.MINE = " + json.dumps(MINE) + ";"
+            "window.READY = " + json.dumps(READY) + ";" + STUB)
+        await page.goto("https://app.local/")
+        await page.wait_for_selector("#screen-main:not(.hidden)", timeout=10000)
+        try:
+            await page.evaluate("nav('preview', 'Аліна Квітко')")
+            await page.wait_for_selector(".imp-banner", timeout=5000)
+            check("банер імпакту видно і в перегляді чужими очима",
+                  "багатоповерхівок" in await page.inner_text(".imp-banner"))
+            calls = await page.evaluate("window.__calls")
+            check("імпакти тягнуться для ОБРАНОЇ людини",
+                  any("/api/impacts/mine" in c["url"] and "person=" in c["url"]
+                      for c in calls))
+            check("і двері «Мої імпакти» на місці",
+                  await page.locator('.door[data-nav="myimpacts"]').count() == 1)
+        finally:
+            await browser.close()
+
         # ---------- журналістка: двері, список, read-only ----------
         browser = await pw.chromium.launch(**launch)
         page = await browser.new_page(viewport={"width": 390, "height": 844})
