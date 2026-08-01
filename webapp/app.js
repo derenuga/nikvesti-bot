@@ -3730,7 +3730,9 @@ function overdueCard(t) {
       ${t.note ? `<div class="al-why">${esc(t.note)}</div>` : ""}
       <div class="al-actions">
         <button class="sbtn ${done > 0 ? "good" : "danger"}" data-oclose="${t.id}">
-          ${done > 0 ? `Зарахувати ${done} з ${t.qty}` : `Зняти (0 з ${t.qty})`}</button>
+          ${done > 0
+            ? `Закрити завдання<span class="sbtn-sub">зараховано ${done} з ${t.qty}</span>`
+            : `Зняти завдання<span class="sbtn-sub">нічого не зараховано</span>`}</button>
         <button class="sbtn primary" data-oext="${t.id}">Новий дедлайн</button>
       </div>
     </div>`;

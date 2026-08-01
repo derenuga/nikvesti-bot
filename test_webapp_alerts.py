@@ -439,8 +439,8 @@ async def main():
                   and "Новий дедлайн" in card)
             check("старої кнопки «Зняти» гуртом немає",
                   await page.locator("[data-odrop]").count() == 0)
-            check("при нулі зарахованого кнопка чесно каже «Зняти (0 з 2)»",
-                  "Зняти (0 з 2)" in card)
+            check("при нулі зарахованого — «Зняти завдання · нічого не зараховано»",
+                  "Зняти завдання" in card and "нічого не зараховано" in card)
             check("прострочене потрапило в лічильник меню",
                   await page.locator(
                       '#bottomnav [data-view="alerts"] .bn-badge').count() == 1)
@@ -469,8 +469,9 @@ async def main():
             }""")
             await page.wait_for_selector("[data-oclose]", timeout=5000)
             card9 = await page.inner_text("#alerts-body")
-            check("з зарахованим кнопка називається «Зарахувати 9 з 10»",
-                  "Зарахувати 9 з 10" in card9)
+            check("з зарахованим — «Закрити завдання» + «зараховано 9 з 10» дрібним",
+                  "Закрити завдання" in card9 and "зараховано 9 з 10" in card9
+                  and await page.locator("[data-oclose] .sbtn-sub").count() == 1)
             check("кнопка зелена (good), не червона і не синя",
                   await page.locator("[data-oclose].good").count() == 1
                   and await page.locator("[data-oclose].danger").count() == 0)
