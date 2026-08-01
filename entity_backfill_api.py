@@ -109,18 +109,52 @@ def load_system_prompt():
     return body
 
 
-def fetch_range(from_date, to_date):
+# Що саме беремо з норі: /entity_backfill 2020-01-01 2024-01-01 articles.
+# Без фільтра діапазон тягне і новини, і статті — а це різні гроші: статей на
+# порядок менше, і догнати спершу їх (найвагоміші тексти, ядро імпакт-серій)
+# коштує пару доларів замість сотень за роки новин.
+KINDS = {"articles": "article", "news": "news", "all": None}
+
+
+def fetch_range(from_date, to_date, kind=None, only_missing=True):
+    """Статті діапазону для витягу.
+
+    kind — 'article' | 'news' | None (усе).
+    only_missing=True (дефолт): пропускаємо ті, що вже мають сутності або вже
+    пройшли витяг і законно порожні (`entity_attempts.done`). Інакше повторний
+    прогін того самого діапазону платив би вдруге, а `write_results` лише
+    апсертить зв'язки — старі, від попереднього прогону, не знімаються, і
+    стаття тягла б за собою об'єднання двох витягів. Свідомий перечит із
+    зняттям зв'язків — це /entity_resync, не бэкфіл.
+
+    Повертає (articles, skipped) — skipped показуємо в оцінці, щоб було видно,
+    за що саме не платимо.
+    """
     conn = ep.connect()
     cur = conn.cursor()
+    cur.execute(ep.ATTEMPTS_DDL)
+    conn.commit()
+
+    where = ["a.published >= extract(epoch FROM %s::date)",
+             "a.published <  extract(epoch FROM %s::date)"]
+    params = [from_date, to_date]
+    if kind:
+        where.append("a.kind = %s")
+        params.append(kind)
+    total_sql = "SELECT count(*) FROM articles a WHERE " + " AND ".join(where)
+    cur.execute(total_sql, params)
+    total = cur.fetchone()[0]
+
+    if only_missing:
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM article_entities ae WHERE ae.article_id = a.id)")
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM entity_attempts t "
+            "WHERE t.article_id = a.id AND t.done)")
     cur.execute(
-        """
-        SELECT id, published, title_ua, title_ru, text_ua, text_ru
-        FROM articles
-        WHERE published >= extract(epoch FROM %s::date)
-          AND published <  extract(epoch FROM %s::date)
-        ORDER BY published DESC
-        """,
-        (from_date, to_date),
+        "SELECT a.id, a.published, a.title_ua, a.title_ru, a.text_ua, a.text_ru "
+        "FROM articles a WHERE " + " AND ".join(where) + " ORDER BY a.published DESC",
+        params,
     )
     arts = []
     for aid, pub, tua, tru, xua, xru in cur.fetchall():
@@ -140,7 +174,7 @@ def fetch_range(from_date, to_date):
         })
     cur.close()
     conn.close()
-    return arts
+    return arts, total - len(arts)
 
 
 def chunk_articles(arts, system_len):
@@ -161,8 +195,8 @@ def chunk_articles(arts, system_len):
     return chunks
 
 
-def cmd_count(from_date, to_date):
-    arts = fetch_range(from_date, to_date)
+def cmd_count(from_date, to_date, kind=None):
+    arts, skipped = fetch_range(from_date, to_date, kind)
     n = len(arts)
     est_in = n * EST_IN_PER_ART
     est_out = n * EST_OUT_PER_ART
@@ -194,8 +228,8 @@ def _make_request(client, art):
 def cmd_run(from_date, to_date, outpath):
     import anthropic
     client = anthropic.Anthropic()  # ANTHROPIC_API_KEY з env
-    arts = fetch_range(from_date, to_date)
-    print(f"статей: {len(arts)}")
+    arts, skipped = fetch_range(from_date, to_date)
+    print(f"статей: {len(arts)} (пропущено вже розібраних: {skipped})")
     if not arts:
         print("нема чого робити")
         return

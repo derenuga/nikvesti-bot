@@ -7,12 +7,17 @@ Railway: у бота вже є ANTHROPIC_API_KEY і внутрішній дос�
 (BOT_DATABASE_URL), тож зовнішній термінал не потрібен.
 
 Команди (whitelist ALLOWED_USER_IDS):
-    /entity_estimate [з] [по]  — к-сть статей у діапазоні + оцінка вартості
+    /entity_estimate [з] [по] [тип]  — к-сть статей + оцінка вартості
                                  (read-only, грошей не витрачає; дефолт
-                                 2022-01-01..2027-01-01)
-    /entity_backfill <з> <по>  — ПЛАТНО: відправити діапазон у Batch API
-                                 (Haiku 4.5, −50%), полінг у фоні, по
-                                 завершенню — злиття в нору і звіт у чат
+                                 2022-01-01..2027-01-01, тип all)
+    /entity_backfill <з> <по> [тип]  — ПЛАТНО: діапазон у Batch API (Haiku 4.5,
+                                 −50%), полінг у фоні, по завершенню — злиття
+                                 в нору і звіт у чат.
+                                 тип: articles | news | all — статей на порядок
+                                 менше за новини, тож догнати спершу їх коштує
+                                 пару доларів замість сотень за роки новин.
+                                 Уже розібране пропускається (не платимо вдруге
+                                 і не нашаровуємо зв'язки — див. fetch_range)
     /entity_status             — сутності/зв'язки по kind + стан батчів
     /entity_resume             — переприв'язати полінг після редеплою
                                  (стан батчів живе в sync_state нори)
@@ -76,23 +81,34 @@ async def entity_estimate_handler(update, context):
     args = context.args or []
     from_date = args[0] if len(args) > 0 else "2022-01-01"
     to_date = args[1] if len(args) > 1 else "2027-01-01"
+    kind_arg = (args[2] if len(args) > 2 else "all").lower()
+    if kind_arg not in api.KINDS:
+        await update.message.reply_text(
+            "Третій аргумент — тип матеріалів: articles | news | all (дефолт all).\n"
+            "Напр.: /entity_estimate 2009-01-01 2024-01-01 articles")
+        return
+    kind = api.KINDS[kind_arg]
     msg = await update.message.reply_text("🦊 Рахую діапазон (read-only)…")
     try:
-        arts = await asyncio.to_thread(api.fetch_range, from_date, to_date)
+        arts, skipped = await asyncio.to_thread(
+            api.fetch_range, from_date, to_date, kind)
         n = len(arts)
         est_in = n * api.EST_IN_PER_ART
         est_out = n * api.EST_OUT_PER_ART
         cost = est_in * api.PRICE_IN + est_out * api.PRICE_OUT
         sys_len = len(api.get_system_prompt().encode("utf-8"))
         n_chunks = len(api.chunk_articles(arts, sys_len)) if arts else 0
+        tail = f" {kind_arg}" if kind else ""
         await msg.edit_text(
-            f"🦊 Оцінка бэкфіла {from_date}…{to_date}\n\n"
-            f"Статей: {n}\n"
-            f"Токени: ~{est_in/1e6:.0f}M вх + ~{est_out/1e6:.0f}M вих\n"
-            f"Вартість (Haiku 4.5, батч −50%): ≈ ${cost:.0f}\n"
+            f"🦊 Оцінка бэкфіла {from_date}…{to_date}"
+            f"{' · ' + kind_arg if kind else ''}\n\n"
+            f"До витягу: {n}\n"
+            f"Вже розібрано, не платимо: {skipped}\n"
+            f"Токени: ~{est_in/1e6:.1f}M вх + ~{est_out/1e6:.1f}M вих\n"
+            f"Вартість (Haiku 4.5, батч −50%): ≈ ${cost:.2f}\n"
             f"(без урахування prompt-cache — по факту дешевше)\n"
             f"Батчів: {n_chunks}\n\n"
-            f"Запуск (платно): /entity_backfill {from_date} {to_date}"
+            f"Запуск (платно): /entity_backfill {from_date} {to_date}{tail}"
         )
     except Exception as e:
         await msg.edit_text(f"❌ Помилка оцінки: {e}")
@@ -106,10 +122,17 @@ async def entity_backfill_handler(update, context):
     args = context.args or []
     if len(args) < 2:
         await update.message.reply_text(
-            "Формат: /entity_backfill 2022-01-01 2027-01-01\n"
+            "Формат: /entity_backfill <з> <по> [articles|news|all]\n"
+            "Напр.: /entity_backfill 2009-01-01 2024-01-01 articles\n"
             "Спершу оцінка (безкоштовно): /entity_estimate"
         )
         return
+    kind_arg = (args[2] if len(args) > 2 else "all").lower()
+    if kind_arg not in api.KINDS:
+        await update.message.reply_text(
+            "Третій аргумент — тип матеріалів: articles | news | all (дефолт all).")
+        return
+    kind = api.KINDS[kind_arg]
     if _load_state():
         await update.message.reply_text(
             "Уже є незавершений прогін — /entity_status. "
@@ -126,13 +149,15 @@ async def entity_backfill_handler(update, context):
     # посеред відправки не губить уже створені батчі (/entity_resume або
     # /entity_recover їх підхоплять).
     state = {"batch_ids": [], "done": [], "from": from_date, "to": to_date,
+             "kind": kind_arg,
              "chat_id": update.effective_chat.id, "started": int(time.time()),
              "articles": 0, "submitting": True}
 
     def submit():
         import anthropic
         client = anthropic.Anthropic()
-        arts = api.fetch_range(from_date, to_date)
+        arts, skipped = api.fetch_range(from_date, to_date, kind)
+        state["skipped"] = skipped
         if not arts:
             return 0
         state["articles"] = len(arts)
@@ -164,11 +189,15 @@ async def entity_backfill_handler(update, context):
         return
     if not n_arts:
         await asyncio.to_thread(_clear_state)
-        await msg.edit_text("У діапазоні немає статей.")
+        await msg.edit_text(
+            "У діапазоні немає статей до витягу — усе вже розібрано.\n"
+            "Свідомий перечит конкретних матеріалів — /entity_resync.")
         return
 
+    skipped = state.get("skipped") or 0
     await msg.edit_text(
-        f"🦊 Відправлено {n_arts} статей у {len(state['batch_ids'])} батч(ів).\n"
+        f"🦊 Відправлено {n_arts} статей у {len(state['batch_ids'])} батч(ів)"
+        f"{f', пропущено вже розібраних: {skipped}' if skipped else ''}.\n"
         f"Полю щохвилини; зазвичай хвилини–година. Стан: /entity_status\n"
         f"Якщо бот редеплоїться — /entity_resume переприв'яже полінг."
     )
@@ -348,19 +377,8 @@ INCR_MAX_ATTEMPTS = 3
 # сторож масового збою стоїть на 50% і жодного разу не взвівся. Тепер відбір
 # іде за ФАКТОМ відсутності зв'язків, тож будь-яка дірка — свіжа, стара чи
 # залишена збоєм API — затягується сама наступної години.
-ATTEMPTS_DDL = """
-CREATE TABLE IF NOT EXISTS entity_attempts (
-    article_id BIGINT PRIMARY KEY,
-    attempts   INT NOT NULL DEFAULT 0,
-    last_error TEXT,
-    done       BOOLEAN NOT NULL DEFAULT FALSE,
-    updated    BIGINT
-)
-"""
-
-
 def _ensure_attempts_table():
-    bot_db.execute(ATTEMPTS_DDL)
+    bot_db.execute(ep.ATTEMPTS_DDL)
 
 
 def _incr_floor():

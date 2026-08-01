@@ -96,6 +96,20 @@ INSERT INTO sync_state (key, value) VALUES ('entity_last_id', '0')
 ON CONFLICT (key) DO NOTHING;
 """
 
+# Слід спроб витягу. Живе тут, а не в handlers/entity_layer, бо потрібна двом
+# модулям одразу: інкремент нею самозаліковується (повторює впалу статтю до
+# 3 разів), а бэкфіл — щоб не платити вдруге за статті, які вже пройшли витяг
+# і законно не мають сутностей (done).
+ATTEMPTS_DDL = """
+CREATE TABLE IF NOT EXISTS entity_attempts (
+    article_id BIGINT PRIMARY KEY,
+    attempts   INT NOT NULL DEFAULT 0,
+    last_error TEXT,
+    done       BOOLEAN NOT NULL DEFAULT FALSE,
+    updated    BIGINT
+)
+"""
+
 
 def get_url():
     # NORA_URL — зовнішній запуск (Mac/dev, публічний URL Railway);
