@@ -140,7 +140,8 @@ async def capture_instagram(profile, stats, follows, unfollows, total_posts, ree
 #
 # У FB та IG знімок піггібеком на недільний звіт; у цих чотирьох звіту в чат
 # немає, тож ходимо по джерела самі — раз на тиждень це дешево (TG: ~8 сторінок
-# стрічки t.me; TikTok/YouTube: 2-3 запити API; Viber: один).
+# стрічки t.me; TikTok/YouTube: 2-3 запити API; Viber: одна публічна сторінка
+# запрошення — його API метрик аудиторії не віддає).
 #
 # Вікно — СІМ ДНІВ, що закінчуються сьогодні, як і в Meta-звітах: тижневий зріз
 # має означати те саме, з якої мережі його не взяти.
@@ -217,16 +218,17 @@ async def capture_youtube():
 
 
 async def capture_viber():
-    """Зріз Viber: підписники — ЄДИНА метрика, яку віддає API. Пости беремо з
-    власного лічильника дзеркала (за місяць — тижневого Viber не має)."""
+    """Зріз Viber: підписники — з публічної сторінки запрошення каналу
+    (viber_mirror.channel_followers). Channels Post API метрик аудиторії не
+    віддає взагалі — старий код читав неіснуюче subscribers_count із
+    get_account_info і мовчки писав None (тому в social_stats у Viber досі
+    не було жодного числа). Інших тижневих метрик немає: пости дзеркала —
+    місячний лічильник storage."""
     from handlers import viber_mirror as vb
 
-    if not vb.is_enabled():
-        raise RuntimeError("Viber не налаштовано (VIBER_AUTH_TOKEN)")
-    info = await asyncio.to_thread(vb.get_account_info)
-    followers = info.get("subscribers_count")
+    followers = await asyncio.to_thread(vb.channel_followers)
     await _record(VIBER, followers, None, None, None, None,
-                  {"window_days": WEEK_DAYS})
+                  {"window_days": WEEK_DAYS, "source": "invite_page"})
     return {"followers": followers}
 
 
@@ -309,7 +311,7 @@ async def record_month(year, month, blocks, source="api"):
         elif platform == YOUTUBE:
             rows.append(_month_row(
                 platform, month_date, followers=data.get("followers"),
-                views=data.get("views"),
+                views=data.get("views"), posts=data.get("videos"),
                 extra={"watch_hours": data.get("watch_hours")}, source=source))
         elif platform == INSTAGRAM:
             rows.append(_month_row(
