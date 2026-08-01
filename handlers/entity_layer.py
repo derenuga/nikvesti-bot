@@ -333,8 +333,74 @@ async def _ingest(bot, state, client):
 
 # ---------- авто-інкремент нових статей (щогодини :55) ----------
 
+# Наявність ключа = інкремент увімкнено (значення більше НЕ курсор, див. нижче).
 INCR_CURSOR_KEY = "entity_incr_last_id"
+# Підлога: нижче цього id не заглядаємо (старий архів веде бэкфіл, а не інкремент).
+INCR_FLOOR_KEY = "entity_incr_floor"
 INCR_MAX_PER_RUN = 120   # захист: за один прогін не більше (наздоганяння дірок частинами)
+# Скільки разів пробуємо статтю, перш ніж визнати її безнадійною. Три спроби
+# рознесені в часі на години — переживає і збій API, і разову битість відповіді.
+INCR_MAX_ATTEMPTS = 3
+
+# Чому не курсор (баг 11.07–01.08.2026): інкремент ходив `id > cursor` і рухав
+# курсор за ВСЮ пачку, включно зі статтями, чий витяг упав. Повернутись до них
+# він не міг ніколи — за три тижні тихо втрачено 403 статті (48% виходу), бо
+# сторож масового збою стоїть на 50% і жодного разу не взвівся. Тепер відбір
+# іде за ФАКТОМ відсутності зв'язків, тож будь-яка дірка — свіжа, стара чи
+# залишена збоєм API — затягується сама наступної години.
+ATTEMPTS_DDL = """
+CREATE TABLE IF NOT EXISTS entity_attempts (
+    article_id BIGINT PRIMARY KEY,
+    attempts   INT NOT NULL DEFAULT 0,
+    last_error TEXT,
+    done       BOOLEAN NOT NULL DEFAULT FALSE,
+    updated    BIGINT
+)
+"""
+
+
+def _ensure_attempts_table():
+    bot_db.execute(ATTEMPTS_DDL)
+
+
+def _incr_floor():
+    """Підлога добору. Береться раз: початок покритого діапазону — усе, що нижче,
+    закривав платний бэкфіл, і сканувати його інкрементом не треба."""
+    raw = bot_db.get_state(INCR_FLOOR_KEY)
+    if raw is not None:
+        return int(raw)
+    rows = bot_db.query("SELECT min(article_id) AS m FROM article_entities")
+    floor = (rows[0]["m"] if rows else None) or 0
+    bot_db.set_state(INCR_FLOOR_KEY, floor)
+    return floor
+
+
+PENDING_SQL = """
+SELECT a.id, a.title_ua, a.title_ru, a.text_ua, a.text_ru
+FROM articles a
+LEFT JOIN entity_attempts t ON t.article_id = a.id
+WHERE a.id >= %s
+  AND NOT EXISTS (SELECT 1 FROM article_entities ae WHERE ae.article_id = a.id)
+  AND coalesce(t.done, false) = false
+  AND coalesce(t.attempts, 0) < %s
+ORDER BY a.id DESC
+LIMIT %s
+"""
+
+PENDING_COUNT_SQL = """
+SELECT count(*) AS n
+FROM articles a
+LEFT JOIN entity_attempts t ON t.article_id = a.id
+WHERE a.id >= %s
+  AND NOT EXISTS (SELECT 1 FROM article_entities ae WHERE ae.article_id = a.id)
+  AND coalesce(t.done, false) = false
+  AND coalesce(t.attempts, 0) < %s
+"""
+
+
+async def _pending_count(floor):
+    rows = await bot_db.aquery(PENDING_COUNT_SQL, (floor, INCR_MAX_ATTEMPTS))
+    return rows[0]["n"] if rows else 0
 
 
 def _extract_one(client, art):
@@ -354,29 +420,47 @@ def _extract_one(client, art):
     return obj.get("entities", []), resp.usage
 
 
+def _mark_attempt(article_id, error=None, done=False):
+    """Слід спроби. done=True — витяг пройшов, але сутностей у статті немає
+    (інакше стаття вічно виглядала б необробленою і бралась би щогодини)."""
+    bot_db.execute(
+        "INSERT INTO entity_attempts (article_id, attempts, last_error, done, updated) "
+        "VALUES (%s, 1, %s, %s, %s) "
+        "ON CONFLICT (article_id) DO UPDATE SET "
+        "attempts = entity_attempts.attempts + 1, "
+        "last_error = EXCLUDED.last_error, "
+        "done = entity_attempts.done OR EXCLUDED.done, "
+        "updated = EXCLUDED.updated",
+        (article_id, error, done, int(time.time())))
+
+
 async def sync_entities_incremental(bot):
-    """Щогодини :55 (після синку дзеркала о :50): витяг сутностей із нових
-    статей нори. Тихий; опт-ін — працює лише коли курсор увімкнено
-    (/entity_increment_on). Вартість ~$0.006/статтю → ~$0.25/день."""
-    cursor_raw = await asyncio.to_thread(bot_db.get_state, INCR_CURSOR_KEY)
-    if cursor_raw is None:
+    """Щогодини :55 (після синку дзеркала о :50): витяг сутностей зі статей
+    нори, у яких сутностей ще немає. Тихий; опт-ін (/entity_increment_on).
+    Вартість ~$0.006/статтю → ~$0.25/день.
+
+    Відбір — за фактом відсутності зв'язків, НЕ за курсором: стаття, чий витяг
+    упав, лишається в черзі й повертається наступної години (до INCR_MAX_ATTEMPTS
+    спроб). Свіже беремо першим (ORDER BY id DESC), щоб добір старих дірок не
+    відсував поточний вихід редакції."""
+    if await asyncio.to_thread(bot_db.get_state, INCR_CURSOR_KEY) is None:
         return  # інкремент вимкнено
     if not os.environ.get("ANTHROPIC_API_KEY") or not bot_db.is_configured():
         return
     if await asyncio.to_thread(_load_state):
         return  # іде бэкфіл — не конкуруємо, наздоженемо наступної години
     try:
+        await asyncio.to_thread(_ensure_attempts_table)
+        floor = await asyncio.to_thread(_incr_floor)
         rows = await bot_db.aquery(
-            "SELECT id, title_ua, title_ru, text_ua, text_ru FROM articles "
-            "WHERE id > %s ORDER BY id ASC LIMIT %s",
-            (int(cursor_raw), INCR_MAX_PER_RUN))
+            PENDING_SQL, (floor, INCR_MAX_ATTEMPTS, INCR_MAX_PER_RUN))
         if not rows:
             return
 
         def extract_all():
             import anthropic
             client = anthropic.Anthropic()
-            results, n_err = [], 0
+            results, errs, empty = [], [], []
             usage = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
             for r in rows:
                 text_ua = (r["text_ua"] or "")[:ep.TEXT_CAP] or None
@@ -388,49 +472,76 @@ async def sync_entities_incremental(bot):
                        "text_ua": text_ua, "text_ru": text_ru}
                 try:
                     entities, u = _extract_one(client, art)
-                    results.append({"article_id": r["id"], "entities": entities})
+                    if entities:
+                        results.append({"article_id": r["id"], "entities": entities})
+                    else:
+                        empty.append(r["id"])
                     usage["input"] += u.input_tokens or 0
                     usage["output"] += u.output_tokens or 0
                     usage["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
                     usage["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0) or 0
-                except Exception:
-                    n_err += 1
-            return results, n_err, usage
+                except Exception as e:
+                    # Причину зберігаємо: раніше вона глушилась, і 48% втрат
+                    # три тижні виглядали як тиша. Видно в /entity_status.
+                    errs.append((r["id"], f"{type(e).__name__}: {e}"[:300]))
+            return results, errs, empty, usage
 
-        results, n_err, usage = await asyncio.to_thread(extract_all)
-        if n_err > len(rows) / 2:
-            # масовий збій (API лежить?) — курсор НЕ рухаємо, наступна година повторить
-            raise RuntimeError(f"інкремент сутностей: {n_err}/{len(rows)} збоїв витягу")
+        results, errs, empty, usage = await asyncio.to_thread(extract_all)
         if results:
             await asyncio.to_thread(ep.write_results, results)
+        if results or empty or errs:
             record_ai_usage(api.MODEL, input_tokens=usage["input"],
                             output_tokens=usage["output"],
                             cache_read=usage["cache_read"],
                             cache_creation=usage["cache_creation"])
-        # окремі збої (не масові) пропускаємо: курсор рухаємо, стаття залишиться
-        # без сутностей — краще, ніж вічний ретрай однієї битої статті
-        await asyncio.to_thread(bot_db.set_state, INCR_CURSOR_KEY, rows[-1]["id"])
+
+        def mark_all():
+            for aid in empty:
+                _mark_attempt(aid, done=True)
+            for aid, err in errs:
+                _mark_attempt(aid, error=err)
+
+        await asyncio.to_thread(mark_all)
+
+        # Сторож: раніше стояв на 50% і при фактичних 48% втрат мовчав три тижні.
+        # Тепер будь-який прогін, де впала бодай третина пачки, кричить — і з
+        # текстом помилки, щоб причина була видна одразу, а не через місяць.
+        if errs and len(errs) * 3 >= len(rows):
+            raise RuntimeError(
+                f"інкремент сутностей: {len(errs)}/{len(rows)} збоїв витягу; "
+                f"перша — стаття {errs[0][0]}: {errs[0][1]}")
     except Exception as e:
         await notify_error(bot, "інкремент сутнісного шару", e)
 
 
 async def entity_increment_on_handler(update, context):
-    """Увімкнути авто-інкремент: курсор стає на поточний max(id) нори —
-    обробляються лише статті, що з'являться ПІСЛЯ увімкнення (минуле — бэкфілом)."""
+    """Увімкнути авто-інкремент. Підлога добору — початок уже покритого
+    діапазону: інкремент веде свіже І затягує дірки в ньому (зокрема залишені
+    збоями витягу). Глибше підлоги — територія бэкфілу, туди не лізе."""
     if not _allowed(update):
         return
     existing = await asyncio.to_thread(bot_db.get_state, INCR_CURSOR_KEY)
     if existing is not None:
+        floor = await asyncio.to_thread(_incr_floor)
         await update.message.reply_text(
-            f"Інкремент уже увімкнено (курсор id={existing}). Вимкнути: /entity_increment_off")
+            f"Інкремент уже увімкнено (підлога id={floor}). "
+            f"Стан черги — /entity_status. Вимкнути: /entity_increment_off")
         return
-    rows = await bot_db.aquery("SELECT max(id) AS m FROM articles")
-    max_id = rows[0]["m"] or 0
-    await asyncio.to_thread(bot_db.set_state, INCR_CURSOR_KEY, max_id)
+    await asyncio.to_thread(_ensure_attempts_table)
+    rows = await bot_db.aquery("SELECT min(article_id) AS m FROM article_entities")
+    floor = rows[0]["m"] if rows else None
+    if not floor:
+        # Сутностей ще немає — інкременту нічого затягувати, стає на свіже.
+        rows = await bot_db.aquery("SELECT max(id) AS m FROM articles")
+        floor = (rows[0]["m"] or 0) + 1
+    await asyncio.to_thread(bot_db.set_state, INCR_FLOOR_KEY, floor)
+    await asyncio.to_thread(bot_db.set_state, INCR_CURSOR_KEY, floor)
+    pending = await _pending_count(floor)
     await update.message.reply_text(
-        f"🦊 Авто-інкремент сутностей увімкнено (з id={max_id}).\n"
-        f"Щогодини о :55 нові статті проходитимуть витяг (~$0.25/день, "
-        f"видно в /aicost). Вимкнути: /entity_increment_off")
+        f"🦊 Авто-інкремент сутностей увімкнено (підлога id={floor}).\n"
+        f"У черзі зараз {pending} статей — щогодини о :55 бере до "
+        f"{INCR_MAX_PER_RUN} (~$0.006/стаття, видно в /aicost).\n"
+        f"Вимкнути: /entity_increment_off")
 
 
 async def entity_increment_off_handler(update, context):
@@ -781,10 +892,36 @@ async def entity_status_handler(update, context):
     else:
         lines.append("\nАктивних прогонів немає.")
     incr = await asyncio.to_thread(bot_db.get_state, INCR_CURSOR_KEY)
-    if incr is not None:
-        lines.append(f"Авто-інкремент: увімкнено (курсор id={incr})")
+    if incr is None:
+        lines.append("\nАвто-інкремент: вимкнено (/entity_increment_on)")
     else:
-        lines.append("Авто-інкремент: вимкнено (/entity_increment_on)")
+        try:
+            await asyncio.to_thread(_ensure_attempts_table)
+            floor = await asyncio.to_thread(_incr_floor)
+            pending = await _pending_count(floor)
+            lines.append(f"\nАвто-інкремент: увімкнено (підлога id={floor})")
+            if pending:
+                hours = -(-pending // INCR_MAX_PER_RUN)  # ceil
+                lines.append(f"  у черзі {pending} статей "
+                             f"(~{hours} год добору, ~${pending * 0.006:.2f})")
+            else:
+                lines.append("  черга порожня — усе свіже розібрано")
+            bad = await bot_db.aquery(
+                "SELECT article_id, attempts, last_error FROM entity_attempts "
+                "WHERE last_error IS NOT NULL AND NOT done "
+                "ORDER BY updated DESC LIMIT 3")
+            if bad:
+                giveup = await bot_db.aquery(
+                    "SELECT count(*) AS n FROM entity_attempts "
+                    "WHERE NOT done AND attempts >= %s", (INCR_MAX_ATTEMPTS,))
+                n_giveup = giveup[0]["n"] if giveup else 0
+                lines.append(f"  збоїв витягу: {n_giveup} статей вичерпали "
+                             f"{INCR_MAX_ATTEMPTS} спроби; останні причини:")
+                for r in bad:
+                    lines.append(f"    {r['article_id']} ×{r['attempts']}: "
+                                 f"{(r['last_error'] or '')[:120]}")
+        except Exception as e:
+            lines.append(f"\nАвто-інкремент: увімкнено (стан черги недоступний: {e})")
     await update.message.reply_text("\n".join(lines))
 
 
