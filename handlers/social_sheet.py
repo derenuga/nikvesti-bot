@@ -16,10 +16,12 @@
     51–65        ✈️ TELEGRAM (підписники, сер. охоплення поста, пости, перегляди,
                  ERR) — офіційного API статистики немає, парсимо веб-дзеркало
                  t.me/s (та сама механіка, що telegram_stats.py)
-    67–81        ▶️ YOUTUBE, 83–97 🎵 TIKTOK, 99–113 💜 VIBER — повноцінні
-                 блоки-каркаси (формат, дельти-формули, підсумки, спарклайни),
-                 бот їх ПОКИ не заповнює: числа приїдуть міграцією зі старої
-                 ручної таблиці і згодом з їх API; формули оживають самі
+    67–81        ▶️ YOUTUBE (підписники, перегляди, години перегляду, контент
+                 з API; CTR — вручну, покази лише в Studio), 83–97 🎵 TIKTOK
+                 (усе з API, крім охоплення — Display API його не віддає,
+                 вручну), 99–113 💜 VIBER (підписники — парсинг публічної
+                 сторінки запрошення, бо Channels Post API метрик аудиторії
+                 не має; пости — власний лічильник дзеркала; активні — вручну)
 
 Кожен блок: 12 рядків місяців + рядок «Підсумок {рік}» ЖИВИМИ ФОРМУЛАМИ
 (SUM/AVERAGE/LOOKUP по місяцях + порівняння з листом попереднього року через
@@ -183,10 +185,10 @@ TGB = {"key": "tg", "band": 51, "hdr": 52, "m1": 53, "total": 65,
        "headers": ["Місяць", "Підписники", "±", "Сер. охоплення поста", "Δ",
                    "Пости", "Перегляди за місяць", "ERR", "", "", "Тренд"]}
 # Блоки, додані після перших п'яти (набір колонок — за метриками старої
-# таблиці редакції). YT/TT/VB тепер наповнюються з API (YouTube/TikTok — повно,
-# Viber — лише підписники + власний лічильник постів; решта колонок Viber/TT
-# без API-джерела лишаються ручними). MANUAL_BLOCKS — набір для добудови старих
-# листів, а не «без авто-заповнення».
+# таблиці редакції). YT/TT наповнюються з API (крім охоплення TikTok і CTR
+# YouTube — цього API не віддають, вручну); Viber — підписники зі сторінки
+# запрошення + власний лічильник постів (активні користувачі — вручну).
+# MANUAL_BLOCKS — набір для добудови старих листів, а не «без авто-заповнення».
 YTB = {"key": "yt", "band": 67, "hdr": 68, "m1": 69, "total": 81,
        "color": YT, "emoji": "▶️",
        "title": "YOUTUBE — @nikvesti",
@@ -1133,10 +1135,13 @@ def _collect_youtube(year, month, with_followers):
     """Знімок YouTube за місяць через YouTube Analytics API (OAuth,
     handlers/youtube_analytics.py). Підписники — поточний лічильник Data API;
     перегляди й години перегляду за місяць — точний агрегат Analytics (не
-    дельта — API віддає їх напряму, у т.ч. заднім числом). Контент і CTR —
-    вручну (videosPublished/CTR API стабільно не віддає)."""
+    дельта — API віддає їх напряму, у т.ч. заднім числом). Контент — к-сть
+    відео, опублікованих у місяці (Data API, гортання плейлиста завантажень —
+    той самий get_videos_in_window, що шукає відео для /stat; рахує те, що
+    зараз публічне: видалене/приховане випадає заднім числом). CTR — вручну:
+    покази й impressions CTR Google не віддає жодним API, лише в Studio."""
     from handlers import youtube_analytics as yta
-    out = {"followers": None, "views": None, "watch_hours": None}
+    out = {"followers": None, "views": None, "watch_hours": None, "videos": None}
     if with_followers:
         out["followers"] = yta.get_channel_stats()["subscribers"]
 
@@ -1150,6 +1155,13 @@ def _collect_youtube(year, month, with_followers):
     if totals:
         out["views"] = totals["views"]
         out["watch_hours"] = totals["watch_hours"]
+    try:
+        _, _, since_ts, until_ts = _month_bounds(year, month)
+        out["videos"] = len(yta.get_videos_in_window(since_ts, until_ts,
+                                                     max_pages=8))
+    except Exception as e:
+        # лічильник контенту — не привід губити перегляди/години
+        print(f"social_sheet: YouTube к-сть контенту не порахувалась — {e}")
     return out
 
 
@@ -1176,16 +1188,21 @@ def _collect_telegram(year, month, with_followers):
 
 
 def _collect_viber(year, month, with_followers):
-    """Viber: підписники (get_account_info — ЄДИНА метрика, яку віддає API;
-    просмотрів/охоплення/активних немає) + к-сть постів, задзеркалених ботом
-    за місяць (власний лічильник, бо Viber історії постів не дає). Підписники
-    пишемо лише як живий знімок (with_followers) — у минулі місяці поточне
-    число не заносимо."""
+    """Viber: підписники — з ПУБЛІЧНОЇ сторінки запрошення каналу
+    (viber_mirror.channel_followers): Channels Post API метрик аудиторії не
+    віддає взагалі — старий код читав неіснуюче subscribers_count із
+    get_account_info і мовчки писав None. Підписники пишемо лише як живий
+    знімок (with_followers) — заднім числом їх не існує ніде. «Активні
+    користувачі» лишаються ручними (їх не віддає ні API, ні сторінка).
+    Пости — власний лічильник дзеркала за місяць (історії постів теж немає).
+    Збій парсера не губить пости — вони пишуться незалежно."""
     from handlers import viber_mirror as vb
     out = {"subscribers": None, "posts": None}
-    if with_followers and vb.is_enabled():
-        info = vb.get_account_info()
-        out["subscribers"] = info.get("subscribers_count")
+    if with_followers:
+        try:
+            out["subscribers"] = vb.channel_followers()
+        except Exception as e:
+            print(f"social_sheet: підписники Viber не знялись — {e}")
     out["posts"] = storage.get_viber_post_count(f"{year}-{month:02d}")
     return out
 
@@ -1256,13 +1273,15 @@ def _month_value_ranges(year, month, site, fb, ig, tg, yt=None, tt=None, vb=None
         if tg.get("views_total") is not None:
             data.append({"range": f"'{y}'!G{r}", "values": [[tg["views_total"]]]})
     if yt:
-        r = row(YTB)
+        r = row(YTB)   # H (CTR) лишається ручним — покази дає лише Studio
         if yt.get("followers") is not None:
             data.append({"range": f"'{y}'!B{r}", "values": [[yt["followers"]]]})
         if yt.get("views") is not None:
             data.append({"range": f"'{y}'!D{r}", "values": [[yt["views"]]]})
         if yt.get("watch_hours") is not None:
             data.append({"range": f"'{y}'!F{r}", "values": [[yt["watch_hours"]]]})
+        if yt.get("videos") is not None:
+            data.append({"range": f"'{y}'!G{r}", "values": [[yt["videos"]]]})
     if tt:
         r = row(TTB)   # F (Охоплення) лишається ручним — API не віддає
         if tt.get("followers") is not None:
@@ -1276,7 +1295,9 @@ def _month_value_ranges(year, month, site, fb, ig, tg, yt=None, tt=None, vb=None
         if tt.get("comments") is not None:
             data.append({"range": f"'{y}'!I{r}", "values": [[tt["comments"]]]})
     if vb:
-        r = row(VBB)   # D (Активні користувачі) лишається ручним — Viber API не віддає
+        # D (Активні користувачі) лишається ручним — його не віддає
+        # ні Channels Post API, ні сторінка запрошення
+        r = row(VBB)
         if vb.get("subscribers") is not None:
             data.append({"range": f"'{y}'!B{r}", "values": [[vb["subscribers"]]]})
         if vb.get("posts") is not None:
@@ -1342,8 +1363,10 @@ async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt", "tt
                 results["yt"] = (f"✅ підписники {yt.get('followers')} "
                                  f"(перегляди — коли місяць скінчиться)")
             else:
+                content = (f", контент {yt.get('videos')}"
+                           if yt.get("videos") is not None else "")
                 results["yt"] = (f"✅ перегляди {yt.get('views')}, "
-                                 f"години {yt.get('watch_hours')}")
+                                 f"години {yt.get('watch_hours')}{content}")
         except Exception as e:
             results["yt"] = f"⛔ {e}"
     if "tt" in blocks:
@@ -1363,10 +1386,11 @@ async def capture_month(year, month, blocks=("site", "fb", "ig", "tg", "yt", "tt
         try:
             vb = await asyncio.to_thread(_collect_viber, year, month, with_followers)
             if not any(v is not None for v in vb.values()):
-                vb, results["vb"] = None, "⛔ Viber не налаштовано / немає даних"
+                vb, results["vb"] = None, "⛔ ні підписників, ні постів за цей місяць"
             else:
-                results["vb"] = (f"✅ підписники {vb.get('subscribers')}, "
-                                 f"пости {vb.get('posts')}")
+                subs = vb.get("subscribers")
+                subs_txt = f"підписники {subs}, " if subs is not None else ""
+                results["vb"] = f"✅ {subs_txt}пости {vb.get('posts')}"
         except Exception as e:
             vb = None
             results["vb"] = f"⛔ {e}"
@@ -1607,7 +1631,8 @@ async def youtube_backfill_handler(update, context):
     (перегляди відео → D, години перегляду → F) з YouTube Analytics API за
     один запит (dimension=month, вся історія каналу). Дефолт старту — 2022
     (найраніший рік таблиці). Підписники історично лишаються з міграції;
-    контент і CTR — вручну. Ідемпотентно."""
+    контент історично — з міграції (наперед його заповнює місячний знімок з
+    Data API), CTR — вручну завжди. Ідемпотентно."""
     if _ALLOWED_USER_IDS and update.effective_user.id not in _ALLOWED_USER_IDS:
         await update.message.reply_text("⛔ Тільки для редакції.")
         return
@@ -1710,8 +1735,8 @@ async def youtube_backfill_handler(update, context):
                          "; реальні значення не чіпались, давні місяці — оцінка)")
         await msg.edit_text(
             f"✅ YouTube: залито {res['written']} місяців ({res['span']}) — "
-            f"перегляди відео й години перегляду.\n{subs_line}. Контент/CTR — "
-            f"вручну.\n{SPREADSHEET_URL}",
+            f"перегляди відео й години перегляду.\n{subs_line}. Контент наперед "
+            f"заповнює місячний знімок, CTR — вручну.\n{SPREADSHEET_URL}",
             disable_web_page_preview=True)
     except Exception as e:
         await msg.edit_text(f"❌ Не вдалось: {e}")

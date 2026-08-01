@@ -37,6 +37,7 @@ getFile Telegram, ≤180 с; крупніше/довше — текстом). me
 
 import asyncio
 import os
+import re
 from collections import deque
 
 import requests
@@ -44,6 +45,16 @@ import requests
 POST_URL = "https://chatapi.viber.com/pa/post"
 ACCOUNT_INFO_URL = "https://chatapi.viber.com/pa/get_account_info"
 SET_WEBHOOK_URL = "https://chatapi.viber.com/pa/set_webhook"
+
+# Публічна сторінка запрошення каналу — ЄДИНЕ місце, звідки можна зняти
+# кількість підписників: Channels Post API метрик аудиторії не віддає взагалі
+# (get_account_info — лише id/назва/фон/адміни, перевірено по доках 01.08.2026).
+INVITE_URL = os.environ.get(
+    "VIBER_INVITE_URL",
+    "https://invite.viber.com/?g2=AQB9azeV3mxLyFKXMr%2FgP1KiaBcHkvYt"
+    "%2BxVMBU4UyzpoJfKDxAEbchfkGrkG8lcr")
+_INVITE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
 TEXT_LIMIT = 7000
 PIC_TEXT_LIMIT = 768          # ліміт підпису у picture-повідомленні Viber
@@ -71,11 +82,30 @@ def is_enabled():
 
 
 def get_account_info():
-    """Дані Viber-акаунта каналу (статус, id, супер-адміни)."""
+    """Дані Viber-акаунта каналу (статус, id, супер-адміни). Метрик аудиторії
+    тут НЕМАЄ (subscribers_count канальний API не віддає) — підписники
+    знімаються з публічної сторінки запрошення, channel_followers()."""
     resp = requests.post(ACCOUNT_INFO_URL, json={"auth_token": _token()}, timeout=15).json()
     if resp.get("status") != 0:
         raise RuntimeError(resp.get("status_message") or resp)
     return resp
+
+
+def channel_followers():
+    """Підписники каналу з публічної сторінки запрошення (invite.viber.com) —
+    той самий підхід, що парсинг t.me для Telegram. Сторінка рендериться на
+    сервері, і в Angular TransferState лежить стан каналу з numberOfWatchers —
+    це лічильник підписників із застосунку (звірено 01.08.2026 з ручним рядом
+    таблиці аналітики). Лапки в стейті закодовані як &q;, тому спершу
+    розкодовуємо. Токен не потрібен — працює й без VIBER_AUTH_TOKEN."""
+    resp = requests.get(INVITE_URL, headers={"User-Agent": _INVITE_UA}, timeout=20)
+    resp.raise_for_status()
+    text = resp.text.replace("&q;", '"')
+    m = re.search(r'"numberOfWatchers":\s*(\d+)', text)
+    if not m:
+        raise RuntimeError("на сторінці запрошення не знайдено numberOfWatchers "
+                           "(Viber змінив розмітку?)")
+    return int(m.group(1))
 
 
 def _sender_id():
@@ -330,7 +360,13 @@ async def viber_setup_handler(update, context):
     try:
         info = await asyncio.to_thread(get_account_info)
         sender = await asyncio.to_thread(_sender_id)
+        try:
+            subs = await asyncio.to_thread(channel_followers)
+            subs_line = f"Підписники (зі сторінки запрошення): {subs}"
+        except Exception as e:
+            subs_line = f"Підписники: не знялись ({e})"
         lines = [f"✅ Акаунт: {info.get('name')} (id {info.get('id')})",
+                 subs_line,
                  f"Автор постів (from): {sender}", ""]
         members = info.get("members") or []
         if members:
