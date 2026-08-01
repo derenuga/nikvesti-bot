@@ -8,7 +8,7 @@
 **Стек:** Python, python-telegram-bot 21.9, APScheduler, BeautifulSoup, Google Analytics Data API, Google Search Console API, Anthropic Claude (tool use), matplotlib  
 **Бот:** @mykvisti_bot  
 **Чат редакції:** -1001857099475  
-**Канал "🦊 Микита винюхав":** -1004322862າ (тендери + документи влади + правоохоронці)
+**Канал "🦊 Микита винюхав":** -1004322862192 (тендери + документи влади + правоохоронці)
 
 ---
 
@@ -376,7 +376,7 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
 | Файл | Що там |
 |---|---|
 | [`docs/BACKLOG.md`](docs/BACKLOG.md) | **головний беклог**: усі напрямки, згруповані, з позначками стану (🔜 можна кодити · 🧭 потрібне рішення Олега · ⛔ заблоковано) |
-| [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) | довідка по проєкту; частина застаріла — джерело істини цей файл. Нумерований беклог звідси переїхав у BACKLOG.md |
+| [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) | залишкові деталі, яким немає модульного дока (навмисна поведінка ранкового повідомлення, TG-id Сергія). Копію довідки й нумерований беклог звідси прибрано 02.08 — вони застаріли й брехали |
 | [`docs/LONG_TERM_VISION.md`](docs/LONG_TERM_VISION.md) | стратегічні напрямки: підписки, власний сервер, AI-доступ до архіву. Нічого звідси не кодити без явного «кодь» |
 | [`docs/MINI_APP_REDESIGN_PLAN.md`](docs/MINI_APP_REDESIGN_PLAN.md) | хвилі робіт і беклог Mini App «Команда» |
 | [`docs/COMPENSATION_ADVISOR.md`](docs/COMPENSATION_ADVISOR.md) | порадник щодо зарплат і премій — задум із дослідженням, НЕ в розробці |

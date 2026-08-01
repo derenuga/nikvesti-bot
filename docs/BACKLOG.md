@@ -175,7 +175,7 @@ Mini App «Команда» — [`TEAM_APP_MODULE.md`](TEAM_APP_MODULE.md), пл
 
 | Файл | Що там |
 |---|---|
-| [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) | довідка по проєкту (частина застаріла — джерело істини `CLAUDE.md`) |
+| [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) | залишкові деталі без свого дока (навмисна поведінка ранку, TG-id Сергія); довідка — в `CLAUDE.md` |
 | [`ARCHIVE_INTELLIGENCE.md`](ARCHIVE_INTELLIGENCE.md) | стратегія інституційної пам'яті: рівні, вартість, продукти |
 | [`ENTITY_LAYER_PLAN.md`](ENTITY_LAYER_PLAN.md) | сутнісний шар і досьє v2 + розбір інциденту 11.07–01.08 |
 | [`LONG_TERM_VISION.md`](LONG_TERM_VISION.md) | підписки, власний сервер, AI над архівом |
