@@ -473,6 +473,15 @@ def test_bulk():
     check("повторний гурт по закритому класу нічого не робить",
           er.bulk_apply("carrier_only", "same", "тест") == 0)
 
+    # Клас, який сам себе називає двоїстим, не має пропонувати кнопку гурту:
+    # одного випадкового тапу досить, щоб зліпити «журналіста» з
+    # «журналістом-розслідувачем» назавжди.
+    check("двоїстий клас гуртом не закривається навіть при прямому виклику",
+          "carrier_only" not in er.BULK_MERGE
+          and "carrier_only" not in er.BULK_REJECT
+          and "word_swap" not in er.BULK_MERGE
+          and "containment_fill" not in er.BULK_MERGE)
+
     # відкат гурту — той самий, що для одиничного рішення
     v = bot_db.query("SELECT raw_norm FROM role_variants LIMIT 1")
     if v:

@@ -2160,20 +2160,35 @@ async def roles_bulk_callback(update, context):
             lines.append(f"· «{r['a_norm']}» ~ «{r['b_norm']}»{tail}")
         if len(rows) > 10:
             lines.append(f"…і ще {len(rows) - 10}")
+        bulkable = cls in BULK_MERGE or cls in BULK_REJECT
         hint = ("Зазвичай тут «так»." if cls in BULK_MERGE else
                 "Зазвичай тут «ні»." if cls in BULK_REJECT else
-                "Клас двоїстий — гуртом краще не чіпати, є /roles_dedup по одній.")
+                "Клас ДВОЇСТИЙ: у ньому і злиття, і різні посади — рішення "
+                "різне для кожної пари, тому кнопок гурту тут немає. "
+                "Проходити через /roles_dedup по одній.")
         lines.append("\n" + hint)
-        kb = [[InlineKeyboardButton(f"✅ Звести всі {len(rows)}",
-                                    callback_data=f"rbm:{cls}"),
-               InlineKeyboardButton(f"❌ Відхилити всі {len(rows)}",
-                                    callback_data=f"rbr:{cls}")],
-              [InlineKeyboardButton("← Класи", callback_data="rbc:*")]]
+        # Кнопки гурту показуємо ТІЛЬКИ там, де гурт дозволений. Інакше під
+        # класом, який сам себе називає двоїстим, усе одно висить «Звести всі»
+        # — і одного випадкового тапу досить, щоб зліпити «журналіста» з
+        # «журналістом-розслідувачем» назавжди.
+        kb = []
+        if bulkable:
+            kb.append([InlineKeyboardButton(f"✅ Звести всі {len(rows)}",
+                                            callback_data=f"rbm:{cls}"),
+                       InlineKeyboardButton(f"❌ Відхилити всі {len(rows)}",
+                                            callback_data=f"rbr:{cls}")])
+        kb.append([InlineKeyboardButton("← Класи", callback_data="rbc:*")])
         await query.edit_message_text("\n".join(lines)[:4000],
                                       reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if action not in ("rbm", "rbr"):
+        return
+    if cls not in BULK_MERGE and cls not in BULK_REJECT:
+        # Другий запобіжник: кнопка могла лишитись у старому повідомленні,
+        # відкритому до того, як клас перевели в «по одній».
+        await query.answer("Цей клас гуртом не закривається — /roles_dedup.",
+                           show_alert=True)
         return
     verdict = "same" if action == "rbm" else "different"
     await query.edit_message_text(
