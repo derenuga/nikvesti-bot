@@ -400,20 +400,27 @@ async def entity_docs_canon_callback(update, context):
 # «правильна» — питання смаку, а не факту. Лишається найзгадуваніша картка,
 # решта зливається в неї звичайним злиттям, тобто з аліасами й журналом.
 
-ORG_GROUPS_SQL = """
+FORM_GROUPS_SQL = """
 SELECT e.id, e.name_ua, e.name_ru, coalesce(e.mentions, 0) AS mentions
-FROM entities e WHERE e.kind = 'org'
+FROM entities e WHERE e.kind = %s
   AND coalesce(e.name_ua, e.name_ru) IS NOT NULL
 ORDER BY coalesce(e.mentions, 0) DESC, e.id
 """
 
+# Для МІСЦЬ ключ вужчий: тип («вулиця», «площа», «село») лишається на місці,
+# розкривається лише його скорочення. Зрізати тип не можна ніколи — «вулиця
+# Лесі Українки», «площа Лесі Українки» і «бульвар Лесі Українки» існують
+# одночасно і є різними об'єктами.
+FORM_KINDS = ("org", "place")
 
-def scan_org_forms():
-    """Read-only: які картки організацій різняться ЛИШЕ правовою формою."""
+
+def scan_org_forms(kind="org"):
+    """Read-only: які картки різняться ЛИШЕ обчислюваною формою написання."""
     _ensure()
     plan = {}
-    for r in bot_db.query(ORG_GROUPS_SQL):
-        key = ep.org_key(r["name_ua"]) or ep.org_key(r["name_ru"])
+    for r in bot_db.query(FORM_GROUPS_SQL, (kind,)):
+        key = (ep.loose_key(kind, r["name_ua"])
+               or ep.loose_key(kind, r["name_ru"]))
         if key:
             plan.setdefault(key, []).append(r)
     groups = {}
@@ -430,9 +437,9 @@ def scan_org_forms():
             "links": sum(c["mentions"] for v in groups.values() for c in v)}
 
 
-def apply_org_forms(decided_by=None):
-    """Злити картки, що різняться лише правовою формою. Ідемпотентно."""
-    scan = scan_org_forms()
+def apply_org_forms(decided_by=None, kind="org"):
+    """Злити картки, що різняться лише формою написання. Ідемпотентно."""
+    scan = scan_org_forms(kind)
     merged = 0
     for cards in scan["groups"].values():
         winner = max(cards, key=lambda c: (c["mentions"], -c["id"]))
@@ -444,11 +451,18 @@ def apply_org_forms(decided_by=None):
     return {"merged": merged, "groups": len(scan["groups"])}
 
 
-def format_org_forms(scan):
-    lines = ["🦊 Правова форма — не інша установа\n",
-             "«Миколаївобленерго», «АТ «Миколаївобленерго»», «КП "
-             "«Миколаївобленерго»» — одна компанія під трьома картками, бо "
-             "витяг то пише форму, то ні.\n",
+def format_org_forms(scan, kind="org"):
+    head = ("🦊 Правова форма — не інша установа\n"
+            if kind == "org" else
+            "🦊 Скорочення типу — не інша вулиця\n")
+    why = ("«Миколаївобленерго», «АТ «Миколаївобленерго»», «КП "
+           "«Миколаївобленерго»» — одна компанія під трьома картками, бо "
+           "витяг то пише форму, то ні.\n"
+           if kind == "org" else
+           "«вул. Космонавтів» і «вулиця Космонавтів» — та сама вулиця. А от "
+           "ТИП лишається на місці: «вулиця Лесі Українки» і «площа Лесі "
+           "Українки» — різні об'єкти, і зводити їх не можна ніколи.\n")
+    lines = [head, why,
              f"Груп: {len(scan['groups'])} · карток: {scan['cards']} · "
              f"згадок на кону: {scan['links']}"]
     big = sorted(scan["groups"].values(), key=lambda v: -sum(
@@ -466,27 +480,29 @@ def format_org_forms(scan):
 
 
 async def entity_org_forms_handler(update, context):
-    """/entity_org_forms — звести картки, що різняться лише правовою формою."""
+    """/entity_org_forms — звести картки, що різняться лише формою написання.
+    Без аргументу — організації; `/entity_org_forms місця` — вулиці."""
     if not _allowed(update):
         return
     if not bot_db.is_configured():
         await update.message.reply_text("🦊 Нора недоступна (BOT_DATABASE_URL).")
         return
-    msg = await update.message.reply_text("🦊 Шукаю однакові установи під різними формами…")
+    kind = "place" if (context.args or [""])[0].startswith("міс") else "org"
+    msg = await update.message.reply_text("🦊 Шукаю те саме під різними формами написання…")
     try:
-        scan = await asyncio.to_thread(scan_org_forms)
+        scan = await asyncio.to_thread(scan_org_forms, kind)
     except Exception as e:
         await msg.edit_text(f"❌ Не порахував: {type(e).__name__}: {e}")
         return
     if not scan["groups"]:
-        await msg.edit_text("🦊 Установ, що різняться лише правовою формою, не бачу.")
+        await msg.edit_text("🦊 Карток, що різняться лише формою написання, не бачу.")
         return
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton(f"✅ Звести {len(scan['groups'])} груп",
-                             callback_data="ejf:go"),
+                             callback_data=f"ejf:go:{kind}"),
         InlineKeyboardButton("❌ Ні", callback_data="ejf:no"),
     ]])
-    await msg.edit_text(format_org_forms(scan), reply_markup=kb)
+    await msg.edit_text(format_org_forms(scan, kind), reply_markup=kb)
 
 
 async def entity_org_forms_callback(update, context):
@@ -499,10 +515,11 @@ async def entity_org_forms_callback(update, context):
     if query.data == "ejf:no":
         await query.edit_message_text("❌ Скасовано, картки не чіпав.")
         return
-    await query.edit_message_text("🦊 Зводжу установи…")
+    kind = query.data.split(":")[2] if query.data.count(":") > 1 else "org"
+    await query.edit_message_text("🦊 Зводжу картки…")
     who = query.from_user.full_name if query.from_user else None
     try:
-        res = await asyncio.to_thread(apply_org_forms, who)
+        res = await asyncio.to_thread(apply_org_forms, who, kind)
     except Exception as e:
         await query.edit_message_text(f"❌ Не звелось: {type(e).__name__}: {e}")
         return
@@ -510,8 +527,9 @@ async def entity_org_forms_callback(update, context):
         f"🦊 Зведено {res['groups']} груп, злито {res['merged']} карток.\n"
         f"Старі написання лишились аліасами, кожне злиття — у журналі "
         f"(/entity_merge_log, відкат /entity_unmerge <id>).\n"
-        f"Далі витяг зіставляє за ключем без форми — «КП «Миколаївводоканал»» "
-        f"більше не заведе окрему картку.")
+        f"Далі витяг зіставляє за обчисленим ключем — ані «КП "
+        f"«Миколаївводоканал»», ані «вул. Космонавтів» більше не заведуть "
+        f"окремої картки.")
 
 
 # ---------- Саме прибирання ----------

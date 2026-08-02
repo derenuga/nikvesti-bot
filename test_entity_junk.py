@@ -490,6 +490,33 @@ def test_org_form_key():
     bot_db.execute("DELETE FROM entities WHERE id = ANY(%s)", ([7201, 7204],))
     bot_db.execute("DELETE FROM entity_merges WHERE winner_id = 7201")
 
+    # МІСЦЯ: розкриття скорочення типу — так, зрізання типу — ніколи.
+    check("скорочення типу розкривається",
+          ep.place_key("вул. Космонавтів") == ep.place_key("вулиця Космонавтів"))
+    check("а сам тип лишається розрізнювачем: вулиця ≠ площа ≠ бульвар",
+          len({ep.place_key("вулиця Лесі Українки"),
+               ep.place_key("площа Лесі Українки"),
+               ep.place_key("бульвар Лесі Українки")}) == 3)
+    for eid, name, arts in ((7301, "вулиця Космонавтів", [9000, 9001]),
+                            (7302, "вул. Космонавтів", [9002]),
+                            (7303, "площа Космонавтів", [9003])):
+        bot_db.execute(
+            "INSERT INTO entities (id, kind, name_ua, mentions) "
+            "VALUES (%s, 'place', %s, %s)", (eid, name, len(arts)))
+        for aid in arts:
+            bot_db.execute(
+                "INSERT INTO article_entities (article_id, entity_id, salience) "
+                "VALUES (%s, %s, 'mentioned') ON CONFLICT DO NOTHING", (aid, eid))
+    ej.apply_org_forms("тест", "place")
+    left = {r["id"] for r in bot_db.query(
+        "SELECT id FROM entities WHERE id = ANY(%s)", ([7301, 7302, 7303],))}
+    check("скорочення злилось із повною назвою", 7302 not in left, str(sorted(left)))
+    check("площа лишилась окремою карткою — це інший об'єкт", 7303 in left)
+    bot_db.execute("DELETE FROM article_entities WHERE entity_id = ANY(%s)",
+                   ([7301, 7303],))
+    bot_db.execute("DELETE FROM entities WHERE id = ANY(%s)", ([7301, 7303],))
+    bot_db.execute("DELETE FROM entity_merges WHERE winner_id = 7301")
+
 
 def test_org_dupes():
     pairs, skipped = ej.find_org_dupes()

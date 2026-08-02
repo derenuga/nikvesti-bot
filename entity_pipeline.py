@@ -365,6 +365,47 @@ def org_key(name):
     return s if len(s) >= ORG_KEY_MIN else None
 
 
+# ---------- Ключ МІСЦЯ (скорочення типу) ----------
+#
+# Тут, на відміну від організацій, ТИП — це розрізнювач, а не шум: «вулиця
+# Лесі Українки», «площа Лесі Українки» і «бульвар Лесі Українки» існують у
+# Миколаєві одночасно і є різними об'єктами, а «Мирне» це село при «вулиці
+# Мирній». Тому зрізати тип не можна ніколи — можна лише РОЗКРИТИ його
+# скорочення, і цим вичерпується механічно безпечне.
+#
+# Замір по норі 02.08: саме на скороченнях сидить 290 груп і 580 карток
+# («вул. Космонавтів» проти «вулиця Космонавтів»). Ширший ключ, що ловить ще
+# й відмінки, додає всього 3 групи — і при цьому мусив би зліпити «Архітектора
+# Старова» з «Архітектора Старого». Не варте того.
+PLACE_ABBR = [
+    (r"^вул\.?\s+", "вулиця "), (r"^просп\.?\s+", "проспект "),
+    (r"^пров\.?\s+", "провулок "), (r"^пл\.?\s+", "площа "),
+    (r"^бул\.?\s+", "бульвар "), (r"^наб\.?\s+", "набережна "),
+    (r"^м\.\s+", "місто "), (r"^с\.\s+", "село "),
+    (r"^смт\.?\s+", "селище "),
+]
+
+
+def place_key(name):
+    """Ключ зіставлення місця: те саме ім'я з розкритим скороченням типу."""
+    s = norm(name)
+    if not s:
+        return None
+    for pat, full in PLACE_ABBR:
+        s = re.sub(pat, full, s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s or None
+
+
+def loose_key(kind, name):
+    """Другий ключ зіставлення для тих видів, де він визначений механічно."""
+    if kind == "org":
+        return org_key(name)
+    if kind == "place":
+        return place_key(name)
+    return None
+
+
 def get_state(cur, key, default=None):
     cur.execute("SELECT value FROM sync_state WHERE key = %s", (key,))
     row = cur.fetchone()
@@ -499,9 +540,10 @@ def write_results(data, batch_ids=None):
     cur.execute("SELECT id, kind, name_ua, name_ru, subtype, aliases, mentions FROM entities")
     recs = {}   # id -> запис (мутабельний)
     index = {}  # (kind, norm) -> id (за найбільшою кількістю згадок)
-    # Другий індекс — тільки для організацій, за ключем без правової форми.
-    # Без нього «КП «Миколаївводоканал»» щоразу заводить нову картку поруч із
-    # «Миколаївводоканалом»: так у норі й виросло 264 групи дублів.
+    # Другий індекс — за обчисленим ключем (організації без правової форми,
+    # місця з розкритим скороченням типу). Без нього «КП «Миколаївводоканал»»
+    # щоразу заводив нову картку поруч із «Миколаївводоканалом», і так у норі
+    # виросло 264 групи дублів; на «вул.» проти «вулиця» — ще 290.
     loose = {}
     for eid, kind, nua, nru, sub, aliases, mentions in cur.fetchall():
         rec = {"id": eid, "kind": kind, "name_ua": nua, "name_ru": nru,
@@ -515,9 +557,9 @@ def write_results(data, batch_ids=None):
             best = index.get(k)
             if best is None or recs[best]["mentions"] < rec["mentions"]:
                 index[k] = eid
-        if kind == "org":
+        if kind in ("org", "place"):
             for nm in (nua, nru):
-                lk = org_key(nm)
+                lk = loose_key(kind, nm)
                 if not lk:
                     continue
                 best = loose.get(lk)
@@ -560,11 +602,12 @@ def write_results(data, batch_ids=None):
             if k[1] and k in index:
                 hit = index[k]
                 break
-        if hit is None and kind == "org":
-            # Правова форма — не інша установа: «АТ «Миколаївобленерго»» це
-            # той самий «Миколаївобленерго». Сире написання піде в аліаси.
+        if hit is None and kind in ("org", "place"):
+            # Правова форма — не інша установа («АТ «Миколаївобленерго»» це
+            # той самий «Миколаївобленерго»), скорочення типу — не інша
+            # вулиця. Сире написання піде в аліаси.
             for nm in (name_ua, name_ru):
-                lk = org_key(nm)
+                lk = loose_key(kind, nm)
                 if lk and lk in loose:
                     hit = loose[lk]
                     break
@@ -597,8 +640,8 @@ def write_results(data, batch_ids=None):
             kk = (kind, norm(nm))
             if kk[1]:
                 index.setdefault(kk, tid)
-            if kind == "org":
-                lk = org_key(nm)
+            if kind in ("org", "place"):
+                lk = loose_key(kind, nm)
                 if lk:
                     loose.setdefault(lk, tid)
         return tid
