@@ -1382,6 +1382,13 @@ def reindex_entity_layer():
     схемі), решта мусить пройти — саме заради цього тут не один REINDEX
     DATABASE."""
     done = []
+    # ANALYZE після масових злиттів обов'язковий: саме застаріла статистика
+    # штовхнула планувальник на merge join, на якому кривий індекс і виліз.
+    for tbl in ("article_entities", "entities", "role_variants", "role_canon"):
+        try:
+            bot_db.execute(f"ANALYZE {tbl}")
+        except Exception as e:
+            print(f"nora_reindex: ANALYZE {tbl} — {e}")
     for name, human in REINDEX_TARGETS:
         kind = "INDEX" if name.startswith("idx_") else "TABLE"
         try:
