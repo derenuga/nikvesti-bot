@@ -623,6 +623,22 @@ def _abbrev_match(short_tokens, long_tokens):
     return None
 
 
+# Скільки символів можна виправити, щоб це лишалось ОПИСКОЮ. Два — це
+# «Сєнкевич»/«Сенкевич» і «Миколаєва»/«Миколаїва»; п'ять — це вже вставлене
+# слово («тепло»), тобто інша назва.
+TYPO_MAX_EDITS = 2
+
+
+def _edits(x, y):
+    """Скільки символів різняться (вставлені + видалені + замінені)."""
+    import difflib
+    n = 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, x, y).get_opcodes():
+        if tag != "equal":
+            n += max(i2 - i1, j2 - j1)
+    return n
+
+
 def classify_pair(a, b, has_carrier=False):
     """Клас пари нормалізованих написань → (ключ, деталь). Деталь — те, що
     людині треба побачити, щоб вирішити за секунду (зайві слова для
@@ -707,8 +723,14 @@ def classify_pair(a, b, has_carrier=False):
         if len(diff) == 1:
             x, y = diff[0]
             # «Сєнкевич»/«Сенкевич» теж різняться одним токеном, але це не
-            # заміна слова, а описка — інакше друкарський клас спорожнів би
-            if difflib.SequenceMatcher(None, x, y).ratio() < 0.8:
+            # заміна слова, а описка — інакше друкарський клас спорожнів би.
+            #
+            # Міряємо КІЛЬКІСТЬ виправлень, а не частку збігу: у довгих
+            # складених назвах частка бреше. «Миколаївоблтеплоенерго» і
+            # «Миколаївобленерго» схожі на 0.86, бо різниця лише у вставленому
+            # «тепло» — а це два РІЗНІ підприємства (тепло й електрика), і
+            # /entity_org_dupes пропонував їх злити (живий випадок 02.08).
+            if _edits(x, y) > TYPO_MAX_EDITS:
                 # Замінили місце («Миколаївської» → «Херсонської») або рівень
                 # («обласної» → «міської») — це різні органи, а не синоніми.
                 if _region_code(x) != _region_code(y) and (
@@ -733,11 +755,10 @@ def classify_pair(a, b, has_carrier=False):
     # вигляді, і без цього рядка вона провалювалась би в «інше».
     if ta == tb and a != b:
         return "typo", None
-    if difflib.SequenceMatcher(None, a, b).ratio() >= 0.85 and len(ta) == len(tb):
+    if len(ta) == len(tb):
         diff = [(x, y) for x, y in zip(ta, tb) if x != y]
         if diff and len(diff) <= 2 and all(
-                difflib.SequenceMatcher(None, x, y).ratio() >= 0.8
-                for x, y in diff):
+                _edits(x, y) <= TYPO_MAX_EDITS for x, y in diff):
             return "typo", " · ".join(f"{x} / {y}" for x, y in diff)
     return ("carrier_only" if has_carrier else "other"), None
 

@@ -1120,8 +1120,14 @@ ORG_PAIRS_SCAN = 300
 # рівень, номери, розрізнювачі) не показуємо взагалі: «управління культури
 # МИКОЛАЇВСЬКОЇ» і «управління культури ХЕРСОНСЬКОЇ» — різні органи, і місце
 # їм у списку кандидатів на злиття лише спокушає.
+# `containment_fill` звідси ПРИБРАНО після живого прогону: зайве слово надто
+# часто робить іншу установу — «Європейський БОКСЕРСЬКИЙ союз» і «Європейський
+# ОБОРОННИЙ союз» пропонувались до злиття з Європейським Союзом, а «Служба
+# ДЕРЖАВНОЇ безпеки України» — зі Службою безпеки. Лишається `containment_own`
+# (зайве слово — наша країна чи область: «Служба безпеки» ~ «Служба безпеки
+# УКРАЇНИ»), де воно назву саме доповнює.
 ORG_DUPE_CLASSES = {"permutation", "abbrev", "typo", "function_words",
-                    "containment_fill", "containment_own"}
+                    "containment_own"}
 
 ORG_DUPES_LIMIT = 10
 
@@ -1173,6 +1179,31 @@ def find_org_dupes(threshold=ORG_SIM_THRESHOLD, limit=ORG_DUPES_LIMIT):
     return out, skipped
 
 
+ORG_DUPES_EXPORT = 300
+
+
+def export_org_dupes_csv():
+    """CSV усіх кандидатів-дублів — із готовим рядком merge і спільними
+    статтями по кожній парі. Десять пар на екран означало б десять заходів;
+    файл розбирають за раз."""
+    import csv
+    import io
+    pairs, skipped = find_org_dupes(limit=ORG_DUPES_EXPORT)
+    rows, _ = describe_cards_fix(
+        [("merge", p["winner"][0], p["loser"][0]) for p in pairs])
+    shared = {(r["winner"], r["loser"]): r["shared"] for r in rows}
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["рядок для пакета", "лишається", "згадки", "зникає", "згадки",
+                "клас", "деталь", "спільних статей"])
+    for p in pairs:
+        wi, li = p["winner"], p["loser"]
+        w.writerow([f"merge {wi[0]} {li[0]}", wi[1], wi[2], li[1], li[2],
+                    er.CLASS_LABELS.get(p["cls"], p["cls"]), p["detail"] or "",
+                    shared.get((wi[0], li[0]), 0)])
+    return ("﻿" + buf.getvalue()).encode("utf-8"), len(pairs), skipped
+
+
 async def entity_org_dupes_handler(update, context):
     """/entity_org_dupes — кандидати-дублі організацій із тапом у прев'ю."""
     if not _allowed(update):
@@ -1207,6 +1238,23 @@ async def entity_org_dupes_handler(update, context):
                      f"(«Президент України»), а це не злиття — /entity_junk.")
     await msg.edit_text("\n".join(lines)[:4000],
                         reply_markup=InlineKeyboardMarkup(kb))
+
+    # І ВЕСЬ список файлом: десять пар на екран означає десять заходів, а
+    # рішення тут групові («усі три написання МикВісті — в одну»).
+    import io
+    try:
+        data, n, _sk = await asyncio.to_thread(export_org_dupes_csv)
+    except Exception as e:
+        await update.message.reply_text(f"(списком не віддалось: {e})")
+        return
+    if n > len(pairs):
+        await update.message.reply_document(
+            document=io.BytesIO(data),
+            filename=f"org_dupes_{n}.csv",
+            caption=(f"🦊 Усі {n} кандидатів — із готовим рядком «merge …» і "
+                     f"спільними статтями по кожній парі.\n\nРозбирають поза "
+                     f"ботом, назад іде .txt із рядком «# cards-fix» — покажу "
+                     f"зведення й спитаю кнопкою."))
 
 
 async def entity_org_dupes_callback(update, context):
