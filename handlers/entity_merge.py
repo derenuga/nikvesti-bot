@@ -242,8 +242,70 @@ LIMIT 15
 """
 
 
+# Вибір карток кнопками — той самий патерн, що відбір новин на бек у
+# news_archive: тапнув потрібні, тапнув дію. Набирати id руками не треба, і
+# зникає найдурніша помилка — одна цифра повз.
+#
+# ПОРЯДОК ТАПІВ = порядок злиття: перша обрана картка лишається, друга йде в
+# аліаси. Це видно на самих кнопках («лишиться» / «зникне»), тож правило не
+# треба пам'ятати.
+#
+# Стан живе в sync_state, а не в пам'яті процесу: редеплой Railway посеред
+# вибору не має перетворювати кнопки на мовчазні.
+
+FIND_STATE_PREFIX = "efind:"
+
+
+def _find_key(chat_id, message_id):
+    return f"{FIND_STATE_PREFIX}{chat_id}:{message_id}"
+
+
+def _find_load(chat_id, message_id):
+    raw = bot_db.get_state(_find_key(chat_id, message_id))
+    return json.loads(raw) if raw else None
+
+
+def _find_save(chat_id, message_id, state):
+    bot_db.set_state(_find_key(chat_id, message_id),
+                     json.dumps(state, ensure_ascii=False))
+
+
+def _find_markup(state):
+    rows = []
+    sel = state["sel"]
+    for it in state["items"]:
+        if it["id"] in sel:
+            mark = "✅ лишиться · " if sel[0] == it["id"] else "🗑 зникне · "
+        else:
+            mark = ""
+        rows.append([InlineKeyboardButton(
+            f"{mark}{it['name']} ({it['mentions']})",
+            callback_data=f"efn:{it['id']}")])
+    if len(sel) == 2:
+        a = next(i for i in state["items"] if i["id"] == sel[0])
+        b = next(i for i in state["items"] if i["id"] == sel[1])
+        rows.append([InlineKeyboardButton(
+            f"🦊 Злити: {b['name']} → {a['name']}", callback_data="efm:go")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _find_text(state):
+    lines = [f"🦊 Картки за «{state['q']}» — {len(state['items'])}\n"]
+    for it in state["items"]:
+        period = f" · {it['lo']}…{it['hi']}" if it["lo"] else ""
+        role = f" · {it['role']}" if it["role"] else ""
+        lines.append(f"[{it['id']}] {it['name']} ({it['kind']}, "
+                     f"{it['mentions']} згадок){period}{role}")
+        if it["aliases"]:
+            lines.append(f"      аліаси: {it['aliases']}")
+    n = len(state["sel"])
+    lines.append("\nТапни дубль — ПЕРША обрана картка лишається, друга піде в "
+                 "аліаси." if n < 2 else "\nОбрано дві — тисни «Злити».")
+    return "\n".join(lines)[:4000]
+
+
 async def entity_find_handler(update, context):
-    """/entity_find <текст> — знайти картки за іменем чи аліасом.
+    """/entity_find <текст> — знайти картки за іменем чи аліасом і дати кнопки.
 
     Без цього /entity_merge непридатний: id карток нізвідки взяти, а
     /entity_export віддає CSV на 40 тисяч рядків."""
@@ -254,7 +316,7 @@ async def entity_find_handler(update, context):
         await update.message.reply_text(
             "Формат: /entity_find <частина імені>\n"
             "Напр.: /entity_find сєнкевич\n"
-            "Далі злиття дублів: /entity_merge <id що лишається> <id дубля>")
+            "Далі тапаєш дублі кнопками — перша обрана картка лишається.")
         return
     like = f"%{q.lower()}%"
     try:
@@ -265,16 +327,70 @@ async def entity_find_handler(update, context):
     if not rows:
         await update.message.reply_text(f"За «{q}» карток не знайшов.")
         return
-    lines = [f"🦊 Картки за «{q}» — {len(rows)}\n"]
-    for r in rows:
-        period = f" · {r['lo']}…{r['hi']}" if r["lo"] else ""
-        role = f" · {r['role_last']}" if r["role_last"] else ""
-        lines.append(f"[{r['id']}] {r['name']} ({r['kind']}, "
-                     f"{r['mentions']} згадок){period}{role}")
-        if r["aliases"]:
-            lines.append(f"      аліаси: {r['aliases']}")
-    lines.append("\nЗлити дублі: /entity_merge <id що лишається> <id дубля>")
-    await update.message.reply_text("\n".join(lines)[:4000])
+    state = {"q": q, "sel": [], "items": [
+        {"id": r["id"], "name": r["name"], "kind": r["kind"],
+         "mentions": r["mentions"], "lo": r["lo"], "hi": r["hi"],
+         "role": r["role_last"], "aliases": r["aliases"]} for r in rows]}
+    msg = await update.message.reply_text(_find_text(state),
+                                          reply_markup=_find_markup(state))
+    await asyncio.to_thread(_find_save, msg.chat_id, msg.message_id, state)
+
+
+async def entity_find_callback(update, context):
+    """efn:<id> — перемкнути вибір картки; efm:go — показати прев'ю злиття."""
+    query = update.callback_query
+    user_id = query.from_user.id if query.from_user else None
+    if _ALLOWED_USER_IDS and user_id not in _ALLOWED_USER_IDS:
+        await query.answer("⛔ Тільки для редакції.", show_alert=True)
+        return
+    chat_id, message_id = query.message.chat_id, query.message.message_id
+    state = await asyncio.to_thread(_find_load, chat_id, message_id)
+    if not state:
+        await query.answer("Результати застаріли — повтори /entity_find.",
+                           show_alert=True)
+        return
+
+    if query.data.startswith("efn:"):
+        eid = int(query.data.split(":", 1)[1])
+        sel = state["sel"]
+        if eid in sel:
+            sel.remove(eid)
+        elif len(sel) >= 2:
+            await query.answer("Уже обрано дві. Зніми одну, щоб обрати іншу.",
+                               show_alert=True)
+            return
+        else:
+            sel.append(eid)
+        await query.answer()
+        await asyncio.to_thread(_find_save, chat_id, message_id, state)
+        try:
+            await query.edit_message_text(_find_text(state),
+                                          reply_markup=_find_markup(state))
+        except Exception:
+            pass       # «message is not modified» при подвійному тапі
+        return
+
+    if query.data != "efm:go" or len(state["sel"]) != 2:
+        await query.answer()
+        return
+    await query.answer()
+    winner_id, loser_id = state["sel"]
+    try:
+        p, err = await asyncio.to_thread(merge_preview, winner_id, loser_id)
+    except Exception as e:
+        await query.edit_message_text(f"❌ {type(e).__name__}: {e}")
+        return
+    if err:
+        await query.answer(f"Не зливаю: {err}", show_alert=True)
+        return
+    await asyncio.to_thread(
+        bot_db.execute, "DELETE FROM sync_state WHERE key = %s",
+        (_find_key(chat_id, message_id),))
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Злити", callback_data=f"emg:{winner_id}:{loser_id}"),
+        InlineKeyboardButton("❌ Скасувати", callback_data="emg:0:0"),
+    ]])
+    await query.edit_message_text(format_preview(p), reply_markup=kb)
 
 
 # ---------- /entity_merge ----------

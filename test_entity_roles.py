@@ -855,6 +855,39 @@ def test_manual_merge():
     check("аліаси переможця повернулись до доздиттєвих",
           sorted(al2) == ["Сєнкевич О."], f"{al2}")
 
+    # --- вибір кнопками: порядок тапів вирішує, хто лишається ---
+    state = {"q": "сєнкевич", "sel": [], "items": [
+        {"id": 501, "name": "Олександр Сєнкевич", "kind": "person",
+         "mentions": 2509, "lo": "2024-05", "hi": "2026-07", "role": "мер",
+         "aliases": ""},
+        {"id": 502, "name": "Сєнкевич", "kind": "person", "mentions": 1,
+         "lo": "2026-07", "hi": "2026-07", "role": "мер", "aliases": ""},
+        {"id": 503, "name": "Катерина Сєнкевич", "kind": "person", "mentions": 3,
+         "lo": "2025-04", "hi": "2026-04", "role": None, "aliases": ""}]}
+    state["sel"] = [501, 502]
+    kb = em._find_markup(state)
+    labels = [b.text for row in kb.inline_keyboard for b in row]
+    check("перша обрана картка підписана «лишиться», друга — «зникне»",
+          any(l.startswith("✅ лишиться") and "Олександр" in l for l in labels)
+          and any(l.startswith("🗑 зникне") and l.count("Сєнкевич") for l in labels),
+          f"{labels}")
+    check("кнопка злиття зʼявляється лише при двох обраних",
+          any("Злити" in l for l in labels)
+          and not any("Злити" in b.text
+                      for row in em._find_markup({**state, "sel": [501]}).inline_keyboard
+                      for b in row))
+    cbs = [b.callback_data for row in kb.inline_keyboard for b in row]
+    check("callback_data вкладається в ліміт Telegram",
+          all(len(c.encode()) <= 64 for c in cbs), f"{cbs}")
+
+    # стан переживає редеплой — лежить у sync_state, а не в памʼяті процесу
+    em._find_save(-100, 777, state)
+    got = em._find_load(-100, 777)
+    check("вибір карток переживає редеплой (стан у норі)",
+          got and got["sel"] == [501, 502], f"{got and got.get('sel')}")
+    bot_db.execute("DELETE FROM sync_state WHERE key LIKE %s",
+                   (em.FIND_STATE_PREFIX + "%",))
+
     bot_db.execute("DELETE FROM article_entities WHERE article_id >= 6000")
     bot_db.execute("DELETE FROM articles WHERE id >= 6000")
     bot_db.execute("DELETE FROM entities WHERE id IN (501, 502, 503)")

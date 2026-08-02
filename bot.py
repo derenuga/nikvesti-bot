@@ -45,7 +45,7 @@ from handlers.entity_layer import (
 )
 from handlers.entity_merge import (
     entity_scale_handler, entity_classes_handler, entity_find_handler,
-    entity_merge_handler, entity_merge_callback,
+    entity_merge_handler, entity_merge_callback, entity_find_callback,
     entity_merge_log_handler, entity_unmerge_handler,
 )
 from handlers.entity_roles import (
@@ -592,6 +592,7 @@ def main():
     app.add_handler(CallbackQueryHandler(roles_org_callback, pattern="^rdo:"))
     app.add_handler(CallbackQueryHandler(roles_bulk_callback, pattern="^rb[cmr]:"))
     app.add_handler(CallbackQueryHandler(entity_merge_callback, pattern="^emg:"))
+    app.add_handler(CallbackQueryHandler(entity_find_callback, pattern="^ef[nm]:"))
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.
