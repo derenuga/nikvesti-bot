@@ -261,6 +261,13 @@ def restore_merge(merge_id):
 
 # ---------- /entity_find ----------
 
+# Зливають ЛЮДЕЙ, організації й місця. Картки event/document у пошуку злиття
+# лише заважають: витяг робить із них переказ сюжету статті («замах на
+# Дональда Трампа», «Трамп: Другий шанс?»), і на запит «трамп» вони забивають
+# екран, ховаючи справжній дубль. Тому за замовчуванням їх немає, а слово
+# `all` у команді їх повертає — сміття теж треба чимось дивитись.
+MERGEABLE_KINDS = ("person", "org", "place")
+
 FIND_SQL = """
 SELECT e.id, e.kind, e.subtype, coalesce(e.name_ua, e.name_ru) AS name,
        e.name_ru, e.role_last, coalesce(e.mentions, 0) AS mentions,
@@ -268,11 +275,21 @@ SELECT e.id, e.kind, e.subtype, coalesce(e.name_ua, e.name_ru) AS name,
        to_char(to_timestamp(e.last_seen), 'YYYY-MM') AS hi,
        array_to_string(e.aliases, ' | ') AS aliases
 FROM entities e
-WHERE lower(coalesce(e.name_ua, '')) LIKE %s
-   OR lower(coalesce(e.name_ru, '')) LIKE %s
-   OR EXISTS (SELECT 1 FROM unnest(e.aliases) AS al WHERE lower(al) LIKE %s)
+WHERE (lower(coalesce(e.name_ua, '')) LIKE %s
+    OR lower(coalesce(e.name_ru, '')) LIKE %s
+    OR EXISTS (SELECT 1 FROM unnest(e.aliases) AS al WHERE lower(al) LIKE %s))
+  AND (%s OR e.kind = ANY(%s))
 ORDER BY e.mentions DESC NULLS LAST, e.id
 LIMIT 15
+"""
+
+FIND_HIDDEN_SQL = """
+SELECT e.kind, count(*) AS n
+FROM entities e
+WHERE (lower(coalesce(e.name_ua, '')) LIKE %s
+    OR lower(coalesce(e.name_ru, '')) LIKE %s)
+  AND NOT (e.kind = ANY(%s))
+GROUP BY e.kind ORDER BY n DESC
 """
 
 
@@ -332,6 +349,12 @@ def _find_text(state):
                      f"{it['mentions']} згадок){period}{role}")
         if it["aliases"]:
             lines.append(f"      аліаси: {it['aliases']}")
+    hid = state.get("hidden") or []
+    if hid:
+        lines.append("\nСховано (події й документи — це переказ сюжету статті, "
+                     "не дублі): "
+                     + ", ".join(f"{k} {n}" for k, n in hid)
+                     + f"\nПоказати: /entity_find {state['q']} all")
     n = len(state["sel"])
     lines.append("\nТапни дубль — ПЕРША обрана картка лишається, друга піде в "
                  "аліаси." if n < 2 else "\nОбрано дві — тисни «Злити».")
@@ -345,23 +368,37 @@ async def entity_find_handler(update, context):
     /entity_export віддає CSV на 40 тисяч рядків."""
     if not _allowed(update):
         return
-    q = " ".join(context.args or []).strip()
+    args = list(context.args or [])
+    show_all = bool(args) and args[-1].lower() == "all"
+    if show_all:
+        args = args[:-1]
+    q = " ".join(args).strip()
     if len(q) < 2:
         await update.message.reply_text(
             "Формат: /entity_find <частина імені>\n"
             "Напр.: /entity_find сєнкевич\n"
-            "Далі тапаєш дублі кнопками — перша обрана картка лишається.")
+            "Далі тапаєш дублі кнопками — перша обрана картка лишається.\n\n"
+            "Показує людей, організації й місця. Щоб побачити ще й події та "
+            "документи: /entity_find <текст> all")
         return
     like = f"%{q.lower()}%"
     try:
-        rows = await bot_db.aquery(FIND_SQL, (like, like, like))
+        rows = await bot_db.aquery(
+            FIND_SQL, (like, like, like, show_all, list(MERGEABLE_KINDS)))
+        hidden = [] if show_all else await bot_db.aquery(
+            FIND_HIDDEN_SQL, (like, like, list(MERGEABLE_KINDS)))
     except Exception as e:
         await update.message.reply_text(f"❌ Нора недоступна: {e}")
         return
     if not rows:
-        await update.message.reply_text(f"За «{q}» карток не знайшов.")
+        tail = ("" if not hidden else
+                "\nЄ картки інших типів: "
+                + ", ".join(f"{h['kind']} {h['n']}" for h in hidden)
+                + f"\nПоказати: /entity_find {q} all")
+        await update.message.reply_text(f"За «{q}» карток не знайшов." + tail)
         return
-    state = {"q": q, "sel": [], "items": [
+    state = {"q": q, "hidden": [[h["kind"], h["n"]] for h in hidden],
+             "sel": [], "items": [
         {"id": r["id"], "name": r["name"], "kind": r["kind"],
          "mentions": r["mentions"], "lo": r["lo"], "hi": r["hi"],
          "role": r["role_last"], "aliases": r["aliases"]} for r in rows]}

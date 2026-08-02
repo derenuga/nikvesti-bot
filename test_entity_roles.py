@@ -882,6 +882,39 @@ def test_manual_merge():
         (res2["merge_id"],))[0]["n"]
     check("відкат знімає і пам'ять рішення, а не лише дані", rules == 0, f"{rules}")
 
+    # --- сміття в пошуку: event/document ховаються ---
+    # Реальний прогін /entity_find трамп повернув 15 карток, з них 12 —
+    # переказ сюжету статті («замах на Дональда Трампа», «Трамп: Другий шанс?»).
+    # Зливають людей, організації й місця, тож у пошуку злиття їх бути не має.
+    bot_db.execute(
+        "INSERT INTO entities (id, kind, name_ua, mentions) VALUES "
+        "(601, 'person', 'Дональд Трамп', 1310), "
+        "(602, 'person', 'Дональд Дж. Трамп', 1), "
+        "(603, 'event', 'замах на Дональда Трампа', 2), "
+        "(604, 'event', 'Трамп: Другий шанс?', 1) "
+        "ON CONFLICT (id) DO NOTHING")
+    like = "%трамп%"
+    vis = bot_db.query(em.FIND_SQL, (like, like, like, False,
+                                     list(em.MERGEABLE_KINDS)))
+    check("подій і документів у пошуку злиття не видно",
+          {r["id"] for r in vis} == {601, 602},
+          f"{[(r['id'], r['kind']) for r in vis]}")
+    hid = bot_db.query(em.FIND_HIDDEN_SQL, (like, like, list(em.MERGEABLE_KINDS)))
+    check("але сховане порахували й показали числом",
+          hid and hid[0]["kind"] == "event" and hid[0]["n"] == 2, f"{hid}")
+    allrows = bot_db.query(em.FIND_SQL, (like, like, like, True,
+                                         list(em.MERGEABLE_KINDS)))
+    check("«all» повертає й сміття — подивитись на нього теж треба чимось",
+          len(allrows) == 4, f"{len(allrows)}")
+    txt = em._find_text({"q": "трамп", "hidden": [["event", 2]], "sel": [],
+                         "items": [{"id": 601, "name": "Дональд Трамп",
+                                    "kind": "person", "mentions": 1310,
+                                    "lo": None, "hi": None, "role": None,
+                                    "aliases": ""}]})
+    check("у тексті пояснено, ЧОМУ сховано, і як показати",
+          "Сховано" in txt and "all" in txt, txt.replace("\n", " | "))
+    bot_db.execute("DELETE FROM entities WHERE id IN (601, 602, 603, 604)")
+
     # --- вибір кнопками: порядок тапів вирішує, хто лишається ---
     state = {"q": "сєнкевич", "sel": [], "items": [
         {"id": 501, "name": "Олександр Сєнкевич", "kind": "person",
