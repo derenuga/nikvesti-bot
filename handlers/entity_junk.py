@@ -351,9 +351,25 @@ async def entity_junk_handler(update, context):
     # Трампа»), і нормальні назви, які просто ще не повторились («Гаазька
     # конвенція 1954», «Маккабіада-2026»). Відрізнити їх можна лише
     # переглядом усього списку — і не в чаті.
+    import io
+    if positions:
+        # Посади окремим файлом із тієї ж причини: рішення про картку
+        # ухвалюють, подивившись на неї, а не на число в кнопці.
+        import csv
+        pbuf = io.StringIO()
+        pw = csv.writer(pbuf)
+        pw.writerow(["id", "назва", "згадки", "чому запідозрено"])
+        for p in positions:
+            pw.writerow([p["id"], p["name"], p["mentions"], p["signals"]])
+        await update.message.reply_document(
+            document=io.BytesIO(("﻿" + pbuf.getvalue()).encode("utf-8")),
+            filename=f"entity_positions_{len(positions)}.csv",
+            caption=(f"🦊 Ті самі {len(positions)} карток org, які схожі на "
+                     f"посади — з підставою по кожній. Кнопка в повідомленні "
+                     f"вище лише РОЗГОРТАЄ цей список, видаляє тап по "
+                     f"конкретній картці."))
     if not scan["total"]:
         return
-    import io
     try:
         data, n = await asyncio.to_thread(export_oneoff_csv)
     except Exception as e:
