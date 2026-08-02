@@ -938,17 +938,67 @@ _COLLOQUIAL = {"мер", "мера", "меру", "мером", "очільник
 
 def pick_canon(sample_a, sample_b):
     """Яке з двох написань стає канонічним: офіційне переважає розмовне,
-    за інших рівних — повніше (§5 плану: канон не «за частотою», а за повнотою)."""
+    ЗАГАЛЬНІШЕ переважає вужче, за інших рівних — повніше (§5 плану: канон не
+    «за частотою», а за повнотою).
+
+    Правило «загальніше» додано 02.08 після живого випадку: до канону
+    «перший заступник МИКОЛАЇВСЬКОГО міського голови» долучився «перший
+    заступник міського голови», який носять і заступники інших міст — і
+    вся група тихо стала миколаївською, хоч людина такого не обирала.
+    Назва канону мусить бути істинною для КОЖНОГО написання, яке він
+    покриває; із двох написань, де одне вкладене в друге, така лише
+    загальніша."""
     a, b = (sample_a or "").strip(), (sample_b or "").strip()
     if not a:
         return b
     if not b:
         return a
-    ca = bool(_COLLOQUIAL & set(_tokens(role_norm(a))))
-    cb = bool(_COLLOQUIAL & set(_tokens(role_norm(b))))
+    ta, tb = set(_tokens(role_norm(a))), set(_tokens(role_norm(b)))
+    if ta < tb:
+        return a
+    if tb < ta:
+        return b
+    ca = bool(_COLLOQUIAL & ta)
+    cb = bool(_COLLOQUIAL & tb)
     if ca != cb:
         return b if ca else a
     return a if len(a) >= len(b) else b
+
+
+def _regeneralize(canon_id):
+    """Якщо в каноні з'явилось написання ЗАГАЛЬНІШЕ за його назву — переназвати.
+
+    Назва канону мусить бути істинною для кожного написання всередині. Живий
+    випадок 02.08: канон звався «перший заступник МИКОЛАЇВСЬКОГО міського
+    голови», людина долучила до нього «перший заступник міського голови» (його
+    носять і заступники інших міст) — і група стала миколаївською без жодного
+    рішення про це. Назва мала стати загальнішою, а не лишитись вужчою.
+
+    Переназивання безпечне в один бік: загальніше твердження істинне для всіх,
+    вужче — ні. Тому звужувати назву тут не можна ніколи."""
+    rows = bot_db.query(
+        "SELECT rc.canon, rv.raw_sample, rv.raw_norm FROM role_canon rc "
+        "JOIN role_variants rv ON rv.canon_id = rc.id WHERE rc.id = %s",
+        (canon_id,))
+    if not rows:
+        return None
+    canon = rows[0]["canon"]
+    best, best_t = canon, set(_tokens(role_norm(canon) or ""))
+    for r in rows:
+        sample = r["raw_sample"] or r["raw_norm"]
+        t = set(_tokens(r["raw_norm"] or ""))
+        if t and t < best_t:
+            best, best_t = sample, t
+    if best != canon:
+        # canon_norm унікальний: якщо загальніша назва вже зайнята іншим
+        # каноном, мовчки лишаємо стару — переназвати можна руками
+        # (/roles_rename), а падати посеред злиття не можна.
+        bot_db.execute(
+            "UPDATE role_canon SET canon = %s, canon_norm = %s WHERE id = %s "
+            "AND NOT EXISTS (SELECT 1 FROM role_canon x WHERE x.canon_norm = %s "
+            "                AND x.id <> %s)",
+            (best, role_norm(best), canon_id, role_norm(best), canon_id))
+    return best
 
 
 def _variant_canon(raw_norm):
@@ -991,6 +1041,7 @@ def merge_roles(a_norm, b_norm, sample_a=None, sample_b=None, decided_by=None):
                 "  (SELECT org_entity_id FROM role_canon WHERE id = %s)) "
                 "WHERE id = %s", (drop, keep))
             bot_db.execute("DELETE FROM role_canon WHERE id = %s", (drop,))
+        _regeneralize(keep)
         rows = bot_db.query("SELECT canon FROM role_canon WHERE id = %s", (keep,))
         return keep, (rows[0]["canon"] if rows else None)
 
@@ -1003,6 +1054,7 @@ def merge_roles(a_norm, b_norm, sample_a=None, sample_b=None, decided_by=None):
             "VALUES (%s, %s, %s, %s, %s) "
             "ON CONFLICT (raw_norm) DO UPDATE SET canon_id = EXCLUDED.canon_id",
             (new_norm, new_sample, canon_id, decided_by, now))
+        _regeneralize(canon_id)
         rows = bot_db.query("SELECT canon FROM role_canon WHERE id = %s", (canon_id,))
         return canon_id, (rows[0]["canon"] if rows else None)
 
