@@ -159,6 +159,24 @@ def test_scan():
     return ids
 
 
+def test_export(ids):
+    """Список файлом. Шість прикладів у чаті нічого не вирішують: серед
+    одноразових карток лежить і справжнє сміття («замах на Дональда Трампа»),
+    і нормальні назви, які просто ще не повторились («Гаазька конвенція
+    1954»). Тому у вивантаженні мусить бути ЗАГОЛОВОК статті — без нього
+    список нечитабельний."""
+    data, n = ej.export_oneoff_csv()
+    text = data.decode("utf-8-sig")
+    check("вивантажуються рівно ті картки, що йдуть під прибирання",
+          n == len(ids), f"{n} vs {len(ids)}")
+    check("у файлі є заголовок статті, у якій картка живе",
+          "Стаття 9000" in text, text.splitlines()[1] if len(text.splitlines()) > 1 else "")
+    check("картка без жодного зв'язку теж у списку (їй статтю не покажеш)",
+          "картка без жодного зв'язку" in text)
+    check("повторювані картки у файл не потрапляють",
+          "повномасштабне вторгнення" not in text)
+
+
 def test_purge_and_undo(ids):
     res = ej.purge_cards(sorted(ids), "oneoff", "тест")
     check("прибрано рівно стільки, скільки показано",
@@ -272,6 +290,7 @@ def test_org_dupes():
 def run():
     setup()
     ids = test_scan()
+    test_export(ids)
     test_purge_and_undo(ids)
     test_role_untouched()
     test_positions()

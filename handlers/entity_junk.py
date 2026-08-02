@@ -128,6 +128,43 @@ def scan_oneoff():
             "repeated": sum(c["repeated"] for c in counts)}
 
 
+ONEOFF_EXPORT_SQL = f"""
+SELECT e.id, e.kind, coalesce(e.name_ua, e.name_ru) AS name,
+       array_to_string(e.aliases, ' | ') AS aliases,
+       a.id AS article_id,
+       to_char(to_timestamp(a.published), 'YYYY-MM-DD') AS published,
+       coalesce(a.title_ua, a.title_ru) AS title
+FROM entities e
+LEFT JOIN (SELECT entity_id, count(DISTINCT article_id) AS n,
+                  min(article_id) AS one
+           FROM article_entities GROUP BY entity_id) l ON l.entity_id = e.id
+LEFT JOIN articles a ON a.id = l.one
+WHERE e.kind = ANY(%s) AND coalesce(l.n, 0) <= %s AND NOT {PROTECTED_SQL}
+ORDER BY e.kind, e.id
+"""
+
+
+def export_oneoff_csv():
+    """CSV усіх одноразових карток — із ЗАГОЛОВКОМ статті, у якій вони живуть.
+
+    Без заголовка список нечитабельний: «Гаазька конвенція 1954» і «замах на
+    Дональда Трампа» відрізняються не кількістю згадок (в обох одна), а тим,
+    чи це НАЗВА, яку можна повторити, чи переказ сюжету. Перше видно з самої
+    назви, друге — лише поруч зі статтею."""
+    import csv
+    import io
+    _ensure()
+    rows = bot_db.query(ONEOFF_EXPORT_SQL, (list(JUNK_KINDS), ONEOFF_MAX_ARTICLES))
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["id", "kind", "назва", "аліаси", "стаття", "дата",
+                "заголовок статті"])
+    for r in rows:
+        w.writerow([r["id"], r["kind"], r["name"], r["aliases"],
+                    r["article_id"] or "", r["published"] or "", r["title"] or ""])
+    return ("﻿" + buf.getvalue()).encode("utf-8"), len(rows)
+
+
 def oneoff_ids():
     _ensure()
     return [r["id"] for r in bot_db.query(
@@ -308,6 +345,29 @@ async def entity_junk_handler(update, context):
             f"окремою кнопкою, там прибирання поштучне.")
     await msg.edit_text(_oneoff_text(scan) + tail,
                         reply_markup=_junk_markup(scan, positions))
+
+    # І список файлом. Шість прикладів у чаті нічого не вирішують: серед
+    # одноразових карток лежить і справжнє сміття («замах на Дональда
+    # Трампа»), і нормальні назви, які просто ще не повторились («Гаазька
+    # конвенція 1954», «Маккабіада-2026»). Відрізнити їх можна лише
+    # переглядом усього списку — і не в чаті.
+    if not scan["total"]:
+        return
+    import io
+    try:
+        data, n = await asyncio.to_thread(export_oneoff_csv)
+    except Exception as e:
+        await update.message.reply_text(f"(списком не віддалось: {e})")
+        return
+    await update.message.reply_document(
+        document=io.BytesIO(data),
+        filename=f"entity_junk_{n}.csv",
+        caption=(f"🦊 Усі {n} карток під прибирання — з заголовком статті, у "
+                 f"якій кожна живе.\n\nЦе для розбору поза ботом: за назвою "
+                 f"видно, чи це переказ сюжету («Трамп: Другий шанс?»), чи "
+                 f"нормальна назва, яка просто ще не повторилась («Закон про "
+                 f"створення Українського національного пантеону»). Кнопка "
+                 f"прибирає ВСІ — тому спершу список."))
 
 
 # Список посад-в-org живе в норі поруч із повідомленням: перерахунок на кожен
