@@ -1135,6 +1135,17 @@ def _name_overlap(role_text, org_name):
     def stems(text):
         return [w for w in _tokens(role_norm(text) or "")
                 if len(w) >= 3 and not _is_region_word(w)]
+    # РІЗНІ КРАЇНИ — одразу ні, хоч би скільки слів збігалось. «Російський
+    # президент» ділить слово «президент» з «Офісом Президента України»,
+    # «Президентом США» і «Президентом України», і без цієї перевірки всі троє
+    # стояли кандидатами в орган Путіна. Топонім у назві посади — це не шум,
+    # це головна прикмета органу.
+    ra = {_region_code(w) for w in _tokens(role_norm(role_text) or "")
+          if _is_region_word(w)}
+    ro = {_region_code(w) for w in _tokens(role_norm(org_name) or "")
+          if _is_region_word(w)}
+    if ra and ro and not (ra & ro):
+        return False
     a, b = stems(role_text), stems(org_name)
     return any(x.startswith(y[:5]) or y.startswith(x[:5]) for x in a for y in b)
 
