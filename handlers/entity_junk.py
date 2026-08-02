@@ -695,6 +695,16 @@ def _save_positions(chat_id, message_id, positions):
                      json.dumps(positions, ensure_ascii=False))
 
 
+def _alive_positions(positions):
+    """Лишити тільки ті картки списку, які досі є в норі."""
+    if not positions:
+        return positions
+    alive = {r["id"] for r in bot_db.query(
+        "SELECT id FROM entities WHERE id = ANY(%s)",
+        ([p["id"] for p in positions],))}
+    return [p for p in positions if p["id"] in alive]
+
+
 def _load_positions(chat_id, message_id):
     raw = bot_db.get_state(_pos_key(chat_id, message_id))
     return json.loads(raw) if raw else None
@@ -793,6 +803,12 @@ async def entity_junk_callback(update, context):
         return
 
     positions = await asyncio.to_thread(_load_positions, chat_id, message_id)
+    if positions is not None:
+        # Список — знімок, зроблений до тапів, і картку могли прибрати або
+        # злити ІНШОЮ командою (живий випадок: /entity_merge на омбудсмані, а
+        # в списку обидві картки далі висять). Звіряємо з норою перед показом,
+        # інакше екран пропонує тапнути те, чого вже немає.
+        positions = await asyncio.to_thread(_alive_positions, positions)
     if positions is None:
         try:
             positions = await asyncio.to_thread(scan_positions)

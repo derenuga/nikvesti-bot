@@ -256,6 +256,16 @@ def test_positions():
     check("найпевніші (з роллю) стоять першими", pos[0]["id"] == 7020,
           str([p["id"] for p in pos]))
 
+    # Екран списку — це знімок: картку могли прибрати або злити ІНШОЮ
+    # командою, і пропонувати тапнути її вже не можна (живий випадок 02.08:
+    # омбудсмана злили через /entity_merge, а в списку він далі висів).
+    bot_db.execute("DELETE FROM entities WHERE id = 7021")
+    check("зниклі картки зі списку зникають перед показом",
+          [p["id"] for p in ej._alive_positions(pos)] == [7020],
+          str([p["id"] for p in ej._alive_positions(pos)]))
+    bot_db.execute("INSERT INTO entities (id, kind, name_ua, mentions) "
+                   "VALUES (7021, 'org', 'Президент України', 1)")
+
     res = ej.purge_cards([7020], "position_as_org", "тест")
     gone = bot_db.query("SELECT id FROM entities WHERE id = 7020")
     check("посада прибирається поштучно", not gone and res["removed"] == 1)
