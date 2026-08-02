@@ -114,6 +114,7 @@ def setup():
         cur.execute("DROP TABLE IF EXISTS role_canon")
         cur.execute("DROP TABLE IF EXISTS role_pairs")
         cur.execute("DROP TABLE IF EXISTS entity_merges")
+        cur.execute("DROP TABLE IF EXISTS entity_merge_rules")
     conn.close()
     er.ensure_schema(force=True)
     em.ensure_schema(force=True)
@@ -855,6 +856,32 @@ def test_manual_merge():
     check("аліаси переможця повернулись до доздиттєвих",
           sorted(al2) == ["Сєнкевич О."], f"{al2}")
 
+    # --- ГОЛОВНЕ: рішення людини має триматись, а не розвалюватись назавтра ---
+    # Зіставлення в write_results іде за name_ua/name_ru, аліаси в ньому участі
+    # НЕ беруть — тож без пам'яті рішень наступна стаття зі словом «Сєнкевич»
+    # створювала б картку заново, і Олег зливав би той самий дубль щотижня.
+    bot_db.execute(
+        "INSERT INTO articles (id, published, title_ua) VALUES (6009, %s, %s) "
+        "ON CONFLICT (id) DO NOTHING", (1700000000, "Нова стаття"))
+    res2 = em.merge_cards(501, 502, "тест")     # зливаємо ще раз після відкату
+    n_before = bot_db.query("SELECT count(*) AS n FROM entities")[0]["n"]
+    ep.write_results([{"article_id": 6009, "entities": [
+        {"kind": "person", "name_ua": "Сєнкевич", "name_ru": None,
+         "role": "мер", "salience": "mentioned"}]}])
+    n_after = bot_db.query("SELECT count(*) AS n FROM entities")[0]["n"]
+    check("дубль НЕ відроджується: нова стаття з «Сєнкевич» іде в злиту картку",
+          n_after == n_before, f"{n_before} → {n_after}")
+    who = bot_db.query(
+        "SELECT entity_id FROM article_entities WHERE article_id = 6009")
+    check("зв'язок повісився саме на картку-переможця",
+          [r["entity_id"] for r in who] == [501], f"{who}")
+
+    em.restore_merge(res2["merge_id"])
+    rules = bot_db.query(
+        "SELECT count(*) AS n FROM entity_merge_rules WHERE merge_id = %s",
+        (res2["merge_id"],))[0]["n"]
+    check("відкат знімає і пам'ять рішення, а не лише дані", rules == 0, f"{rules}")
+
     # --- вибір кнопками: порядок тапів вирішує, хто лишається ---
     state = {"q": "сєнкевич", "sel": [], "items": [
         {"id": 501, "name": "Олександр Сєнкевич", "kind": "person",
@@ -888,6 +915,7 @@ def test_manual_merge():
     bot_db.execute("DELETE FROM sync_state WHERE key LIKE %s",
                    (em.FIND_STATE_PREFIX + "%",))
 
+    bot_db.execute("DELETE FROM entity_merge_rules")
     bot_db.execute("DELETE FROM article_entities WHERE article_id >= 6000")
     bot_db.execute("DELETE FROM articles WHERE id >= 6000")
     bot_db.execute("DELETE FROM entities WHERE id IN (501, 502, 503)")

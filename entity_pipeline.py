@@ -103,6 +103,22 @@ ON CONFLICT (key) DO NOTHING;
 # модулям одразу: інкремент нею самозаліковується (повторює впалу статтю до
 # 3 разів), а бэкфіл — щоб не платити вдруге за статті, які вже пройшли витяг
 # і законно не мають сутностей (done).
+# Пам'ять РІШЕНЬ про злиття. Без неї злиття не тримається: зіставлення в
+# write_results іде тільки за name_ua/name_ru, аліаси в ньому не беруть участі —
+# тож наступна стаття зі словом «Сєнкевич» створює картку заново, і людина
+# зливає той самий дубль щотижня. Тут лежить рівно те, що ЛЮДИНА вже вирішила:
+# «це написання належить оцій картці». Знімається разом із відкатом злиття.
+MERGE_RULES_DDL = """
+CREATE TABLE IF NOT EXISTS entity_merge_rules (
+    kind      TEXT NOT NULL,
+    norm      TEXT NOT NULL,
+    entity_id BIGINT NOT NULL,
+    merge_id  BIGINT,
+    created   BIGINT,
+    PRIMARY KEY (kind, norm)
+)
+"""
+
 ATTEMPTS_DDL = """
 CREATE TABLE IF NOT EXISTS entity_attempts (
     article_id BIGINT PRIMARY KEY,
@@ -337,6 +353,18 @@ def write_results(data, batch_ids=None):
             best = index.get(k)
             if best is None or recs[best]["mentions"] < rec["mentions"]:
                 index[k] = eid
+
+    # Рішення людини про злиття — у той самий індекс. setdefault, а не
+    # перезапис: якщо картка з таким іменем ЖИВА, вона головніша за правило
+    # (правило лікує повторну появу, а не відбирає чужі згадки).
+    try:
+        cur.execute(MERGE_RULES_DDL)
+        cur.execute("SELECT kind, norm, entity_id FROM entity_merge_rules")
+        for kind, nrm, eid in cur.fetchall():
+            if eid in recs and nrm:
+                index.setdefault((kind, nrm), eid)
+    except Exception as e:
+        print(f"write_results: правила злиття не прочитані — {e}")
 
     new_recs = []       # записи на INSERT
     tmp_seq = [-1]      # тимчасові від'ємні id для нових (мапляться після вставки)

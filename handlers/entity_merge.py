@@ -107,6 +107,14 @@ def record_merge(cur, winner_id, loser_id, decided_by=None):
     cur.execute("SELECT article_id FROM article_entities WHERE entity_id = %s",
                 (winner_id,))
     w_articles = [r[0] for r in cur.fetchall()]
+    # Правила, які вже вказували на програшну картку, мають переїхати на
+    # переможця — інакше після другого злиття в кластері вони вели б у нікуди.
+    cur.execute(ep.MERGE_RULES_DDL)
+    cur.execute(
+        "UPDATE entity_merge_rules SET entity_id = %s WHERE entity_id = %s "
+        "RETURNING kind, norm", (winner_id, loser_id))
+    repointed = [[r[0], r[1]] for r in cur.fetchall()]
+
     snapshot = {
         "card": card,
         "links": links,
@@ -115,13 +123,30 @@ def record_merge(cur, winner_id, loser_id, decided_by=None):
                    "name_ru": w[2] if w else None,
                    "aliases": list(w[3] or []) if w else [],
                    "articles": w_articles},
+        "rules_repointed": repointed,
     }
     cur.execute(
         "INSERT INTO entity_merges (winner_id, loser_id, loser_snapshot, "
         "decided_by, created) VALUES (%s, %s, %s, %s, %s) RETURNING id",
         (winner_id, loser_id, json.dumps(snapshot, ensure_ascii=False),
          decided_by, int(time.time())))
-    return cur.fetchone()[0]
+    merge_id = cur.fetchone()[0]
+
+    # І головне: запам'ятати САМЕ РІШЕННЯ. Інакше наступна стаття зі старим
+    # написанням створить дубль заново, і людина зливатиме його щотижня.
+    canon = {ep.norm(w[1]) if w else None, ep.norm(w[2]) if w else None}
+    now = int(time.time())
+    for nm in [card["name_ua"], card["name_ru"]] + list(card["aliases"]):
+        n = ep.norm(nm)
+        if not n or n in canon:
+            continue
+        cur.execute(
+            "INSERT INTO entity_merge_rules (kind, norm, entity_id, merge_id, created) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (kind, norm) DO UPDATE SET entity_id = EXCLUDED.entity_id, "
+            "merge_id = EXCLUDED.merge_id",
+            (card["kind"], n, winner_id, merge_id, now))
+    return merge_id
 
 
 RECALC_AGG_SQL = """
@@ -219,6 +244,15 @@ def restore_merge(merge_id):
         both = [card["id"], winner_id]
         bot_db.execute(RECALC_AGG_SQL, (both,))
         bot_db.execute(RECALC_ROLE_SQL, (both,))
+        # Знімаємо і пам'ять рішення: відкат має відкочувати не лише дані, а й
+        # правило, інакше витяг далі клеїв би написання до переможця.
+        bot_db.execute(ep.MERGE_RULES_DDL)
+        bot_db.execute("DELETE FROM entity_merge_rules WHERE merge_id = %s",
+                       (merge_id,))
+        for kind, nrm in (snap.get("rules_repointed") or []):
+            bot_db.execute(
+                "UPDATE entity_merge_rules SET entity_id = %s "
+                "WHERE kind = %s AND norm = %s", (card["id"], kind, nrm))
         bot_db.execute("UPDATE entity_merges SET undone = %s WHERE id = %s",
                        (int(time.time()), merge_id))
     return {"winner_id": winner_id, "loser_id": card["id"],
