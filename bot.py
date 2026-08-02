@@ -44,7 +44,8 @@ from handlers.entity_layer import (
     entity_dedup_handler, entity_export_links_handler, entity_resync_handler,
 )
 from handlers.entity_merge import (
-    entity_scale_handler, entity_classes_handler,
+    entity_scale_handler, entity_classes_handler, entity_find_handler,
+    entity_merge_handler, entity_merge_callback,
     entity_merge_log_handler, entity_unmerge_handler,
 )
 from handlers.entity_roles import (
@@ -487,6 +488,8 @@ def main():
     app.add_handler(CommandHandler("entity_export_links", entity_export_links_handler))
     app.add_handler(CommandHandler("entity_scale", entity_scale_handler))
     app.add_handler(CommandHandler("entity_classes", entity_classes_handler))
+    app.add_handler(CommandHandler("entity_find", entity_find_handler))
+    app.add_handler(CommandHandler("entity_merge", entity_merge_handler))
     app.add_handler(CommandHandler("entity_merge_log", entity_merge_log_handler))
     app.add_handler(CommandHandler("entity_unmerge", entity_unmerge_handler))
     app.add_handler(CommandHandler("roles", roles_handler))
@@ -588,6 +591,7 @@ def main():
     app.add_handler(CallbackQueryHandler(roles_pair_callback, pattern="^rdp:"))
     app.add_handler(CallbackQueryHandler(roles_org_callback, pattern="^rdo:"))
     app.add_handler(CallbackQueryHandler(roles_bulk_callback, pattern="^rb[cmr]:"))
+    app.add_handler(CallbackQueryHandler(entity_merge_callback, pattern="^emg:"))
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.

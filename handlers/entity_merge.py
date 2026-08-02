@@ -27,7 +27,10 @@ import json
 import os
 import time
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
 from handlers import bot_db, entity_roles
+import entity_pipeline as ep
 
 _ALLOWED_USER_IDS = {
     int(uid) for uid in os.environ.get("ALLOWED_USER_IDS", "").split(",") if uid.strip()
@@ -220,6 +223,248 @@ def restore_merge(merge_id):
                        (int(time.time()), merge_id))
     return {"winner_id": winner_id, "loser_id": card["id"],
             "name": card["name_ua"] or card["name_ru"], "links": len(links)}
+
+
+# ---------- /entity_find ----------
+
+FIND_SQL = """
+SELECT e.id, e.kind, e.subtype, coalesce(e.name_ua, e.name_ru) AS name,
+       e.name_ru, e.role_last, coalesce(e.mentions, 0) AS mentions,
+       to_char(to_timestamp(e.first_seen), 'YYYY-MM') AS lo,
+       to_char(to_timestamp(e.last_seen), 'YYYY-MM') AS hi,
+       array_to_string(e.aliases, ' | ') AS aliases
+FROM entities e
+WHERE lower(coalesce(e.name_ua, '')) LIKE %s
+   OR lower(coalesce(e.name_ru, '')) LIKE %s
+   OR EXISTS (SELECT 1 FROM unnest(e.aliases) AS al WHERE lower(al) LIKE %s)
+ORDER BY e.mentions DESC NULLS LAST, e.id
+LIMIT 15
+"""
+
+
+async def entity_find_handler(update, context):
+    """/entity_find <текст> — знайти картки за іменем чи аліасом.
+
+    Без цього /entity_merge непридатний: id карток нізвідки взяти, а
+    /entity_export віддає CSV на 40 тисяч рядків."""
+    if not _allowed(update):
+        return
+    q = " ".join(context.args or []).strip()
+    if len(q) < 2:
+        await update.message.reply_text(
+            "Формат: /entity_find <частина імені>\n"
+            "Напр.: /entity_find сєнкевич\n"
+            "Далі злиття дублів: /entity_merge <id що лишається> <id дубля>")
+        return
+    like = f"%{q.lower()}%"
+    try:
+        rows = await bot_db.aquery(FIND_SQL, (like, like, like))
+    except Exception as e:
+        await update.message.reply_text(f"❌ Нора недоступна: {e}")
+        return
+    if not rows:
+        await update.message.reply_text(f"За «{q}» карток не знайшов.")
+        return
+    lines = [f"🦊 Картки за «{q}» — {len(rows)}\n"]
+    for r in rows:
+        period = f" · {r['lo']}…{r['hi']}" if r["lo"] else ""
+        role = f" · {r['role_last']}" if r["role_last"] else ""
+        lines.append(f"[{r['id']}] {r['name']} ({r['kind']}, "
+                     f"{r['mentions']} згадок){period}{role}")
+        if r["aliases"]:
+            lines.append(f"      аліаси: {r['aliases']}")
+    lines.append("\nЗлити дублі: /entity_merge <id що лишається> <id дубля>")
+    await update.message.reply_text("\n".join(lines)[:4000])
+
+
+# ---------- /entity_merge ----------
+#
+# Крок 3 §7: ручне злиття карток на вимогу. Детектора, черги й судді тут немає
+# свідомо — вони чекають рішення за числами заміру, а ця команда вже знімає
+# біль там, де дубль знайдено очима («Сєнкевич» при «Олександр Сєнкевич»).
+#
+# Запобіжники, без яких злиття робити не можна (§5 і §7 «чого не робити»):
+#   • різні kind не зливаються НІКОЛИ (людина з організацією);
+#   • перед злиттям — прев'ю з підставою: спільні статті й спільні сусіди, бо
+#     саме співпоява відрізняє одну людину від однофамільця (§2), а не ім'я;
+#   • рішення тапом по кнопці, а не самим фактом набору команди: id набирають
+#     руками, і одна цифра помилки — це злиття не тих карток;
+#   • знімок у entity_merges → /entity_unmerge повертає все, разом із
+#     role_at_time кожного зв'язку.
+
+OVERLAP_SQL = """
+WITH a AS (SELECT article_id FROM article_entities WHERE entity_id = %s),
+     b AS (SELECT article_id FROM article_entities WHERE entity_id = %s)
+SELECT (SELECT count(*) FROM a JOIN b USING (article_id)) AS shared_articles,
+       (SELECT count(*) FROM (
+            SELECT entity_id FROM article_entities
+            WHERE article_id IN (SELECT article_id FROM a) AND entity_id <> %s
+            INTERSECT
+            SELECT entity_id FROM article_entities
+            WHERE article_id IN (SELECT article_id FROM b) AND entity_id <> %s
+        ) t) AS shared_neighbours
+"""
+
+CARD_SQL = """
+SELECT id, kind, subtype, name_ua, name_ru, role_last,
+       coalesce(mentions, 0) AS mentions,
+       to_char(to_timestamp(first_seen), 'YYYY-MM') AS lo,
+       to_char(to_timestamp(last_seen), 'YYYY-MM') AS hi,
+       array_to_string(aliases, ' | ') AS aliases
+FROM entities WHERE id = %s
+"""
+
+
+def merge_preview(winner_id, loser_id):
+    a = bot_db.query(CARD_SQL, (winner_id,))
+    b = bot_db.query(CARD_SQL, (loser_id,))
+    if not a or not b:
+        missing = [i for i, r in ((winner_id, a), (loser_id, b)) if not r]
+        return None, f"немає карток: {', '.join(str(i) for i in missing)}"
+    a, b = a[0], b[0]
+    if a["kind"] != b["kind"]:
+        return None, (f"різні типи ({a['kind']} і {b['kind']}) — такі картки "
+                      f"не зливаються ніколи")
+    ov = bot_db.query(OVERLAP_SQL, (winner_id, loser_id, loser_id, winner_id))[0]
+    return {"a": a, "b": b, "overlap": ov}, None
+
+
+def format_preview(p):
+    def card(letter, c, tail):
+        period = f"{c['lo']}…{c['hi']}" if c["lo"] else "період невідомий"
+        role = f"\n   роль: {c['role_last']}" if c["role_last"] else ""
+        al = f"\n   аліаси: {c['aliases']}" if c["aliases"] else ""
+        ru = f" / {c['name_ru']}" if c["name_ru"] else ""
+        return (f"{letter} [{c['id']}] {c['name_ua'] or c['name_ru']}{ru}"
+                f"\n   {c['mentions']} згадок · {period}{role}{al}\n   {tail}")
+
+    ov = p["overlap"]
+    return (
+        "🦊 Злити ці картки?\n\n"
+        + card("✅", p["a"], "ЛИШАЄТЬСЯ") + "\n"
+        + card("🗑", p["b"], "піде в аліаси й зникне") + "\n\n"
+        + f"Спільних статей: {ov['shared_articles']} · "
+          f"спільних сусідів: {ov['shared_neighbours']}\n"
+        + "Саме співпоява відрізняє одну людину від однофамільця — "
+          "якщо спільного світу немає, це різні люди.\n\n"
+        + "Щоб лишилась ІНША картка — поміняй id місцями в команді."
+    )
+
+
+def merge_cards(winner_id, loser_id, decided_by=None):
+    """Перевісити зв'язки, злити аліаси, перерахувати агрегати, прибрати
+    програшну картку — зі знімком у журналі. Спільне ядро з /entity_dedup,
+    але для довільної пари карток, а не для точного збігу імен."""
+    ensure_schema()
+    conn = ep.connect()
+    cur = conn.cursor()
+    try:
+        cur.execute(MERGES_DDL)
+        cur.execute("SELECT kind, name_ua, name_ru, aliases FROM entities WHERE id = %s",
+                    (winner_id,))
+        w = cur.fetchone()
+        cur.execute("SELECT kind, name_ua, name_ru, aliases FROM entities WHERE id = %s",
+                    (loser_id,))
+        l = cur.fetchone()
+        if not w or not l:
+            raise ValueError("картки немає в норі")
+        if w[0] != l[0]:
+            raise ValueError(f"різні типи: {w[0]} і {l[0]}")
+
+        merge_id = record_merge(cur, winner_id, loser_id, decided_by)
+
+        # Аліаси: усе, чим програшну картку називали, має лишитись шукабельним —
+        # інакше пошук по народній назві після злиття не знайде нічого (§5).
+        aliases = set(w[3] or [])
+        canon = {ep.norm(w[1]), ep.norm(w[2])}
+        for nm in (l[1], l[2]):
+            if nm and ep.norm(nm) not in canon:
+                aliases.add(nm)
+        for nm in (l[3] or []):
+            if nm and ep.norm(nm) not in canon:
+                aliases.add(nm)
+        name_ua = w[1] or l[1]
+        name_ru = w[2] or l[2]
+
+        cur.execute(
+            "UPDATE article_entities ae SET entity_id = %s "
+            "WHERE entity_id = %s AND NOT EXISTS ("
+            "  SELECT 1 FROM article_entities x "
+            "  WHERE x.article_id = ae.article_id AND x.entity_id = %s)",
+            (winner_id, loser_id, winner_id))
+        moved = cur.rowcount
+        cur.execute("DELETE FROM article_entities WHERE entity_id = %s", (loser_id,))
+        cur.execute(
+            "UPDATE entities SET name_ua = %s, name_ru = %s, aliases = %s WHERE id = %s",
+            (name_ua, name_ru, sorted(aliases), winner_id))
+        cur.execute("DELETE FROM entities WHERE id = %s", (loser_id,))
+        cur.execute(RECALC_AGG_SQL, ([winner_id],))
+        cur.execute(RECALC_ROLE_SQL, ([winner_id],))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    return {"merge_id": merge_id, "moved": moved, "aliases": sorted(aliases)}
+
+
+async def entity_merge_handler(update, context):
+    if not _allowed(update):
+        return
+    args = context.args or []
+    if len(args) < 2 or not all(a.isdigit() for a in args[:2]):
+        await update.message.reply_text(
+            "Формат: /entity_merge <id що ЛИШАЄТЬСЯ> <id дубля>\n"
+            "Напр.: /entity_merge 1204 8871\n\n"
+            "Знайти id: /entity_find <ім'я>\n"
+            "Журнал і відкат: /entity_merge_log, /entity_unmerge <id>")
+        return
+    winner_id, loser_id = int(args[0]), int(args[1])
+    if winner_id == loser_id:
+        await update.message.reply_text("Це одна й та сама картка.")
+        return
+    try:
+        p, err = await asyncio.to_thread(merge_preview, winner_id, loser_id)
+    except Exception as e:
+        await update.message.reply_text(f"❌ {type(e).__name__}: {e}")
+        return
+    if err:
+        await update.message.reply_text(f"🦊 Не зливаю: {err}")
+        return
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Злити", callback_data=f"emg:{winner_id}:{loser_id}"),
+        InlineKeyboardButton("❌ Скасувати", callback_data="emg:0:0"),
+    ]])
+    await update.message.reply_text(format_preview(p), reply_markup=kb)
+
+
+async def entity_merge_callback(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id if query.from_user else None
+    if _ALLOWED_USER_IDS and user_id not in _ALLOWED_USER_IDS:
+        await query.answer("⛔ Тільки для редакції.", show_alert=True)
+        return
+    try:
+        _, w, l = query.data.split(":", 2)
+        winner_id, loser_id = int(w), int(l)
+    except (ValueError, AttributeError):
+        await query.answer()
+        return
+    await query.answer()
+    base = (query.message.text or "").split("\n\nЩоб лишилась")[0]
+    if not winner_id:
+        await query.edit_message_text(base + "\n\n❌ Скасовано.")
+        return
+    who = query.from_user.full_name if query.from_user else None
+    try:
+        res = await asyncio.to_thread(merge_cards, winner_id, loser_id, who)
+    except Exception as e:
+        await query.edit_message_text(base + f"\n\n❌ Не злилось: {e}")
+        return
+    await query.edit_message_text(
+        base + f"\n\n✅ Злито: {res['moved']} зв'язків перевішено на {winner_id}, "
+               f"картка {loser_id} прибрана.\n"
+               f"Аліаси: {' | '.join(res['aliases']) or '—'}\n"
+               f"Відкат: /entity_unmerge {res['merge_id']}")
 
 
 # ---------- /entity_merge_log ----------

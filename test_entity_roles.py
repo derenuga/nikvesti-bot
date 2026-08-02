@@ -799,6 +799,67 @@ def test_card_merge_journal():
     check("повторний відкат ідемпотентний", em.restore_merge(mid) == "already")
 
 
+def test_manual_merge():
+    """/entity_merge <id1> <id2> — крок 3. Дубль знайдено очима («Сєнкевич»
+    при «Олександр Сєнкевич»), і його треба злити так, щоб пошук по обох
+    написаннях далі працював, а помилку можна було відкотити."""
+    bot_db.execute(
+        "INSERT INTO entities (id, kind, name_ua, name_ru, aliases) VALUES "
+        "(501, 'person', 'Олександр Сєнкевич', NULL, %s), "
+        "(502, 'person', 'Сєнкевич', 'Сенкевич', '{}'), "
+        "(503, 'org', 'Миколаївська міськрада', NULL, '{}') "
+        "ON CONFLICT (id) DO NOTHING", (["Сєнкевич О."],))
+    for aid, eid, role in ((6000, 501, "мер Миколаєва"),
+                           (6001, 502, "міський голова"),
+                           (6002, 502, "мер"),
+                           (6000, 502, "мер Миколаєва")):   # спільна стаття
+        bot_db.execute(
+            "INSERT INTO articles (id, published, title_ua) VALUES (%s, %s, %s) "
+            "ON CONFLICT (id) DO NOTHING", (aid, 1700000000, f"Стаття {aid}"))
+        bot_db.execute(
+            "INSERT INTO article_entities (article_id, entity_id, role_at_time, salience) "
+            "VALUES (%s, %s, %s, 'mentioned') ON CONFLICT DO NOTHING",
+            (aid, eid, role))
+
+    p, err = em.merge_preview(501, 503)
+    check("картки різних типів не зливаються ніколи",
+          p is None and "різні типи" in (err or ""), f"{err}")
+    p, err = em.merge_preview(501, 502)
+    check("прев'ю показує підставу — спільні статті й сусідів",
+          p and p["overlap"]["shared_articles"] == 1, f"{err or p['overlap']}")
+    txt = em.format_preview(p)
+    check("у прев'ю видно, яка картка лишається",
+          "ЛИШАЄТЬСЯ" in txt and "піде в аліаси" in txt)
+
+    before = {(r["article_id"], r["role_at_time"]) for r in bot_db.query(
+        "SELECT article_id, role_at_time FROM article_entities "
+        "WHERE entity_id IN (501, 502)")}
+    res = em.merge_cards(501, 502, "тест")
+    check("злиття перевісило зв'язки", res["moved"] == 2, f"{res}")
+    gone = bot_db.query("SELECT count(*) AS n FROM entities WHERE id = 502")[0]["n"]
+    check("програшна картка прибрана", gone == 0)
+    al = bot_db.query("SELECT aliases FROM entities WHERE id = 501")[0]["aliases"]
+    check("імена програшної картки пішли в аліаси (інакше пошук по них помре)",
+          "Сєнкевич" in al and "Сенкевич" in al and "Сєнкевич О." in al, f"{al}")
+    now = {(r["article_id"], r["role_at_time"]) for r in bot_db.query(
+        "SELECT article_id, role_at_time FROM article_entities WHERE entity_id = 501")}
+    check("role_at_time кожного зв'язку збережено", now == before, f"{now} vs {before}")
+    agg = bot_db.query("SELECT mentions FROM entities WHERE id = 501")[0]["mentions"]
+    check("агрегати перераховані", agg == 3, f"{agg}")
+
+    back = em.restore_merge(res["merge_id"])
+    check("відкат повертає картку з її зв'язками", isinstance(back, dict), f"{back}")
+    card = bot_db.query("SELECT name_ua, name_ru FROM entities WHERE id = 502")
+    check("відновлена картка та сама", card and card[0]["name_ua"] == "Сєнкевич", f"{card}")
+    al2 = bot_db.query("SELECT aliases FROM entities WHERE id = 501")[0]["aliases"]
+    check("аліаси переможця повернулись до доздиттєвих",
+          sorted(al2) == ["Сєнкевич О."], f"{al2}")
+
+    bot_db.execute("DELETE FROM article_entities WHERE article_id >= 6000")
+    bot_db.execute("DELETE FROM articles WHERE id >= 6000")
+    bot_db.execute("DELETE FROM entities WHERE id IN (501, 502, 503)")
+
+
 def test_measure_readonly():
     before = raw_roles_snapshot()
     n_canon = bot_db.query("SELECT count(*) AS n FROM role_canon")[0]["n"]
@@ -825,6 +886,7 @@ async def run():
     test_affiliation()
     test_rejection_memory_and_rollback()
     test_card_merge_journal()
+    test_manual_merge()
     test_measure_readonly()
 
 

@@ -1321,8 +1321,11 @@ async def roles_outliers_handler(update, context):
         lines.append("Це вісь карток, ролі ні до чого: одна людина під двома "
                      "картками. Але обережно — так само виглядає й однофамілець.")
         for r in dup:
+            arts = ", ".join(str(a) for a in (r["articles"] or []))
             lines.append(f"«{r['rn']}» · {r['name']} ({r['c']}) ~ "
-                         f"{r['main_name']} ({r['top']})")
+                         f"{r['main_name']} ({r['top']}) · статті: {arts}")
+        lines.append("Знайти id карток: /entity_find <ім'я> · злити: "
+                     "/entity_merge <id що лишається> <id дубля>")
         lines.append("")
 
     # Перевірка по ТЕКСТУ: чи стоїть посада поруч з іменем. Періоди тут не
