@@ -324,6 +324,7 @@ CLASS_LABELS = {
     "place_swap": "ІНШЕ МІСЦЕ — замінено топонім",
     "level_swap": "ІНШИЙ РІВЕНЬ (обласна / міська / районна)",
     "permutation": "ті самі слова, інший порядок",
+    "function_words": "різниця лише у службових словах (кома / «та»)",
     "abbrev": "скорочення / розгортання",
     "containment_fill": "уточнення: доповнює назву",
     "containment_geo": "уточнення: ІНШЕ МІСЦЕ (країна/область/місто)",
@@ -345,7 +346,7 @@ CLASS_LABELS = {
 # розвитку» — це різні управління), тому гуртом його не закривають узагалі.
 # Голу форму посади («прем'єр-міністр» без країни) взагалі не можна злити ні з
 # чим конкретним: у кожній статті вона означає свою людину.
-BULK_MERGE = {"permutation", "abbrev", "typo"}
+BULK_MERGE = {"permutation", "abbrev", "typo", "function_words"}
 BULK_REJECT = {"numbers", "status_diff", "place_swap", "level_swap",
                "containment_geo", "containment_disc"}
 
@@ -396,6 +397,13 @@ ACTING_RE = re.compile(
 def _status_marker(text):
     m = ACTING_RE.search(text or "")
     return m.group(0).strip() if m else None
+
+
+# Службові слова. «депутат міськради ТА голова ОВА» і «депутат міськради,
+# голова ОВА» — це той самий рядок із комою замість сполучника, а не дві різні
+# посади. Такі пари безпечно зводити гуртом: семантики в різниці немає.
+FUNCTION_WORDS = {"та", "і", "й", "а", "з", "із", "зі", "у", "в", "на", "по",
+                  "до", "від", "при", "для", "про", "the", "of"}
 
 
 def _has_digits(tokens):
@@ -555,6 +563,12 @@ def classify_pair(a, b, has_carrier=False):
 
     if sorted(ta) == sorted(tb) and ta != tb:
         return "permutation", None
+    # Різниця лише у службових словах — кома проти «та» і подібне.
+    da = [w for w in ta if w not in FUNCTION_WORDS]
+    db = [w for w in tb if w not in FUNCTION_WORDS]
+    if da == db and ta != tb:
+        extra = sorted(set(ta) ^ set(tb))
+        return "function_words", " ".join(extra) or None
     short_t, long_t = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
     hit = _abbrev_match(short_t, long_t)
     if hit:
