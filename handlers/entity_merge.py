@@ -477,22 +477,38 @@ WHERE a.name_ua IS NOT NULL AND b.name_ua IS NOT NULL
 
 def _tally(pairs):
     """pairs: [(cls, detail, ліва, права)] → зведення по класах + гістограма
-    зайвих слів класу «уточнення»."""
+    зайвих слів класу «уточнення» + поділ цього класу на доповнення й
+    розрізнювачі (саме він і вирішує, чи можна закривати клас гуртом)."""
     classes, extra = {}, {}
+    fill = disc = 0
     for cls, detail, left, right in pairs:
         slot = classes.setdefault(cls, {"n": 0, "examples": []})
         slot["n"] += 1
         if len(slot["examples"]) < 2:
             slot["examples"].append(f"{left} ~ {right}")
         if cls == "containment" and detail:
-            for w in detail.split():
+            words = detail.split()
+            for w in words:
                 extra[w] = extra.get(w, 0) + 1
+            if set(words) & entity_roles.DISCRIMINATING:
+                disc += 1
+            else:
+                fill += 1
     return {"total": len(pairs), "classes": classes,
-            "extra": sorted(extra.items(), key=lambda kv: -kv[1])[:12]}
+            "extra": sorted(extra.items(), key=lambda kv: -kv[1])[:12],
+            "fill": fill, "disc": disc}
 
 
-def classify_cards():
-    rows = bot_db.query(SCALE_SIM_ALL_SQL, (SIM_MIN_MENTIONS, SIM_MIN_MENTIONS))
+def classify_cards(threshold=SIM_THRESHOLD):
+    """УВАГА на поріг. Оператор `%` бере його з налаштування сеансу
+    pg_trgm.similarity_threshold, а не з тексту запиту. Перший прогін
+    /entity_classes цього не виставив і мовчки поїхав на дефолтних 0.3 — замість
+    3 757 пар вийшло 194 308, з них 92% сміття («вулиця Повстанська» ~ «вулиця
+    4 Ялтинська»), і розкладка була неспівставна з /entity_scale. Тому поріг
+    ставиться явно, в одній сесії з запитом, і друкується у звіті."""
+    with bot_db.session():
+        bot_db.execute(f"SET pg_trgm.similarity_threshold = {threshold}")
+        rows = bot_db.query(SCALE_SIM_ALL_SQL, (SIM_MIN_MENTIONS, SIM_MIN_MENTIONS))
     pairs = []
     for r in rows:
         a, b = entity_roles.role_norm(r["an"]), entity_roles.role_norm(r["bn"])
@@ -521,7 +537,9 @@ def format_classes(title, data):
         for ex in slot["examples"]:
             lines.append(f"   · {ex}")
     if data["extra"]:
-        lines.append("\nЗайві слова у класі «уточнення» (що саме відрізняє пару):")
+        lines.append(f"\nУточнення: {data['fill']} доповнюють назву, "
+                     f"{data['disc']} розрізняють (колишній/перший/дитяча…)")
+        lines.append("Зайві слова (що саме відрізняє пару):")
         lines.append("   " + ", ".join(f"{w} ×{n}" for w, n in data["extra"]))
     return "\n".join(lines)
 
@@ -534,13 +552,21 @@ async def entity_classes_handler(update, context):
     if not bot_db.is_configured():
         await update.message.reply_text("🦊 Нора недоступна (BOT_DATABASE_URL).")
         return
+    args = context.args or []
+    try:
+        thr = float(args[0]) if args else SIM_THRESHOLD
+    except ValueError:
+        thr = SIM_THRESHOLD
+    thr = min(max(thr, 0.3), 0.95)
     msg = await update.message.reply_text("🦊 Розкладаю кандидатів по класах…")
     try:
-        cards = await asyncio.to_thread(classify_cards)
+        cards = await asyncio.to_thread(classify_cards, thr)
     except Exception as e:
         await msg.edit_text(f"❌ Картки не розклались: {type(e).__name__}: {e}")
         return
-    await msg.edit_text(format_classes("Класи кандидатів · КАРТКИ", cards)[:4000])
+    await msg.edit_text(
+        format_classes(f"Класи кандидатів · КАРТКИ (схожість > {thr})",
+                       cards)[:4000])
     try:
         roles = await asyncio.to_thread(classify_roles)
     except Exception as e:
