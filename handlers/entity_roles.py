@@ -628,6 +628,11 @@ def _abbrev_match(short_tokens, long_tokens):
 # слово («тепло»), тобто інша назва.
 TYPO_MAX_EDITS = 2
 
+# У КОРОТКИХ словах два виправлення — це вже інше слово: «рада» і «влада»
+# різняться на два символи, і /entity_org_dupes пропонував злити «Миколаївську
+# обласну ВЛАДУ» з «обласною РАДОЮ» (живий випадок 02.08).
+SHORT_WORD = 5
+
 
 def _edits(x, y):
     """Скільки символів різняться (вставлені + видалені + замінені)."""
@@ -637,6 +642,10 @@ def _edits(x, y):
         if tag != "equal":
             n += max(i2 - i1, j2 - j1)
     return n
+
+
+def _max_edits(x, y):
+    return 1 if min(len(x), len(y)) <= SHORT_WORD else TYPO_MAX_EDITS
 
 
 def classify_pair(a, b, has_carrier=False):
@@ -730,7 +739,7 @@ def classify_pair(a, b, has_carrier=False):
             # «Миколаївобленерго» схожі на 0.86, бо різниця лише у вставленому
             # «тепло» — а це два РІЗНІ підприємства (тепло й електрика), і
             # /entity_org_dupes пропонував їх злити (живий випадок 02.08).
-            if _edits(x, y) > TYPO_MAX_EDITS:
+            if _edits(x, y) > _max_edits(x, y):
                 # Замінили місце («Миколаївської» → «Херсонської») або рівень
                 # («обласної» → «міської») — це різні органи, а не синоніми.
                 if _region_code(x) != _region_code(y) and (
@@ -758,7 +767,7 @@ def classify_pair(a, b, has_carrier=False):
     if len(ta) == len(tb):
         diff = [(x, y) for x, y in zip(ta, tb) if x != y]
         if diff and len(diff) <= 2 and all(
-                _edits(x, y) <= TYPO_MAX_EDITS for x, y in diff):
+                _edits(x, y) <= _max_edits(x, y) for x, y in diff):
             return "typo", " · ".join(f"{x} / {y}" for x, y in diff)
     return ("carrier_only" if has_carrier else "other"), None
 
