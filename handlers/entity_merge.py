@@ -835,8 +835,8 @@ def measure():
     out["role_top"] = bot_db.query(SCALE_ROLE_TOP_SQL)
     out["role_multi"] = bot_db.query(SCALE_ROLE_MULTI_SQL)[0]["n"]
     out["role_multi_top"] = bot_db.query(SCALE_ROLE_MULTI_TOP_SQL)
-    n_roles, pairs = entity_roles.find_pairs()
-    out["role_scan_roles"] = n_roles
+    names, pairs = entity_roles.find_pairs()
+    out["role_scan_roles"] = len(names)
     out["role_pairs"] = len(pairs)
     out["role_pairs_strong"] = sum(1 for p in pairs if p[2] >= 4)
     out["role_pairs_top"] = pairs[:5]
@@ -950,7 +950,7 @@ def classify_cards(threshold=SIM_THRESHOLD):
 
 
 def classify_roles():
-    _, rows = entity_roles.find_pairs()
+    _names, rows = entity_roles.find_pairs()
     return _tally([(cls, detail, a, b) for a, b, _s, _sig, cls, detail, _st in rows])
 
 

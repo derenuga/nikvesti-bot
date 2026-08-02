@@ -172,7 +172,7 @@ def test_norm_matches_sql():
 
 
 def test_detector():
-    n_roles, pairs = er.find_pairs(min_links=1, top_roles=200)
+    names, pairs = er.find_pairs(min_links=1, top_roles=200)
     got = {(r[0], r[1]) for r in pairs}
 
     def has(x, y):
@@ -200,6 +200,8 @@ def test_detector():
         score[(a, b)] = score[(b, a)] = sc
     real = score.get(("мер миколаєва", "міський голова миколаєва"))
     lexical = score.get(("голова миколаївської ова", "миколаївський міський голова"))
+    check("перебір повертає перелік ролей, а не лише число",
+          isinstance(names, list) and len(names) > 2, f"{len(names)}")
     check("спільний носій важить більше за голу схожість написання",
           real is not None and lexical is not None and real > lexical,
           f"носій {real} vs схожість {lexical}")
@@ -797,6 +799,19 @@ def test_rejection_memory_and_rollback():
             "SELECT verdict FROM role_pairs WHERE id = %s", (pid,))[0]["verdict"]
         check("повторний прогін детектора не стирає рішення людини",
               again == "different", f"verdict={again}")
+        # Детектор за сесію переписувався тричі; пари, які за новими правилами
+        # кандидатами вже не є, мають зникати з черги — інакше людина
+        # відповідає на питання, яких бот більше не ставить.
+        bot_db.execute(
+            "INSERT INTO role_pairs (a_norm, b_norm, score, signals, updated) "
+            "VALUES ('мер миколаєва', 'депутатка міської ради', 9, 'застаріле', 0) "
+            "ON CONFLICT DO NOTHING")
+        er.scan_pairs(min_links=1, top_roles=200)
+        left = bot_db.query(
+            "SELECT count(*) AS n FROM role_pairs WHERE a_norm = 'мер миколаєва' "
+            "AND b_norm = 'депутатка міської ради'")[0]["n"]
+        check("застаріла пара зникає з черги при повторному прогоні",
+              left == 0, f"{left}")
     else:
         check("«ні, різні» прибирає пару з черги назавжди", False, "черга порожня")
 

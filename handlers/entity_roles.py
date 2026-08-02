@@ -513,7 +513,7 @@ def find_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
     roles = {r["rn"]: r for r in stats}
     names = list(roles)
     if len(names) < 2:
-        return len(names), []
+        return names, []
 
     # (а) спільний носій. Найсильніший сигнал: одна людина під двома написаннями
     # у ПЕРЕТИННІ періоди — це майже напевно одна посада, а не підвищення.
@@ -651,7 +651,7 @@ def find_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
         score += min(2.0, math.log10(max(stake, 1)))
         rows.append((a, b, round(score, 2), " · ".join(sig), cls, detail, stake))
     rows.sort(key=lambda r: (-r[2], -r[6]))
-    return len(names), rows
+    return names, rows
 
 
 def scan_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
@@ -661,7 +661,20 @@ def scan_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
     живе назавжди, тому повторний прогін лише додає нове й освіжає бали
     невирішених. Повертає (ролей у переборі, кандидатів, з них нових/оновлених,
     у черзі)."""
-    n_roles, rows = find_pairs(min_links, top_roles)
+    names, rows = find_pairs(min_links, top_roles)
+    n_roles = len(names)
+    # Прибрати з черги пари, які за НИНІШНІМИ правилами кандидатами вже не є.
+    # Детектор за сесію переписувався тричі (вага носіїв, класи, пороги), і без
+    # цього людина відповідала б на питання, яких бот більше не ставить.
+    # Чіпаємо тільки НЕвирішені й тільки в межах поточного перебору — рішення
+    # людини не чіпає ніщо.
+    keep = {(a, b) for a, b, *_ in rows}
+    stale = [r["id"] for r in bot_db.query(
+        "SELECT id, a_norm, b_norm FROM role_pairs WHERE verdict IS NULL "
+        "AND a_norm = ANY(%s) AND b_norm = ANY(%s)", (names, names))
+        if (r["a_norm"], r["b_norm"]) not in keep]
+    if stale:
+        bot_db.execute("DELETE FROM role_pairs WHERE id = ANY(%s)", (stale,))
     added = 0
     now = int(time.time())
     for a, b, score, sig, cls, detail, stake in rows:
