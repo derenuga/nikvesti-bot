@@ -237,6 +237,157 @@ def scan_positions():
     return out
 
 
+# ---------- Канон посилань на закон (обчислена назва) ----------
+#
+# Найцінніший клас документів і водночас найбільша купа дублів: одна стаття
+# кодексу живе десятком написань, кожне зі своєю карткою по одній згадці —
+# тобто виглядає «сміттям», хоч насправді це покажчик «за якими статтями ми
+# писали справи».
+#
+# Лікування і профілактика тут — ОДИН код. `ep.canon_document` рахує назву
+# детерміновано, і write_results кличе його на кожному витягу: інкремент,
+# батчі архіву, /entity_resync. Тому нових дублів не буде взагалі, а наявні
+# зводяться цією ж функцією разово — назва обчислюється, старе написання йде
+# в аліаси (пошук по ньому лишається живим), збіги зливаються звичайним
+# злиттям із журналом, тож відкат є.
+
+DOC_CARDS_SQL = """
+SELECT e.id, e.name_ua, e.name_ru, coalesce(e.mentions, 0) AS mentions,
+       array_to_string(e.aliases, ' | ') AS aliases
+FROM entities e WHERE e.kind = 'document'
+ORDER BY coalesce(e.mentions, 0) DESC, e.id
+"""
+
+
+def scan_doc_canon():
+    """Read-only: скільки карток отримають обчислену назву і скільки груп
+    злипнеться. Нічого не пише."""
+    _ensure()
+    plan, renames = {}, []
+    for r in bot_db.query(DOC_CARDS_SQL):
+        canon = (ep.canon_document(r["name_ua"])
+                 or ep.canon_document(r["name_ru"]))
+        if not canon:
+            continue
+        if ep.norm(canon) != ep.norm(r["name_ua"]):
+            renames.append((r["id"], r["name_ua"], canon))
+        plan.setdefault(ep.norm(canon), []).append(dict(r, canon=canon))
+    groups = {k: v for k, v in plan.items() if len(v) > 1}
+    return {"renames": renames, "groups": groups,
+            "recognised": sum(len(v) for v in plan.values()),
+            "canonical": len(plan),
+            "in_groups": sum(len(v) for v in groups.values()),
+            "links": sum(c["mentions"] for v in groups.values() for c in v)}
+
+
+def apply_doc_canon(decided_by=None):
+    """Проставити обчислені назви й злити збіги. Ідемпотентно: повторний
+    прогін нічого не змінює, бо назви вже канонічні."""
+    scan = scan_doc_canon()
+    merged = renamed = 0
+    for cards in scan["groups"].values():
+        # Лишається найзгадуваніша картка — на неї перевішуються решта.
+        winner = max(cards, key=lambda c: (c["mentions"], -c["id"]))
+        _rename_doc(winner)
+        renamed += 1
+        for c in cards:
+            if c["id"] == winner["id"]:
+                continue
+            em.merge_cards(winner["id"], c["id"], decided_by)
+            merged += 1
+    # Поодинокі картки теж перейменовуємо: наступна стаття з іншим написанням
+    # тієї самої статті кодексу має знайти саме її, а не завести нову.
+    done = {c["id"] for v in scan["groups"].values() for c in v}
+    for eid, old, canon in scan["renames"]:
+        if eid in done:
+            continue
+        _rename_doc({"id": eid, "name_ua": old, "canon": canon})
+        renamed += 1
+    return {"merged": merged, "renamed": renamed}
+
+
+def _rename_doc(card):
+    """Канонічна назва + старе написання в аліаси. Без аліаса перейменування
+    було б втратою: пошук по «частині 5 статті 191» перестав би знаходити."""
+    if ep.norm(card["canon"]) == ep.norm(card["name_ua"]):
+        return
+    bot_db.execute(
+        "UPDATE entities SET name_ua = %s, aliases = ("
+        "  SELECT coalesce(array_agg(DISTINCT x ORDER BY x), '{}') "
+        "  FROM unnest(aliases || %s::text[]) AS x) "
+        "WHERE id = %s",
+        (card["canon"], [card["name_ua"]], card["id"]))
+
+
+def format_doc_canon(scan):
+    lines = ["🦊 Канон посилань на закон (нічого ще не змінено)\n",
+             "Одна стаття кодексу живе десятком написань, і кожне завело "
+             "власну картку по одній згадці. Назва рахується з тексту, тому "
+             "далі така картка буде одна — і в інкременті, і в батчах архіву.\n"]
+    lines.append(f"Упізнано написань: {scan['recognised']} → "
+                 f"{scan['canonical']} статей і законопроєктів")
+    lines.append(f"Груп дублів: {len(scan['groups'])} · карток у них: "
+                 f"{scan['in_groups']} · згадок на кону: {scan['links']}")
+    big = sorted(scan["groups"].items(), key=lambda kv: -len(kv[1]))[:5]
+    for _k, cards in big:
+        lines.append(f"\n{cards[0]['canon']} ← {len(cards)} карток:")
+        for c in cards[:4]:
+            lines.append(f"   · {c['name_ua']}")
+    lines.append("\nСтаре написання кожної картки лишається аліасом — пошук "
+                 "по ньому працюватиме. Кожне злиття лишає знімок у журналі "
+                 "(/entity_merge_log, /entity_unmerge).")
+    return "\n".join(lines)[:4000]
+
+
+async def entity_docs_canon_handler(update, context):
+    """/entity_docs_canon — звести посилання на закон до обчисленої назви."""
+    if not _allowed(update):
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Нора недоступна (BOT_DATABASE_URL).")
+        return
+    msg = await update.message.reply_text("🦊 Рахую посилання на закон…")
+    try:
+        scan = await asyncio.to_thread(scan_doc_canon)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не порахував: {type(e).__name__}: {e}")
+        return
+    if not scan["recognised"]:
+        await msg.edit_text("🦊 Посилань на статті кодексів у норі не бачу.")
+        return
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            f"✅ Звести {len(scan['groups'])} груп", callback_data="ejd:go"),
+        InlineKeyboardButton("❌ Ні", callback_data="ejd:no"),
+    ]]) if scan["groups"] or scan["renames"] else None
+    await msg.edit_text(format_doc_canon(scan), reply_markup=kb)
+
+
+async def entity_docs_canon_callback(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id if query.from_user else None
+    if _ALLOWED_USER_IDS and user_id not in _ALLOWED_USER_IDS:
+        await query.answer("⛔ Тільки для редакції.", show_alert=True)
+        return
+    await query.answer()
+    if query.data == "ejd:no":
+        await query.edit_message_text("❌ Скасовано, картки не чіпав.")
+        return
+    await query.edit_message_text("🦊 Зводжу посилання на закон…")
+    who = query.from_user.full_name if query.from_user else None
+    try:
+        res = await asyncio.to_thread(apply_doc_canon, who)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Не звелось: {type(e).__name__}: {e}")
+        return
+    await query.edit_message_text(
+        f"🦊 Готово: злито {res['merged']} карток, канонічну назву отримали "
+        f"{res['renamed']}.\n"
+        f"Старі написання лишились аліасами, кожне злиття — у журналі "
+        f"(/entity_merge_log, відкат /entity_unmerge <id>).\n"
+        f"Далі витяг рахує назву сам — нових дублів по статтях не буде.")
+
+
 # ---------- Саме прибирання ----------
 
 def purge_cards(ids, reason, decided_by=None, run=None):

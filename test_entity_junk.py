@@ -266,6 +266,147 @@ def test_positions():
           str(back))
 
 
+def test_doc_canon_parser():
+    """Обчислена назва посилання на закон (ep.canon_document).
+
+    Тут дві помилки коштують по-різному. Не впізнати написання — просто
+    лишити дубль, це видно й лікується. А ЗЛИТИ РІЗНІ статті — брехня в
+    даних: «статті 191 та 209» це не 191-а, а 9256-д не 9256 (доопрацьований
+    законопроєкт — інший документ). Тому обидва випадки тут перевіряються
+    поіменно, на живих написаннях із нори."""
+    same = [
+        "стаття 191 КК",
+        "Кримінальний кодекс України, стаття 191",
+        "частина п'ята статті 191 Кримінального кодексу України",
+        "кримінальне провадження за частиною 4 статті 191 КК України",
+        "ч. 4 ст. 191 ККУ",
+    ]
+    got = {ep.canon_document(x) for x in same}
+    check("усі написання однієї статті дають ОДНУ назву",
+          got == {"стаття 191 КК України"}, str(got))
+    check("частина статті в назву не входить (картка — це стаття)",
+          ep.canon_document("частина 2 статті 115 КК України")
+          == ep.canon_document("Кримінальний кодекс України, стаття 115, частина 2")
+          == "стаття 115 КК України")
+    for compound in ("Кримінальний кодекс України, статті 191 та 209",
+                     "обвинувальний акт за статтями 109, 436-2, 114-2 "
+                     "Кримінального кодексу України",
+                     "Статті 410, 62 Конституції України",
+                     "Кримінальний Кодекс України, частина 2 статті 28, "
+                     "частини 2 статті 204"):
+        check(f"складене посилання не зводиться: {compound[:34]}…",
+              ep.canon_document(compound) is None,
+              str(ep.canon_document(compound)))
+    check("кодекс без статті не зводиться",
+          ep.canon_document("Кримінальний кодекс України") is None)
+    check("«статус» не читається як «стаття»",
+          ep.canon_document("Про статус ветеранів війни") is None)
+    check("рік не плутається з номером статті",
+          ep.canon_document("стаття 5 Закону про мобілізацію від 2020 року") is None)
+    check("законопроєкт зводиться за номером",
+          ep.canon_document("Законопроєкт № 12000 про держбюджет на 2025 рік")
+          == ep.canon_document("законопроєкт №12000") == "законопроєкт №12000")
+    check("суфікс номера законопроєкту — частина номера, а не сміття",
+          ep.canon_document("законопроєкт №9256-д") == "законопроєкт №9256-д"
+          != ep.canon_document("законопроєкт №9256"))
+    check("номер скликання лишається у верхньому регістрі",
+          ep.canon_document("законопроєкт 4220-IX") == "законопроєкт №4220-IX")
+    check("звичайний документ не чіпається",
+          ep.canon_document("Гаазька конвенція про захист культурних цінностей "
+                            "1954") is None)
+
+
+def test_doc_canon_migration():
+    """Наявні картки лікуються тією самою функцією, якою витяг рахує назву.
+
+    Головне тут — що лікування не втрачає нічого: старе написання лишається
+    аліасом (пошук по ньому має працювати), згадки складаються, а кожне
+    злиття лежить у журналі, тож помилку можна відкотити."""
+    for eid, name, arts in ((7101, "стаття 191 КК", [9000]),
+                            (7102, "Кримінальний кодекс України, стаття 191",
+                             [9001, 9002]),
+                            (7103, "частина п'ята статті 191 "
+                                   "Кримінального кодексу України", [9003]),
+                            (7104, "Кримінальний кодекс України, "
+                                   "статті 191 та 209", [9004])):
+        bot_db.execute(
+            "INSERT INTO entities (id, kind, name_ua, mentions) "
+            "VALUES (%s, 'document', %s, %s)", (eid, name, len(arts)))
+        for aid in arts:
+            bot_db.execute(
+                "INSERT INTO article_entities (article_id, entity_id, salience) "
+                "VALUES (%s, %s, 'mentioned') ON CONFLICT DO NOTHING", (aid, eid))
+    scan = ej.scan_doc_canon()
+    check("замір бачить групу дублів однієї статті",
+          any(len(v) == 3 for v in scan["groups"].values()),
+          str({k: len(v) for k, v in scan["groups"].items()}))
+    check("складене посилання в групу не потрапило",
+          not any(c["id"] == 7104 for v in scan["groups"].values() for c in v))
+
+    res = ej.apply_doc_canon("тест")
+    left = bot_db.query(
+        "SELECT id, name_ua, mentions, array_to_string(aliases, ' | ') AS al "
+        "FROM entities WHERE id = ANY(%s)", ([7101, 7102, 7103, 7104],))
+    ids = {r["id"] for r in left}
+    check("від трьох карток лишилась одна", ids == {7102, 7104}, str(sorted(ids)))
+    winner = next(r for r in left if r["id"] == 7102)
+    check("вона має обчислену назву", winner["name_ua"] == "стаття 191 КК України",
+          winner["name_ua"])
+    check("усі старі написання лишились аліасами (пошук по них живий)",
+          all(x in winner["al"] for x in
+              ("стаття 191 КК", "частина п'ята статті 191 Кримінального кодексу України")),
+          winner["al"])
+    check("згадки склались", winner["mentions"] == 4, str(winner["mentions"]))
+    check("складене посилання лишилось окремою карткою", 7104 in ids)
+    check("кожне злиття лежить у журналі",
+          bot_db.query("SELECT count(*) AS n FROM entity_merges "
+                       "WHERE winner_id = 7102 AND undone IS NULL")[0]["n"] == 2)
+    check("повторний прогін нічого не змінює (ідемпотентно)",
+          ej.apply_doc_canon("тест") == {"merged": 0, "renamed": 0},
+          str(ej.apply_doc_canon("тест")))
+
+
+def test_doc_canon_write_results():
+    """Профілактика: НОВІ статті не мають плодити ті самі дублі.
+
+    Це та половина задачі, заради якої нормалізатор живе в write_results, а не
+    в разовій команді: через нього проходять усі канали витягу — щогодинний
+    інкремент, батчі архіву й /entity_resync."""
+    before = {r["id"] for r in bot_db.query(
+        "SELECT id FROM entities WHERE kind = 'document'")}
+    ep.write_results([
+        {"article_id": 9005, "entities": [
+            {"kind": "document", "name_ua": "частина 3 статті 286 "
+                                            "Кримінального кодексу України",
+             "salience": "mentioned"}]},
+        {"article_id": 9004, "entities": [
+            {"kind": "document", "name_ua": "ч. 1 ст. 286 КК України",
+             "salience": "mentioned"}]},
+    ])
+    new = bot_db.query(
+        "SELECT id, name_ua, mentions, array_to_string(aliases, ' | ') AS al "
+        "FROM entities WHERE kind = 'document' AND NOT (id = ANY(%s))",
+        (sorted(before),))
+    check("два різні написання однієї статті дали ОДНУ картку",
+          len(new) == 1, str([r["name_ua"] for r in new]))
+    if new:
+        check("у неї обчислена назва",
+              new[0]["name_ua"] == "стаття 286 КК України", new[0]["name_ua"])
+        check("обидва сирі написання збереглись аліасами",
+              "ч. 1 ст. 286 КК України" in new[0]["al"]
+              and "частина 3 статті 286" in new[0]["al"], new[0]["al"])
+        check("картка зібрала обидві статті", new[0]["mentions"] == 2,
+              str(new[0]["mentions"]))
+        bot_db.execute("DELETE FROM article_entities WHERE entity_id = %s",
+                       (new[0]["id"],))
+        bot_db.execute("DELETE FROM entities WHERE id = %s", (new[0]["id"],))
+    bot_db.execute("DELETE FROM article_entities WHERE entity_id = ANY(%s)",
+                   ([7101, 7102, 7103, 7104],))
+    bot_db.execute("DELETE FROM entities WHERE id = ANY(%s)",
+                   ([7101, 7102, 7103, 7104],))
+    bot_db.execute("DELETE FROM entity_merges WHERE winner_id = 7102")
+
+
 def test_org_dupes():
     pairs, skipped = ej.find_org_dupes()
     got = {(p["winner"][0], p["loser"][0]) for p in pairs}
@@ -294,6 +435,9 @@ def run():
     test_purge_and_undo(ids)
     test_role_untouched()
     test_positions()
+    test_doc_canon_parser()
+    test_doc_canon_migration()
+    test_doc_canon_write_results()
     test_org_dupes()
     bad = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS) - len(bad)}/{len(RESULTS)} перевірок пройдено")
