@@ -1169,10 +1169,19 @@ LIMIT %s
 OUTLIER_MIN_TOP = 20
 OUTLIER_RATIO = 20
 
-# Скільки символів між іменем і словом посади в тексті ще вважаємо «поруч».
-# Абзац новини — 300–600 символів, тож 250 приблизно означає «в одному реченні
-# або сусідньому».
-NEAR_CHARS = 250
+# Скільки символів між іменем і словом посади ще означає «це одна іменна
+# група»: «мер Миколаєва Олександр Сєнкевич» — 14 символів, «Тодішній мер
+# Миколаєва Володимир Чайка» — 23.
+#
+# Перший поріг був 250 і провалився на реальній статті 310211: там «Також
+# Віталій Кім розповідав…» і наступним абзацом «Мер також наголосив…» (це про
+# Сєнкевича) стоять за ~130 символів одне від одного — і Кім проходив би як
+# законний мер. Тобто «поруч» у масштабі абзацу нічого не доводить: у новині
+# абзаци й так про сусідні речі.
+NEAR_CHARS = 60
+# Сіра зона: посада в тексті є, але не в одній групі з іменем. Ні доказ, ні
+# спростування — рівно те місце, де треба показати людині врізку.
+GREY_CHARS = 300
 
 
 def _prefix(word):
@@ -1182,47 +1191,82 @@ def _prefix(word):
     return word[:max(4, len(word) - 2)]
 
 
-def role_near_name(text, name, role_norm_text):
-    """Чи стоїть посада в тексті ПОРУЧ із цим іменем.
+# Топоніми, які треба ВИКИНУТИ з перевірки близькості. Без цього вона міряє не
+# посаду, а місто: у ролі «міський голова МИКОЛАЄВА» слово «Миколаєва» стоїть у
+# кожному абзаці миколаївської новини, а в імені «МИКОЛА Леонтович» той самий
+# корінь — і бот бачив відстань 0 там, де посади поруч немає взагалі.
+# Список беремо з самої нори (entities kind='place'), а не вигадуємо.
+_places = {"set": None}
 
-    Це і є те, чого не дають ні числа, ні періоди: у статті-ретроспективі
-    «тодішній мер Володимир Чайка» слова стоять поряд, а в помилці витягу
-    «Віталій Кім» згадано в одному абзаці, а «мер Миколаєва Сєнкевич» — в
-    іншому, за кілометр. Повертає (відстань, чи знайдене ім'я) — рішення
-    лишається за людиною, але тепер воно спирається на текст.
+
+def _place_prefixes():
+    if _places["set"] is None:
+        pref = set()
+        try:
+            for r in bot_db.query(
+                    "SELECT lower(name_ua) AS a, lower(name_ru) AS b "
+                    "FROM entities WHERE kind = 'place'"):
+                for nm in (r["a"], r["b"]):
+                    for w in _tokens(nm or ""):
+                        if len(w) >= 5:
+                            pref.add(w[:6])
+        except Exception as e:
+            print(f"entity_roles: список топонімів недоступний — {e}")
+        _places["set"] = pref
+    return _places["set"]
+
+
+def _drop_places(words):
+    """Прибрати топоніми, але не лишити список порожнім: якщо в написанні
+    самі топоніми (буває в назвах органів) — краще міряти по них, ніж ніяк."""
+    pref = _place_prefixes()
+    kept = [w for w in words if w[:6] not in pref]
+    return kept or words
+
+
+def _find_all(low, words, min_len):
+    out = []
+    for w in words:
+        if len(w) < min_len:
+            continue
+        pref, start = _prefix(w), 0
+        while True:
+            i = low.find(pref, start)
+            if i < 0:
+                break
+            out.append(i)
+            start = i + 1
+    return out
+
+
+def role_near_name(text, name, role_norm_text, window=180):
+    """Наскільки близько посада стоїть до цього імені — і ВРІЗКА з тексту.
+
+    Відстань потрібна лише щоб відсортувати; вирішує людина по врізці, бо
+    жоден поріг тут не буває правильним. Приклад зі статті 310211: «Також
+    Віталій Кім розповідав…» і наступним абзацом «Мер також наголосив…» — це
+    130 символів і слово «мер», яке стосується Сєнкевича, а не Кіма. Машина
+    цього не розрізнить, людина по врізці — за секунду.
+
+    Повертає (відстань, чи знайдене ім'я, врізка).
     """
     if not text or not name:
-        return None, False
+        return None, False, None
     low = text.lower()
-    name_pos = []
-    for w in _tokens(name.lower()):
-        if len(w) < 4:
-            continue
-        start = 0
-        pref = _prefix(w)
-        while True:
-            i = low.find(pref, start)
-            if i < 0:
-                break
-            name_pos.append(i)
-            start = i + 1
+    # Прізвище буває коротким («Кім»), тому для імені поріг 3 — але топоніми
+    # з обох боків геть, інакше міряємо збіг «Микола» ↔ «Миколаєва».
+    name_pos = _find_all(low, _drop_places(_tokens(name.lower())), 3)
     if not name_pos:
-        return None, False
-    role_pos = []
-    for w in _tokens(role_norm_text or ""):
-        if len(w) < 3:
-            continue
-        start = 0
-        pref = _prefix(w)
-        while True:
-            i = low.find(pref, start)
-            if i < 0:
-                break
-            role_pos.append(i)
-            start = i + 1
+        return None, False, None
+    role_pos = _find_all(low, _drop_places(_tokens(role_norm_text or "")), 3)
     if not role_pos:
-        return None, True
-    return min(abs(n - r) for n in name_pos for r in role_pos), True
+        return None, True, None
+    best = min(((abs(n - r), n) for n in name_pos for r in role_pos),
+               key=lambda x: x[0])
+    dist, at = best
+    lo = max(0, at - window // 2)
+    snippet = _SPACE_RE.sub(" ", text[lo:at + window]).strip()
+    return dist, True, ("…" + snippet + "…")
 
 
 async def roles_outliers_handler(update, context):
@@ -1265,9 +1309,10 @@ async def roles_outliers_handler(update, context):
 
     lines = [f"🦊 Рідкісні носії сталої посади — {len(rows)}\n",
              "Рідкісний ≠ помилковий: попередник на посаді це норма (Чайка мер "
-             "2001–2013, Сєнкевич з 2015). Розрізняє їх не число і не період "
-             "(ретроспектива про мера 2001-го виходить у 2025-му), а ТЕКСТ: чи "
-             "стоїть посада поруч з іменем.\n"]
+             "2001–2013, Сєнкевич з 2015). Ані число, ані період цього не "
+             "розрізняють — ретроспектива про мера 2001-го виходить у 2025-му. "
+             "Тому нижче врізки з тексту: остаточно вирішуєш ти, бот лише "
+             "сортує й показує.\n"]
 
     if dup:
         lines.append(f"━ Схоже ім'я — дубль КАРТКИ або однофамілець ({len(dup)}) ━")
@@ -1291,53 +1336,60 @@ async def roles_outliers_handler(update, context):
                 texts[row["id"]] = row["t"]
         out = []
         for r in items:
-            best, found_any = None, False
+            best, found_any, snip, at = None, False, None, None
             for aid in (r["articles"] or []):
-                dist, found = role_near_name(texts.get(aid), r["name"], r["rn"])
+                dist, found, s = role_near_name(texts.get(aid), r["name"], r["rn"])
                 found_any = found_any or found
                 if dist is not None and (best is None or dist < best):
-                    best = dist
-            out.append((r, best, found_any))
+                    best, snip, at = dist, s, aid
+            out.append((r, best, found_any, snip, at))
         return out
 
     try:
         checked = await asyncio.to_thread(with_proximity, other)
     except Exception as e:
         print(f"roles_outliers: перевірка по тексту пропущена — {e}")
-        checked = [(r, None, True) for r in other]
+        checked = [(r, None, True, None, None) for r in other]
 
-    near = [(r, d) for r, d, f in checked if d is not None and d <= NEAR_CHARS]
-    far = [(r, d, f) for r, d, f in checked if d is None or d > NEAR_CHARS]
+    near = [c for c in checked if c[1] is not None and c[1] <= NEAR_CHARS]
+    grey = [c for c in checked
+            if c[1] is not None and NEAR_CHARS < c[1] <= GREY_CHARS]
+    far = [c for c in checked if c[1] is None or c[1] > GREY_CHARS]
 
     def block(r, tail=""):
         arts = ", ".join(str(a) for a in (r["articles"] or []))
-        return (f"«{r['rn']}»\n   {r['name']} ({r['c']}) {r['lo']}…{r['hi']}"
-                f"  ·  при {r['main_name']} ({r['top']})"
-                f"\n   статті: {arts}{tail}")
+        return (f"«{r['rn']}»\n   {r['name']} ({r['c']}) при "
+                f"{r['main_name']} ({r['top']}) · статті: {arts}{tail}")
 
     if near:
-        lines.append(f"━ Роль СТОЇТЬ поруч з іменем у тексті ({len(near)}) ━")
-        lines.append("Тобто в статті прямо написано «мер Володимир Чайка» — це "
-                     "попередник на посаді, а не помилка. Не чіпаємо.")
-        for r, d in near:
-            lines.append(block(r, f" · {d} симв. від імені"))
+        lines.append(f"━ Посада в одній групі з іменем ({len(near)}) ━")
+        lines.append("«мер Миколаєва Володимир Чайка» — посада справді про цю "
+                     "людину. Найімовірніше попередник, не чіпаємо.")
+        for r, d, f, s, at in near:
+            lines.append(block(r, f" · {d} симв."))
         lines.append("")
 
     ids = []
-    if far:
-        lines.append(f"━ Роль ДАЛЕКО від імені — підозра на помилку ({len(far)}) ━")
-        lines.append("Ім'я в одному абзаці, посада в іншому — саме так виглядав "
-                     "Прокудін під миколаївською ОВА.")
-        for r, d, f in far:
+    if grey or far:
+        lines.append(f"━ Треба глянути очима ({len(grey) + len(far)}) ━")
+        lines.append("Врізка з тексту — вирішуй по ній. Так виглядала помилка у "
+                     "310211: «Також Віталій Кім розповідав…» і наступним "
+                     "абзацом «Мер також наголосив…» — це про Сєнкевича.")
+        for r, d, f, s, at in grey + far:
             ids.extend(r["articles"] or [])
             why = ("імені немає в тексті" if not f
-                   else "посади немає поруч" if d is None else f"{d} симв.")
+                   else "посади в тексті немає" if d is None else f"{d} симв.")
             lines.append(block(r, f" · {why}"))
-        lines.append("\nПодивитись текст: /nora_article <id>")
+            if s:
+                lines.append(f"   {at}: {s}")
+        lines.append("\nПовний текст: /nora_article <id>")
         lines.append("Полагодити (спершу правимо статтю на сайті, якщо винен "
                      "текст):\n/entity_resync "
                      + " ".join(str(i) for i in ids[:20]))
-    await msg.edit_text("\n".join(lines)[:4000])
+    text_out = "\n".join(lines)
+    if len(text_out) > 4000:
+        text_out = text_out[:3960] + "\n…(звіт обрізано, звузь: /roles_outliers 8)"
+    await msg.edit_text(text_out)
 
 
 # ---------- /roles_org ----------
