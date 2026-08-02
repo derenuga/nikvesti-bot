@@ -1108,31 +1108,46 @@ async def roles_handler(update, context):
 
 # ---------- /roles_outliers ----------
 #
-# Окремий клас дефектів, знайдений 02.08 очима на першому ж прогоні: у статті
-# про Миколаївщину в беку стоїть «у Херсоні теж був обстріл, голова ОВА
-# Прокудін повідомив…», і витяг ДОПОВНЮЄ роль регіоном статті —
-# «голова МИКОЛАЇВСЬКОЇ обласної військової адміністрації». Тобто роль
-# приписана чужій людині, і виглядає вона як цілком законний факт.
+# Шукає РІДКІСНИХ носіїв сталої посади. Привід — дефект, знайдений 02.08: у
+# статті про Миколаївщину в беку стоїть «у Херсоні теж був обстріл, голова ОВА
+# Прокудін повідомив…», і витяг ДОПОВНИВ роль регіоном статті, повісивши на
+# голову Херсонської ОВА миколаївську посаду.
 #
-# Ловиться це дешево й без AI: у сталої посади є один-два постійні носії, а
-# такий дефект дає носія з ОДНИМ зв'язком там, де в головного їх сотні. Звіт
-# read-only — він не чинить, а показує масштаб і дає готовий список id для
-# /entity_resync. Правити сирий role_at_time бот не буде ніколи: він факт
-# статті, і якщо стаття помилкова — виправляти треба статтю й перечитати її.
+# **Але рідкісний носій — це НЕ синонім помилки, і перша версія звіту тут
+# брехала заголовком.** У 17-річному архіві попередник на посаді абсолютно
+# нормальний: Чайка мер Миколаєва 2001–2013, Сєнкевич з 2015; Порошенко,
+# Янукович, Обама, Кеннеді — усі законні «президенти». Гнати їх у
+# /entity_resync означало б платити за перечит правильних даних.
+#
+# Тому звіт РОЗКЛАДАЄ знахідки, а не звинувачує:
+#   • схоже ім'я на головного носія → це дубль КАРТКИ («Сєнкевич» при
+#     «Олександр Сєнкевич», «Дональд Дж. Трамп» при «Дональд Трамп») або
+#     однофамілець (пастка §2) — вісь карток, ролі ні до чого;
+#   • інша людина → або попередник (норма), або помилка витягу. Розрізняє їх
+#     людина, і для цього поруч друкуються ПЕРІОДИ обох: у попередника свій
+#     відрізок часу, у помилки — одна згадка посеред періоду головного носія.
+#
+# Правити сирий role_at_time бот не буде ніколи: він факт статті, і якщо винен
+# текст — виправляти треба статтю, а потім перечитати її.
 
 OUTLIERS_SQL = """
 WITH r AS (
-    SELECT role_norm(ae.role_at_time) AS rn, ae.entity_id, count(*) AS c
+    SELECT role_norm(ae.role_at_time) AS rn, ae.entity_id, count(*) AS c,
+           to_char(to_timestamp(min(a.published)), 'YYYY-MM') AS lo,
+           to_char(to_timestamp(max(a.published)), 'YYYY-MM') AS hi
     FROM article_entities ae
+    JOIN articles a ON a.id = ae.article_id
     WHERE ae.role_at_time IS NOT NULL AND role_norm(ae.role_at_time) IS NOT NULL
     GROUP BY 1, 2
 ), tot AS (
-    SELECT rn, max(c) AS top, sum(c) AS total, count(*) AS carriers FROM r GROUP BY rn
+    SELECT rn, max(c) AS top, count(*) AS carriers FROM r GROUP BY rn
+), main AS (
+    SELECT DISTINCT ON (rn) rn, entity_id, c, lo, hi FROM r ORDER BY rn, c DESC
 )
-SELECT r.rn, coalesce(e.name_ua, e.name_ru) AS name, r.c, tot.top,
-       (SELECT coalesce(e2.name_ua, e2.name_ru) FROM r r2
-        JOIN entities e2 ON e2.id = r2.entity_id
-        WHERE r2.rn = r.rn ORDER BY r2.c DESC LIMIT 1) AS main_name,
+SELECT r.rn, coalesce(e.name_ua, e.name_ru) AS name, r.c, r.lo, r.hi,
+       tot.top, tot.carriers,
+       coalesce(m.name_ua, m.name_ru) AS main_name,
+       main.lo AS main_lo, main.hi AS main_hi,
        (SELECT array_agg(ae2.article_id) FROM (
             SELECT ae3.article_id FROM article_entities ae3
             WHERE ae3.entity_id = r.entity_id
@@ -1140,8 +1155,10 @@ SELECT r.rn, coalesce(e.name_ua, e.name_ru) AS name, r.c, tot.top,
             ORDER BY ae3.article_id DESC LIMIT 3) ae2) AS articles
 FROM r
 JOIN tot ON tot.rn = r.rn
+JOIN main ON main.rn = r.rn
 JOIN entities e ON e.id = r.entity_id
-WHERE tot.top >= %s AND r.c * %s <= tot.top
+JOIN entities m ON m.id = main.entity_id
+WHERE tot.top >= %s AND r.c * %s <= tot.top AND r.entity_id <> main.entity_id
 ORDER BY tot.top DESC, r.c
 LIMIT %s
 """
@@ -1179,22 +1196,50 @@ async def roles_outliers_handler(update, context):
         return
     if not rows:
         await msg.edit_text(
-            "🦊 Викидів не знайшов: у кожної сталої посади носії пропорційні.")
+            "🦊 Рідкісних носіїв не знайшов: у кожної сталої посади носії "
+            "пропорційні.")
         return
-    ids = []
-    lines = [f"🦊 Ролі, приписані явно не тому носієві — {len(rows)}\n",
-             "Схема дефекту: у беку статті згадано людину з іншого регіону, а "
-             "витяг доповнив її роль регіоном СТАТТІ.\n"]
+
+    import difflib
+
+    dup, other = [], []
     for r in rows:
-        arts = list(r["articles"] or [])
-        ids.extend(arts)
-        lines.append(f"«{r['rn']}»\n   {r['name']} ({r['c']}) при "
-                     f"{r['main_name']} ({r['top']}) · статті: "
-                     + ", ".join(str(a) for a in arts))
-    if ids:
-        lines.append("\nПеревірити текст: /nora_article <id>")
-        lines.append("Полагодити (спершу правимо статтю на сайті, якщо винен "
-                     "текст):\n/entity_resync " + " ".join(str(i) for i in ids[:20]))
+        same = difflib.SequenceMatcher(
+            None, (r["name"] or "").lower(), (r["main_name"] or "").lower()).ratio()
+        (dup if same >= 0.5 else other).append(r)
+
+    lines = [f"🦊 Рідкісні носії сталої посади — {len(rows)}\n",
+             "Рідкісний ≠ помилковий: у 17-річному архіві попередник на посаді "
+             "це норма (Чайка мер 2001–2013, Сєнкевич з 2015). Тому дивись на "
+             "періоди, а не на числа.\n"]
+
+    if dup:
+        lines.append(f"━ Схоже ім'я — дубль КАРТКИ або однофамілець ({len(dup)}) ━")
+        lines.append("Це вісь карток, ролі ні до чого: одна людина під двома "
+                     "картками. Але обережно — так само виглядає й однофамілець.")
+        for r in dup:
+            lines.append(f"«{r['rn']}» · {r['name']} ({r['c']}) ~ "
+                         f"{r['main_name']} ({r['top']})")
+        lines.append("")
+
+    ids = []
+    if other:
+        lines.append(f"━ Інша людина — попередник або помилка витягу ({len(other)}) ━")
+        for r in other:
+            arts = list(r["articles"] or [])
+            ids.extend(arts)
+            lines.append(
+                f"«{r['rn']}»\n   {r['name']} ({r['c']}) {r['lo']}…{r['hi']}"
+                f"  ·  при {r['main_name']} ({r['top']}) {r['main_lo']}…{r['main_hi']}"
+                f"\n   статті: " + ", ".join(str(a) for a in arts))
+        lines.append(
+            "\nПопередник має СВІЙ відрізок часу — його не чіпаємо. "
+            "Помилка витягу виглядає як одна-дві згадки посеред періоду "
+            "головного носія.")
+        lines.append("Подивитись текст: /nora_article <id>")
+        lines.append("Полагодити ЛИШЕ помилкові (спершу правимо статтю на "
+                     "сайті, якщо винен текст):\n/entity_resync "
+                     + " ".join(str(i) for i in ids[:20]))
     await msg.edit_text("\n".join(lines)[:4000])
 
 

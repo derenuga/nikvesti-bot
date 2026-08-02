@@ -534,11 +534,42 @@ def test_outliers():
         "INSERT INTO article_entities (article_id, entity_id, role_at_time, salience) "
         "VALUES (5000, 402, %s, 'mentioned') ON CONFLICT DO NOTHING", (role,))
 
+    # попередник на посаді — НЕ помилка: у нього свій відрізок часу
+    bot_db.execute(
+        "INSERT INTO entities (id, kind, name_ua) VALUES (403, 'person', 'Володимир Чайка') "
+        "ON CONFLICT (id) DO NOTHING")
+    bot_db.execute(
+        "INSERT INTO articles (id, published, title_ua) VALUES (5030, 1300000000, %s) "
+        "ON CONFLICT (id) DO NOTHING", ("Стаття 5030",))
+    bot_db.execute(
+        "INSERT INTO article_entities (article_id, entity_id, role_at_time, salience) "
+        "VALUES (5030, 403, %s, 'mentioned') ON CONFLICT DO NOTHING", (role,))
+    # дубль КАРТКИ головного носія — інша вісь, не ролі
+    bot_db.execute(
+        "INSERT INTO entities (id, kind, name_ua) VALUES (404, 'person', 'Кім-тест') "
+        "ON CONFLICT (id) DO NOTHING")
+    bot_db.execute(
+        "INSERT INTO article_entities (article_id, entity_id, role_at_time, salience) "
+        "VALUES (5001, 404, %s, 'mentioned') ON CONFLICT DO NOTHING", (role,))
+
     rows = bot_db.query(er.OUTLIERS_SQL, (er.OUTLIER_MIN_TOP, er.OUTLIER_RATIO, 20))
     hit = [r for r in rows if r["name"] == "Олександр Прокудін"]
     check("викид (1 зв'язок при 30) знайдено",
           hit and hit[0]["main_name"] == "Віталій Кім-тест",
           f"{[(r['name'], r['c'], r['top']) for r in rows]}")
+    check("у звіті є періоди обох носіїв — саме ними попередник відрізняється",
+          hit and hit[0]["lo"] and hit[0]["main_lo"],
+          f"{hit[0]['lo'] if hit else None} vs {hit[0]['main_lo'] if hit else None}")
+    chaika = [r for r in rows if r["name"] == "Володимир Чайка"]
+    check("попередник потрапляє у звіт, але зі СВОЇМ періодом",
+          chaika and chaika[0]["hi"] < chaika[0]["main_lo"],
+          f"{chaika[0]['lo'] if chaika else None}…{chaika[0]['hi'] if chaika else None}")
+    import difflib
+    twin = [r for r in rows if r["name"] == "Кім-тест"]
+    check("дубль картки видно за схожістю імені з головним носієм",
+          twin and difflib.SequenceMatcher(
+              None, twin[0]["name"].lower(), twin[0]["main_name"].lower()).ratio() >= 0.5,
+          f"{twin}")
     check("звіт дає id статей для /entity_resync",
           hit and 5000 in (hit[0]["articles"] or []), f"{hit[0]['articles'] if hit else None}")
     main = [r for r in rows if r["name"] == "Віталій Кім-тест"]
@@ -551,7 +582,7 @@ def test_outliers():
 
     bot_db.execute("DELETE FROM article_entities WHERE article_id >= 5000")
     bot_db.execute("DELETE FROM articles WHERE id >= 5000")
-    bot_db.execute("DELETE FROM entities WHERE id IN (401, 402)")
+    bot_db.execute("DELETE FROM entities WHERE id IN (401, 402, 403, 404)")
 
 
 def test_carrier_counts():
