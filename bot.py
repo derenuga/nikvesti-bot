@@ -48,9 +48,9 @@ from handlers.entity_merge import (
     entity_merge_log_handler, entity_unmerge_handler,
 )
 from handlers.entity_roles import (
-    roles_handler, roles_dedup_handler, roles_canon_handler,
+    roles_handler, roles_dedup_handler, roles_canon_handler, roles_bulk_handler,
     roles_rename_handler, roles_forget_handler,
-    roles_pair_callback, roles_org_callback,
+    roles_pair_callback, roles_org_callback, roles_bulk_callback,
 )
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler, budget_date_handler
@@ -491,6 +491,7 @@ def main():
     app.add_handler(CommandHandler("roles", roles_handler))
     app.add_handler(CommandHandler("roles_dedup", roles_dedup_handler))
     app.add_handler(CommandHandler("roles_canon", roles_canon_handler))
+    app.add_handler(CommandHandler("roles_bulk", roles_bulk_handler))
     app.add_handler(CommandHandler("roles_rename", roles_rename_handler))
     app.add_handler(CommandHandler("roles_forget", roles_forget_handler))
     app.add_handler(CommandHandler("tags_export", tags_export_handler))
@@ -583,6 +584,7 @@ def main():
     app.add_handler(CallbackQueryHandler(news_select_callback, pattern=f"^{SELECT_CALLBACK_PREFIX}"))
     app.add_handler(CallbackQueryHandler(roles_pair_callback, pattern="^rdp:"))
     app.add_handler(CallbackQueryHandler(roles_org_callback, pattern="^rdo:"))
+    app.add_handler(CallbackQueryHandler(roles_bulk_callback, pattern="^rb[cmr]:"))
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.

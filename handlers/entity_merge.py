@@ -480,23 +480,21 @@ def _tally(pairs):
     зайвих слів класу «уточнення» + поділ цього класу на доповнення й
     розрізнювачі (саме він і вирішує, чи можна закривати клас гуртом)."""
     classes, extra = {}, {}
-    fill = disc = 0
     for cls, detail, left, right in pairs:
         slot = classes.setdefault(cls, {"n": 0, "examples": []})
         slot["n"] += 1
         if len(slot["examples"]) < 2:
             slot["examples"].append(f"{left} ~ {right}")
-        if cls == "containment" and detail:
-            words = detail.split()
-            for w in words:
+        if cls.startswith("containment") and detail:
+            for w in detail.split():
                 extra[w] = extra.get(w, 0) + 1
-            if set(words) & entity_roles.DISCRIMINATING:
-                disc += 1
-            else:
-                fill += 1
+    bulk_yes = sum(s["n"] for c, s in classes.items()
+                   if c in entity_roles.BULK_MERGE)
+    bulk_no = sum(s["n"] for c, s in classes.items()
+                  if c in entity_roles.BULK_REJECT)
     return {"total": len(pairs), "classes": classes,
             "extra": sorted(extra.items(), key=lambda kv: -kv[1])[:12],
-            "fill": fill, "disc": disc}
+            "bulk_yes": bulk_yes, "bulk_no": bulk_no}
 
 
 def classify_cards(threshold=SIM_THRESHOLD):
@@ -537,10 +535,11 @@ def format_classes(title, data):
         for ex in slot["examples"]:
             lines.append(f"   · {ex}")
     if data["extra"]:
-        lines.append(f"\nУточнення: {data['fill']} доповнюють назву, "
-                     f"{data['disc']} розрізняють (колишній/перший/дитяча…)")
-        lines.append("Зайві слова (що саме відрізняє пару):")
+        lines.append("\nЗайві слова в «уточненнях» (що саме відрізняє пару):")
         lines.append("   " + ", ".join(f"{w} ×{n}" for w, n in data["extra"]))
+    manual = data["total"] - data["bulk_yes"] - data["bulk_no"]
+    lines.append(f"\nГуртом «так»: {data['bulk_yes']} · гуртом «ні»: "
+                 f"{data['bulk_no']} · по одній: {manual}")
     return "\n".join(lines)
 
 

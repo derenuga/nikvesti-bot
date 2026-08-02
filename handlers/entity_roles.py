@@ -63,8 +63,17 @@ _ALLOWED_USER_IDS = {
 # пунктуації. Лапки прибираємо з ключа, а не з тексту: «в.о. голови» і
 # "в.о. голови" мають бути однією роллю.
 
-_TR_FROM = "‐‑–—−    «»“”„‟\"'`"
-_TR_TO = "-----    "          # 5 тире → '-', 4 пробільні → ' ', решта видаляється
+_TR_FROM = ("‐‑–—−"      # тире → дефіс
+            "    "      # нерозривні/тонкі пробіли → пробіл
+            "«»“”„‟\"'`"   # лапки — геть
+            "ʼ’‘")       # …і апострофи
+_TR_TO = "-----    "
+# 5 тире → '-', 4 пробільні → ' ', решта (лапки, апострофи) видаляється.
+# Апострофи додано 02.08 після заміру: «премʼєр-міністр» і «премєр-міністр» це
+# одна посада, питати про неї не треба взагалі — у розкладці такі пари сиділи
+# в «друкарській різниці» й з'їдали чергу. Зміна нормалізації НЕ безкоштовна:
+# по role_norm() побудований індекс і нею ж ключується довідник, тому
+# ROLE_NORM_VERSION нижче примушує перебудувати індекс і перекласти ключі.
 
 _PY_TRANS = {}
 for _i, _ch in enumerate(_TR_FROM):
@@ -163,15 +172,63 @@ WHERE ae.role_at_time IS NOT NULL AND ae.role_at_time <> ''
 
 _schema_done = {"flag": False}
 
+# Піднімати ПРИ КОЖНІЙ зміні role_norm(). Postgres не перебудовує вираженний
+# індекс сам, коли IMMUTABLE-функцію підмінили через CREATE OR REPLACE — індекс
+# тихо лишається від старої логіки й починає промахуватись. Плюс ключі довідника
+# (role_variants.raw_norm, role_pairs.a/b_norm) теж рахувались старою функцією.
+ROLE_NORM_VERSION = 2
+ROLE_NORM_VERSION_KEY = "role_norm_version"
+
+
+def _renorm_dictionary():
+    """Перекласти ключі довідника на нову нормалізацію. Дублі, що злиплись
+    після зміни (саме заради них зміна й робилась), прибираємо — лишається
+    перший запис."""
+    for row in bot_db.query("SELECT raw_norm, raw_sample FROM role_variants"):
+        new = role_norm(row["raw_sample"] or row["raw_norm"])
+        if new and new != row["raw_norm"]:
+            n = bot_db.execute(
+                "UPDATE role_variants SET raw_norm = %s WHERE raw_norm = %s "
+                "AND NOT EXISTS (SELECT 1 FROM role_variants x WHERE x.raw_norm = %s)",
+                (new, row["raw_norm"], new))
+            if not n:
+                bot_db.execute("DELETE FROM role_variants WHERE raw_norm = %s",
+                               (row["raw_norm"],))
+    # Пари перерахує наступний /roles_dedup; невирішені просто скидаємо, а
+    # рішення людини переносимо на нові ключі.
+    bot_db.execute("DELETE FROM role_pairs WHERE verdict IS NULL")
+    for row in bot_db.query("SELECT id, a_norm, b_norm FROM role_pairs"):
+        a, b = role_norm(row["a_norm"]), role_norm(row["b_norm"])
+        if (a, b) != (row["a_norm"], row["b_norm"]) and a and b:
+            if a > b:
+                a, b = b, a
+            n = bot_db.execute(
+                "UPDATE role_pairs SET a_norm = %s, b_norm = %s WHERE id = %s "
+                "AND NOT EXISTS (SELECT 1 FROM role_pairs x "
+                "                WHERE x.a_norm = %s AND x.b_norm = %s)",
+                (a, b, row["id"], a, b))
+            if not n:
+                bot_db.execute("DELETE FROM role_pairs WHERE id = %s", (row["id"],))
+
 
 def ensure_schema(force=False):
-    """Ідемпотентно: функція нормалізації, таблиці довідника, індекс, view."""
+    """Ідемпотентно: функція нормалізації, таблиці довідника, індекс, view.
+    При зміні ROLE_NORM_VERSION додатково перебудовує індекс і ключі."""
     if _schema_done["flag"] and not force:
         return
+    stored = bot_db.get_state(ROLE_NORM_VERSION_KEY)
+    changed = stored is not None and int(stored) != ROLE_NORM_VERSION
     bot_db.execute(ROLE_NORM_DDL)
     bot_db.execute(ROLES_DDL)
+    if changed:
+        # Спершу індекс — інакше подальші запити по role_norm() читали б старий.
+        bot_db.execute("DROP INDEX IF EXISTS idx_ae_role_norm")
     bot_db.execute(ROLE_INDEX_DDL)
     bot_db.execute(ROLE_VIEW_DDL)
+    if changed:
+        _renorm_dictionary()
+    if stored is None or changed:
+        bot_db.set_state(ROLE_NORM_VERSION_KEY, ROLE_NORM_VERSION)
     _schema_done["flag"] = True
 
 
@@ -262,14 +319,41 @@ def plural(n, one, few, many):
 # питати класом, а не парою.
 
 CLASS_LABELS = {
+    "numbers": "РІЗНІ НОМЕРИ — не злиття",
     "permutation": "ті самі слова, інший порядок",
     "abbrev": "скорочення / розгортання",
-    "containment": "уточнення (одне вкладене в інше)",
+    "containment_fill": "уточнення: доповнює назву",
+    "containment_geo": "уточнення: ІНШИЙ регіон",
+    "containment_disc": "уточнення: розрізняє (колишній/перший/дитяча)",
     "word_swap": "одне слово замінено",
     "typo": "друкарська різниця",
     "carrier_only": "лексично різні, спільний носій",
     "other": "інше",
 }
+
+# Класи, які можна закривати ГУРТОМ, і в який бік. Решта — по одній парі.
+BULK_MERGE = {"permutation", "abbrev", "typo", "containment_fill"}
+BULK_REJECT = {"numbers", "containment_geo", "containment_disc"}
+
+# Корені інших регіонів: у «керівник обласної ВА» ~ «керівник обласної ВА
+# ХЕРСОНСЬКОЇ області» зайве слово не доповнює назву, а вказує на іншу область,
+# і злиття зліпило б очільників двох ОВА. «Миколаївське» в цей список свідомо
+# НЕ входить — для нашого архіву це доповнення, а не уточнення.
+OTHER_REGIONS = (
+    "херсон", "одес", "київ", "киев", "львів", "львов", "харків", "харьков",
+    "дніпро", "днепро", "запоріж", "запорож", "вінниц", "винниц", "полтав",
+    "черка", "житомир", "чернігів", "чернигов", "сум", "рівн", "ровен",
+    "волин", "тернопіл", "ужгород", "закарпат", "івано", "франків",
+    "чернівц", "кіровоград", "кропивниц", "луган", "донец", "крим", "севастопол",
+)
+
+
+def _has_digits(tokens):
+    return sorted(t for t in tokens if any(c.isdigit() for c in t))
+
+
+def _is_other_region(word):
+    return any(word.startswith(root) for root in OTHER_REGIONS)
 
 # Слова, які в класі «уточнення» РОЗРІЗНЯЮТЬ, а не доповнюють: «заступник» ≠
 # «перший заступник», «мер» ≠ «колишній мер». Решта зайвих слів (україни,
@@ -322,6 +406,14 @@ def classify_pair(a, b, has_carrier=False):
     carrier_only. Для карток такого сигналу немає, і залишок іде в other."""
     ta, tb = _tokens(a), _tokens(b)
     sa, sb = set(ta), set(tb)
+    # НОМЕРИ — перед усім іншим. «Стаття 127 КК України» ~ «стаття 366-3 КК
+    # України» відрізняються на кілька символів і за будь-яким рядковим
+    # критерієм виглядають друкарською помилкою; у замірі 02.08 таких пар було
+    # 1324 в одному класі з реальними описками. Це різні статті кодексу, різні
+    # ліцеї, різні частини — злиття тут не буває ніколи.
+    na, nb = _has_digits(ta), _has_digits(tb)
+    if na != nb:
+        return "numbers", f"{' '.join(na) or '—'} ≠ {' '.join(nb) or '—'}"
     if sorted(ta) == sorted(tb) and ta != tb:
         return "permutation", None
     short_t, long_t = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
@@ -330,16 +422,18 @@ def classify_pair(a, b, has_carrier=False):
         return "abbrev", hit
     if sa < sb or sb < sa:
         extra = sorted((sb - sa) if sa < sb else (sa - sb))
-        return "containment", " ".join(extra)
+        detail = " ".join(extra)
+        if any(_is_other_region(w) for w in extra):
+            return "containment_geo", detail
+        if set(extra) & DISCRIMINATING:
+            return "containment_disc", detail
+        return "containment_fill", detail
     import difflib
     # одне слово замінено: та сама конструкція, різниця рівно в одному токені
     if len(ta) == len(tb):
         diff = [(x, y) for x, y in zip(ta, tb) if x != y]
         if len(diff) == 1:
             x, y = diff[0]
-            # числа — це не синоніми, а різні об'єкти («стаття 190»/«стаття 310»)
-            if x.isdigit() or y.isdigit():
-                return "other", f"{x} ≠ {y}"
             # «Сєнкевич»/«Сенкевич» теж різняться одним токеном, але це не
             # заміна слова, а описка — інакше друкарський клас спорожнів би
             if difflib.SequenceMatcher(None, x, y).ratio() < 0.8:
@@ -447,11 +541,17 @@ def find_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
         elif cls == "abbrev":
             score += 2
             sig.append(f"скорочення: {detail}")
+        elif cls in ("containment_geo", "containment_disc"):
+            # Уточнення, яке РОЗРІЗНЯЄ (інший регіон, «перший», «колишній»).
+            # Балів не додаємо взагалі — питати про це варто востаннє.
+            sig.append(f"уточнення, різниця: {detail}")
         elif cls == "word_swap":
             # «голова» → «очільник» те саме, «голова» → «депутатка» ні —
             # клас двоїстий, тому бал маленький, а різниця йде в картку.
             score += 1
             sig.append(f"одне слово замінено: {detail}")
+        elif cls == "numbers":
+            sig.append(f"різні номери: {detail}")
         elif nested:
             # Вкладеність СВІДОМО важить мало (було 2, стало 1): на реальних
             # даних вона масово тягне нагору «уточнення» — «міський голова» ~
@@ -1068,6 +1168,188 @@ async def roles_forget_handler(update, context):
         await update.message.reply_text(
             f"🦊 «{extra}» відв'язано від канону, пари з ним повернулись у чергу."
             if n else f"«{extra}» у довіднику не було.")
+
+
+# ---------- /roles_bulk: підтвердження КЛАСОМ, а не парою ----------
+#
+# Замір 02.08: 2 109 пар-кандидатів по ролях. По одній це десяток годин, і на
+# третій сотні людина перестає читати підстави — тобто кнопки стають гіршими
+# за їх відсутність. Тому клас закривається одним рішенням, а по одній
+# лишаються тільки ті класи, де рішення справді різні для кожної пари
+# (carrier_only, word_swap, other).
+#
+# Гурт НІКОЛИ не діє без перегляду: спершу показуємо десяток прикладів класу,
+# і лише потім кнопка. Це та сама вимога «автозлиття без людини не робити»,
+# просто людина відповідає за клас, а не за рядок.
+
+CLASS_PAIRS_SQL = """
+SELECT p.id, p.a_norm, p.b_norm, p.cls_detail, p.stake
+FROM role_pairs p
+LEFT JOIN role_variants va ON va.raw_norm = p.a_norm
+LEFT JOIN role_variants vb ON vb.raw_norm = p.b_norm
+WHERE p.verdict IS NULL AND p.cls = %s
+  AND (va.canon_id IS NULL OR vb.canon_id IS NULL OR va.canon_id <> vb.canon_id)
+ORDER BY p.stake DESC NULLS LAST, p.score DESC
+"""
+
+CLASS_COUNTS_SQL = """
+SELECT p.cls, count(*) AS n
+FROM role_pairs p
+LEFT JOIN role_variants va ON va.raw_norm = p.a_norm
+LEFT JOIN role_variants vb ON vb.raw_norm = p.b_norm
+WHERE p.verdict IS NULL
+  AND (va.canon_id IS NULL OR vb.canon_id IS NULL OR va.canon_id <> vb.canon_id)
+GROUP BY p.cls ORDER BY n DESC
+"""
+
+
+def class_counts():
+    ensure_schema()
+    return [(r["cls"] or "other", r["n"]) for r in bot_db.query(CLASS_COUNTS_SQL)]
+
+
+def _samples(norms):
+    """Живі написання для набору нормалізованих ключів — одним запитом, бо
+    гурт може чіпати сотні пар, а походи по одному вбили б його."""
+    if not norms:
+        return {}
+    rows = bot_db.query(
+        "SELECT role_norm(role_at_time) AS rn, "
+        "       mode() WITHIN GROUP (ORDER BY role_at_time) AS sample "
+        "FROM article_entities WHERE role_norm(role_at_time) = ANY(%s) "
+        "GROUP BY 1", (list(norms),))
+    return {r["rn"]: r["sample"] for r in rows}
+
+
+def bulk_apply(cls, verdict, decided_by=None):
+    """Закрити весь клас одним рішенням. verdict: 'same' (звести) або
+    'different' (більше не питати). Повертає скільки пар закрито."""
+    ensure_schema()
+    with bot_db.session():
+        rows = bot_db.query(CLASS_PAIRS_SQL, (cls,))
+        if not rows:
+            return 0
+        if verdict != "same":
+            bot_db.execute(
+                "UPDATE role_pairs SET verdict = 'different', decided_by = %s, "
+                "updated = %s WHERE id = ANY(%s)",
+                (decided_by, int(time.time()), [r["id"] for r in rows]))
+            return len(rows)
+        norms = {r["a_norm"] for r in rows} | {r["b_norm"] for r in rows}
+        samples = _samples(norms)
+        done = 0
+        for r in rows:
+            try:
+                merge_roles(r["a_norm"], r["b_norm"],
+                            samples.get(r["a_norm"]), samples.get(r["b_norm"]),
+                            decided_by)
+                set_verdict(r["id"], "same", decided_by)
+                done += 1
+            except Exception as e:
+                print(f"roles_bulk: пара {r['id']} не звелась — {e}")
+        return done
+
+
+def _bulk_menu_markup(counts):
+    rows = []
+    for cls, n in counts:
+        mark = "✅" if cls in BULK_MERGE else ("❌" if cls in BULK_REJECT else "·")
+        rows.append([InlineKeyboardButton(
+            f"{mark} {CLASS_LABELS.get(cls, cls)} — {n}",
+            callback_data=f"rbc:{cls}")])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+def _bulk_menu_text(counts):
+    if not counts:
+        return ("🦊 Черга порожня — спершу /roles_dedup прожене детектор.")
+    total = sum(n for _, n in counts)
+    return (f"🦊 Класи в черзі — {total} пар\n\n"
+            f"✅ — клас, який зазвичай закривають гуртом «так»\n"
+            f"❌ — гуртом «ні» (номери, інший регіон, розрізнювачі)\n"
+            f"· — тільки по одній: рішення різне для кожної пари\n\n"
+            f"Тапни клас, щоб побачити приклади.")
+
+
+async def roles_bulk_handler(update, context):
+    if not _allowed(update):
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Нора недоступна (BOT_DATABASE_URL).")
+        return
+    msg = await update.message.reply_text("🦊 Рахую класи в черзі…")
+    try:
+        counts = await asyncio.to_thread(class_counts)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось: {type(e).__name__}: {e}")
+        return
+    await msg.edit_text(_bulk_menu_text(counts), reply_markup=_bulk_menu_markup(counts))
+
+
+async def roles_bulk_callback(update, context):
+    """rbc:<клас> — показати приклади; rbm/rbr:<клас> — закрити клас гуртом."""
+    query = update.callback_query
+    user_id = query.from_user.id if query.from_user else None
+    if _ALLOWED_USER_IDS and user_id not in _ALLOWED_USER_IDS:
+        await query.answer("⛔ Тільки для редакції.", show_alert=True)
+        return
+    try:
+        action, cls = query.data.split(":", 1)
+    except (ValueError, AttributeError):
+        await query.answer()
+        return
+    await query.answer()
+    who = query.from_user.full_name if query.from_user else None
+
+    if action == "rbc" and cls == "*":
+        counts = await asyncio.to_thread(class_counts)
+        await query.edit_message_text(_bulk_menu_text(counts),
+                                      reply_markup=_bulk_menu_markup(counts))
+        return
+
+    if action == "rbc":
+        rows = await bot_db.aquery(CLASS_PAIRS_SQL, (cls,))
+        if not rows:
+            await query.edit_message_text("Цей клас уже порожній.")
+            return
+        lines = [f"🦊 {CLASS_LABELS.get(cls, cls)} — {len(rows)} пар\n"]
+        for r in rows[:10]:
+            tail = f"  ({r['cls_detail']})" if r["cls_detail"] else ""
+            lines.append(f"· «{r['a_norm']}» ~ «{r['b_norm']}»{tail}")
+        if len(rows) > 10:
+            lines.append(f"…і ще {len(rows) - 10}")
+        hint = ("Зазвичай тут «так»." if cls in BULK_MERGE else
+                "Зазвичай тут «ні»." if cls in BULK_REJECT else
+                "Клас двоїстий — гуртом краще не чіпати, є /roles_dedup по одній.")
+        lines.append("\n" + hint)
+        kb = [[InlineKeyboardButton(f"✅ Звести всі {len(rows)}",
+                                    callback_data=f"rbm:{cls}"),
+               InlineKeyboardButton(f"❌ Відхилити всі {len(rows)}",
+                                    callback_data=f"rbr:{cls}")],
+              [InlineKeyboardButton("← Класи", callback_data="rbc:*")]]
+        await query.edit_message_text("\n".join(lines)[:4000],
+                                      reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if action not in ("rbm", "rbr"):
+        return
+    verdict = "same" if action == "rbm" else "different"
+    await query.edit_message_text(
+        f"🦊 Обробляю клас «{CLASS_LABELS.get(cls, cls)}»…")
+    try:
+        n = await asyncio.to_thread(bulk_apply, cls, verdict, who)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Гурт не пройшов: {type(e).__name__}: {e}")
+        return
+    what = ("зведено в канони" if verdict == "same"
+            else "позначено різними — більше не спитаю")
+    counts = await asyncio.to_thread(class_counts)
+    await query.edit_message_text(
+        f"🦊 Клас «{CLASS_LABELS.get(cls, cls)}»: {n} пар {what}.\n"
+        + ("Відкат — /roles_forget <написання> або /roles_canon для перегляду.\n\n"
+           if verdict == "same" else "\n")
+        + _bulk_menu_text(counts),
+        reply_markup=_bulk_menu_markup(counts))
 
 
 def _reopen(raw_norms):

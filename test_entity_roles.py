@@ -216,10 +216,13 @@ def test_classes():
         ("голова миколаївської ова", "голова миколаївської обласної "
          "військової адміністрації", "abbrev"),
         # уточнення — НЕ синонім: різницю має бачити людина
-        ("міський голова", "міський голова львова", "containment"),
+        ("міський голова", "міський голова львова", "containment_geo"),
         ("керівник обласної військової адміністрації",
          "керівник обласної військової адміністрації херсонської області",
-         "containment"),
+         "containment_geo"),
+        ("премєр-міністр", "премєр-міністр україни", "containment_fill"),
+        ("заступник міського голови", "перший заступник міського голови",
+         "containment_disc"),
         # друкарська різниця
         ("олександр сєнкевич", "олександр сенкевич", "typo"),
         # одне слово замінено — синонім посади
@@ -236,7 +239,10 @@ def test_classes():
         # ПАСТКА заміру 02.08: «КК = Кримінального Кодексу» збігається, але
         # статті різні. Це не скорочення — масове злиття склеїло б 190 і 310.
         ("стаття 190 кк україни", "стаття 310 кримінального кодексу україни",
-         "other"),
+         "numbers"),
+        ("стаття 127 кримінального кодексу україни",
+         "стаття 366-3 кримінального кодексу україни", "numbers"),
+        ("миколаївський ліцей 8", "миколаївський ліцей 9", "numbers"),
     ]
     bad = [(a, b, want, er.classify_pair(a, b)[0])
            for a, b, want in cases if er.classify_pair(a, b)[0] != want]
@@ -244,25 +250,29 @@ def test_classes():
 
     cls, detail = er.classify_pair("міський голова", "міський голова львова")
     check("клас «уточнення» показує САМЕ зайве слово (це і є рішення)",
-          cls == "containment" and detail == "львова", f"{cls}/{detail}")
+          cls == "containment_geo" and detail == "львова", f"{cls}/{detail}")
 
-    _, detail = er.classify_pair("стаття 190 кк україни",
-                                 "стаття 310 кримінального кодексу україни")
-    check("пара з різними числами показує саме числа, а не «скорочення»",
-          detail is None or "190" in detail or "310" in detail, f"{detail}")
+    cls, detail = er.classify_pair("стаття 190 кк україни",
+                                   "стаття 310 кримінального кодексу україни")
+    check("пара з різними числами — окремий клас і показує самі числа",
+          cls == "numbers" and "190" in detail and "310" in detail,
+          f"{cls}/{detail}")
+    check("клас «різні номери» ніколи не йде в гурт «звести»",
+          "numbers" in er.BULK_REJECT and "numbers" not in er.BULK_MERGE)
+    check("апостроф знімається нормалізацією — питання не виникає взагалі",
+          er.role_norm("премʼєр-міністр") == er.role_norm("премєр-міністр")
+          == "премєр-міністр", er.role_norm("премʼєр-міністр"))
 
     cls, detail = er.classify_pair("голова обласної ва", "очільник обласної ва")
     check("клас «одне слово замінено» показує обидва слова",
           cls == "word_swap" and detail == "голова → очільник", f"{cls}/{detail}")
 
-    # Поділ «уточнень» на доповнення й розрізнювачі — це те, чим вирішується,
-    # чи можна закривати клас гуртом.
-    _, fill = er.classify_pair("премєр-міністр", "премєр-міністр україни")
-    _, disc = er.classify_pair("заступник міського голови",
-                               "перший заступник міського голови")
-    check("доповнення назви і розрізнювач відрізняються за словом",
-          not (set(fill.split()) & er.DISCRIMINATING)
-          and (set(disc.split()) & er.DISCRIMINATING), f"{fill!r} vs {disc!r}")
+    # Поділ «уточнень» на три купи — це те, чим вирішується, чи можна
+    # закривати клас гуртом.
+    check("доповнення назви йде в гурт «звести», розрізнювачі й регіон — ні",
+          "containment_fill" in er.BULK_MERGE
+          and "containment_disc" in er.BULK_REJECT
+          and "containment_geo" in er.BULK_REJECT)
 
     cls, _ = er.classify_pair("мер миколаєва", "міський голова миколаєва",
                               has_carrier=True)
@@ -279,7 +289,7 @@ def test_classes():
     # має стояти нижче за справжню пару зі спільним носієм — інакше вечір
     # починається з уточнень, які все одно доведеться відхилити.
     nested = [sc for (a, b), (sc, cls) in by.items()
-              if cls == "containment" and "депутатка" in a]
+              if cls.startswith("containment") and "депутатка" in a]
     carrier = [sc for (a, b), (sc, cls) in by.items() if cls == "carrier_only"]
     check("вкладеність без спільного носія стоїть нижче за спільного носія",
           nested and carrier and max(carrier) > max(nested),
@@ -322,6 +332,76 @@ def test_class_breakdown():
     em.classify_cards()
     em.classify_roles()
     check("розкладка нічого не змінює", raw_roles_snapshot() == before)
+
+
+def test_bulk():
+    """Підтвердження КЛАСОМ (крок Б). 2109 пар по одній — десяток годин, тому
+    клас закривається одним рішенням; але тільки після показу прикладів і
+    тільки для класів, де рішення однакове для всіх пар."""
+    er.scan_pairs(min_links=1, top_roles=200)
+    before = raw_roles_snapshot()
+    counts = dict(er.class_counts())
+    check("класи в черзі рахуються", counts, f"{counts}")
+
+    geo = er.bulk_apply("containment_geo", "different", "тест")
+    check("гурт «ні» закриває клас цілком", geo >= 1, f"{geo}")
+    left = dict(er.class_counts()).get("containment_geo", 0)
+    check("після гурту «ні» клас із черги зникає", left == 0, f"{left}")
+    canons = bot_db.query("SELECT count(*) AS n FROM role_canon")[0]["n"]
+    check("гурт «ні» не створює жодного канону", canons == 0, f"{canons}")
+
+    same = er.bulk_apply("carrier_only", "same", "тест")
+    check("гурт «так» зводить клас у канони", same >= 1, f"{same}")
+    check("сирий role_at_time не змінився і після гурту",
+          raw_roles_snapshot() == before)
+    canons = bot_db.query("SELECT count(*) AS n FROM role_canon")[0]["n"]
+    check("канони після гурту з'явились", canons >= 1, f"{canons}")
+
+    check("повторний гурт по закритому класу нічого не робить",
+          er.bulk_apply("carrier_only", "same", "тест") == 0)
+
+    # відкат гурту — той самий, що для одиничного рішення
+    v = bot_db.query("SELECT raw_norm FROM role_variants LIMIT 1")
+    if v:
+        rn = v[0]["raw_norm"]
+        bot_db.execute("DELETE FROM role_variants WHERE raw_norm = %s", (rn,))
+        er._reopen([rn])
+        back = bot_db.query(
+            "SELECT count(*) AS n FROM role_pairs WHERE verdict IS NULL "
+            "AND (a_norm = %s OR b_norm = %s)", (rn, rn))[0]["n"]
+        check("відкат після гурту повертає пари в чергу", back > 0, f"{back}")
+
+    # прибираємо за собою: далі тестам потрібна чиста черга й порожній довідник
+    bot_db.execute("DELETE FROM role_variants")
+    bot_db.execute("DELETE FROM role_canon")
+    bot_db.execute("DELETE FROM role_pairs")
+
+
+def test_norm_version():
+    """Зміна role_norm() без перебудови — тиха поломка: Postgres не оновлює
+    вираженний індекс сам, а ключі довідника лишаються від старої функції."""
+    bot_db.execute(
+        "INSERT INTO role_canon (id, canon, canon_norm, created) "
+        "VALUES (900, 'Премʼєр-міністр', 'старий-ключ', 0) "
+        "ON CONFLICT (id) DO NOTHING")
+    bot_db.execute(
+        "INSERT INTO role_variants (raw_norm, raw_sample, canon_id, created) "
+        "VALUES ('премʼєр-міністр', 'Премʼєр-міністр', 900, 0) "
+        "ON CONFLICT (raw_norm) DO NOTHING")
+    bot_db.set_state(er.ROLE_NORM_VERSION_KEY, er.ROLE_NORM_VERSION - 1)
+    er.ensure_schema(force=True)
+    keys = [r["raw_norm"] for r in bot_db.query(
+        "SELECT raw_norm FROM role_variants WHERE canon_id = 900")]
+    check("ключі довідника перекладено на нову нормалізацію",
+          keys == ["премєр-міністр"], f"{keys}")
+    idx = bot_db.query(
+        "SELECT count(*) AS n FROM pg_indexes WHERE indexname = 'idx_ae_role_norm'")
+    check("індекс по role_norm перебудовано, а не залишено від старої функції",
+          idx[0]["n"] == 1, f"{idx}")
+    stored = bot_db.get_state(er.ROLE_NORM_VERSION_KEY)
+    check("версія нормалізації записана", int(stored) == er.ROLE_NORM_VERSION,
+          f"{stored}")
+    bot_db.execute("DELETE FROM role_canon WHERE id = 900")
 
 
 def test_queue_and_merge():
@@ -542,6 +622,8 @@ async def run():
     test_detector()
     test_classes()
     test_class_breakdown()
+    test_bulk()
+    test_norm_version()
     test_queue_and_merge()
     test_affiliation()
     test_rejection_memory_and_rollback()
