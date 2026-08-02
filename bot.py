@@ -51,6 +51,7 @@ from handlers.entity_merge import (
 from handlers.entity_junk import (
     entity_junk_handler, entity_junk_callback, entity_junk_undo_handler,
     entity_docs_canon_handler, entity_docs_canon_callback,
+    entity_org_forms_handler, entity_org_forms_callback,
     entity_org_dupes_handler, entity_org_dupes_callback,
 )
 from handlers.entity_roles import (
@@ -503,6 +504,7 @@ def main():
     app.add_handler(CommandHandler("entity_junk_undo", entity_junk_undo_handler))
     app.add_handler(CommandHandler("entity_org_dupes", entity_org_dupes_handler))
     app.add_handler(CommandHandler("entity_docs_canon", entity_docs_canon_handler))
+    app.add_handler(CommandHandler("entity_org_forms", entity_org_forms_handler))
     app.add_handler(CommandHandler("roles", roles_handler))
     app.add_handler(CommandHandler("roles_dedup", roles_dedup_handler))
     app.add_handler(CommandHandler("roles_canon", roles_canon_handler))
@@ -615,6 +617,7 @@ def main():
     app.add_handler(CallbackQueryHandler(entity_junk_callback, pattern="^ej[bp]:"))
     app.add_handler(CallbackQueryHandler(entity_org_dupes_callback, pattern="^ejo:"))
     app.add_handler(CallbackQueryHandler(entity_docs_canon_callback, pattern="^ejd:"))
+    app.add_handler(CallbackQueryHandler(entity_org_forms_callback, pattern="^ejf:"))
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.

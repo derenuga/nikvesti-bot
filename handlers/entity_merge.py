@@ -114,10 +114,20 @@ def record_merge(cur, winner_id, loser_id, decided_by=None):
         "UPDATE entity_merge_rules SET entity_id = %s WHERE entity_id = %s "
         "RETURNING kind, norm", (winner_id, loser_id))
     repointed = [[r[0], r[1]] for r in cur.fetchall()]
+    # Афіліація посади теж має переїхати. Канон ролі показує на картку органу
+    # (role_canon.org_entity_id), і якщо саме вона програла злиття, посилання
+    # лишилось би вказувати в нікуди — «міський голова» без міськради.
+    canons = []
+    cur.execute("SELECT to_regclass('role_canon')")
+    if (cur.fetchone() or [None])[0]:
+        cur.execute("UPDATE role_canon SET org_entity_id = %s "
+                    "WHERE org_entity_id = %s RETURNING id", (winner_id, loser_id))
+        canons = [r[0] for r in cur.fetchall()]
 
     snapshot = {
         "card": card,
         "links": links,
+        "canons_repointed": canons,
         "winner": {"id": w[0] if w else winner_id,
                    "name_ua": w[1] if w else None,
                    "name_ru": w[2] if w else None,
@@ -331,6 +341,9 @@ def restore_merge(merge_id):
             bot_db.execute(
                 "UPDATE entity_merge_rules SET entity_id = %s "
                 "WHERE kind = %s AND norm = %s", (card["id"], kind, nrm))
+        for cid in (snap.get("canons_repointed") or []):
+            bot_db.execute("UPDATE role_canon SET org_entity_id = %s WHERE id = %s",
+                           (card["id"], cid))
         bot_db.execute("UPDATE entity_merges SET undone = %s WHERE id = %s",
                        (int(time.time()), merge_id))
     return {"winner_id": winner_id, "loser_id": card["id"],

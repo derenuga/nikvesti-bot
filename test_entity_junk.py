@@ -407,6 +407,90 @@ def test_doc_canon_write_results():
     bot_db.execute("DELETE FROM entity_merges WHERE winner_id = 7102")
 
 
+def test_org_form_key():
+    """Правова форма — не інша установа (ep.org_key + міграція + витяг).
+
+    Найбільша купа дублів у норі: 264 групи, 590 карток, 7412 згадок. Пастки
+    перевірені на реальному вивантаженні: цифри в назвах («лікарня №1» проти
+    «№3») мусять розрізняти установи, а «КОП» — це ІМʼЯ комунального
+    підприємства шкільного харчування, а не абревіатура форми; тримати його
+    у списку форм означало лишити порожній ключ."""
+    check("форма зрізається, назва лишається ключем",
+          ep.org_key("КП «Миколаївводоканал»") == ep.org_key("Миколаївводоканал")
+          == ep.org_key("МКП «Миколаївводоканал»") == "миколаївводоканал")
+    check("довга форма словами зрізається так само",
+          ep.org_key("Комунальне підприємство «Миколаївські парки»")
+          == ep.org_key("КП «Миколаївські парки»") == "миколаївські парки")
+    check("цифра в назві лишається — це різні установи",
+          ep.org_key("Миколаївська міська лікарня №3")
+          != ep.org_key("Миколаївська міська лікарня №1"))
+    check("«КОП» не вважається формою (це назва підприємства)",
+          ep.org_key("КОП") == ep.org_key("комунальне підприємство КОП") == "коп")
+    check("сама форма без назви ключа не дає",
+          ep.org_key("АТ") is None and ep.org_key("КП") is None)
+
+    for eid, name, arts in ((7201, "Миколаївводоканал", [9000, 9001, 9002]),
+                            (7202, "КП «Миколаївводоканал»", [9003]),
+                            (7203, "МКП «Миколаївводоканал»", [9004]),
+                            (7204, "Миколаївська міська лікарня №3", [9005])):
+        bot_db.execute(
+            "INSERT INTO entities (id, kind, name_ua, mentions) "
+            "VALUES (%s, 'org', %s, %s)", (eid, name, len(arts)))
+        for aid in arts:
+            bot_db.execute(
+                "INSERT INTO article_entities (article_id, entity_id, salience) "
+                "VALUES (%s, %s, 'mentioned') ON CONFLICT DO NOTHING", (aid, eid))
+    # Канон посади показує на картку, яка ЗАРАЗ програє злиття: після нього
+    # афіліація мусить переїхати на переможця, інакше вкаже в нікуди.
+    cid = bot_db.query(
+        "INSERT INTO role_canon (canon, canon_norm, org_entity_id, created) "
+        "VALUES ('директор водоканалу', 'директор водоканалу', 7202, 1780000000) "
+        "RETURNING id")[0]["id"]
+
+    scan = ej.scan_org_forms()
+    check("замір бачить групу «одна установа, різні форми»",
+          any(len(v) == 3 for v in scan["groups"].values()),
+          str({k: len(v) for k, v in scan["groups"].items()}))
+    res = ej.apply_org_forms("тест")
+    left = {r["id"]: r for r in bot_db.query(
+        "SELECT id, name_ua, mentions, array_to_string(aliases, ' | ') AS al "
+        "FROM entities WHERE id = ANY(%s)", ([7201, 7202, 7203, 7204],))}
+    check("лишилась найзгадуваніша картка", set(left) == {7201, 7204},
+          str(sorted(left)))
+    check("її назва не переписана (яка форма «правильна» — не факт, а смак)",
+          left[7201]["name_ua"] == "Миколаївводоканал")
+    check("форми пішли в аліаси", "КП «Миколаївводоканал»" in left[7201]["al"],
+          left[7201]["al"])
+    check("згадки склались", left[7201]["mentions"] == 5, str(left[7201]["mentions"]))
+    check("лікарня з іншим номером не зачеплена", 7204 in left)
+    check("афіліація канону переїхала на переможця, а не повисла",
+          bot_db.query("SELECT org_entity_id FROM role_canon WHERE id = %s",
+                       (cid,))[0]["org_entity_id"] == 7201)
+    check("повторний прогін нічого не зливає",
+          ej.apply_org_forms("тест")["merged"] == 0)
+
+    # І профілактика: новий витяг із формою не заводить окрему картку.
+    ep.write_results([{"article_id": 9004, "entities": [
+        {"kind": "org", "name_ua": "Комунальне підприємство «Миколаївводоканал»",
+         "salience": "mentioned"}]}])
+    after = bot_db.query(
+        "SELECT id, array_to_string(aliases, ' | ') AS al FROM entities "
+        "WHERE kind = 'org' AND (name_ua LIKE %s OR %s = ANY(aliases))",
+        ("%иколаївводоканал%", "Комунальне підприємство «Миколаївводоканал»"))
+    check("витяг із формою причепився до наявної картки, а не завів нову",
+          len(after) == 1 and after[0]["id"] == 7201,
+          str([(r["id"]) for r in after]))
+    check("і сире написання лишилось аліасом",
+          "Комунальне підприємство «Миколаївводоканал»" in (after[0]["al"] if after else ""),
+          after[0]["al"] if after else "")
+
+    bot_db.execute("DELETE FROM role_canon WHERE id = %s", (cid,))
+    bot_db.execute("DELETE FROM article_entities WHERE entity_id = ANY(%s)",
+                   ([7201, 7204],))
+    bot_db.execute("DELETE FROM entities WHERE id = ANY(%s)", ([7201, 7204],))
+    bot_db.execute("DELETE FROM entity_merges WHERE winner_id = 7201")
+
+
 def test_org_dupes():
     pairs, skipped = ej.find_org_dupes()
     got = {(p["winner"][0], p["loser"][0]) for p in pairs}
@@ -438,6 +522,7 @@ def run():
     test_doc_canon_parser()
     test_doc_canon_migration()
     test_doc_canon_write_results()
+    test_org_form_key()
     test_org_dupes()
     bad = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS) - len(bad)}/{len(RESULTS)} перевірок пройдено")

@@ -309,6 +309,62 @@ def canon_document(name):
     return None
 
 
+# ---------- Ключ ОРГАНІЗАЦІЇ (правова форма — не інша установа) ----------
+#
+# «Миколаївобленерго», «АТ «Миколаївобленерго»», «КП «Миколаївобленерго»»,
+# «Акціонерне товариство «Миколаївобленерго»» — одна компанія під чотирма
+# картками, бо витяг то пише правову форму, то ні. Замір по норі 02.08: 264
+# групи, 590 карток, 7412 згадок — і це найбільші підприємства міста, тобто
+# головні герої місцевих новин.
+#
+# На відміну від статей кодексу тут НЕ переписується назва: яка форма
+# «правильна» — питання смаку, а не факту. Обчислюється лише КЛЮЧ зіставлення,
+# по якому нове написання знаходить наявну картку.
+#
+# «КОП» у цьому списку немає свідомо, хоч виглядає як абревіатура форми: у
+# Миколаєві так називають комунальне виробниче підприємство шкільного
+# харчування, тобто це ІМʼЯ. Прибирання його як форми лишало порожній ключ.
+ORG_FORMS = [
+    r"комунальн\w*\s+виробнич\w*\s+підприємств\w*",
+    r"комунальн\w*\s+некомерційн\w*\s+підприємств\w*",
+    r"обласн\w*\s+комунальн\w*\s+підприємств\w*",
+    r"комунальн\w*\s+підприємств\w*", r"комунальн\w*\s+установ\w*",
+    r"комунальн\w*\s+заклад\w*", r"державн\w*\s+підприємств\w*",
+    r"приватн\w*\s+акціонерн\w*\s+товариств\w*",
+    r"публічн\w*\s+акціонерн\w*\s+товариств\w*",
+    r"акціонерн\w*\s+товариств\w*",
+    r"товариств\w*\s+з\s+обмежен\w*\s+відповідальн\w*",
+    r"\bкп\b", r"\bокп\b", r"\bкнп\b", r"\bкву\b", r"\bкз\b", r"\bмкп\b",
+    r"\bтов\b", r"\bпат\b", r"\bпрат\b", r"\bдп\b", r"\bат\b",
+]
+_ORG_FORM_RE = re.compile("|".join(ORG_FORMS))
+
+# Ключ коротший за це не беремо: на двох-трьох символах абревіатури різних
+# установ починають збігатися.
+ORG_KEY_MIN = 3
+
+
+def org_key(name):
+    """Ключ зіставлення організації без правової форми, або None.
+
+    Рахується для БУДЬ-ЯКОЇ назви, а не лише для тієї, що має форму: картка
+    «Миколаївводоканал» мусить знаходитись написанням «КП
+    «Миколаївводоканал»», а спільне в них лише цей ключ.
+
+    None — коли ловити нема чого: назва складається з самої форми або
+    лишилось менше ORG_KEY_MIN символів (на двох-трьох символах абревіатури
+    різних установ починають збігатися)."""
+    if not name:
+        return None
+    s = norm(name)
+    if not s:
+        return None
+    s = _ORG_FORM_RE.sub(" ", s)
+    s = re.sub(r"[()]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip(" ,.-")
+    return s if len(s) >= ORG_KEY_MIN else None
+
+
 def get_state(cur, key, default=None):
     cur.execute("SELECT value FROM sync_state WHERE key = %s", (key,))
     row = cur.fetchone()
@@ -443,6 +499,10 @@ def write_results(data, batch_ids=None):
     cur.execute("SELECT id, kind, name_ua, name_ru, subtype, aliases, mentions FROM entities")
     recs = {}   # id -> запис (мутабельний)
     index = {}  # (kind, norm) -> id (за найбільшою кількістю згадок)
+    # Другий індекс — тільки для організацій, за ключем без правової форми.
+    # Без нього «КП «Миколаївводоканал»» щоразу заводить нову картку поруч із
+    # «Миколаївводоканалом»: так у норі й виросло 264 групи дублів.
+    loose = {}
     for eid, kind, nua, nru, sub, aliases, mentions in cur.fetchall():
         rec = {"id": eid, "kind": kind, "name_ua": nua, "name_ru": nru,
                "subtype": sub, "aliases": set(aliases or []),
@@ -455,6 +515,14 @@ def write_results(data, batch_ids=None):
             best = index.get(k)
             if best is None or recs[best]["mentions"] < rec["mentions"]:
                 index[k] = eid
+        if kind == "org":
+            for nm in (nua, nru):
+                lk = org_key(nm)
+                if not lk:
+                    continue
+                best = loose.get(lk)
+                if best is None or recs[best]["mentions"] < rec["mentions"]:
+                    loose[lk] = eid
 
     # Рішення людини про злиття — у той самий індекс. setdefault, а не
     # перезапис: якщо картка з таким іменем ЖИВА, вона головніша за правило
@@ -492,6 +560,14 @@ def write_results(data, batch_ids=None):
             if k[1] and k in index:
                 hit = index[k]
                 break
+        if hit is None and kind == "org":
+            # Правова форма — не інша установа: «АТ «Миколаївобленерго»» це
+            # той самий «Миколаївобленерго». Сире написання піде в аліаси.
+            for nm in (name_ua, name_ru):
+                lk = org_key(nm)
+                if lk and lk in loose:
+                    hit = loose[lk]
+                    break
         if hit is not None:
             rec = recs[hit]
             if not rec["name_ua"] and name_ua:
@@ -521,6 +597,10 @@ def write_results(data, batch_ids=None):
             kk = (kind, norm(nm))
             if kk[1]:
                 index.setdefault(kk, tid)
+            if kind == "org":
+                lk = org_key(nm)
+                if lk:
+                    loose.setdefault(lk, tid)
         return tid
 
     # 2. Пройти результат, зібрати зв'язки (з тимчасовими id для нових сутностей).

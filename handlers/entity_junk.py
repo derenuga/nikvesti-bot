@@ -388,6 +388,132 @@ async def entity_docs_canon_callback(update, context):
         f"Далі витяг рахує назву сам — нових дублів по статтях не буде.")
 
 
+# ---------- Правова форма організації (КП / ОКП / ТОВ / АТ) ----------
+#
+# Та сама хвороба, що зі статтями кодексу, і найбільша за розміром: витяг то
+# пише правову форму, то ні, і одна установа розповзається на 4–6 карток.
+# Замір по норі 02.08: 264 групи, 590 карток, 7412 згадок — і це головні
+# герої місцевих новин («Миколаївобленерго» був розколотий на п'ять карток,
+# «Миколаївоблтеплоенерго» на шість).
+#
+# На відміну від статей кодексу назву тут НЕ переписуємо: яка форма
+# «правильна» — питання смаку, а не факту. Лишається найзгадуваніша картка,
+# решта зливається в неї звичайним злиттям, тобто з аліасами й журналом.
+
+ORG_GROUPS_SQL = """
+SELECT e.id, e.name_ua, e.name_ru, coalesce(e.mentions, 0) AS mentions
+FROM entities e WHERE e.kind = 'org'
+  AND coalesce(e.name_ua, e.name_ru) IS NOT NULL
+ORDER BY coalesce(e.mentions, 0) DESC, e.id
+"""
+
+
+def scan_org_forms():
+    """Read-only: які картки організацій різняться ЛИШЕ правовою формою."""
+    _ensure()
+    plan = {}
+    for r in bot_db.query(ORG_GROUPS_SQL):
+        key = ep.org_key(r["name_ua"]) or ep.org_key(r["name_ru"])
+        if key:
+            plan.setdefault(key, []).append(r)
+    groups = {}
+    for key, cards in plan.items():
+        if len(cards) < 2:
+            continue
+        # Однакові назви — це робота /entity_dedup, тут нас цікавить саме
+        # різниця у формі. Інакше звіт показував би те, що вже полагоджено.
+        if len({ep.norm(c["name_ua"] or c["name_ru"]) for c in cards}) < 2:
+            continue
+        groups[key] = cards
+    return {"groups": groups,
+            "cards": sum(len(v) for v in groups.values()),
+            "links": sum(c["mentions"] for v in groups.values() for c in v)}
+
+
+def apply_org_forms(decided_by=None):
+    """Злити картки, що різняться лише правовою формою. Ідемпотентно."""
+    scan = scan_org_forms()
+    merged = 0
+    for cards in scan["groups"].values():
+        winner = max(cards, key=lambda c: (c["mentions"], -c["id"]))
+        for c in cards:
+            if c["id"] == winner["id"]:
+                continue
+            em.merge_cards(winner["id"], c["id"], decided_by)
+            merged += 1
+    return {"merged": merged, "groups": len(scan["groups"])}
+
+
+def format_org_forms(scan):
+    lines = ["🦊 Правова форма — не інша установа\n",
+             "«Миколаївобленерго», «АТ «Миколаївобленерго»», «КП "
+             "«Миколаївобленерго»» — одна компанія під трьома картками, бо "
+             "витяг то пише форму, то ні.\n",
+             f"Груп: {len(scan['groups'])} · карток: {scan['cards']} · "
+             f"згадок на кону: {scan['links']}"]
+    big = sorted(scan["groups"].values(), key=lambda v: -sum(
+        c["mentions"] for c in v))[:6]
+    for cards in big:
+        winner = max(cards, key=lambda c: (c["mentions"], -c["id"]))
+        lines.append(f"\n✅ {winner['name_ua']} ({winner['mentions']})")
+        for c in sorted(cards, key=lambda c: -c["mentions"]):
+            if c["id"] != winner["id"]:
+                lines.append(f"   🗑 {c['name_ua']} ({c['mentions']})")
+    lines.append("\nЛишається найзгадуваніша картка, решта йде в її аліаси. "
+                 "Кожне злиття — у журналі (/entity_merge_log, "
+                 "відкат /entity_unmerge <id>).")
+    return "\n".join(lines)[:4000]
+
+
+async def entity_org_forms_handler(update, context):
+    """/entity_org_forms — звести картки, що різняться лише правовою формою."""
+    if not _allowed(update):
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Нора недоступна (BOT_DATABASE_URL).")
+        return
+    msg = await update.message.reply_text("🦊 Шукаю однакові установи під різними формами…")
+    try:
+        scan = await asyncio.to_thread(scan_org_forms)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не порахував: {type(e).__name__}: {e}")
+        return
+    if not scan["groups"]:
+        await msg.edit_text("🦊 Установ, що різняться лише правовою формою, не бачу.")
+        return
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"✅ Звести {len(scan['groups'])} груп",
+                             callback_data="ejf:go"),
+        InlineKeyboardButton("❌ Ні", callback_data="ejf:no"),
+    ]])
+    await msg.edit_text(format_org_forms(scan), reply_markup=kb)
+
+
+async def entity_org_forms_callback(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id if query.from_user else None
+    if _ALLOWED_USER_IDS and user_id not in _ALLOWED_USER_IDS:
+        await query.answer("⛔ Тільки для редакції.", show_alert=True)
+        return
+    await query.answer()
+    if query.data == "ejf:no":
+        await query.edit_message_text("❌ Скасовано, картки не чіпав.")
+        return
+    await query.edit_message_text("🦊 Зводжу установи…")
+    who = query.from_user.full_name if query.from_user else None
+    try:
+        res = await asyncio.to_thread(apply_org_forms, who)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Не звелось: {type(e).__name__}: {e}")
+        return
+    await query.edit_message_text(
+        f"🦊 Зведено {res['groups']} груп, злито {res['merged']} карток.\n"
+        f"Старі написання лишились аліасами, кожне злиття — у журналі "
+        f"(/entity_merge_log, відкат /entity_unmerge <id>).\n"
+        f"Далі витяг зіставляє за ключем без форми — «КП «Миколаївводоканал»» "
+        f"більше не заведе окрему картку.")
+
+
 # ---------- Саме прибирання ----------
 
 def purge_cards(ids, reason, decided_by=None, run=None):
