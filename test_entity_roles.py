@@ -513,6 +513,47 @@ def test_org_suggestion_prefers_name():
     bot_db.execute("DELETE FROM role_canon WHERE id = %s", (cid,))
 
 
+def test_outliers():
+    """Роль, приписана чужому носієві: у статті про Миколаївщину бек «у Херсоні
+    теж… голова ОВА Прокудін», і витяг доповнив роль регіоном СТАТТІ. У сталої
+    посади один-два носії, тому такий дефект видно як носія з одним зв'язком
+    там, де в головного їх сотні."""
+    bot_db.execute(
+        "INSERT INTO entities (id, kind, name_ua) VALUES "
+        "(401, 'person', 'Віталій Кім-тест'), (402, 'person', 'Олександр Прокудін') "
+        "ON CONFLICT (id) DO NOTHING")
+    role = "голова Миколаївської обласної військової адміністрації"
+    for aid in range(5000, 5030):     # головний носій — 30 зв'язків
+        bot_db.execute(
+            "INSERT INTO articles (id, published, title_ua) VALUES (%s, %s, %s) "
+            "ON CONFLICT (id) DO NOTHING", (aid, 1700000000, f"Стаття {aid}"))
+        bot_db.execute(
+            "INSERT INTO article_entities (article_id, entity_id, role_at_time, salience) "
+            "VALUES (%s, 401, %s, 'main') ON CONFLICT DO NOTHING", (aid, role))
+    bot_db.execute(                    # чужак — один зв'язок
+        "INSERT INTO article_entities (article_id, entity_id, role_at_time, salience) "
+        "VALUES (5000, 402, %s, 'mentioned') ON CONFLICT DO NOTHING", (role,))
+
+    rows = bot_db.query(er.OUTLIERS_SQL, (er.OUTLIER_MIN_TOP, er.OUTLIER_RATIO, 20))
+    hit = [r for r in rows if r["name"] == "Олександр Прокудін"]
+    check("викид (1 зв'язок при 30) знайдено",
+          hit and hit[0]["main_name"] == "Віталій Кім-тест",
+          f"{[(r['name'], r['c'], r['top']) for r in rows]}")
+    check("звіт дає id статей для /entity_resync",
+          hit and 5000 in (hit[0]["articles"] or []), f"{hit[0]['articles'] if hit else None}")
+    main = [r for r in rows if r["name"] == "Віталій Кім-тест"]
+    check("головний носій викидом не вважається", not main, f"{main}")
+
+    before = raw_roles_snapshot()
+    bot_db.query(er.OUTLIERS_SQL, (er.OUTLIER_MIN_TOP, er.OUTLIER_RATIO, 20))
+    check("звіт про викиди нічого не переписує (сира роль недоторкана)",
+          raw_roles_snapshot() == before)
+
+    bot_db.execute("DELETE FROM article_entities WHERE article_id >= 5000")
+    bot_db.execute("DELETE FROM articles WHERE id >= 5000")
+    bot_db.execute("DELETE FROM entities WHERE id IN (401, 402)")
+
+
 def test_carrier_counts():
     """Чужий носій ролі (Прокудін під миколаївською ОВА) — помилка витягу, а не
     другий носій посади. У картці він має бути видним як викид, тобто з числом."""
@@ -680,6 +721,7 @@ async def run():
     test_norm_version()
     test_queue_and_merge()
     test_carrier_counts()
+    test_outliers()
     test_org_suggestion_prefers_name()
     test_affiliation()
     test_rejection_memory_and_rollback()

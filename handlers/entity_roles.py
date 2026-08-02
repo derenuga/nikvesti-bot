@@ -1106,6 +1106,98 @@ async def roles_handler(update, context):
     await msg.edit_text("\n".join(lines))
 
 
+# ---------- /roles_outliers ----------
+#
+# Окремий клас дефектів, знайдений 02.08 очима на першому ж прогоні: у статті
+# про Миколаївщину в беку стоїть «у Херсоні теж був обстріл, голова ОВА
+# Прокудін повідомив…», і витяг ДОПОВНЮЄ роль регіоном статті —
+# «голова МИКОЛАЇВСЬКОЇ обласної військової адміністрації». Тобто роль
+# приписана чужій людині, і виглядає вона як цілком законний факт.
+#
+# Ловиться це дешево й без AI: у сталої посади є один-два постійні носії, а
+# такий дефект дає носія з ОДНИМ зв'язком там, де в головного їх сотні. Звіт
+# read-only — він не чинить, а показує масштаб і дає готовий список id для
+# /entity_resync. Правити сирий role_at_time бот не буде ніколи: він факт
+# статті, і якщо стаття помилкова — виправляти треба статтю й перечитати її.
+
+OUTLIERS_SQL = """
+WITH r AS (
+    SELECT role_norm(ae.role_at_time) AS rn, ae.entity_id, count(*) AS c
+    FROM article_entities ae
+    WHERE ae.role_at_time IS NOT NULL AND role_norm(ae.role_at_time) IS NOT NULL
+    GROUP BY 1, 2
+), tot AS (
+    SELECT rn, max(c) AS top, sum(c) AS total, count(*) AS carriers FROM r GROUP BY rn
+)
+SELECT r.rn, coalesce(e.name_ua, e.name_ru) AS name, r.c, tot.top,
+       (SELECT coalesce(e2.name_ua, e2.name_ru) FROM r r2
+        JOIN entities e2 ON e2.id = r2.entity_id
+        WHERE r2.rn = r.rn ORDER BY r2.c DESC LIMIT 1) AS main_name,
+       (SELECT array_agg(ae2.article_id) FROM (
+            SELECT ae3.article_id FROM article_entities ae3
+            WHERE ae3.entity_id = r.entity_id
+              AND role_norm(ae3.role_at_time) = r.rn
+            ORDER BY ae3.article_id DESC LIMIT 3) ae2) AS articles
+FROM r
+JOIN tot ON tot.rn = r.rn
+JOIN entities e ON e.id = r.entity_id
+WHERE tot.top >= %s AND r.c * %s <= tot.top
+ORDER BY tot.top DESC, r.c
+LIMIT %s
+"""
+
+# Поріг «усталеної» посади і в скільки разів носій має бути рідшим за головного,
+# щоб вважатись викидом. 20× — щоб не чіпати реальну зміну посадовця (у неї
+# зазвичай десятки згадок), а ловити саме одноразові приписування.
+OUTLIER_MIN_TOP = 20
+OUTLIER_RATIO = 20
+
+
+async def roles_outliers_handler(update, context):
+    """/roles_outliers [N] — де роль приписана явно не тому носієві."""
+    if not _allowed(update):
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Нора недоступна (BOT_DATABASE_URL).")
+        return
+    args = context.args or []
+    try:
+        n = int(args[0]) if args else 20
+    except ValueError:
+        n = 20
+    n = min(max(n, 1), 100)
+    msg = await update.message.reply_text("🦊 Шукаю ролі, приписані не тому носієві…")
+
+    def build():
+        ensure_schema()
+        return bot_db.query(OUTLIERS_SQL, (OUTLIER_MIN_TOP, OUTLIER_RATIO, n))
+
+    try:
+        rows = await asyncio.to_thread(build)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось: {type(e).__name__}: {e}")
+        return
+    if not rows:
+        await msg.edit_text(
+            "🦊 Викидів не знайшов: у кожної сталої посади носії пропорційні.")
+        return
+    ids = []
+    lines = [f"🦊 Ролі, приписані явно не тому носієві — {len(rows)}\n",
+             "Схема дефекту: у беку статті згадано людину з іншого регіону, а "
+             "витяг доповнив її роль регіоном СТАТТІ.\n"]
+    for r in rows:
+        arts = list(r["articles"] or [])
+        ids.extend(arts)
+        lines.append(f"«{r['rn']}»\n   {r['name']} ({r['c']}) при "
+                     f"{r['main_name']} ({r['top']}) · статті: "
+                     + ", ".join(str(a) for a in arts))
+    if ids:
+        lines.append("\nПеревірити текст: /nora_article <id>")
+        lines.append("Полагодити (спершу правимо статтю на сайті, якщо винен "
+                     "текст):\n/entity_resync " + " ".join(str(i) for i in ids[:20]))
+    await msg.edit_text("\n".join(lines)[:4000])
+
+
 # ---------- /roles_org ----------
 
 async def roles_org_handler(update, context):

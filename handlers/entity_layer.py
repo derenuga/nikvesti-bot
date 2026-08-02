@@ -1018,6 +1018,26 @@ async def entity_resync_handler(update, context):
         return
 
     msg = await update.message.reply_text(f"🦊 Перечитую сутності {len(ids)} статей…")
+
+    # Спершу ТЕКСТ із сайту, потім сутності з нього. Витяг читає нору, а не
+    # сайт, тож без цього кроку правка в CMS не доїжджає: /entity_resync тихо
+    # перечитував би СТАРИЙ текст і відтворював ту саму помилку. Реальний кейс
+    # 02.08: у статті виправили «голова ОВА Прокудін» → «голова ХЕРСОНСЬКОЇ
+    # ОВА», натиснули /entity_resync — і роль лишилась миколаївською, бо в норі
+    # ще лежав доредакційний текст (синк дзеркала ходить раз на годину о :50).
+    synced = None
+    try:
+        from handlers import db as site_db
+        if site_db.is_configured():
+            from handlers.archive_mirror import resync_ids
+            synced, dead, gone = await resync_ids(ids)
+            await msg.edit_text(
+                f"🦊 Оновив у норі текст {len(synced)} стат(ей) із сайту, "
+                f"тепер перечитую сутності…")
+    except Exception as e:
+        # Не критично: нижче перечитаємо те, що є в норі, але скажемо про це.
+        print(f"entity_resync: не вдалось оновити текст із сайту — {e}")
+
     placeholders = ", ".join(["%s"] * len(ids))
     rows = await bot_db.aquery(
         "SELECT id, title_ua, title_ru, text_ua, text_ru FROM articles "
@@ -1082,6 +1102,9 @@ async def entity_resync_handler(update, context):
         )
 
     lines = [f"🦊 Перечит сутностей: {len(results)}/{len(rows)} статей"]
+    if synced is None:
+        lines.append("⚠️ текст із сайту не оновлювався (БД сайту недоступна) — "
+                     "сутності перечитано з того, що лежить у норі")
     for r in results:
         lines.append(f"• {r['article_id']} — {len(r['entities'])} сутностей")
     if stats:
