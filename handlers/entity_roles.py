@@ -1667,31 +1667,64 @@ async def roles_org_handler(update, context):
 # ---------- /roles_canon ----------
 
 async def roles_canon_handler(update, context):
+    """/roles_canon — компактний список канонів; /roles_canon <id> — один канон
+    з усіма написаннями.
+
+    Без цього поділу команда падала: канон із 51 написання плюс шість десятків
+    інших не влазять у ліміт повідомлення Telegram, і огляд ставав недоступним
+    рівно тоді, коли він найпотрібніший — коли треба лагодити злиплий канон."""
     if not _allowed(update):
         return
     args = context.args or []
-    try:
-        n = int(args[0]) if args else 20
-    except ValueError:
-        n = 20
-    n = min(max(n, 1), 100)
+    one = int(args[0]) if args and args[0].isdigit() else None
 
-    def build():
+    def build_one():
+        ensure_schema()
+        rows = bot_db.query(
+            "SELECT rc.id, rc.canon, coalesce(o.name_ua, o.name_ru) AS org "
+            "FROM role_canon rc LEFT JOIN entities o ON o.id = rc.org_entity_id "
+            "WHERE rc.id = %s", (one,))
+        if not rows:
+            return None, []
+        vars_ = bot_db.query(
+            "SELECT rv.raw_sample, rv.raw_norm, "
+            "       (SELECT count(*) FROM article_entities ae "
+            "        WHERE role_norm(ae.role_at_time) = rv.raw_norm) AS links "
+            "FROM role_variants rv WHERE rv.canon_id = %s "
+            "ORDER BY links DESC", (one,))
+        return rows[0], vars_
+
+    def build_list():
         ensure_schema()
         return bot_db.query(
             """
             SELECT rc.id, rc.canon, coalesce(o.name_ua, o.name_ru) AS org,
-                   array_agg(rv.raw_sample ORDER BY rv.raw_sample) AS variants
+                   count(*) AS variants
             FROM role_canon rc
             JOIN role_variants rv ON rv.canon_id = rc.id
             LEFT JOIN entities o ON o.id = rc.org_entity_id
             GROUP BY rc.id, rc.canon, o.name_ua, o.name_ru
             ORDER BY count(*) DESC, rc.id
-            LIMIT %s
-            """, (n,))
+            """)
 
     try:
-        rows = await asyncio.to_thread(build)
+        if one is not None:
+            head, vars_ = await asyncio.to_thread(build_one)
+            if not head:
+                await update.message.reply_text(f"Канону {one} немає.")
+                return
+            org = f"\n🏛 {head['org']}" if head["org"] else "\n🏛 орган не вказано"
+            lines = [f"🦊 [{head['id']}] «{head['canon']}»{org}",
+                     f"Написань: {len(vars_)}\n"]
+            for v in vars_:
+                lines.append(f"  {v['links']:>5} · {v['raw_sample'] or v['raw_norm']}")
+            lines.append("\nЗняти одне написання: /roles_forget <написання>")
+            lines.append(f"Розібрати канон цілком: /roles_forget {head['id']}")
+            lines.append(f"Переназвати: /roles_rename {head['id']} <текст>")
+            lines.append(f"Змінити орган: /roles_org {head['id']}")
+            await update.message.reply_text("\n".join(lines)[:4000])
+            return
+        rows = await asyncio.to_thread(build_list)
     except Exception as e:
         await update.message.reply_text(f"❌ Нора недоступна: {e}")
         return
@@ -1699,14 +1732,17 @@ async def roles_canon_handler(update, context):
         await update.message.reply_text(
             "Канонів ще немає — /roles_dedup поставить перші питання.")
         return
-    lines = ["🦊 Канон посад\n"]
+    lines = [f"🦊 Канон посад — {len(rows)}\n"]
     for r in rows:
         org = f" · 🏛 {r['org']}" if r["org"] else ""
-        lines.append(f"[{r['id']}] «{r['canon']}»{org}")
-        lines.append("   " + " | ".join(v for v in r["variants"] if v))
-    lines.append("\nПереназвати: /roles_rename <id> <текст> · "
+        lines.append(f"[{r['id']}] «{r['canon']}» — {r['variants']} написань{org}")
+    lines.append("\nОдин канон із написаннями: /roles_canon <id>")
+    lines.append("Переназвати: /roles_rename <id> <текст> · "
                  "відкат: /roles_forget <текст|id>")
-    await update.message.reply_text("\n".join(lines))
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3960] + "\n…(список обрізано)"
+    await update.message.reply_text(text)
 
 
 # ---------- /roles_rename ----------
