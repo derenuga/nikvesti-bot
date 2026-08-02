@@ -883,7 +883,7 @@ def format_measure(m):
     lines.append(f"\nДетектор знайшов пар-кандидатів: {m['role_pairs']} "
                  f"(з них сильних: {m['role_pairs_strong']}), "
                  f"ролей у переборі: {m['role_scan_roles']}")
-    for a, b, score, sig, cls, detail, stake in m.get("role_pairs_top") or []:
+    for a, b, score, sig, cls, detail, stake, *_ in m.get("role_pairs_top") or []:
         lines.append(f"  «{a}» ~ «{b}» ({score:.0f}: {sig})")
     lines.append("\nРозкладка кандидатів по класах: /entity_classes")
     lines.append("Питати кнопками по ролях: /roles_dedup · стан: /roles")
@@ -951,7 +951,8 @@ def classify_cards(threshold=SIM_THRESHOLD):
 
 def classify_roles():
     _names, rows = entity_roles.find_pairs()
-    return _tally([(cls, detail, a, b) for a, b, _s, _sig, cls, detail, _st in rows])
+    return _tally([(cls, detail, a, b)
+               for a, b, _s, _sig, cls, detail, _st, *_ in rows])
 
 
 def format_classes(title, data):

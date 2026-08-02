@@ -143,6 +143,11 @@ CREATE INDEX IF NOT EXISTS idx_role_pairs_open ON role_pairs (score DESC) WHERE 
 ALTER TABLE role_pairs ADD COLUMN IF NOT EXISTS cls TEXT;
 ALTER TABLE role_pairs ADD COLUMN IF NOT EXISTS cls_detail TEXT;
 ALTER TABLE role_pairs ADD COLUMN IF NOT EXISTS stake INT;
+-- Зв'язки кожної сторони окремо. Потрібні саме поштучно, а не сумою: пара
+-- питається в порядку РЕАЛЬНОГО приросту покриття, а він рахує лише ті
+-- сторони, які ще не під каноном (див. NEXT_PAIR_SQL).
+ALTER TABLE role_pairs ADD COLUMN IF NOT EXISTS links_a INT;
+ALTER TABLE role_pairs ADD COLUMN IF NOT EXISTS links_b INT;
 """
 
 # Індекс по нормалізованій ролі: усі запити довідника групують саме по ній,
@@ -860,7 +865,8 @@ def find_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
         # інакше вечір іде на посади, які трапились двічі.
         stake = min(roles[a]["links"], roles[b]["links"])
         score += min(2.0, math.log10(max(stake, 1)))
-        rows.append((a, b, round(score, 2), " · ".join(sig), cls, detail, stake))
+        rows.append((a, b, round(score, 2), " · ".join(sig), cls, detail, stake,
+                     roles[a]["links"], roles[b]["links"]))
     rows.sort(key=lambda r: (-r[2], -r[6]))
     return names, rows
 
@@ -888,17 +894,18 @@ def scan_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
         bot_db.execute("DELETE FROM role_pairs WHERE id = ANY(%s)", (stale,))
     added = 0
     now = int(time.time())
-    for a, b, score, sig, cls, detail, stake in rows:
+    for a, b, score, sig, cls, detail, stake, la, lb in rows:
         n = bot_db.execute(
             "INSERT INTO role_pairs (a_norm, b_norm, score, signals, cls, "
-            "  cls_detail, stake, updated) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+            "  cls_detail, stake, links_a, links_b, updated) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (a_norm, b_norm) DO UPDATE SET "
             "  score = EXCLUDED.score, signals = EXCLUDED.signals, "
             "  cls = EXCLUDED.cls, cls_detail = EXCLUDED.cls_detail, "
-            "  stake = EXCLUDED.stake, updated = EXCLUDED.updated "
+            "  stake = EXCLUDED.stake, links_a = EXCLUDED.links_a, "
+            "  links_b = EXCLUDED.links_b, updated = EXCLUDED.updated "
             "WHERE role_pairs.verdict IS NULL",
-            (a, b, score, sig, cls, detail, stake, now))
+            (a, b, score, sig, cls, detail, stake, la, lb, now))
         added += 1 if n else 0
     return n_roles, len(rows), added, _pending_count()
 
@@ -1126,8 +1133,23 @@ ORG_QUESTION_GENERIC = (
     "Прив'язувати варто лише посаду з назвою: «міський голова Миколаєва» → "
     "Миколаївська міська рада.")
 
-NEXT_PAIR_SQL = """
-SELECT p.id, p.a_norm, p.b_norm, p.score, p.signals, p.cls, p.cls_detail
+# ПОРЯДОК ПИТАНЬ — за приростом покриття, а не за впевненістю детектора.
+#
+# Замір 02.08 показав, чому це важливо: у черзі 875 питань, і разом вони варті
+# 8072 зв'язків — тобто в середньому по дев'ять. Але розподіл кривий: кілька
+# десятків пар несуть сотні зв'язків кожна, а хвіст — по одному-два. При
+# сортуванні за score найжирніші пари стояли посеред черги, і щоб дійти до
+# них, треба було перетерпіти сотні дрібних; людина втомлюється раніше.
+#
+# Приріст рахується ЧЕСНО: сторона, яка вже під каноном, покриття не додає,
+# тому в сумі лише непокриті. Інакше пара з гігантським каноном на одному боці
+# вічно стояла б першою, віддаючи насправді кілька зв'язків.
+GAIN_SQL = ("(CASE WHEN va.canon_id IS NULL THEN coalesce(p.links_a, 0) ELSE 0 END"
+            " + CASE WHEN vb.canon_id IS NULL THEN coalesce(p.links_b, 0) ELSE 0 END)")
+
+NEXT_PAIR_SQL = f"""
+SELECT p.id, p.a_norm, p.b_norm, p.score, p.signals, p.cls, p.cls_detail,
+       {GAIN_SQL} AS gain
 FROM role_pairs p
 LEFT JOIN role_variants va ON va.raw_norm = p.a_norm
 LEFT JOIN role_variants vb ON vb.raw_norm = p.b_norm
@@ -1135,7 +1157,7 @@ WHERE p.verdict IS NULL
   AND (va.canon_id IS NULL OR vb.canon_id IS NULL OR va.canon_id <> vb.canon_id)
   AND NOT (p.id = ANY(%s))
   AND (%s IS NULL OR p.cls = %s)
-ORDER BY p.score DESC, p.id
+ORDER BY {GAIN_SQL} DESC, p.score DESC, p.id
 LIMIT 1
 """
 
@@ -1294,10 +1316,16 @@ def _question_text(p):
     hint = ""
     if (p.get("cls") or "") in BULK_REJECT:
         hint = " ← зазвичай «ні»"
+    # Скільки покриття дасть «так». Черга йде за цим числом, і поки воно
+    # тризначне — питання варте уваги; коли впало до одиниць, решту вечора
+    # можна не витрачати. Без нього людина не бачить, де закінчується користь.
+    gain = (f"На кону: +{p['gain']} зв'язків покриття\n"
+            if p.get("gain") else "")
     return ("🦊 Це та сама посада?\n\n"
             + block("А", p["a"]) + "\n"
             + block("Б", p["b"]) + "\n"
             + warn + "\n"
+            + gain
             + (f"Клас: {cls}{hint}\n" if cls else "")
             + f"Підстава: {p['signals']}")
 

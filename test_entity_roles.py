@@ -382,7 +382,7 @@ def test_classes():
 
     # Вкладеність більше не тягне «уточнення» нагору черги (було 2 бали, стало 1)
     _, pairs = er.find_pairs(min_links=1, top_roles=200)
-    by = {(a, b): (sc, cls) for a, b, sc, _sig, cls, _d, _st in pairs}
+    by = {(a, b): (sc, cls) for a, b, sc, _sig, cls, _d, _st, *_ in pairs}
     # Вкладеність БЕЗ спільного носія («депутатка міської ради» ~ «…Львова»)
     # має стояти нижче за справжню пару зі спільним носієм — інакше вечір
     # починається з уточнень, які все одно доведеться відхилити.
@@ -394,7 +394,7 @@ def test_classes():
           f"носій {carrier} vs вкладеність {nested}")
 
     # Ставка: питати про 900 зв'язків раніше, ніж про 3 — за інших рівних
-    stakes = {(a, b): st for a, b, _s, _sig, _c, _d, st in pairs}
+    stakes = {(a, b): st for a, b, _s, _sig, _c, _d, st, *_ in pairs}
     # Порядок у парі має бути канонічним: частина кандидатів приходить із SQL,
     # де колація ігнорує пунктуацію, і та сама пара лягала в чергу двічі.
     _n2, pr = er.find_pairs(min_links=1, top_roles=200)
@@ -503,6 +503,34 @@ def test_bulk():
         "AND b_norm = 'голова обласної ва'")
     check("і така пара лишається невирішеною в черзі",
           still and still[0]["verdict"] is None, f"{still}")
+    bot_db.execute("DELETE FROM role_variants")
+    bot_db.execute("DELETE FROM role_canon")
+
+    # ПОРЯДОК ЧЕРГИ — за приростом покриття. У проді 875 питань варті 8072
+    # зв'язків разом, і кілька десятків пар несуть з них більшість: при
+    # сортуванні за впевненістю детектора найжирніші стояли посеред черги, і
+    # людина втомлювалась раніше, ніж доходила до них.
+    er.scan_pairs(min_links=1, top_roles=200)
+    order = [(r["a_norm"], r["b_norm"], r["gain"]) for r in bot_db.query(
+        er.NEXT_PAIR_SQL.replace("LIMIT 1", "LIMIT 50"), ([], None, None))]
+    check("черга віддає спершу найжирніші питання",
+          order and order == sorted(order, key=lambda t: -t[2]),
+          f"{[(a[:18], g) for a, _b, g in order[:5]]}")
+    top_q = er.next_question(set())
+    check("у картці видно, скільки покриття дасть «так»",
+          top_q and top_q.get("gain")
+          and f"+{top_q['gain']} зв'язків покриття" in er._question_text(top_q),
+          f"gain={top_q.get('gain') if top_q else None}")
+    # Сторона, яка ВЖЕ під каноном, покриття не додає: інакше пара з
+    # гігантським каноном на одному боці вічно стояла б першою, віддаючи
+    # насправді жменю зв'язків.
+    er.merge_roles(top_q["a_norm"], top_q["b_norm"] + " (несправжнє)",
+                   top_q["a"]["sample"], "несправжнє написання", "тест")
+    after = bot_db.query(er.NEXT_PAIR_SQL, ([], None, None))
+    same = [r for r in after if r["id"] == top_q["id"]]
+    check("покрита сторона в приріст не рахується",
+          not same or same[0]["gain"] < top_q["gain"],
+          f"{top_q['gain']} → {same[0]['gain'] if same else 'вибула'}")
     bot_db.execute("DELETE FROM role_variants")
     bot_db.execute("DELETE FROM role_canon")
 
