@@ -1134,6 +1134,7 @@ LEFT JOIN role_variants vb ON vb.raw_norm = p.b_norm
 WHERE p.verdict IS NULL
   AND (va.canon_id IS NULL OR vb.canon_id IS NULL OR va.canon_id <> vb.canon_id)
   AND NOT (p.id = ANY(%s))
+  AND (%s IS NULL OR p.cls = %s)
 ORDER BY p.score DESC, p.id
 LIMIT 1
 """
@@ -1167,8 +1168,8 @@ def _canon_of(raw_norm):
     return dict(rows[0]) if rows else None
 
 
-def next_question(exclude_ids):
-    rows = bot_db.query(NEXT_PAIR_SQL, (list(exclude_ids or []),))
+def next_question(exclude_ids, cls=None):
+    rows = bot_db.query(NEXT_PAIR_SQL, (list(exclude_ids or []), cls, cls))
     if not rows:
         return None
     p = dict(rows[0])
@@ -1257,6 +1258,11 @@ def _question_markup(pair_id):
 # означає «не зараз», а не «різні»; після перезапуску бота питання повернеться.
 _skipped = {}
 
+# Фільтр «питати лише цей клас»: з екрана класу в /roles_bulk має бути вихід у
+# питання по одній парі, інакше людина бачить список і не може на нього
+# відповісти — саме так і сталось на першому ж двоїстому класі.
+_class_filter = {}
+
 
 def _allowed(update):
     user = update.effective_user
@@ -1266,8 +1272,15 @@ def _allowed(update):
 async def _send_next(chat, user_id, bot=None):
     """Наступне питання черги — або підсумок, коли черга скінчилась."""
     skip = _skipped.setdefault(user_id, set())
-    p = await asyncio.to_thread(next_question, skip)
+    cls = _class_filter.get(user_id)
+    p = await asyncio.to_thread(next_question, skip, cls)
     if not p:
+        if cls:
+            _class_filter.pop(user_id, None)
+            await chat.send_message(
+                f"🦊 Клас «{CLASS_LABELS.get(cls, cls)}» пройдено.\n"
+                f"Решта класів — /roles_bulk, уся черга — /roles_dedup")
+            return
         n = await asyncio.to_thread(_pending_count)
         tail = (f"\nПропущено в цій сесії: {len(skip)} — вони повернуться "
                 f"наступним /roles_dedup." if skip else "")
@@ -1305,6 +1318,7 @@ async def roles_dedup_handler(update, context):
         f"(нових/оновлених: {n_new}) · у черзі: {pending}\n"
         f"Сирий текст ролей не чіпається — довідник лягає поруч.")
     _skipped.pop(update.effective_user.id, None)
+    _class_filter.pop(update.effective_user.id, None)
     await _send_next(update.effective_chat, update.effective_user.id)
 
 
@@ -2184,9 +2198,21 @@ async def roles_bulk_callback(update, context):
                                             callback_data=f"rbm:{cls}"),
                        InlineKeyboardButton(f"❌ Відхилити всі {len(rows)}",
                                             callback_data=f"rbr:{cls}")])
+        kb.append([InlineKeyboardButton(
+            f"👉 Пройти по одній ({len(rows)})", callback_data=f"rbo:{cls}")])
         kb.append([InlineKeyboardButton("← Класи", callback_data="rbc:*")])
         await query.edit_message_text("\n".join(lines)[:4000],
                                       reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if action == "rbo":
+        _class_filter[user_id] = cls
+        _skipped.pop(user_id, None)
+        await query.edit_message_text(
+            (query.message.text or "").split("\n\nЗазвичай")[0].split(
+                "\n\nКлас ДВОЇСТИЙ")[0]
+            + f"\n\n👉 Проходимо клас по одній парі.")
+        await _send_next(query.message.chat, user_id)
         return
 
     if action not in ("rbm", "rbr"):

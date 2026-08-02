@@ -477,6 +477,22 @@ def test_bulk():
     check("повторний гурт по закритому класу нічого не робить",
           er.bulk_apply("carrier_only", "same", "тест") == 0)
 
+    # З екрана класу має бути вихід у питання по одній парі — інакше людина
+    # бачить список і не може на нього відповісти, а команда /roles_dedup
+    # починає з початку всієї черги.
+    any_cls = next(c for c, _n in er.class_counts())
+    q_all = er.next_question(set())
+    q_cls = er.next_question(set(), any_cls)
+    check("черга вміє питати ЛИШЕ в межах одного класу",
+          q_cls and q_cls["cls"] == any_cls, f"{any_cls} → {q_cls and q_cls['cls']}")
+    other_cls = next((c for c, _n in er.class_counts() if c != any_cls), None)
+    if other_cls:
+        q_other = er.next_question(set(), other_cls)
+        check("фільтр класу справді фільтрує, а не віддає перше-ліпше",
+              q_other and q_other["cls"] == other_cls
+              and q_other["cls"] != q_cls["cls"],
+              f"{other_cls} → {q_other and q_other['cls']}")
+
     # Клас, який сам себе називає двоїстим, не має пропонувати кнопку гурту:
     # одного випадкового тапу досить, щоб зліпити «журналіста» з
     # «журналістом-розслідувачем» назавжди.

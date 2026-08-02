@@ -590,7 +590,7 @@ def main():
     app.add_handler(CallbackQueryHandler(news_select_callback, pattern=f"^{SELECT_CALLBACK_PREFIX}"))
     app.add_handler(CallbackQueryHandler(roles_pair_callback, pattern="^rdp:"))
     app.add_handler(CallbackQueryHandler(roles_org_callback, pattern="^rdo:"))
-    app.add_handler(CallbackQueryHandler(roles_bulk_callback, pattern="^rb[cmr]:"))
+    app.add_handler(CallbackQueryHandler(roles_bulk_callback, pattern="^rb[cmro]:"))
     app.add_handler(CallbackQueryHandler(entity_merge_callback, pattern="^emg:"))
     app.add_handler(CallbackQueryHandler(entity_find_callback, pattern="^ef[nm]:"))
     print("Bot started...")
