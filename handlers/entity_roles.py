@@ -420,6 +420,23 @@ def _is_own_place(word):
     return any(word.startswith(root) for root in OUR_PLACES)
 
 
+def _is_region_word(word):
+    """СТРОГА перевірка топоніма — лише за курованими коренями регіонів і
+    країн, без списку місць із нори.
+
+    Широка перевірка (`_is_place_word`) бере топоніми з `entities` kind='place',
+    а там лежить усе підряд: «Голованівськ», «Міський парк», «Обласна
+    лікарня». П'ятисимвольний префікс від них збігається зі словами ПОСАДИ —
+    «голова», «міський», «обласної», — і порівняння наборів топонімів видало
+    686 пар, серед них «мер Миколаєва» ~ «міський голова Миколаєва», тобто
+    найцінніше злиття в системі, у класі «зазвичай ні».
+
+    Тому там, де порівнюються НАБОРИ слів (а не одне зайве слово), беремо
+    тільки куровані корені: помилка тут коштує назавжди закритої пари."""
+    return (any(word.startswith(r) for r in OTHER_REGIONS)
+            or any(word.startswith(r) for r in OUR_PLACES))
+
+
 def _is_other_region(word):
     """Чи вказує зайве слово на ЧУЖЕ місце.
 
@@ -431,7 +448,10 @@ def _is_other_region(word):
     Але саме «чуже» тут ключове: «міністр оборони» ~ «міністр оборони
     УКРАЇНИ» — це та сама посада з повнішою назвою (той самий Умєров), а не
     інше місце. Наші топоніми йдуть в окремий клас, бо рішення протилежне."""
-    return _is_place_word(word) and not _is_own_place(word)
+    # СТРОГО, за курованими коренями: широкий список місць із нори містить
+    # «Обласну лікарню» й «Міський парк», і на п'ятисимвольному префіксі слова
+    # ПОСАДИ («обласної», «міський», «голова») починають виглядати топонімами.
+    return _is_region_word(word) and not _is_own_place(word)
 
 # Рівень органу. «обласна» ВА і «міська» ВА — різні установи, і заміна одного
 # слова на інше НЕ робить із них одну посаду. Разом із топонімами це те, через
@@ -542,8 +562,8 @@ def classify_pair(a, b, has_carrier=False):
     # «одне слово замінено», бо «депутатКА ОБЛАСНОЇ ради» ~ «депутат МІСЬКОЇ
     # ради» різняться двома словами і провалювались у клас «інше», де рішення
     # доводилось ухвалювати вручну 312 разів.
-    pa = {w for w in ta if _is_place_word(w)}
-    pb = {w for w in tb if _is_place_word(w)}
+    pa = {w for w in ta if _is_region_word(w)}
+    pb = {w for w in tb if _is_region_word(w)}
     if pa and pb and pa != pb:
         return "place_swap", f"{' '.join(sorted(pa))} ↔ {' '.join(sorted(pb))}"
     la = {_level_code(w) for w in ta if _is_level_word(w)}
@@ -573,7 +593,7 @@ def classify_pair(a, b, has_carrier=False):
             if difflib.SequenceMatcher(None, x, y).ratio() < 0.8:
                 # Замінили місце («Миколаївської» → «Херсонської») або рівень
                 # («обласної» → «міської») — це різні органи, а не синоніми.
-                if _is_place_word(x) or _is_place_word(y):
+                if _is_region_word(x) or _is_region_word(y):
                     return "place_swap", f"{x} → {y}"
                 if _level_code(x) != _level_code(y) and (
                         _is_level_word(x) or _is_level_word(y)):
@@ -1111,7 +1131,7 @@ def is_generic_role(canon_text):
     для таких ролей дає не канон, а організація в тій самій статті."""
     # lower() обовʼязково: у каноні написання з великої («Миколаєва»),
     # а префікси топонімів зберігаються в нижньому регістрі.
-    return not any(_is_place_word(w)
+    return not any(_is_region_word(w)
                    for w in _tokens((canon_text or "").lower()))
 
 
