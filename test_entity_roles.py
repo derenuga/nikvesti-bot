@@ -947,6 +947,10 @@ def test_canon_warning():
          "a_canon": er._canon_of("голова обласної ва"),
          "b_canon": er._canon_of("голова міської ва")}
     txt = er._question_text(p)
+    check("нуль на кону підписаний, а не мовчазний — інакше виглядає поламаним",
+          "покриття не зміниться" in er._question_text(p)
+          and "обидва написання вже під канонами" in er._question_text(p),
+          er._question_text(p))
     check("картка попереджає, що «так» зіллє ДВА канони",
           "зіллє ДВА канони" in txt and "написань" in txt,
           txt.split("\n")[-3] if txt else "")
