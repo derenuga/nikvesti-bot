@@ -543,6 +543,35 @@ def test_org_form_key():
     bot_db.execute("DELETE FROM entity_merges WHERE winner_id = 7301")
 
 
+def test_acronym_dupes():
+    """Абревіатура за ІНІЦІАЛАМИ — окремий детектор.
+
+    Трграмами цей клас не ловиться взагалі: у «ГДМБ» і «Госпрозрахункова
+    дільниця механізації будівництва» нема жодної спільної трграми. На замірі
+    02.08 таких пар було два десятки (СБУ, ЗСУ, НАБУ, ДБР, ТЦК, ГДМБ, ХУМС),
+    і знайшлись вони лише тому, що Олег назвав приклад руками — тобто без
+    детектора клас відростав би мовчки."""
+    for eid, name, m in ((7501, "СБУ", 11),
+                         (7502, "Служба безпеки України", 1015),
+                         (7503, "Миколаївська ОВА", 238),
+                         (7504, "Одеська військова адміністрація", 6),
+                         (7505, "КП", 8),
+                         (7506, "Кримська платформа", 3)):
+        bot_db.execute("INSERT INTO entities (id, kind, name_ua, mentions) "
+                       "VALUES (%s, 'org', %s, %s)", (eid, name, m))
+    pairs = ej.find_acronym_dupes()
+    got = {(p["winner"][0], p["loser"][0]) for p in pairs}
+    check("абревіатура знаходить свою повну назву",
+          (7502, 7501) in got, str(sorted(got)))
+    check("переможцем стає вживаніша картка", 
+          all(p["winner"][2] >= p["loser"][2] for p in pairs))
+    check("різні міста не пара: «Миколаївська ОВА» ~ «Одеська військова…»",
+          (7503, 7504) not in got and (7504, 7503) not in got, str(sorted(got)))
+    check("двобуквені абревіатури не беруться (шум «КП» ~ «Кримська платформа»)",
+          (7506, 7505) not in got and (7505, 7506) not in got, str(sorted(got)))
+    bot_db.execute("DELETE FROM entities WHERE id >= 7501 AND id <= 7506")
+
+
 def test_cards_fix_package():
     """Пакет по КАРТКАХ файлом (# cards-fix).
 
@@ -658,6 +687,7 @@ def run():
     test_doc_canon_migration()
     test_doc_canon_write_results()
     test_org_form_key()
+    test_acronym_dupes()
     test_cards_fix_package()
     test_org_dupes()
     bad = [r for r in RESULTS if not r[1]]

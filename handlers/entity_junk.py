@@ -1129,6 +1129,19 @@ ORG_PAIRS_SCAN = 300
 ORG_DUPE_CLASSES = {"permutation", "abbrev", "typo", "function_words",
                     "containment_own"}
 
+# Абревіатура за ІНІЦІАЛАМИ — окреме джерело кандидатів, бо трграмами вона не
+# ловиться взагалі: у «ГДМБ» і «Госпрозрахункова дільниця механізації
+# будівництва» нема жодної спільної трграми, а це одне підприємство. Так само
+# СБУ, ЗСУ, НАБУ, ДБР, ТЦК — на замірі 02.08 таких пар набралось два десятки,
+# і знайшлись вони лише тому, що Олег назвав приклад руками.
+ACRONYM_MIN = 3          # двобуквені дають шум: «КП» збігається з усім на К+П
+ACRONYM_MAX = 6
+
+# Слова, які не рахуються в ініціали: правова форма й службові.
+INITIAL_SKIP = {"кп", "окп", "тов", "ат", "пат", "прат", "дп", "ку", "кнп",
+                "мкп", "нак", "пп", "та", "і", "й", "з", "із", "у", "в", "на",
+                "по", "до", "від", "при", "для", "про", "імені", "ім"}
+
 ORG_DUPES_LIMIT = 10
 
 # У скільки разів вжиток має різнитися, щоб він переважив повноту назви.
@@ -1183,12 +1196,16 @@ ORG_DUPES_EXPORT = 300
 
 
 def export_org_dupes_csv():
+    """CSV усіх кандидатів — і схожих написань, і абревіатур за ініціалами."""
     """CSV усіх кандидатів-дублів — із готовим рядком merge і спільними
     статтями по кожній парі. Десять пар на екран означало б десять заходів;
     файл розбирають за раз."""
     import csv
     import io
     pairs, skipped = find_org_dupes(limit=ORG_DUPES_EXPORT)
+    seen = {frozenset((p["winner"][0], p["loser"][0])) for p in pairs}
+    pairs += [p for p in find_acronym_dupes()
+              if frozenset((p["winner"][0], p["loser"][0])) not in seen]
     rows, _ = describe_cards_fix(
         [("merge", p["winner"][0], p["loser"][0]) for p in pairs])
     shared = {(r["winner"], r["loser"]): r["shared"] for r in rows}
@@ -1204,6 +1221,48 @@ def export_org_dupes_csv():
     return ("﻿" + buf.getvalue()).encode("utf-8"), len(pairs), skipped
 
 
+def find_acronym_dupes():
+    """Пари «абревіатура ↔ повна назва» за збігом ініціалів.
+
+    Топоніми звіряються з обох боків: «Миколаївська ОВА» і «Одеська військова
+    адміністрація» теж дають ОВА, і це різні установи."""
+    _ensure()
+    rows = bot_db.query(
+        "SELECT id, coalesce(name_ua, name_ru) AS name, coalesce(mentions, 0) AS m "
+        "FROM entities WHERE kind = 'org' AND coalesce(name_ua, name_ru) IS NOT NULL")
+    acro, byini = {}, {}
+    for r in rows:
+        toks = [t for t in er._tokens((r["name"] or "").lower())
+                if t not in INITIAL_SKIP]
+        if not toks:
+            continue
+        if (len(toks) == 1 and ACRONYM_MIN <= len(toks[0]) <= ACRONYM_MAX
+                and toks[0].isalpha() and toks[0].upper() in (r["name"] or "")):
+            acro.setdefault(toks[0], []).append(r)
+        elif len(toks) >= 2:
+            byini.setdefault("".join(t[0] for t in toks), []).append(r)
+    out = []
+    for key, shorts in acro.items():
+        for full in byini.get(key, []):
+            for short in shorts:
+                if short["id"] == full["id"]:
+                    continue
+                pa = {er._region_code(t) for t in er._tokens(short["name"].lower())
+                      if er._is_region_word(t)}
+                pb = {er._region_code(t) for t in er._tokens(full["name"].lower())
+                      if er._is_region_word(t)}
+                if pa and pb and pa != pb:
+                    continue          # різні міста — не пара
+                w, l = ((full, short) if full["m"] >= short["m"]
+                        else (short, full))
+                out.append({"winner": (w["id"], w["name"], w["m"]),
+                            "loser": (l["id"], l["name"], l["m"]),
+                            "cls": "abbrev_initials",
+                            "detail": key.upper()})
+    out.sort(key=lambda p: -(p["winner"][2] + p["loser"][2]))
+    return out
+
+
 async def entity_org_dupes_handler(update, context):
     """/entity_org_dupes — кандидати-дублі організацій із тапом у прев'ю."""
     if not _allowed(update):
@@ -1214,6 +1273,10 @@ async def entity_org_dupes_handler(update, context):
     msg = await update.message.reply_text("🦊 Шукаю дублі органів…")
     try:
         pairs, skipped = await asyncio.to_thread(find_org_dupes)
+        acro = await asyncio.to_thread(find_acronym_dupes)
+        seen = {frozenset((p["winner"][0], p["loser"][0])) for p in pairs}
+        pairs += [p for p in acro
+                  if frozenset((p["winner"][0], p["loser"][0])) not in seen]
     except Exception as e:
         await msg.edit_text(f"❌ Не знайшов: {type(e).__name__}: {e}")
         return
