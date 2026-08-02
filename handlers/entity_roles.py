@@ -743,6 +743,32 @@ WHERE role_norm(ae.role_at_time) = %s
 GROUP BY 1 ORDER BY c DESC LIMIT 2
 """
 
+# Орган посади: ДВА джерела кандидатів, і порядок між ними принциповий.
+#
+# Спершу було лише співпояв — «яка організація найчастіше трапляється в статтях
+# із цією роллю». На Галущенку це дало НАБУ, САП і «Квартал 95»: він міністр
+# юстиції, але пишуть про нього в матеріалах про корупційне провадження. Тобто
+# співпояв ловить не афіліацію, а СЮЖЕТ, і для національних політиків він
+# систематично бреше.
+#
+# Тому головне джерело тепер лексичне: орган, чия НАЗВА перегукується з назвою
+# посади («міністр юстиції» → «Міністерство юстиції України», «голова
+# Миколаївської ОВА» → «Миколаївська обласна військова адміністрація»). Це
+# майже завжди правильна відповідь. Співпояв лишається другим — він рятує там,
+# де назва посади органу не містить («мер Миколаєва» → «Миколаївська міська
+# рада»), — але в кнопці підписано, на якій підставі кандидат запропонований,
+# щоб «48 спільних статей» не виглядало як «це його орган».
+
+ORG_BY_NAME_SQL = """
+SELECT e.id, coalesce(e.name_ua, e.name_ru) AS name,
+       similarity(lower(coalesce(e.name_ua, e.name_ru)), %s) AS sim
+FROM entities e
+WHERE e.kind = 'org' AND coalesce(e.name_ua, e.name_ru) IS NOT NULL
+  AND similarity(lower(coalesce(e.name_ua, e.name_ru)), %s) >= 0.25
+ORDER BY sim DESC, coalesce(e.mentions, 0) DESC
+LIMIT 3
+"""
+
 ORG_CANDIDATES_SQL = """
 SELECT e.id, coalesce(e.name_ua, e.name_ru) AS name, count(*) AS c
 FROM article_entities ae
@@ -752,6 +778,42 @@ WHERE ae.article_id IN (
     WHERE role_norm(ae2.role_at_time) = ANY(%s))
 GROUP BY 1, 2 ORDER BY c DESC LIMIT 3
 """
+
+
+def org_candidates(canon_id):
+    """Кандидати в орган канону: спершу за назвою посади, потім за співпоявою.
+    Повертає [{id, name, basis}] — basis іде в кнопку, щоб було видно, ЧОМУ
+    бот це пропонує."""
+    ensure_schema()
+    rows = bot_db.query(
+        "SELECT rc.canon, array_agg(rv.raw_norm) AS variants "
+        "FROM role_canon rc JOIN role_variants rv ON rv.canon_id = rc.id "
+        "WHERE rc.id = %s GROUP BY rc.canon", (canon_id,))
+    if not rows:
+        return []
+    canon, variants = rows[0]["canon"], rows[0]["variants"]
+    out, seen = [], set()
+    try:
+        for r in bot_db.query(ORG_BY_NAME_SQL, (role_norm(canon), role_norm(canon))):
+            out.append({"id": r["id"], "name": r["name"],
+                        "basis": "за назвою посади"})
+            seen.add(r["id"])
+    except Exception as e:
+        print(f"entity_roles: лексичний пошук органу пропущено — {e}")
+    for r in bot_db.query(ORG_CANDIDATES_SQL, (variants,)):
+        if r["id"] in seen:
+            continue
+        out.append({"id": r["id"], "name": r["name"],
+                    "basis": f"{r['c']} спільних статей"})
+    return out[:4]
+
+
+def org_markup(canon_id, cands):
+    rows = [[InlineKeyboardButton(f"{c['name']} — {c['basis']}",
+                                  callback_data=f"rdo:{canon_id}:{c['id']}")]
+            for c in cands]
+    rows.append([InlineKeyboardButton("↷ Не зараз", callback_data=f"rdo:{canon_id}:0")])
+    return InlineKeyboardMarkup(rows)
 
 NEXT_PAIR_SQL = """
 SELECT p.id, p.a_norm, p.b_norm, p.score, p.signals, p.cls, p.cls_detail
@@ -769,8 +831,11 @@ LIMIT 1
 def _role_card(rn):
     rows = bot_db.query(ROLE_CARD_SQL, (rn,))
     card = dict(rows[0]) if rows else {}
-    card["carriers"] = [r["name"] for r in bot_db.query(ROLE_CARRIERS_SQL, (rn,))
-                        if r["name"]]
+    # Носій із ЛІЧИЛЬНИКОМ: «Кім (314), Прокудін (1)» одразу показує, що
+    # другий — випадкова помилка витягу, а не другий носій посади. Без числа
+    # такий викид виглядав би як рівноправний факт і міг збити рішення.
+    card["carriers"] = [f"{r['name']} ({r['c']})"
+                        for r in bot_db.query(ROLE_CARRIERS_SQL, (rn,)) if r["name"]]
     card["sample"] = card.get("sample") or rn
     return card
 
@@ -923,11 +988,7 @@ async def roles_pair_callback(update, context):
             "WHERE rc.id = %s", (canon_id,))
         n_vars = rows_[0]["n"] if rows_ else 2
         has_org = bool(rows_[0]["has_org"]) if rows_ else False
-        orgs = []
-        if not has_org:
-            variants = [r["raw_norm"] for r in bot_db.query(
-                "SELECT raw_norm FROM role_variants WHERE canon_id = %s", (canon_id,))]
-            orgs = bot_db.query(ORG_CANDIDATES_SQL, (variants,))
+        orgs = [] if has_org else org_candidates(canon_id)
         return canon_id, canon, n_vars, has_org, orgs
 
     try:
@@ -940,13 +1001,9 @@ async def roles_pair_callback(update, context):
     text = ((query.message.text or "")
             + f"\n\n✅ Одна посада: «{canon}» ({n_vars} написань).")
     if orgs:
-        text += "\n\nЧий це орган? (дасть афіліацію людина↔організація)"
-        rows_kb = [[InlineKeyboardButton(f"{o['name']} ({o['c']})",
-                                         callback_data=f"rdo:{canon_id}:{o['id']}")]
-                   for o in orgs]
-        rows_kb.append([InlineKeyboardButton(
-            "↷ Не зараз", callback_data=f"rdo:{canon_id}:0")])
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows_kb))
+        text += ("\n\nЧий це орган? (дасть афіліацію людина↔організація; "
+                 "змінити потім — /roles_org)")
+        await query.edit_message_text(text, reply_markup=org_markup(canon_id, orgs))
     else:
         await query.edit_message_text(text)
     await _send_next(query.message.chat, user_id)
@@ -1047,6 +1104,76 @@ async def roles_handler(update, context):
                          f"{links}{org}")
     lines.append("\nПитати кнопками: /roles_dedup · список: /roles_canon")
     await msg.edit_text("\n".join(lines))
+
+
+# ---------- /roles_org ----------
+
+async def roles_org_handler(update, context):
+    """/roles_org <id канону> [id сутності|0] — переглянути/змінити/зняти орган.
+
+    Питання про орган ставиться один раз, одразу після зведення, і легко
+    промахнутись: у першій же версії співпояв запропонував Галущенку НАБУ й
+    «Квартал 95» замість Мін'юсту. Тому рішення має бути виправним без деплою."""
+    if not _allowed(update):
+        return
+    args = context.args or []
+    if not args or not args[0].isdigit():
+        await update.message.reply_text(
+            "Формат: /roles_org <id канону> — показати кандидатів у орган\n"
+            "        /roles_org <id канону> <id сутності> — поставити\n"
+            "        /roles_org <id канону> 0 — зняти\n"
+            "id канону підкаже /roles_canon")
+        return
+    canon_id = int(args[0])
+
+    if len(args) > 1 and args[1].lstrip("-").isdigit():
+        org_id = int(args[1])
+
+        def do():
+            ensure_schema()
+            n = bot_db.execute(
+                "UPDATE role_canon SET org_entity_id = %s WHERE id = %s",
+                (org_id or None, canon_id))
+            name = None
+            if org_id:
+                r = bot_db.query(
+                    "SELECT coalesce(name_ua, name_ru) AS name FROM entities "
+                    "WHERE id = %s", (org_id,))
+                name = r[0]["name"] if r else None
+            return n, name
+
+        n, name = await asyncio.to_thread(do)
+        if not n:
+            await update.message.reply_text(f"Канону {canon_id} немає.")
+        elif not org_id:
+            await update.message.reply_text(f"🦊 Орган канону {canon_id} знято.")
+        else:
+            await update.message.reply_text(
+                f"🏛 Канон {canon_id} → {name or org_id}."
+                if name else f"🏛 Канон {canon_id} → сутність {org_id} "
+                             f"(такої сутності в норі немає — перевір id).")
+        return
+
+    def build():
+        ensure_schema()
+        rows = bot_db.query(
+            "SELECT rc.canon, coalesce(o.name_ua, o.name_ru) AS org "
+            "FROM role_canon rc LEFT JOIN entities o ON o.id = rc.org_entity_id "
+            "WHERE rc.id = %s", (canon_id,))
+        return (rows[0] if rows else None), org_candidates(canon_id)
+
+    row, cands = await asyncio.to_thread(build)
+    if not row:
+        await update.message.reply_text(f"Канону {canon_id} немає — /roles_canon.")
+        return
+    head = f"🦊 «{row['canon']}»\nЗараз орган: {row['org'] or '— не вказано'}"
+    if not cands:
+        await update.message.reply_text(
+            head + "\n\nКандидатів бот не знайшов. Постав вручну: "
+                   "/roles_org <id канону> <id сутності>")
+        return
+    await update.message.reply_text(head + "\n\nЧий це орган?",
+                                    reply_markup=org_markup(canon_id, cands))
 
 
 # ---------- /roles_canon ----------

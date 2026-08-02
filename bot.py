@@ -49,7 +49,7 @@ from handlers.entity_merge import (
 )
 from handlers.entity_roles import (
     roles_handler, roles_dedup_handler, roles_canon_handler, roles_bulk_handler,
-    roles_rename_handler, roles_forget_handler,
+    roles_rename_handler, roles_forget_handler, roles_org_handler,
     roles_pair_callback, roles_org_callback, roles_bulk_callback,
 )
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
@@ -494,6 +494,7 @@ def main():
     app.add_handler(CommandHandler("roles_bulk", roles_bulk_handler))
     app.add_handler(CommandHandler("roles_rename", roles_rename_handler))
     app.add_handler(CommandHandler("roles_forget", roles_forget_handler))
+    app.add_handler(CommandHandler("roles_org", roles_org_handler))
     app.add_handler(CommandHandler("tags_export", tags_export_handler))
     app.add_handler(CommandHandler("tags_wiki", tags_wiki_handler))
     app.add_handler(CommandHandler("tags_wiki_reset", tags_wiki_reset_handler))

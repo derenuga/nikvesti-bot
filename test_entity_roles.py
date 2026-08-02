@@ -468,6 +468,60 @@ def test_queue_and_merge():
     check("відв'язані варіанти зводяться в окремий канон", n == 2, f"канонів: {n}")
 
 
+def test_org_suggestion_prefers_name():
+    """Співпояв ловить СЮЖЕТ, а не афіліацію: Галущенку він запропонував НАБУ,
+    САП і «Квартал 95» — бо міністр юстиції, а пишуть про нього в матеріалах
+    про провадження. Тому першими йдуть органи, чия НАЗВА перегукується з
+    назвою посади."""
+    bot_db.execute(
+        "INSERT INTO entities (id, kind, name_ua, mentions) VALUES "
+        "(301, 'org', 'Міністерство юстиції України', 12), "
+        "(302, 'org', 'Національне антикорупційне бюро України', 480) "
+        "ON CONFLICT (id) DO NOTHING")
+    bot_db.execute(
+        "INSERT INTO entities (id, kind, name_ua, mentions) VALUES "
+        "(303, 'person', 'Герман Галущенко', 30) ON CONFLICT (id) DO NOTHING")
+    # роль міністра — і в КОЖНІЙ статті поруч НАБУ, а Мін'юсту немає ніде
+    for idx in (14, 15, 16, 17):
+        bot_db.execute(
+            "INSERT INTO article_entities (article_id, entity_id, role_at_time, salience) "
+            "VALUES (%s, 303, 'міністр юстиції', 'main') ON CONFLICT DO NOTHING",
+            (ARTICLES[idx][0],))
+        bot_db.execute(
+            "INSERT INTO article_entities (article_id, entity_id, salience) "
+            "VALUES (%s, 302, 'mentioned') ON CONFLICT DO NOTHING",
+            (ARTICLES[idx][0],))
+    cid, _ = er.merge_roles("міністр юстиції", "міністр юстиції україни",
+                            "міністр юстиції", "міністр юстиції України", "тест")
+    cands = er.org_candidates(cid)
+    check("орган за назвою посади стоїть перед органом за співпоявою",
+          cands and cands[0]["id"] == 301,
+          f"{[(c['name'], c['basis']) for c in cands]}")
+    check("у кнопці видно ПІДСТАВУ, а не просто число",
+          cands and "назв" in cands[0]["basis"], f"{cands[0]['basis'] if cands else None}")
+    nabu = [c for c in cands if c["id"] == 302]
+    check("співпояв лишається другим джерелом, а не зникає",
+          not nabu or "статей" in nabu[0]["basis"], f"{nabu}")
+    # орган можна переставити й зняти вже після рішення
+    bot_db.execute("UPDATE role_canon SET org_entity_id = 302 WHERE id = %s", (cid,))
+    bot_db.execute("UPDATE role_canon SET org_entity_id = NULL WHERE id = %s", (cid,))
+    got = bot_db.query(
+        "SELECT org_entity_id FROM role_canon WHERE id = %s", (cid,))[0]["org_entity_id"]
+    check("орган знімається без сліду (помилкова прив'язка виправна)",
+          got is None, f"{got}")
+    bot_db.execute("DELETE FROM role_variants WHERE canon_id = %s", (cid,))
+    bot_db.execute("DELETE FROM role_canon WHERE id = %s", (cid,))
+
+
+def test_carrier_counts():
+    """Чужий носій ролі (Прокудін під миколаївською ОВА) — помилка витягу, а не
+    другий носій посади. У картці він має бути видним як викид, тобто з числом."""
+    card = er._role_card("голова миколаївської ова")
+    check("носії показані з лічильником згадок",
+          card["carriers"] and all("(" in c for c in card["carriers"]),
+          f"{card['carriers']}")
+
+
 def test_affiliation():
     canon = bot_db.query(
         "SELECT rc.id FROM role_canon rc JOIN role_variants rv ON rv.canon_id = rc.id "
@@ -625,6 +679,8 @@ async def run():
     test_bulk()
     test_norm_version()
     test_queue_and_merge()
+    test_carrier_counts()
+    test_org_suggestion_prefers_name()
     test_affiliation()
     test_rejection_memory_and_rollback()
     test_card_merge_journal()
