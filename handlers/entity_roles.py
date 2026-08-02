@@ -1225,17 +1225,19 @@ def _drop_places(words):
 
 
 def _find_all(low, words, min_len):
+    """Позиції слів у тексті — по ПОЧАТКУ слова, а не будь-де в рядку.
+
+    Голий підрядок бреше на коротких коренях: «мер» сидить усередині
+    «прем'єра», і в статті про композитора Леонтовича бот бачив посаду мера за
+    6 символів від імені (реальний випадок 319027). Пошук по межі слова це
+    знімає, а хвіст слова лишається вільним — саме там українська і змінює
+    відмінок («мером», «Леонтовича»)."""
     out = []
     for w in words:
         if len(w) < min_len:
             continue
-        pref, start = _prefix(w), 0
-        while True:
-            i = low.find(pref, start)
-            if i < 0:
-                break
-            out.append(i)
-            start = i + 1
+        pattern = r"(?<!\w)" + re.escape(_prefix(w))
+        out.extend(m.start() for m in re.finditer(pattern, low))
     return out
 
 
