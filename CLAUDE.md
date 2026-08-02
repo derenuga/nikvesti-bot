@@ -381,6 +381,7 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
 | [`docs/MINI_APP_REDESIGN_PLAN.md`](docs/MINI_APP_REDESIGN_PLAN.md) | хвилі робіт і беклог Mini App «Команда» |
 | [`docs/COMPENSATION_ADVISOR.md`](docs/COMPENSATION_ADVISOR.md) | порадник щодо зарплат і премій — задум із дослідженням, НЕ в розробці |
 | [`docs/ARCHIVE_INTELLIGENCE.md`](docs/ARCHIVE_INTELLIGENCE.md), [`docs/ENTITY_LAYER_PLAN.md`](docs/ENTITY_LAYER_PLAN.md) | дорожня карта інституційної памʼяті й сутнісного шару |
+| [`docs/PROMISES_BANK.md`](docs/PROMISES_BANK.md) | банк тем: обіцянки, горизонти, нагадування редакції — бриф для окремої сесії, не кодилось |
 | [`docs/IMPACT_ARCHIVE.md`](docs/IMPACT_ARCHIVE.md) | імпакт-архів: механіка, схема, беклог (медальки в профілі, PDF, добірки за донором) |
 | локальні беклоги в доках модулів | дрібне по своєму модулю (`STAT_MODULE.md`, `NATURAL_LANGUAGE_QUERIES_MODULE.md`, `DOCUMENTS_MODULE.md`) |
 
