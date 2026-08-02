@@ -230,6 +230,13 @@ def scan_positions():
         if head in POSITION_WORDS:
             signals.append(f"перше слово — посада («{head}»)")
         if signals:
+            # Лексичний сигнал САМ ПО СОБІ слабкий: на ньому 02.08 спливли
+            # «Королева канадська кінна поліція» (насправді Королівська, з
+            # одруківкою), «Лідер» у лапках і Контакт-центр міськради. Усі
+            # справжні посади мали другий сигнал — написання трапляється
+            # роллю. Тому слабкі підписані прямо в списку.
+            if not as_role:
+                signals.append("СЛАБКИЙ сигнал — лише за словом")
             out.append({"id": r["id"], "name": r["name"],
                         "mentions": r["mentions"], "as_role": as_role,
                         "signals": " · ".join(signals)})
@@ -728,6 +735,11 @@ def _positions_text(positions):
     if len(positions) > POS_PAGE:
         lines.append(f"\n…і ще {len(positions) - POS_PAGE} — покажу, коли "
                      f"розберешся з цими.")
+    weak = sum(1 for p in positions if not p["as_role"])
+    if weak:
+        lines.append(f"\n⚠️ {weak} із них мають лише лексичний сигнал — там "
+                     f"частіше трапляються установи з «посадовим» першим "
+                     f"словом («Королівська канадська кінна поліція», «Лідер»).")
     lines.append("\nТап по картці прибирає ЇЇ ОДНУ (зі знімком у журналі).")
     return "\n".join(lines)[:4000]
 
