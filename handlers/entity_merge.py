@@ -75,7 +75,7 @@ def _allowed(update):
 
 # ---------- Журнал злиттів (§5) ----------
 
-def record_merge(cur, winner_id, loser_id, decided_by=None):
+def record_merge(cur, winner_id, loser_id, decided_by=None, run=None):
     """Знімок ПЕРЕД злиттям — викликати до перевішування зв'язків.
 
     Працює на переданому курсорі, бо /entity_dedup веде своє з'єднання й одну
@@ -127,6 +127,7 @@ def record_merge(cur, winner_id, loser_id, decided_by=None):
     snapshot = {
         "card": card,
         "links": links,
+        "run": run,          # мітка пакета — щоб відкотити всю купу одразу
         "canons_repointed": canons,
         "winner": {"id": w[0] if w else winner_id,
                    "name_ua": w[1] if w else None,
@@ -629,7 +630,7 @@ def format_preview(p):
     )
 
 
-def merge_cards(winner_id, loser_id, decided_by=None):
+def merge_cards(winner_id, loser_id, decided_by=None, run=None):
     """Перевісити зв'язки, злити аліаси, перерахувати агрегати, прибрати
     програшну картку — зі знімком у журналі. Спільне ядро з /entity_dedup,
     але для довільної пари карток, а не для точного збігу імен."""
@@ -649,7 +650,7 @@ def merge_cards(winner_id, loser_id, decided_by=None):
         if w[0] != l[0]:
             raise ValueError(f"різні типи: {w[0]} і {l[0]}")
 
-        merge_id = record_merge(cur, winner_id, loser_id, decided_by)
+        merge_id = record_merge(cur, winner_id, loser_id, decided_by, run)
 
         # Аліаси: усе, чим програшну картку називали, має лишитись шукабельним —
         # інакше пошук по народній назві після злиття не знайде нічого (§5).

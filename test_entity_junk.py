@@ -518,6 +518,64 @@ def test_org_form_key():
     bot_db.execute("DELETE FROM entity_merges WHERE winner_id = 7301")
 
 
+def test_cards_fix_package():
+    """Пакет по КАРТКАХ файлом (# cards-fix).
+
+    Причина існування: список кандидатів «прізвище окремою карткою при
+    повному імені» рахується поза ботом і одразу дає 67 пар — це 67 команд
+    руками. Пакет робить із них один тап, але НЕ скасовує підстави: у прев'ю
+    біля кожної пари стоїть кількість спільних статей, бо саме співпоява
+    відрізняє одну людину від однофамільця, і для пар без перетину є окрема
+    кнопка."""
+    # 7401/7402 — та сама людина (спільні статті), 7403/7404 — однофамільці
+    for eid, name, arts in ((7401, "Олександр Сєнкевич", [9000, 9001]),
+                            (7402, "Сєнкевич", [9000]),
+                            (7403, "Іван Коваль", [9002]),
+                            (7404, "Коваль", [9003])):
+        bot_db.execute("INSERT INTO entities (id, kind, name_ua, mentions) "
+                       "VALUES (%s, 'person', %s, %s)", (eid, name, len(arts)))
+        for aid in arts:
+            bot_db.execute(
+                "INSERT INTO article_entities (article_id, entity_id, salience) "
+                "VALUES (%s, %s, 'mentioned') ON CONFLICT DO NOTHING", (aid, eid))
+    text = ("# cards-fix\n"
+            "merge 7401 7402   # коментар у рядку\n"
+            "/entity_merge 7403 7404\n"
+            "хтозна-що\n")
+    actions, errors = ej.parse_cards_fix(text)
+    check("пакет розбирається, разом із рядками-командами",
+          actions == [("merge", 7401, 7402), ("merge", 7403, 7404)], str(actions))
+    check("сміттєвий рядок іде в помилки", len(errors) == 1, str(errors))
+
+    rows, _dropped = ej.describe_cards_fix(actions)
+    by = {(r["winner"], r["loser"]): r for r in rows}
+    check("прев'ю рахує СПІЛЬНІ СТАТТІ кожної пари — це і є підстава",
+          by[(7401, 7402)]["shared"] == 1 and by[(7403, 7404)]["shared"] == 0,
+          str([(k, v["shared"]) for k, v in by.items()]))
+    text_out = ej.format_cards_fix(rows, [], errors)
+    check("пара без перетину позначена ⚠ і порахована окремо",
+          "⚠️" in text_out and "без ЖОДНОЇ спільної статті: 1" in text_out)
+
+    res = ej.apply_cards_fix(actions, "тест", only_shared=True)
+    left = {r["id"] for r in bot_db.query(
+        "SELECT id FROM entities WHERE id = ANY(%s)", ([7401, 7402, 7403, 7404],))}
+    check("«лише з перетином» злило одну пару й не чіпало однофамільців",
+          left == {7401, 7403, 7404} and res["skipped"] == 1,
+          f"{sorted(left)} · skipped={res['skipped']}")
+    check("відкат усього пакета — одна команда",
+          ej.undo_run(res["run"]) == 1)
+    back = {r["id"] for r in bot_db.query(
+        "SELECT id FROM entities WHERE id = ANY(%s)", ([7401, 7402],))}
+    check("картка повернулась зі знімка", back == {7401, 7402}, str(sorted(back)))
+
+    bot_db.execute("DELETE FROM article_entities WHERE entity_id = ANY(%s)",
+                   ([7401, 7402, 7403, 7404],))
+    bot_db.execute("DELETE FROM entities WHERE id = ANY(%s)",
+                   ([7401, 7402, 7403, 7404],))
+    bot_db.execute("DELETE FROM entity_merges WHERE winner_id = ANY(%s)",
+                   ([7401, 7403],))
+
+
 def test_org_dupes():
     pairs, skipped = ej.find_org_dupes()
     got = {(p["winner"][0], p["loser"][0]) for p in pairs}
@@ -550,6 +608,7 @@ def run():
     test_doc_canon_migration()
     test_doc_canon_write_results()
     test_org_form_key()
+    test_cards_fix_package()
     test_org_dupes()
     bad = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS) - len(bad)}/{len(RESULTS)} перевірок пройдено")

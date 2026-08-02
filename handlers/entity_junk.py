@@ -866,6 +866,202 @@ async def entity_junk_undo_handler(update, context):
         if n else f"У прогоні {run} нема чого відкочувати.")
 
 
+# ---------- Пакет рішень по КАРТКАХ файлом ----------
+#
+# Той самий обмін, що для ролей, але про картки. Причина та сама і навіть
+# гостріша: список кандидатів на злиття людей рахується скриптом поза ботом
+# (прізвище окремою карткою при повному імені, і жодного однофамільця), і
+# таких пар одразу 67. Вводити 67 команд руками — знущання.
+#
+# Формат — рядок на дію, маркер у першому рядку:
+#
+#     # cards-fix
+#     merge 2928 5724      # лишається 2928, 5724 йде в аліаси
+#     drop 41546           # прибрати картку (зі знімком у журналі)
+#
+# Рішення все одно людини: бот показує, ЩО зробить, і чекає кнопку. У прев'ю
+# біля кожної пари стоїть кількість СПІЛЬНИХ СТАТЕЙ — саме співпоява
+# відрізняє одну людину від однофамільця, тому пари без жодного перетину
+# позначені ⚠ і для них є окрема кнопка «звести лише з перетином».
+
+CARDS_MARKER = "cards-fix"
+
+CARDS_PREVIEW_SQL = """
+SELECT p.winner, p.loser,
+       coalesce(w.name_ua, w.name_ru) AS wname, coalesce(w.mentions, 0) AS wm,
+       coalesce(l.name_ua, l.name_ru) AS lname, coalesce(l.mentions, 0) AS lm,
+       w.kind AS wkind, l.kind AS lkind,
+       (SELECT count(*) FROM article_entities a
+         JOIN article_entities b ON b.article_id = a.article_id
+        WHERE a.entity_id = p.winner AND b.entity_id = p.loser) AS shared
+FROM (VALUES %s) AS p(winner, loser)
+LEFT JOIN entities w ON w.id = p.winner
+LEFT JOIN entities l ON l.id = p.loser
+"""
+
+
+def parse_cards_fix(text):
+    """Текст пакета → (дії, помилки). merge <лишається> <дубль> · drop <id>."""
+    actions, errors = [], []
+    for raw in (text or "").splitlines():
+        line = raw.split("#")[0].strip() if not raw.strip().startswith("#") else ""
+        if not line:
+            continue
+        if line.startswith("/entity_"):
+            line = line[len("/entity_"):]
+        bits = line.split()
+        op = bits[0].lower()
+        if op == "merge" and len(bits) >= 3 and bits[1].isdigit() and bits[2].isdigit():
+            actions.append(("merge", int(bits[1]), int(bits[2])))
+        elif op in ("drop", "purge") and len(bits) >= 2 and bits[1].isdigit():
+            actions.append(("drop", int(bits[1])))
+        else:
+            errors.append(f"не розібрав: {line[:60]}")
+    return actions, errors
+
+
+def describe_cards_fix(actions):
+    """Прев'ю з підставою: спільні статті кожної пари."""
+    _ensure()
+    pairs = [(a[1], a[2]) for a in actions if a[0] == "merge"]
+    rows = []
+    if pairs:
+        from psycopg2.extras import execute_values
+        conn = ep.connect()
+        cur = conn.cursor()
+        try:
+            execute_values(cur, CARDS_PREVIEW_SQL, pairs, template="(%s::bigint, %s::bigint)")
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        finally:
+            cur.close()
+            conn.close()
+    drops = [a[1] for a in actions if a[0] == "drop"]
+    dropped = bot_db.query(
+        "SELECT id, coalesce(name_ua, name_ru) AS name, coalesce(mentions, 0) AS m "
+        "FROM entities WHERE id = ANY(%s)", (drops,)) if drops else []
+    return rows, dropped
+
+
+def format_cards_fix(rows, dropped, errors):
+    lines = [f"🦊 Пакет по картках: звести {len(rows)} пар"
+             + (f" · прибрати {len(dropped)}" if dropped else "") + "\n"]
+    risky = 0
+    for r in rows[:25]:
+        if r["wname"] is None or r["lname"] is None:
+            lines.append(f"❌ {r['winner']} / {r['loser']} — картки немає")
+            continue
+        if r["wkind"] != r["lkind"]:
+            lines.append(f"❌ {r['wname']} / {r['lname']} — різні типи, не зіллю")
+            continue
+        mark = "⚠️ " if not r["shared"] else ""
+        if not r["shared"]:
+            risky += 1
+        lines.append(f"{mark}{r['lname']} ({r['lm']}) → {r['wname']} ({r['wm']}) "
+                     f"· спільних статей: {r['shared']}")
+    if len(rows) > 25:
+        lines.append(f"…і ще {len(rows) - 25} пар")
+    for d in dropped[:10]:
+        lines.append(f"🗑 {d['name']} ({d['m']})")
+    if errors:
+        lines.append("\n⚠️ не розібрав:\n" + "\n".join(errors[:4]))
+    if risky:
+        lines.append(f"\n⚠️ Пар без ЖОДНОЇ спільної статті: {risky}. Саме "
+                     f"співпоява відрізняє одну людину від однофамільця, тож "
+                     f"для них є окрема кнопка.")
+    lines.append("\nКожне злиття лишає знімок — відкат усього пакета однією "
+                 "командою.")
+    return "\n".join(lines)[:4000]
+
+
+def apply_cards_fix(actions, decided_by=None, only_shared=False, run=None):
+    """Виконати пакет. Кожна дія окремо: збійна не валить решту."""
+    _ensure()
+    run = run or f"cards-{int(time.time())}"
+    rows, _ = describe_cards_fix(actions)
+    shared = {(r["winner"], r["loser"]): r["shared"] for r in rows}
+    done, failed, skipped = 0, [], 0
+    for a in actions:
+        try:
+            if a[0] == "merge":
+                if only_shared and not shared.get((a[1], a[2])):
+                    skipped += 1
+                    continue
+                em.merge_cards(a[1], a[2], decided_by, run)
+            else:
+                purge_cards([a[1]], "cards-fix", decided_by, run)
+            done += 1
+        except Exception as e:
+            failed.append(f"{' '.join(str(x) for x in a)} — {type(e).__name__}: {e}")
+    return {"run": run, "done": done, "skipped": skipped, "failed": failed}
+
+
+CARDS_STATE_PREFIX = "cardsfix:"
+
+
+async def cards_fix_document(msg, text):
+    """Пакет по картках .txt — прев'ю й кнопки. Кличеться з диспетчера
+    документів у handlers/entity_roles (маркер у першому рядку файла)."""
+    actions, errors = parse_cards_fix(text)
+    if not actions:
+        await msg.reply_text("🦊 Пакет порожній — жодного рядка не розібрав.\n"
+                             + "\n".join(errors[:5]))
+        return
+    try:
+        rows, dropped = await asyncio.to_thread(describe_cards_fix, actions)
+    except Exception as e:
+        await msg.reply_text(f"❌ Не змалював пакет: {type(e).__name__}: {e}")
+        return
+    risky = sum(1 for r in rows if not r["shared"])
+    buttons = [[InlineKeyboardButton(f"✅ Виконати {len(actions)}",
+                                     callback_data="cfx:all")]]
+    if risky:
+        buttons.append([InlineKeyboardButton(
+            f"✅ Лише з перетином ({len(rows) - risky})", callback_data="cfx:shared")])
+    buttons.append([InlineKeyboardButton("❌ Ні", callback_data="cfx:no")])
+    sent = await msg.reply_text(format_cards_fix(rows, dropped, errors),
+                                reply_markup=InlineKeyboardMarkup(buttons))
+    await asyncio.to_thread(
+        bot_db.set_state, f"{CARDS_STATE_PREFIX}{sent.chat_id}:{sent.message_id}",
+        json.dumps(actions, ensure_ascii=False))
+
+
+async def cards_fix_callback(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id if query.from_user else None
+    if _ALLOWED_USER_IDS and user_id not in _ALLOWED_USER_IDS:
+        await query.answer("⛔ Тільки для редакції.", show_alert=True)
+        return
+    await query.answer()
+    key = f"{CARDS_STATE_PREFIX}{query.message.chat_id}:{query.message.message_id}"
+    if query.data == "cfx:no":
+        await asyncio.to_thread(bot_db.execute,
+                                "DELETE FROM sync_state WHERE key = %s", (key,))
+        await query.edit_message_text("❌ Скасовано, картки не чіпав.")
+        return
+    raw = await asyncio.to_thread(bot_db.get_state, key)
+    if not raw:
+        await query.edit_message_text("Пакет застарів — надішли файл ще раз.")
+        return
+    actions = [tuple(a) for a in json.loads(raw)]
+    only_shared = query.data == "cfx:shared"
+    await query.edit_message_text(f"🦊 Виконую {len(actions)} дій…")
+    who = query.from_user.full_name if query.from_user else None
+    try:
+        res = await asyncio.to_thread(apply_cards_fix, actions, who, only_shared)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Пакет не пройшов: {type(e).__name__}: {e}")
+        return
+    await asyncio.to_thread(bot_db.execute,
+                            "DELETE FROM sync_state WHERE key = %s", (key,))
+    tail = f"\nПропущено без перетину: {res['skipped']}" if res["skipped"] else ""
+    fail = ("\n\n❌ не вийшло:\n" + "\n".join(res["failed"][:5])) if res["failed"] else ""
+    await query.edit_message_text(
+        f"🦊 Виконано {res['done']} дій.{tail}\n"
+        f"Прогін: `{res['run']}`\n"
+        f"Відкотити весь: /entity_junk_undo {res['run']}{fail}")
+
+
 # ---------- /entity_org_dupes ----------
 #
 # «Офіс президента» і «Офіс Президента України» — та сама установа під двома

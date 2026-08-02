@@ -2914,7 +2914,15 @@ async def roles_fix_document(update, context):
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
         return
-    if FIX_MARKER not in text[:400].lower():
+    head = text[:400].lower()
+    if "cards-fix" in head:
+        # Пакет про КАРТКИ — інша вісь, інший модуль. Розбирати його тут не
+        # можна, а мовчки проковтнути не можна тим більше: обробник .txt у
+        # боті один, і другий до файла вже не дійде.
+        from handlers import entity_junk as ej
+        await ej.cards_fix_document(msg, text)
+        return
+    if FIX_MARKER not in head:
         return          # не наш файл — мовчки повз
     actions, errors = parse_fix(text)
     if not actions:
