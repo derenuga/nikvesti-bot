@@ -149,6 +149,48 @@ def record_merge(cur, winner_id, loser_id, decided_by=None):
     return merge_id
 
 
+# ---------- Знімок ПРИБРАНОЇ картки (§3 docs/ENTITY_DATA_FIXES.md) ----------
+#
+# Видалення сміттєвої картки незворотне рівно так само, як злиття, тому ходить
+# тим самим журналом. Переможця в нього немає — на його місці стоїть 0, і саме
+# по ньому /entity_unmerge розуміє, що відновлювати треба картку з її
+# зв'язками, а не розбирати злиття.
+#
+# Правил entity_merge_rules тут НЕ пишемо свідомо: правило означає «це
+# написання належить оцій картці», а картки більше немає. Якщо витяг колись
+# зустріне ту саму назву знову — хай створює наново, це чесніше за посилання
+# в нікуди.
+PURGE_WINNER = 0
+
+
+def record_purge(cur, entity_id, reason, run, decided_by=None):
+    """Знімок ПЕРЕД видаленням картки. Працює на переданому курсорі — прогін
+    веде одну транзакцію, і журнал має комітитись рівно з тим видаленням, яке
+    описує. Повертає id запису журналу (він же — адреса відкату)."""
+    cur.execute(
+        "SELECT id, kind, subtype, name_ua, name_ru, aliases, role_last, "
+        "       first_seen, last_seen, mentions FROM entities WHERE id = %s",
+        (entity_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    card = {"id": row[0], "kind": row[1], "subtype": row[2], "name_ua": row[3],
+            "name_ru": row[4], "aliases": list(row[5] or []), "role_last": row[6],
+            "first_seen": row[7], "last_seen": row[8], "mentions": row[9]}
+    cur.execute(
+        "SELECT article_id, role_at_time, salience FROM article_entities "
+        "WHERE entity_id = %s ORDER BY article_id", (entity_id,))
+    links = [[r[0], r[1], r[2]] for r in cur.fetchall()]
+    snapshot = {"op": "purge", "reason": reason, "run": run,
+                "card": card, "links": links}
+    cur.execute(
+        "INSERT INTO entity_merges (winner_id, loser_id, loser_snapshot, "
+        "decided_by, created) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (PURGE_WINNER, entity_id, json.dumps(snapshot, ensure_ascii=False),
+         decided_by, int(time.time())))
+    return cur.fetchone()[0]
+
+
 RECALC_AGG_SQL = """
 UPDATE entities e SET mentions = coalesce(s.cnt, 0),
                       first_seen = s.fmin, last_seen = s.fmax
@@ -171,6 +213,40 @@ WHERE e.id = sub.entity_id
 """
 
 
+def _restore_purge(merge_id, card, links):
+    """Відкат ВИДАЛЕННЯ картки: повертаємо її з тим самим id і всі її зв'язки
+    разом із role_at_time та salience. Переможця тут не було, тож і знімати з
+    когось аліаси чи чужі статті не треба — картка просто повертається на
+    місце."""
+    with bot_db.transaction():
+        bot_db.execute(
+            "INSERT INTO entities (id, kind, subtype, name_ua, name_ru, aliases, "
+            "role_last, first_seen, last_seen, mentions) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (id) DO UPDATE SET kind = EXCLUDED.kind, "
+            "  subtype = EXCLUDED.subtype, name_ua = EXCLUDED.name_ua, "
+            "  name_ru = EXCLUDED.name_ru, aliases = EXCLUDED.aliases, "
+            "  role_last = EXCLUDED.role_last",
+            (card["id"], card["kind"], card["subtype"], card["name_ua"],
+             card["name_ru"], card["aliases"], card["role_last"],
+             card["first_seen"], card["last_seen"], card["mentions"]))
+        bot_db.execute(
+            "SELECT setval(pg_get_serial_sequence('entities', 'id'), "
+            "GREATEST((SELECT max(id) FROM entities), 1))")
+        for aid, role, sal in links:
+            bot_db.execute(
+                "INSERT INTO article_entities (article_id, entity_id, role_at_time, "
+                "salience) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                (aid, card["id"], role, sal))
+        bot_db.execute(RECALC_AGG_SQL, ([card["id"]],))
+        bot_db.execute(RECALC_ROLE_SQL, ([card["id"]],))
+        bot_db.execute("UPDATE entity_merges SET undone = %s WHERE id = %s",
+                       (int(time.time()), merge_id))
+    return {"winner_id": None, "loser_id": card["id"],
+            "name": card["name_ua"] or card["name_ru"], "links": len(links),
+            "purge": True}
+
+
 def restore_merge(merge_id):
     """Відкотити одне злиття зі знімка. Ідемпотентно (повторний виклик каже
     «вже відкочено»). Кластер відкочують у зворотному порядку — id спадаючи."""
@@ -187,6 +263,8 @@ def restore_merge(merge_id):
     if isinstance(snap, str):
         snap = json.loads(snap)
     card, links = snap["card"], snap["links"]
+    if snap.get("op") == "purge" or rec["winner_id"] == PURGE_WINNER:
+        return _restore_purge(merge_id, card, links)
     winner = snap.get("winner") or {}
     winner_id = rec["winner_id"]
     w_articles = set(winner.get("articles") or [])
@@ -675,6 +753,8 @@ async def entity_merge_log_handler(update, context):
             "       loser_snapshot #>> '{card,name_ua}' AS lname, "
             "       loser_snapshot #>> '{card,name_ru}' AS lname_ru, "
             "       jsonb_array_length(loser_snapshot -> 'links') AS links, "
+            "       loser_snapshot ->> 'op' AS op, "
+            "       loser_snapshot ->> 'reason' AS reason, "
             "       (SELECT coalesce(w.name_ua, w.name_ru) FROM entities w "
             "        WHERE w.id = m.winner_id) AS wname "
             "FROM entity_merges m ORDER BY id DESC LIMIT %s", (n,))
@@ -692,10 +772,13 @@ async def entity_merge_log_handler(update, context):
     lines = ["🦊 Журнал злиттів карток\n"]
     for r in rows:
         mark = " ↩️ відкочено" if r["undone"] else ""
+        # Прибирання сміття ходить тим самим журналом, але переможця в нього
+        # немає — писати «→ «None» (0)» було б брехнею.
+        where = (f"🗑 прибрано ({r['reason'] or 'сміття'})" if r["op"] == "purge"
+                 else f"→ «{r['wname']}» ({r['winner_id']})")
         lines.append(
             f"[{r['id']}] {r['at']} · «{r['lname'] or r['lname_ru']}» "
-            f"({r['loser_id']}, {r['links']} зв'язків) → "
-            f"«{r['wname']}» ({r['winner_id']}){mark}")
+            f"({r['loser_id']}, {r['links']} зв'язків) {where}{mark}")
     lines.append("\nВідкотити: /entity_unmerge <id>")
     await update.message.reply_text("\n".join(lines))
 
@@ -724,6 +807,10 @@ async def entity_unmerge_handler(update, context):
         await msg.edit_text(f"Запису {merge_id} у журналі немає.")
     elif res == "already":
         await msg.edit_text(f"Злиття {merge_id} вже відкочене.")
+    elif res.get("purge"):
+        await msg.edit_text(
+            f"🦊 Повернув прибрану картку «{res['name']}» (id {res['loser_id']}) "
+            f"з {res['links']} зв'язками; агрегати перераховано.")
     else:
         await msg.edit_text(
             f"🦊 Відновлено картку «{res['name']}» (id {res['loser_id']}) "

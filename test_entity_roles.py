@@ -1646,6 +1646,139 @@ def test_manual_merge():
     bot_db.execute("DELETE FROM entities WHERE id IN (501, 502, 503)")
 
 
+def test_canon_merge():
+    """Злиття двох КАНОНІВ (/roles_merge).
+
+    Живий випадок 02.08: «начальник управління культури Миколаївської міської
+    ради» і «начальник управління культури Миколаєва» — один орган, два
+    канони. Спільної пари в черзі вони не мають, тому побічним ефектом
+    відповіді «так» ніколи не зчепляться, і звести їх нічим.
+
+    Головне тут — не сам переїзд написань, а те, що назва результату
+    ЗАГАЛЬНІША: вона мусить лишитись істинною для кожного написання, яке
+    приїхало. Прев'ю рахує її тією самою функцією, що й саме злиття, інакше
+    кнопка обіцяла б одне, а робила інше."""
+    before = raw_roles_snapshot()
+    bot_db.execute(
+        "INSERT INTO entities (id, kind, name_ua) VALUES "
+        "(9101, 'org', 'Управління культури Миколаївської міської ради') "
+        "ON CONFLICT (id) DO NOTHING")
+    a_id, _ = er.merge_roles(
+        "начальник управління культури миколаївської міської ради",
+        "начальник управління культури миколаївської міськради",
+        "начальник управління культури Миколаївської міської ради",
+        "начальник управління культури миколаївської міськради", "тест")
+    b_id, _ = er.merge_roles(
+        "начальник управління культури миколаєва",
+        "начальник управління культури",
+        "начальник управління культури Миколаєва",
+        "начальник управління культури", "тест")
+    bot_db.execute("UPDATE role_canon SET org_entity_id = 9101 WHERE id = %s",
+                   (b_id,))
+
+    p, err = er.canon_merge_preview(a_id, b_id)
+    check("прев'ю злиття канонів будується", err is None and p is not None, str(err))
+    check("у прев'ю видно, скільки написань і зв'язків на кону",
+          p["a"]["variants"] == 2 and p["b"]["variants"] == 2,
+          f"{p['a']['variants']} / {p['b']['variants']}")
+    check("прев'ю обіцяє ЗАГАЛЬНІШУ назву",
+          p["name"] == "начальник управління культури", p["name"])
+    check("прев'ю каже, що орган підтягнеться з другого канону",
+          p["org"] == "Управління культури Миколаївської міської ради"
+          and p["org_from"], f"{p['org']}{p['org_from']}")
+    text = er.format_canon_preview(p)
+    check("у прев'ю є обидва канони й попередження про напрям",
+          str(a_id) in text and str(b_id) in text and "поміняй id місцями" in text)
+
+    canon_id, canon = er.merge_canons(a_id, b_id, "тест")
+    check("лишився саме той канон, який назвали першим", canon_id == a_id,
+          f"{canon_id} vs {a_id}")
+    check("назва канону після злиття — загальніша (обіцянка прев'ю збулась)",
+          canon == p["name"], f"{canon}")
+    moved = bot_db.query(
+        "SELECT count(*) AS n FROM role_variants WHERE canon_id = %s", (a_id,))[0]["n"]
+    check("усі написання переїхали", moved == 4, f"{moved}")
+    check("порожній канон зник",
+          not bot_db.query("SELECT id FROM role_canon WHERE id = %s", (b_id,)))
+    org = bot_db.query("SELECT org_entity_id FROM role_canon WHERE id = %s",
+                       (a_id,))[0]["org_entity_id"]
+    check("орган підтягнувся до переможця", org == 9101, str(org))
+    check("сирий role_at_time злиття канонів не чіпає",
+          raw_roles_snapshot() == before)
+    check("повторне злиття в себе ж нічого не ламає",
+          er.merge_canons(a_id, a_id)[0] == a_id)
+
+    bot_db.execute("DELETE FROM role_canon WHERE id = %s", (a_id,))
+    bot_db.execute("DELETE FROM entities WHERE id = 9101")
+
+
+def test_canon_audit():
+    """Звіт «канони, названі вужче, ніж покривають» (/roles_audit).
+
+    Код лагоджено 02.08, але вже створені канони фікс не чіпає — їх шукають
+    очима по всьому списку. Тому канони тут створюються ПРЯМИМ записом у
+    довідник: рівно так вони й виглядають, коли зроблені до фікса
+    (`merge_roles` тепер сам би переназвав канон і випадок не відтворився б).
+    """
+    before = raw_roles_snapshot()
+    now = 1780000000
+    rows = bot_db.query(
+        "INSERT INTO role_canon (canon, canon_norm, created) VALUES (%s, %s, %s) "
+        "RETURNING id",
+        ("перший заступник Миколаївського міського голови",
+         er.role_norm("перший заступник Миколаївського міського голови"), now))
+    narrow_id = rows[0]["id"]
+    rows = bot_db.query(
+        "INSERT INTO role_canon (canon, canon_norm, created) VALUES (%s, %s, %s) "
+        "RETURNING id",
+        ("начальник управління культури Миколаївської міської ради",
+         er.role_norm("начальник управління культури Миколаївської міської ради"),
+         now))
+    alien_id = rows[0]["id"]
+    for raw, sample, cid in (
+        ("перший заступник миколаївського міського голови",
+         "перший заступник Миколаївського міського голови", narrow_id),
+        ("перший заступник міського голови",
+         "перший заступник міського голови", narrow_id),
+        ("начальник управління культури миколаївської міської ради",
+         "начальник управління культури Миколаївської міської ради", alien_id),
+        ("керівниця управління освіти міської ради",
+         "керівниця управління освіти міської ради", alien_id),
+    ):
+        bot_db.execute(
+            "INSERT INTO role_variants (raw_norm, raw_sample, canon_id, created) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (raw_norm) DO UPDATE "
+            "SET canon_id = EXCLUDED.canon_id", (raw, sample, cid, now))
+
+    narrow, alien = er.audit_canons()
+    hit = next((r for r in narrow if r["id"] == narrow_id), None)
+    check("канон із топонімом, що покриває голу форму, знайдено", hit is not None,
+          str([r["id"] for r in narrow]))
+    check("звіт пропонує саме голу назву",
+          hit and hit["suggest"] == "перший заступник міського голови",
+          str(hit and hit["suggest"]))
+    bad = next((r for r in alien if r["id"] == alien_id), None)
+    check("чуже написання в каноні знайдено («освіти» проти «культури»)",
+          bad is not None and "освіти" in bad["raw"], str(bad and bad["raw"]))
+    text = "\n".join(er.format_audit(narrow, alien))
+    check("у звіті готовий рядок /roles_rename",
+          f"/roles_rename {narrow_id} перший заступник міського голови" in text)
+    check("і готовий рядок /roles_forget",
+          "/roles_forget керівниця управління освіти міської ради" in text)
+    check("правильний канон у «вужчих» не з'являється",
+          not any(r["id"] == alien_id for r in narrow),
+          str([r["id"] for r in narrow]))
+    check("ревізія read-only: сирі ролі не чіпає",
+          raw_roles_snapshot() == before)
+    check("і сам довідник теж не чіпає",
+          bot_db.query("SELECT canon FROM role_canon WHERE id = %s",
+                       (narrow_id,))[0]["canon"]
+          == "перший заступник Миколаївського міського голови")
+
+    bot_db.execute("DELETE FROM role_canon WHERE id = ANY(%s)",
+                   ([narrow_id, alien_id],))
+
+
 def test_measure_readonly():
     before = raw_roles_snapshot()
     n_canon = bot_db.query("SELECT count(*) AS n FROM role_canon")[0]["n"]
@@ -1679,6 +1812,8 @@ async def run():
     test_rejection_memory_and_rollback()
     test_card_merge_journal()
     test_manual_merge()
+    test_canon_merge()
+    test_canon_audit()
     test_measure_readonly()
 
 
