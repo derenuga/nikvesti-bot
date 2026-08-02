@@ -325,7 +325,7 @@ def plural(n, one, few, many):
 
 CLASS_LABELS = {
     "numbers": "РІЗНІ НОМЕРИ — не злиття",
-    "status_diff": "різний СТАТУС (в.о. / екс / тимчасовий)",
+    "status_diff": "різний РАНГ або статус (віце / заступник / в.о. / екс)",
     "place_swap": "ІНШЕ МІСЦЕ — замінено топонім",
     "level_swap": "ІНШИЙ РІВЕНЬ (обласна / міська / районна)",
     "permutation": "ті самі слова, інший порядок",
@@ -693,6 +693,14 @@ def classify_pair(a, b, has_carrier=False):
             return "containment_own", detail
         return "containment_fill", detail
     import difflib
+    # РАНГ перед усією лексикою: «віцепрезидент США» і «президент США»
+    # відрізняються приставкою, тобто посимвольно схожі на 0.82 — і
+    # запасне правило нижче читало їх як ДРУКАРСЬКУ різницю, тобто клас,
+    # який закривають гуртом «так». Живий випадок 02.08.
+    ra, rb = _rank_words(ta), _rank_words(tb)
+    if ra != rb:
+        extra = " ".join(sorted(rb - ra)) or " ".join(sorted(ra - rb))
+        return "status_diff", f"«{extra}» лише в одному написанні"
     # одне слово замінено: та сама конструкція, різниця рівно в одному токені
     if len(ta) == len(tb):
         diff = [(x, y) for x, y in zip(ta, tb) if x != y]
@@ -711,8 +719,26 @@ def classify_pair(a, b, has_carrier=False):
                     return "level_swap", f"{x} → {y}"
                 return "word_swap", f"{x} → {y}"
             return "typo", f"{x} / {y}"
-    if difflib.SequenceMatcher(None, a, b).ratio() >= 0.85:
+    # Запасне правило «схожі рядки — описка» БЕЗ перевірки слів було
+    # найдорожчою помилкою класифікатора: «директор КП «Миколаївводоканал»» і
+    # «директор КП «Миколаївські парки»» збігаються на 0.86 посимвольно, а
+    # «начальник управління КУЛЬТУРИ …ради» і «начальниця управління ОСВІТИ
+    # …ради» — на 0.90. Обидві пари падали в клас, який закривають гуртом
+    # «так», тобто одне необережне рішення зліплювало різні органи назавжди.
+    #
+    # Описка — це коли ЖОДНЕ слово не замінене на інше: усі розбіжні токени
+    # схожі між собою («Сєнкевич»/«Сенкевич»), і їх не більше двох.
+    # Різниця ЛИШЕ в пунктуації: «премєр-міністр» ~ «премєр міністр» дають
+    # однакові токени, тобто жодне слово не замінене — це описка в чистому
+    # вигляді, і без цього рядка вона провалювалась би в «інше».
+    if ta == tb and a != b:
         return "typo", None
+    if difflib.SequenceMatcher(None, a, b).ratio() >= 0.85 and len(ta) == len(tb):
+        diff = [(x, y) for x, y in zip(ta, tb) if x != y]
+        if diff and len(diff) <= 2 and all(
+                difflib.SequenceMatcher(None, x, y).ratio() >= 0.8
+                for x, y in diff):
+            return "typo", " · ".join(f"{x} / {y}" for x, y in diff)
     return ("carrier_only" if has_carrier else "other"), None
 
 
