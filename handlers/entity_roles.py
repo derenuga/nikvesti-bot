@@ -258,7 +258,7 @@ LIMIT %s
 """
 
 CARRIERS_SQL = """
-SELECT role_norm(ae.role_at_time) AS rn, ae.entity_id,
+SELECT role_norm(ae.role_at_time) AS rn, ae.entity_id, count(*) AS c,
        min(a.published) AS lo, max(a.published) AS hi
 FROM article_entities ae
 JOIN articles a ON a.id = ae.article_id
@@ -324,6 +324,7 @@ CLASS_LABELS = {
     "abbrev": "скорочення / розгортання",
     "containment_fill": "уточнення: доповнює назву",
     "containment_geo": "уточнення: ІНШЕ МІСЦЕ (країна/область/місто)",
+    "containment_own": "уточнення: наша країна/область — повніша назва",
     "containment_disc": "уточнення: розрізняє (колишній/перший/дитяча)",
     "word_swap": "одне слово замінено",
     "typo": "друкарська різниця",
@@ -381,17 +382,36 @@ def _has_digits(tokens):
     return sorted(t for t in tokens if any(c.isdigit() for c in t))
 
 
-def _is_other_region(word):
-    """Чи є зайве слово ТОПОНІМОМ — тобто чи уточнює воно посаду місцем.
+# Наші місця. «міністр оборони» ~ «міністр оборони УКРАЇНИ» — це та сама
+# посада з повнішою назвою, а «прем'єр-міністр» ~ «прем'єр-міністр ІТАЛІЇ» —
+# різні. Обидва випадки топонімні, тому одного прапорця «місце» замало:
+# рішення протилежне, і клас має це казати.
+OUR_PLACES = ("україн", "украин", "микола", "николае")
 
-    Курований список нижче покриває лише українські області, і на ньому я вже
-    провалився: «прем'єр-міністр» ~ «прем'єр-міністр ІТАЛІЇ» потрапляли в
-    «доповнює назву» й пішли б у масове злиття. Тому головне джерело —
-    топоніми з самої нори (`entities` kind='place'): там є і країни, і чужі
-    міста, і області, і нічого не треба вгадувати наперед."""
+
+def _is_place_word(word):
+    """Чи є слово топонімом узагалі (байдуже, нашим чи чужим)."""
     if any(word.startswith(root) for root in OTHER_REGIONS):
         return True
     return word[:5] in _place_prefixes()
+
+
+def _is_own_place(word):
+    return any(word.startswith(root) for root in OUR_PLACES)
+
+
+def _is_other_region(word):
+    """Чи вказує зайве слово на ЧУЖЕ місце.
+
+    Курований список покривав лише українські області, і на ньому я вже
+    провалився: «прем'єр-міністр» ~ «прем'єр-міністр ІТАЛІЇ» потрапляли в
+    «доповнює назву» й пішли б у масове злиття. Тому топоніми беруться з самої
+    нори (`entities` kind='place') — там і країни, і чужі міста.
+
+    Але саме «чуже» тут ключове: «міністр оборони» ~ «міністр оборони
+    УКРАЇНИ» — це та сама посада з повнішою назвою (той самий Умєров), а не
+    інше місце. Наші топоніми йдуть в окремий клас, бо рішення протилежне."""
+    return _is_place_word(word) and not _is_own_place(word)
 
 # Слова, які в класі «уточнення» РОЗРІЗНЯЮТЬ, а не доповнюють: «заступник» ≠
 # «перший заступник», «мер» ≠ «колишній мер». Решта зайвих слів (україни,
@@ -463,6 +483,8 @@ def classify_pair(a, b, has_carrier=False):
         detail = " ".join(extra)
         if any(_is_other_region(w) for w in extra):
             return "containment_geo", detail
+        if any(_is_own_place(w) for w in extra):
+            return "containment_own", detail
         if set(extra) & DISCRIMINATING:
             return "containment_disc", detail
         return "containment_fill", detail
@@ -495,21 +517,27 @@ def find_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
 
     # (а) спільний носій. Найсильніший сигнал: одна людина під двома написаннями
     # у ПЕРЕТИННІ періоди — це майже напевно одна посада, а не підвищення.
+    # Носія рахуємо НЕ штукою, а вагою. «президент» (Зеленський 592) і
+    # «президент США» (Трамп 1000) ділять Трампа — але на 6 згадок із 610,
+    # тобто спільність 1%. За штучним лічильником це виглядало як «спільний
+    # носій у перетинні періоди: 2», тобто найсильніший сигнал, і бот
+    # пропонував злити Зеленського з Байденом. За вагою — 1%, тобто шум.
     shared, overlap = {}, {}
     by_entity = {}
     for r in bot_db.query(CARRIERS_SQL, (names,)):
         by_entity.setdefault(r["entity_id"], []).append(
-            (r["rn"], r["lo"] or 0, r["hi"] or 0))
+            (r["rn"], r["lo"] or 0, r["hi"] or 0, r["c"] or 0))
     for spans in by_entity.values():
         spans.sort()
         for i in range(len(spans)):
             for j in range(i + 1, len(spans)):
-                a, alo, ahi = spans[i]
-                b, blo, bhi = spans[j]
+                a, alo, ahi, ca = spans[i]
+                b, blo, bhi, cb = spans[j]
                 key = (a, b)
-                shared[key] = shared.get(key, 0) + 1
+                w = min(ca, cb)
+                shared[key] = shared.get(key, 0) + w
                 if alo <= bhi and blo <= ahi:
-                    overlap[key] = overlap.get(key, 0) + 1
+                    overlap[key] = overlap.get(key, 0) + w
 
     # (б) схожість написання (pg_trgm). Ловить «Кім/Ким», подвоєння, дефіси.
     sims = {}
@@ -553,17 +581,23 @@ def find_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
         sig, score = [], 0.0
         ov = overlap.get((a, b), 0)
         sh = shared.get((a, b), 0)
-        if ov:
+        base = min(roles[a]["links"], roles[b]["links"]) or 1
+        ratio = ov / base
+        if ov and ratio >= 0.5:
             # Єдиний сигнал, що означає саме «та сама посада», а не «схожі
-            # рядки». Тому важить більше за будь-яку лексичну комбінацію:
-            # інакше пара «депутатка міської ради» ~ «...ради Львова», у якої
-            # спільного носія немає взагалі, ставала б урівень із «мер» ~
-            # «міський голова».
+            # рядки»: ті самі люди носять обидва написання. Тому важить
+            # більше за будь-яку лексичну комбінацію.
             score += 4
-            sig.append(f"спільних носіїв у перетинні періоди: {ov}")
+            sig.append(f"спільні носії дають {ratio:.0%} згадок")
+        elif ov and ratio >= 0.15:
+            score += 2
+            sig.append(f"спільні носії дають {ratio:.0%} згадок")
+        elif ov:
+            score += 0.5
+            sig.append(f"спільні носії лише {ratio:.0%} згадок — слабко")
         elif sh:
             score += 1
-            sig.append(f"спільних носіїв (періоди не перетинаються): {sh}")
+            sig.append("спільні носії є, але періоди не перетинаються")
         sim = sims.get((a, b))
         if sim is not None:
             score += 2 if sim >= 0.6 else 1
@@ -887,8 +921,9 @@ def _role_card(rn):
     # Носій із ЛІЧИЛЬНИКОМ: «Кім (314), Прокудін (1)» одразу показує, що
     # другий — випадкова помилка витягу, а не другий носій посади. Без числа
     # такий викид виглядав би як рівноправний факт і міг збити рішення.
-    card["carriers"] = [f"{r['name']} ({r['c']})"
-                        for r in bot_db.query(ROLE_CARRIERS_SQL, (rn,)) if r["name"]]
+    rows_c = [r for r in bot_db.query(ROLE_CARRIERS_SQL, (rn,)) if r["name"]]
+    card["carriers"] = [f"{r['name']} ({r['c']})" for r in rows_c]
+    card["top"] = rows_c[0]["name"] if rows_c else None
     card["sample"] = card.get("sample") or rn
     return card
 
@@ -942,19 +977,34 @@ def _question_text(p):
         cls = f"{cls} — «{p['cls_detail']}»"
     ca, cb = p.get("a_canon"), p.get("b_canon")
     warn = ""
+    # Найпростіша перевірка, яку людина робить очима першою: чи це взагалі про
+    # тих самих людей. «президент» = Зеленський, «президент США» = Трамп —
+    # головні носії різні, і це видно швидше за будь-які бали.
+    ta, tb = p["a"].get("top"), p["b"].get("top")
+    if ta and tb and ta != tb:
+        warn += f"\n⚠️ Головні носії РІЗНІ: {ta} vs {tb}\n"
     if ca and cb and ca["id"] != cb["id"]:
         warn = (f"\n⚠️ «Так» зіллє ДВА канони: «{ca['canon']}» "
                 f"({ca['variants']} написань) + «{cb['canon']}» "
                 f"({cb['variants']}). Помилка зіпсує обидва.\n")
     elif ca or cb:
-        c = ca or cb
-        warn = (f"\nℹ️ Одне з написань уже в каноні «{c['canon']}» "
-                f"({c['variants']} написань) — друге долучиться до нього.\n")
+        # Обов'язково казати, ЯКЕ саме написання вже в каноні: без цього
+        # рядок читається як загальна нотатка, а насправді це головне —
+        # «президент США» вже в каноні «віце-президентка США» означає, що
+        # там уже стоїть помилка, і «так» долучить до неї ще одне написання.
+        side, c = ("А", ca) if ca else ("Б", cb)
+        warn = (f"\nℹ️ {side} уже в каноні «{c['canon']}» "
+                f"({c['variants']} написань) — інше долучиться до нього.\n")
+    # Клас із BULK_REJECT — це той, де відповідь майже завжди «ні». Сказати
+    # це вголос дешевше, ніж сподіватись, що людина пам'ятає список класів.
+    hint = ""
+    if (p.get("cls") or "") in BULK_REJECT:
+        hint = " ← зазвичай «ні»"
     return ("🦊 Це та сама посада?\n\n"
             + block("А", p["a"]) + "\n"
             + block("Б", p["b"]) + "\n"
             + warn + "\n"
-            + (f"Клас: {cls}\n" if cls else "")
+            + (f"Клас: {cls}{hint}\n" if cls else "")
             + f"Підстава: {p['signals']}")
 
 
@@ -967,7 +1017,7 @@ def is_generic_role(canon_text):
     для таких ролей дає не канон, а організація в тій самій статті."""
     # lower() обовʼязково: у каноні написання з великої («Миколаєва»),
     # а префікси топонімів зберігаються в нижньому регістрі.
-    return not any(_is_other_region(w)
+    return not any(_is_place_word(w)
                    for w in _tokens((canon_text or "").lower()))
 
 

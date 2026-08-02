@@ -228,7 +228,10 @@ def test_classes():
         ("премєр-міністр", "премєр-міністр італії", "containment_geo"),
         ("міністр закордонних справ", "міністр закордонних справ польщі",
          "containment_geo"),
-        ("премєр-міністр", "премєр-міністр україни", "containment_geo"),
+        # НАША країна — це повніша назва тієї самої посади, а не інше місце:
+        # «міністр оборони» ~ «міністр оборони України» носить той самий Умєров.
+        ("міністр оборони", "міністр оборони україни", "containment_own"),
+        ("премєр-міністр", "премєр-міністр україни", "containment_own"),
         # …а це вже НЕ з зашитого списку: «Очаків» бот знає лише тому, що
         # такий топонім є в норі. Без цього джерела список країн ніколи не
         # покрив би всі села Миколаївщини.
@@ -288,6 +291,14 @@ def test_classes():
           not any(c.startswith("containment") for c in er.BULK_MERGE)
           and "containment_disc" in er.BULK_REJECT
           and "containment_geo" in er.BULK_REJECT, f"{er.BULK_MERGE}")
+    check("«наша країна» і «інше місце» — РІЗНІ класи, бо рішення протилежні",
+          er.classify_pair("міністр оборони", "міністр оборони україни")[0]
+          != er.classify_pair("премєр-міністр", "премєр-міністр італії")[0])
+    check("«наша країна» не позначена як «зазвичай ні»",
+          "containment_own" not in er.BULK_REJECT
+          and "containment_own" not in er.BULK_MERGE)
+    check("посада з нашим містом усе одно не «шаблон» — орган у неї є",
+          not er.is_generic_role("міський голова Миколаєва"))
     check("гуртом зводяться лише механічні класи",
           er.BULK_MERGE == {"permutation", "abbrev", "typo"}, f"{er.BULK_MERGE}")
 
@@ -719,8 +730,33 @@ def test_canon_warning():
           txt.split("\n")[-3] if txt else "")
     p2 = dict(p, b_canon=None)
     txt2 = er._question_text(p2)
-    check("коли канон один — сказано, до чого саме долучиться друге написання",
-          "уже в каноні" in txt2 and "зіллє ДВА" not in txt2)
+    check("коли канон один — сказано, ЯКЕ написання в ньому вже сидить",
+          "А уже в каноні" in txt2 and "зіллє ДВА" not in txt2, txt2)
+    # «президент» (Зеленський) ~ «президент США» (Трамп): різні головні носії
+    pz = {"a": {"sample": "президент", "links": 610, "people": 10,
+                "lo": "2024-05", "hi": "2026-08",
+                "carriers": ["Володимир Зеленський (592)"],
+                "top": "Володимир Зеленський"},
+          "b": {"sample": "президент США", "links": 1144, "people": 6,
+                "lo": "2024-05", "hi": "2026-08",
+                "carriers": ["Дональд Трамп (1000)"], "top": "Дональд Трамп"},
+          "signals": "спільні носії лише 1% згадок — слабко",
+          "cls": "containment_geo", "cls_detail": "сша",
+          "a_canon": None, "b_canon": None}
+    check("картка кричить, коли головні носії різні",
+          "Головні носії РІЗНІ" in er._question_text(pz)
+          and "Зеленський" in er._question_text(pz))
+    same_top = dict(pz, b={**pz["b"], "top": "Володимир Зеленський"})
+    check("а коли носій той самий — зайвого попередження немає",
+          "Головні носії РІЗНІ" not in er._question_text(same_top))
+
+    p3 = dict(p, a_canon=None, b_canon=None, cls="containment_geo",
+              cls_detail="сша")
+    check("клас, де відповідь майже завжди «ні», підписаний у картці",
+          "зазвичай «ні»" in er._question_text(p3))
+    p4 = dict(p3, cls="carrier_only", cls_detail=None)
+    check("а двоїстий клас такої підказки не отримує",
+          "зазвичай «ні»" not in er._question_text(p4))
     # Прибираємо ТІЛЬКИ свої канони: далі test_affiliation спирається на канон
     # мера, створений раніше.
     bot_db.execute(
