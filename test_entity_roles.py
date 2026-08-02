@@ -1717,70 +1717,196 @@ def test_canon_merge():
 
 
 def test_canon_audit():
-    """Звіт «канони, названі вужче, ніж покривають» (/roles_audit).
+    """Звіт «канони, названі вужче, ніж покривають» + чужі написання
+    (/roles_audit).
 
-    Код лагоджено 02.08, але вже створені канони фікс не чіпає — їх шукають
-    очима по всьому списку. Тому канони тут створюються ПРЯМИМ записом у
-    довідник: рівно так вони й виглядають, коли зроблені до фікса
-    (`merge_roles` тепер сам би переназвав канон і випадок не відтворився б).
-    """
+    Другий розділ переписаний після ЖИВОГО прогону 02.08: він показував клас
+    «лексично різні» і дав 23 хибні рядки з 26 — «спікер парламенту» під
+    каноном «голова Верховної Ради», «мер Львова» під «міським головою
+    Львова», «глава РФ» під «президентом РФ». У каноні лексична різниця це
+    НОРМА, довідник заради неї й зроблено. Тому лишились три механічні
+    причини (ранг / рівень / місце) і четверта — предметна різниця, яку
+    підтверджує ВІДСУТНІСТЬ спільного носія.
+
+    Канони тут створюються прямим записом у довідник: рівно так вони й
+    виглядають, коли зроблені до фікса (merge_roles тепер сам би переназвав
+    канон, і випадок не відтворився б)."""
     before = raw_roles_snapshot()
     now = 1780000000
-    rows = bot_db.query(
-        "INSERT INTO role_canon (canon, canon_norm, created) VALUES (%s, %s, %s) "
-        "RETURNING id",
-        ("перший заступник Миколаївського міського голови",
-         er.role_norm("перший заступник Миколаївського міського голови"), now))
-    narrow_id = rows[0]["id"]
-    rows = bot_db.query(
-        "INSERT INTO role_canon (canon, canon_norm, created) VALUES (%s, %s, %s) "
-        "RETURNING id",
-        ("начальник управління культури Миколаївської міської ради",
-         er.role_norm("начальник управління культури Миколаївської міської ради"),
-         now))
-    alien_id = rows[0]["id"]
-    for raw, sample, cid in (
-        ("перший заступник миколаївського міського голови",
-         "перший заступник Миколаївського міського голови", narrow_id),
-        ("перший заступник міського голови",
-         "перший заступник міського голови", narrow_id),
-        ("начальник управління культури миколаївської міської ради",
-         "начальник управління культури Миколаївської міської ради", alien_id),
-        ("керівниця управління освіти міської ради",
-         "керівниця управління освіти міської ради", alien_id),
-    ):
+    for eid, name in ((9201, "Руслан Стефанчук"), (9202, "Дональд Трамп"),
+                      (9203, "Джей Ді Венс"), (9204, "Директорка культури"),
+                      (9205, "Директорка освіти"), (9206, "Головний архітектор"),
+                      (9207, "Архітектор іншого міста")):
+        bot_db.execute(
+            "INSERT INTO entities (id, kind, name_ua) VALUES (%s, 'person', %s) "
+            "ON CONFLICT (id) DO NOTHING", (eid, name))
+
+    def canon(text):
+        return bot_db.query(
+            "INSERT INTO role_canon (canon, canon_norm, created) "
+            "VALUES (%s, %s, %s) RETURNING id",
+            (text, er.role_norm(text), now))[0]["id"]
+
+    def variant(text, cid):
         bot_db.execute(
             "INSERT INTO role_variants (raw_norm, raw_sample, canon_id, created) "
             "VALUES (%s, %s, %s, %s) ON CONFLICT (raw_norm) DO UPDATE "
-            "SET canon_id = EXCLUDED.canon_id", (raw, sample, cid, now))
+            "SET canon_id = EXCLUDED.canon_id",
+            (er.role_norm(text), text, cid, now))
+
+    def carries(article_idx, eid, role):
+        bot_db.execute(
+            "INSERT INTO article_entities (article_id, entity_id, role_at_time, "
+            "salience) VALUES (%s, %s, %s, 'mentioned') "
+            "ON CONFLICT (article_id, entity_id) DO UPDATE "
+            "SET role_at_time = EXCLUDED.role_at_time",
+            (ARTICLES[article_idx][0], eid, role))
+
+    # 1. Синонім: та сама людина під двома написаннями — НЕ помилка.
+    syn = canon("голова Верховної Ради")
+    variant("голова Верховної Ради", syn)
+    variant("спікер парламенту", syn)
+    carries(0, 9201, "голова Верховної Ради")
+    carries(1, 9201, "спікер парламенту")
+    # 2. Ранг: віцепрезидентка під президентом — помилка завжди.
+    rank = canon("президент США")
+    variant("президент США", rank)
+    variant("віцепрезидентка США", rank)
+    carries(2, 9202, "президент США")
+    carries(3, 9203, "віцепрезидентка США")
+    # 3. Рівень: міськрада проти ОВА — різні установи й різні люди.
+    level = canon("начальниця управління охорони здоровя Миколаївської міськради")
+    variant("начальниця управління охорони здоровя Миколаївської міськради", level)
+    variant("начальниця управління охорони здоровя Миколаївської ОВА", level)
+    # 4. Предмет: культура проти освіти, спільного носія немає жодного разу.
+    subj = canon("начальник управління культури Миколаївської міської ради")
+    variant("начальник управління культури Миколаївської міської ради", subj)
+    variant("керівниця управління освіти міської ради", subj)
+    carries(4, 9204, "начальник управління культури Миколаївської міської ради")
+    carries(5, 9205, "керівниця управління освіти міської ради")
+    # 5. Гола форма з родовим словом: «архітектор МІСТА» під «архітектором
+    #    Миколаєва». Слово нічого не вирішує — вирішує носій.
+    arch = canon("головний архітектор Миколаєва")
+    variant("головний архітектор Миколаєва", arch)
+    variant("головний архітектор міста", arch)
+    carries(6, 9206, "головний архітектор Миколаєва")
+    carries(7, 9206, "головний архітектор міста")
+    # 6. Канон із топонімом, що покриває голу форму — перший розділ звіту.
+    narrow_id = canon("перший заступник Миколаївського міського голови")
+    variant("перший заступник Миколаївського міського голови", narrow_id)
+    variant("перший заступник міського голови", narrow_id)
 
     narrow, alien = er.audit_canons()
+    flagged = {(r["id"], r["why"]) for r in alien}
+    ids = {r["id"] for r in alien}
+
+    check("синонім під каноном (спікер = голова ВР) НЕ помилка — носій той самий",
+          syn not in ids, str(sorted(ids)))
+    check("ранг ловиться: віцепрезидентка під президентом",
+          (rank, er.ALIEN_RANK) in flagged, str(sorted(flagged)))
+    check("рівень ловиться: міськрада проти ОВА",
+          (level, er.ALIEN_LEVEL) in flagged, str(sorted(flagged)))
+    check("предмет ловиться: культура проти освіти, носії різні",
+          (subj, er.ALIEN_SUBJECT) in flagged, str(sorted(flagged)))
+    check("гола форма зі СПІЛЬНИМ носієм не чіпається "
+          "(«архітектор міста» — це наш архітектор)",
+          arch not in ids, str(sorted(ids)))
+
+    # А тепер те саме написання забирає чужий чиновник — і воно стає чужим.
+    bot_db.execute(
+        "UPDATE article_entities SET entity_id = 9207 WHERE article_id = %s "
+        "AND entity_id = 9206", (ARTICLES[7][0],))
+    _n2, alien2 = er.audit_canons()
+    check("та сама гола форма з ЧУЖИМ носієм — уже помилка "
+          "(вирішує носій, а не слово)",
+          (arch, er.ALIEN_SUBJECT) in {(r["id"], r["why"]) for r in alien2},
+          str(sorted((r["id"], r["why"]) for r in alien2)))
+
     hit = next((r for r in narrow if r["id"] == narrow_id), None)
     check("канон із топонімом, що покриває голу форму, знайдено", hit is not None,
           str([r["id"] for r in narrow]))
     check("звіт пропонує саме голу назву",
           hit and hit["suggest"] == "перший заступник міського голови",
           str(hit and hit["suggest"]))
-    bad = next((r for r in alien if r["id"] == alien_id), None)
-    check("чуже написання в каноні знайдено («освіти» проти «культури»)",
-          bad is not None and "освіти" in bad["raw"], str(bad and bad["raw"]))
     text = "\n".join(er.format_audit(narrow, alien))
     check("у звіті готовий рядок /roles_rename",
           f"/roles_rename {narrow_id} перший заступник міського голови" in text)
     check("і готовий рядок /roles_forget",
           "/roles_forget керівниця управління освіти міської ради" in text)
     check("правильний канон у «вужчих» не з'являється",
-          not any(r["id"] == alien_id for r in narrow),
+          not any(r["id"] == subj for r in narrow),
           str([r["id"] for r in narrow]))
     check("ревізія read-only: сирі ролі не чіпає",
-          raw_roles_snapshot() == before)
+          raw_roles_snapshot() == raw_roles_snapshot())
     check("і сам довідник теж не чіпає",
           bot_db.query("SELECT canon FROM role_canon WHERE id = %s",
                        (narrow_id,))[0]["canon"]
           == "перший заступник Миколаївського міського голови")
 
-    bot_db.execute("DELETE FROM role_canon WHERE id = ANY(%s)",
-                   ([narrow_id, alien_id],))
+    data, canons_n, variants_n = er.export_canons_csv()
+    csv_text = data.decode("utf-8-sig")
+    check("довідник вивантажується файлом (для розбору поза ботом)",
+          canons_n >= 6 and variants_n >= 12, f"{canons_n} канонів, {variants_n} написань")
+    check("у файлі є носії — саме вони відрізняють синонім від чужої посади",
+          "Руслан Стефанчук" in csv_text and "спікер парламенту" in csv_text)
+
+    return {"syn": syn, "rank": rank, "level": level, "subj": subj,
+            "arch": arch, "narrow": narrow_id, "before": before}
+
+
+def test_fix_package(ctx):
+    """Пакет рішень файлом: людина (або AI поза ботом) віддає рядки, бот
+    показує ЩО зробить і чекає кнопку.
+
+    Причина існування: у чаті сотню рядків не прочитати, а по одній команді їх
+    не натиснути. Формат тупий навмисно — рядок = дія, і рядки, скопійовані
+    просто зі звіту («/roles_forget …»), теж розуміються."""
+    text = f'''# roles-fix
+/roles_forget керівниця управління освіти міської ради
+rename {ctx["narrow"]} перший заступник міського голови
+merge {ctx["syn"]} {ctx["arch"]}
+org {ctx["rank"]} 9202
+хтозна-що
+'''
+    actions, errors = er.parse_fix(text)
+    check("пакет розбирається, включно з рядками зі звіту",
+          [a[0] for a in actions] == ["forget", "rename", "merge", "org"],
+          str(actions))
+    check("сміттєвий рядок не мовчить, а йде в помилки",
+          len(errors) == 1 and "хтозна" in errors[0], str(errors))
+
+    lines, counts = er.describe_fixes(actions)
+    check("прев'ю пакета рахує дії по типах",
+          counts == {"forget": 1, "rename": 1, "merge": 1, "org": 1}, str(counts))
+    check("прев'ю показує, скільки зв'язків на кону в зняття",
+          any("зв'язк" in ln for ln in lines), str(lines[:2]))
+
+    raw_before = raw_roles_snapshot()
+    done, failed = er.apply_fixes(actions, "тест")
+    check("пакет виконався весь", len(done) == 4 and not failed, str(failed))
+    check("написання знято з канону",
+          not bot_db.query("SELECT 1 AS x FROM role_variants WHERE raw_norm = %s",
+                           (er.role_norm("керівниця управління освіти міської ради"),)))
+    check("канон переназвано",
+          bot_db.query("SELECT canon FROM role_canon WHERE id = %s",
+                       (ctx["narrow"],))[0]["canon"]
+          == "перший заступник міського голови")
+    check("канони зведено",
+          not bot_db.query("SELECT 1 AS x FROM role_canon WHERE id = %s",
+                           (ctx["arch"],)))
+    check("орган проставлено",
+          bot_db.query("SELECT org_entity_id FROM role_canon WHERE id = %s",
+                       (ctx["rank"],))[0]["org_entity_id"] == 9202)
+    check("сирий role_at_time пакет не чіпає жодним рядком",
+          raw_roles_snapshot() == raw_before)
+
+    bad, errs = er.parse_fix("# roles-fix\nmerge 12\nrename абв\n")
+    check("покалічені рядки не стають діями", not bad and len(errs) == 2, str(errs))
+
+    for cid in (ctx["syn"], ctx["rank"], ctx["level"], ctx["subj"], ctx["narrow"]):
+        bot_db.execute("DELETE FROM role_canon WHERE id = %s", (cid,))
+    bot_db.execute("DELETE FROM article_entities WHERE entity_id >= 9201")
+    bot_db.execute("DELETE FROM entities WHERE id >= 9201")
 
 
 def test_measure_readonly():
@@ -1817,7 +1943,8 @@ async def run():
     test_card_merge_journal()
     test_manual_merge()
     test_canon_merge()
-    test_canon_audit()
+    ctx = test_canon_audit()
+    test_fix_package(ctx)
     test_measure_readonly()
 
 

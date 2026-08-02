@@ -57,6 +57,7 @@ from handlers.entity_roles import (
     roles_rename_handler, roles_forget_handler, roles_org_handler,
     roles_outliers_handler, roles_who_handler,
     roles_audit_handler, roles_merge_handler, roles_merge_callback,
+    roles_fix_document, roles_fix_callback,
     roles_pair_callback, roles_org_callback, roles_bulk_callback,
 )
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
@@ -582,6 +583,9 @@ def main():
     # xlsx з підписом /budget_load: CommandHandler бачить лише text, caption — ні
     app.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex(r"^/budget_load"), budget_load_handler))
     # ZIP пакета рішення в приват — без команд: бот сам розбирає і нашаровує
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.Document.FileExtension("txt"),
+        roles_fix_document))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.Document.ALL, budget_package_handler))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     # Переслана в приват картка контакту → у базу редакції. Ставимо ПЕРЕД
@@ -603,6 +607,7 @@ def main():
     app.add_handler(CallbackQueryHandler(roles_org_callback, pattern="^rdo:"))
     app.add_handler(CallbackQueryHandler(roles_bulk_callback, pattern="^rb[cmro]:"))
     app.add_handler(CallbackQueryHandler(roles_merge_callback, pattern="^rmc:"))
+    app.add_handler(CallbackQueryHandler(roles_fix_callback, pattern="^rfx:"))
     app.add_handler(CallbackQueryHandler(entity_merge_callback, pattern="^emg:"))
     app.add_handler(CallbackQueryHandler(entity_find_callback, pattern="^ef[nm]:"))
     app.add_handler(CallbackQueryHandler(entity_junk_callback, pattern="^ej[bp]:"))

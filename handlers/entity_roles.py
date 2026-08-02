@@ -2427,21 +2427,74 @@ FROM role_canon rc JOIN role_variants rv ON rv.canon_id = rc.id
 ORDER BY rc.id
 """
 
-# Класи, у яких написання говорить про ІНШИЙ предмет, ніж назва канону.
-# Вкладеність (containment_fill / containment_own) сюди не входить: це або
-# нормальна повніша назва, або ознака №1, у якої свій розділ звіту.
-AUDIT_SUSPECT = {"place_swap", "level_swap", "word_swap", "numbers",
-                 "status_diff", "containment_disc", "other"}
+# Слова, що означають «людина на чолі». Заміна одного з них на інше — це
+# синонім, а не інша посада: «начальник управління» = «керівник управління»,
+# «голова ВР» = «спікер парламенту», «мер Львова» = «міський голова Львова».
+# Саме на цьому провалився перший варіант звіту: він показував клас «лексично
+# різні», а в каноні це НОРМА — довідник для того й існує, щоб зводити «мера»
+# з «міським головою». З 26 рядків живого прогону 23 були такими.
+HEAD_WORDS = {
+    "голова", "голови", "головою", "головиня", "очільник", "очільниця",
+    "керівник", "керівниця", "начальник", "начальниця", "глава", "лідер",
+    "мер", "мерка", "градоначальник", "спікер", "спікерка",
+    "директор", "директорка", "гендиректор", "губернатор", "президент",
+    "прокурор", "прокурорка", "міністр", "міністерка", "командувач",
+    "секретар", "секретарка", "посол", "послиця", "ректор", "канцлер",
+}
+
+# Слова РАНГУ. Ось вони справді роблять іншу посаду, і саме такий рядок у
+# живому прогоні виявився помилкою: під каноном «президент США» лежала
+# «віцепрезидентка США». Ловимо префіксом, бо написання буває і через дефіс,
+# і разом («віце-президентка», «віцепрезидентка»).
+RANK_PREFIXES = ("віце", "заступ", "перш", "друг", "трет", "помічн", "радник",
+                 "радниц", "виконувач", "тимчасов", "екс", "колишн", "старш",
+                 "молодш", "во", "в.о", "т.в.о")
+
+# Родові слова замість топоніма: «головний архітектор МІСТА» — це загальна
+# форма посади «головного архітектора Миколаєва», а не інше місце. Через них
+# такі написання потрапляють у ПЕРШИЙ розділ (назва канону завужена), а не в
+# другий.
+GENERIC_PLACES = {"міста", "місті", "місто", "області", "область", "громади",
+                  "громада", "району", "район", "країни", "країна", "держави"}
+
+
+def _rank_words(tokens):
+    return {t for t in tokens if any(t.startswith(p) for p in RANK_PREFIXES)}
+
+
+def _canon_carriers(norms):
+    """{написання → множина носіїв}. Потрібно саме це: лексика не відрізняє
+    синонім від чужої посади, а носії відрізняють. «Голову ВР» і «спікера
+    парламенту» носить той самий Стефанчук — це синонім; «управління
+    культури» і «управління освіти» не має спільного носія жодного разу — це
+    різні органи."""
+    if not norms:
+        return {}
+    out = {}
+    for r in bot_db.query(
+            "SELECT role_norm(role_at_time) AS rn, entity_id FROM article_entities "
+            "WHERE role_norm(role_at_time) = ANY(%s) GROUP BY 1, 2", (list(norms),)):
+        out.setdefault(r["rn"], set()).add(r["entity_id"])
+    return out
 
 
 def audit_canons():
-    """(вужчі назви, чужі написання). Нічого не змінює."""
+    """(вужчі назви, чужі написання). Нічого не змінює.
+
+    Другий розділ показує ЛИШЕ те, що механічно означає іншу посаду: ранг
+    (віце/заступник/екс), інший рівень органу, інше місто — і предметну
+    різницю, підтверджену тим, що спільного носія в написань немає. Раніше
+    він показував клас «лексично різні», і живий прогін дав 23 хибні рядки з
+    26: у каноні лексична різниця це НОРМА, заради неї довідник і зроблено."""
     ensure_schema()
     canons = {}
     for r in bot_db.query(AUDIT_SQL):
         c = canons.setdefault(r["id"], {"id": r["id"], "canon": r["canon"],
                                         "variants": []})
         c["variants"].append(r)
+    carriers = _canon_carriers(
+        {v["raw_norm"] for c in canons.values() for v in c["variants"]}
+        | {role_norm(c["canon"]) for c in canons.values()})
 
     narrow, alien = [], []
     for c in canons.values():
@@ -2459,6 +2512,12 @@ def audit_canons():
             bare = [v for v in c["variants"]
                     if v["raw_norm"] != cn
                     and not any(_is_region_word(w) for w in _tokens(v["raw_norm"]))
+                    # Родове слово замість топоніма — НЕ загальніша форма:
+                    # «головний архітектор МІСТА» у наших текстах означає
+                    # Миколаїв, так його називає редакція. Перейменувати канон
+                    # на цю форму означало б втратити місто без потреби, тож
+                    # такі написання в розділ не беремо взагалі.
+                    and not any(w in GENERIC_PLACES for w in _tokens(v["raw_norm"]))
                     # `<=`, а не `<`: написання без топоніма й так коротше за
                     # назву канону рівно на топонім — рівність тут і є той
                     # самий випадок, заради якого звіт писався.
@@ -2471,14 +2530,93 @@ def audit_canons():
         for v in c["variants"]:
             if v["raw_norm"] == cn:
                 continue
-            cls, detail = classify_pair(cn, v["raw_norm"])
-            if cls in AUDIT_SUSPECT:
+            why = _alien_reason(cn, ct, v["raw_norm"], carriers)
+            if why:
                 alien.append({"id": c["id"], "canon": c["canon"],
                               "raw": v["raw_sample"] or v["raw_norm"],
-                              "links": v["links"], "cls": cls, "detail": detail})
+                              "links": v["links"], "why": why[0],
+                              "detail": why[1]})
     narrow.sort(key=lambda x: -x["links"])
-    alien.sort(key=lambda x: -x["links"])
+    alien.sort(key=lambda x: (ALIEN_ORDER.index(x["why"]), -x["links"]))
     return narrow, alien
+
+
+# Причини, за яких написання в каноні справді означає ІНШУ посаду. Порядок =
+# порядок довіри: ранг помиляється рідко, предметна різниця — найчастіше.
+ALIEN_RANK = "ранг"
+ALIEN_LEVEL = "рівень"
+ALIEN_PLACE = "місце"
+ALIEN_SUBJECT = "предмет"
+ALIEN_ORDER = [ALIEN_RANK, ALIEN_LEVEL, ALIEN_PLACE, ALIEN_SUBJECT]
+
+ALIEN_LABELS = {
+    ALIEN_RANK: "РАНГ інший — це не та сама посада",
+    ALIEN_LEVEL: "ІНШИЙ РІВЕНЬ органу",
+    ALIEN_PLACE: "ІНШЕ МІСЦЕ",
+    ALIEN_SUBJECT: "ІНШИЙ ПРЕДМЕТ — і спільного носія немає жодного разу "
+                   "(гола форма на кшталт «міста» теж сюди: її міг забрати "
+                   "чужий чиновник)",
+}
+
+
+def _alien_reason(canon_norm, canon_tokens, raw_norm, carriers):
+    """(причина, деталь) або None. Механічно — і тільки те, що механічно
+    видно; синонімію («спікер парламенту» = «голова ВР») машина не розрізняє
+    ніяк, тому решту звіт не показує взагалі."""
+    vt = _tokens(raw_norm)
+    ct = canon_tokens
+    # 1. Ранг. «Президент США» ← «віцепрезидентка США»: слово рангу є з
+    #    одного боку й немає з другого.
+    ra, rb = _rank_words(ct), _rank_words(vt)
+    if ra != rb:
+        extra = " ".join(sorted(rb - ra)) or " ".join(sorted(ra - rb))
+        return ALIEN_RANK, f"«{extra}» лише в одному написанні"
+    ma, mb = _status_marker(canon_norm), _status_marker(raw_norm)
+    if bool(ma) != bool(mb):
+        return ALIEN_RANK, f"«{ma or mb}» лише в одному написанні"
+    # 2. Рівень органу: «управління охорони здоров'я МІСЬКРАДИ» ←
+    #    «…Миколаївської ОВА». Різні установи й різні люди.
+    la = {_level_code(w) for w in ct if _is_level_word(w)}
+    lb = {_level_code(w) for w in vt if _is_level_word(w)}
+    if la and lb and la != lb:
+        return ALIEN_LEVEL, (" ".join(sorted(w for w in ct if _is_level_word(w)))
+                             + " ↔ "
+                             + " ".join(sorted(w for w in vt if _is_level_word(w))))
+    # 3. Місце — лише коли топонім реальний З ОБОХ боків. «Миколаєва» проти
+    #    «міста» це не інше місто, а загальна форма: такий рядок належить
+    #    першому розділу звіту.
+    pa = {_region_code(w) for w in ct if _is_region_word(w)}
+    pb = {_region_code(w) for w in vt if _is_region_word(w)}
+    if pa and pb and pa != pb:
+        return ALIEN_PLACE, (" ".join(sorted(w for w in ct if _is_region_word(w)))
+                             + " ↔ "
+                             + " ".join(sorted(w for w in vt if _is_region_word(w))))
+    # 4. Предмет. Тут лексики самої по собі МАЛО: «голова ВР» ← «спікер
+    #    парламенту» теж різняться предметними словами, і це синонім. Тому
+    #    вимагаємо другого, незалежного сигналу — жодного спільного носія.
+    #    Слова «на чолі» і рівень органу з порівняння викидаємо: заміна
+    #    начальника на керівника (чи «ОВА» на «обласну військову
+    #    адміністрацію») предмета не змінює.
+    #
+    #    Сюди ж свідомо потрапляє гола форма з родовим словом: «головний
+    #    архітектор МІСТА» під каноном «…Миколаєва». Слово «міста» саме по
+    #    собі нічого не вирішує — воно означає Миколаїв рівно доти, доки його
+    #    носить миколаївський архітектор; щойно так названо когось із Одеси,
+    #    це вже чуже написання. Тому питання вирішує носій, а не словник.
+    def _content(tokens):
+        return {w for w in tokens
+                if w not in HEAD_WORDS and w not in FUNCTION_WORDS
+                and not _is_level_word(w)}
+
+    ca, cb = _content(ct), _content(vt)
+    only_a, only_b = ca - cb, cb - ca
+    if only_a and only_b:
+        who_a = carriers.get(canon_norm, set())
+        who_b = carriers.get(raw_norm, set())
+        if who_a and who_b and not (who_a & who_b):
+            return ALIEN_SUBJECT, (" ".join(sorted(only_a)) + " ↔ "
+                                   + " ".join(sorted(only_b)))
+    return None
 
 
 def format_audit(narrow, alien):
@@ -2499,13 +2637,298 @@ def format_audit(narrow, alien):
     for r in alien:
         det = f" ({r['detail']})" if r["detail"] else ""
         lines.append(f"\n[{r['id']}] «{r['canon']}»")
-        lines.append(f"   ← «{r['raw']}» · {CLASS_LABELS.get(r['cls'], r['cls'])}"
+        lines.append(f"   ← «{r['raw']}» · {ALIEN_LABELS.get(r['why'], r['why'])}"
                      f"{det} · "
                      f"{plural(r['links'], 'зв’язок', 'зв’язки', 'зв’язків')}")
         lines.append(f"   /roles_forget {r['raw']}")
     lines.append("\nОбидва списки — підозри, а не вироки: рішення за людиною. "
                  "Канон цілком видно в /roles_canon <id>.")
+    lines.append("Синонімів («спікер парламенту» = «голова ВР») тут немає "
+                 "свідомо: машина їх від чужої посади не відрізняє, це видно "
+                 "лише по носіях — вони у файлі нижче.")
     return lines
+
+
+# ---------- Обмін файлами: довідник → людина → пакет рішень ----------
+#
+# Механіка тут закінчується. Машина бачить, що написання лексично різні, але
+# не знає, що «спікер парламенту» це «голова Верховної Ради», а «управління
+# культури» — не «управління освіти». Живий прогін 02.08 дав 23 хибні рядки з
+# 26 саме тому. Людина ж не може читати сотні рядків у чаті — і не мусить.
+#
+# Тому обмін іде ФАЙЛАМИ: бот віддає весь довідник CSV-кою (канон, написання,
+# скільки зв'язків, ХТО носить — носії й розрізняють синонім від чужої
+# посади), її дивиться людина або AI поза ботом, і назад приїжджає простий
+# текстовий файл із рішеннями. Бот показує, ЩО зробить, і чекає кнопку —
+# рішення все одно ухвалює людина, просто одним тапом замість сотні.
+
+CANON_EXPORT_SQL = """
+SELECT rc.id, rc.canon, coalesce(o.name_ua, o.name_ru) AS org,
+       rv.raw_sample, rv.raw_norm,
+       (SELECT count(*) FROM article_entities ae
+         WHERE role_norm(ae.role_at_time) = rv.raw_norm) AS links
+FROM role_canon rc
+JOIN role_variants rv ON rv.canon_id = rc.id
+LEFT JOIN entities o ON o.id = rc.org_entity_id
+ORDER BY rc.id, links DESC
+"""
+
+CARRIER_NAMES_SQL = """
+SELECT role_norm(ae.role_at_time) AS rn,
+       coalesce(e.name_ua, e.name_ru) AS name, count(*) AS n
+FROM article_entities ae JOIN entities e ON e.id = ae.entity_id
+WHERE role_norm(ae.role_at_time) = ANY(%s)
+GROUP BY 1, 2 ORDER BY 1, 3 DESC
+"""
+
+
+def export_canons_csv():
+    """CSV усього довідника ролей: канон, написання, зв'язки, носії.
+
+    Носії тут не для краси: саме вони відрізняють синонім («голову ВР» і
+    «спікера парламенту» носить одна людина) від чужої посади («культури» й
+    «освіти» не мають спільного носія жодного разу)."""
+    import csv
+    import io
+    ensure_schema()
+    rows = bot_db.query(CANON_EXPORT_SQL)
+    names = {}
+    for r in bot_db.query(CARRIER_NAMES_SQL,
+                          ([r["raw_norm"] for r in rows],)):
+        names.setdefault(r["rn"], []).append(f"{r['name']} ×{r['n']}")
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["canon_id", "canon", "org", "написання", "зв'язки", "носії"])
+    for r in rows:
+        w.writerow([r["id"], r["canon"], r["org"] or "",
+                    r["raw_sample"] or r["raw_norm"], r["links"],
+                    " | ".join(names.get(r["raw_norm"], [])[:4])])
+    canons = len({r["id"] for r in rows})
+    return ("﻿" + buf.getvalue()).encode("utf-8"), canons, len(rows)
+
+
+# Маркер пакета рішень. Потрібен, щоб бот не сплутав файл ні з чим іншим:
+# у приват йому кидають ще й пакети рішень міськради (.zip/.xlsx) і снапшоти
+# бюджету. Обробник бере ЛИШЕ .txt і ЛИШЕ з цим рядком усередині.
+FIX_MARKER = "roles-fix"
+
+FIX_OPS = {"forget", "rename", "merge", "org"}
+
+
+def parse_fix(text):
+    """Текст пакета → (дії, помилки). Формат навмисно тупий, рядок = дія:
+
+        # roles-fix
+        forget керівниця управління освіти міської ради
+        rename 29 начальник управління культури
+        merge 29 60
+        org 29 4711        (0 — зняти орган)
+
+    Рядки, скопійовані просто зі звіту («/roles_forget …»), теж розуміються:
+    у них лише префікс інший, і змушувати людину його прибирати немає сенсу.
+    """
+    actions, errors = [], []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("/roles_"):
+            line = line[len("/roles_"):]
+        parts = line.split(None, 1)
+        op = parts[0].lower().rstrip(":")
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        if op not in FIX_OPS:
+            errors.append(f"не знаю дії: {line[:60]}")
+            continue
+        if op == "forget":
+            if not rest:
+                errors.append(f"порожній forget: {line[:60]}")
+                continue
+            actions.append(("forget", rest))
+        elif op == "rename":
+            bits = rest.split(None, 1)
+            if len(bits) < 2 or not bits[0].isdigit():
+                errors.append(f"rename очікує <id> <назва>: {line[:60]}")
+                continue
+            actions.append(("rename", int(bits[0]), bits[1].strip()))
+        elif op == "merge":
+            bits = rest.split()
+            if len(bits) < 2 or not all(b.isdigit() for b in bits[:2]):
+                errors.append(f"merge очікує <id> <id>: {line[:60]}")
+                continue
+            actions.append(("merge", int(bits[0]), int(bits[1])))
+        else:
+            bits = rest.split()
+            if len(bits) < 2 or not all(b.isdigit() for b in bits[:2]):
+                errors.append(f"org очікує <id канону> <id сутності|0>: {line[:60]}")
+                continue
+            actions.append(("org", int(bits[0]), int(bits[1])))
+    return actions, errors
+
+
+def describe_fixes(actions):
+    """Що саме станеться — рядками, ПЕРЕД тим як щось робити. Числа тягнемо з
+    нори: у пакеті їх немає, а «зняти написання» без кількості зв'язків
+    неможливо оцінити."""
+    ensure_schema()
+    lines, counts = [], {"forget": 0, "rename": 0, "merge": 0, "org": 0}
+    for a in actions:
+        counts[a[0]] += 1
+        if a[0] == "forget":
+            if a[1].strip().isdigit():
+                n = bot_db.query(
+                    "SELECT count(*) AS n FROM role_variants WHERE canon_id = %s",
+                    (int(a[1]),))[0]["n"]
+                lines.append(f"🗑 розібрати канон {a[1]} ({n} написань у чергу)")
+            else:
+                rn = role_norm(a[1])
+                links = bot_db.query(
+                    "SELECT count(*) AS n FROM article_entities "
+                    "WHERE role_norm(role_at_time) = %s", (rn,))[0]["n"]
+                known = bot_db.query(
+                    "SELECT canon_id FROM role_variants WHERE raw_norm = %s", (rn,))
+                where = f" з канону {known[0]['canon_id']}" if known else " (у довіднику немає)"
+                lines.append(f"🗑 зняти «{a[1]}»{where} · {links} зв'язків")
+        elif a[0] == "rename":
+            cur = bot_db.query("SELECT canon FROM role_canon WHERE id = %s", (a[1],))
+            was = f"«{cur[0]['canon']}» " if cur else ""
+            lines.append(f"✏️ [{a[1]}] {was} → «{a[2]}»")
+        elif a[0] == "merge":
+            p, err = canon_merge_preview(a[1], a[2])
+            lines.append(f"🔗 {a[1]} ← {a[2]}: " +
+                         (err if err else
+                          f"{p['b']['variants']} написань переїдуть, "
+                          f"результат «{p['name']}»"))
+        else:
+            who = bot_db.query(
+                "SELECT coalesce(name_ua, name_ru) AS n FROM entities WHERE id = %s",
+                (a[2],)) if a[2] else None
+            lines.append(f"🏛 [{a[1]}] орган → "
+                         + (who[0]["n"] if who else ("знято" if not a[2] else str(a[2]))))
+    return lines, counts
+
+
+def apply_fixes(actions, decided_by=None):
+    """Виконати пакет. Кожна дія окремо: збійна не валить решту, її причина
+    їде у звіт — інакше одна помилка в рядку викидала б усю роботу."""
+    ensure_schema()
+    done, failed = [], []
+    for a in actions:
+        try:
+            if a[0] == "forget":
+                kind, n, extra = forget_one(a[1])
+                done.append(f"🗑 {a[1]}" if n else f"— {a[1]} (не було)")
+            elif a[0] == "rename":
+                n = bot_db.execute(
+                    "UPDATE role_canon SET canon = %s, canon_norm = %s WHERE id = %s",
+                    (a[2], role_norm(a[2]), a[1]))
+                done.append(f"✏️ {a[1]} → {a[2]}" if n else f"— канону {a[1]} немає")
+            elif a[0] == "merge":
+                cid, canon = merge_canons(a[1], a[2], decided_by)
+                done.append(f"🔗 {a[2]} → {a[1]} «{canon}»")
+            else:
+                n = bot_db.execute(
+                    "UPDATE role_canon SET org_entity_id = %s WHERE id = %s",
+                    (a[2] or None, a[1]))
+                done.append(f"🏛 {a[1]} → {a[2] or 'знято'}"
+                            if n else f"— канону {a[1]} немає")
+        except Exception as e:
+            failed.append(f"{' '.join(str(x) for x in a)[:60]} — {type(e).__name__}: {e}")
+    return done, failed
+
+
+FIX_STATE_PREFIX = "rolesfix:"
+
+
+def _fix_key(chat_id, message_id):
+    return f"{FIX_STATE_PREFIX}{chat_id}:{message_id}"
+
+
+async def roles_fix_document(update, context):
+    """Пакет рішень .txt у приваті — читаємо, показуємо ЩО зробимо, чекаємо
+    кнопку. Файли без маркера ігноруємо мовчки: у приват боту кидають ще й
+    бюджетні пакети, і плутати їх не можна."""
+    import json
+    msg = update.effective_message
+    doc = msg.document if msg else None
+    if not doc or not _allowed(update):
+        return
+    if not (doc.file_name or "").lower().endswith((".txt", ".roles")):
+        return
+    f = await context.bot.get_file(doc.file_id)
+    data = bytes(await f.download_as_bytearray())
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return
+    if FIX_MARKER not in text[:400].lower():
+        return          # не наш файл — мовчки повз
+    actions, errors = parse_fix(text)
+    if not actions:
+        await msg.reply_text(
+            "🦊 Пакет порожній — жодного рядка не розібрав.\n"
+            + ("\n".join(errors[:5]) if errors else ""))
+        return
+    try:
+        lines, counts = await asyncio.to_thread(describe_fixes, actions)
+    except Exception as e:
+        await msg.reply_text(f"❌ Не змалював пакет: {type(e).__name__}: {e}")
+        return
+    head = (f"🦊 Пакет рішень: зняти {counts['forget']} · переназвати "
+            f"{counts['rename']} · звести {counts['merge']} · орган "
+            f"{counts['org']}\n")
+    body = "\n".join(lines[:40])
+    if len(lines) > 40:
+        body += f"\n…і ще {len(lines) - 40} дій"
+    if errors:
+        body += "\n\n⚠️ не розібрав:\n" + "\n".join(errors[:5])
+    sent = await msg.reply_text(
+        head + "\n" + body + "\n\nСирі ролі в статтях не змінюються в жодному "
+                             "разі — це рядки довідника.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"✅ Виконати {len(actions)}", callback_data="rfx:go"),
+            InlineKeyboardButton("❌ Ні", callback_data="rfx:no"),
+        ]]))
+    await asyncio.to_thread(
+        bot_db.set_state, _fix_key(sent.chat_id, sent.message_id),
+        json.dumps(actions, ensure_ascii=False))
+
+
+async def roles_fix_callback(update, context):
+    import json
+    query = update.callback_query
+    user_id = query.from_user.id if query.from_user else None
+    if _ALLOWED_USER_IDS and user_id not in _ALLOWED_USER_IDS:
+        await query.answer("⛔ Тільки для редакції.", show_alert=True)
+        return
+    await query.answer()
+    key = _fix_key(query.message.chat_id, query.message.message_id)
+    if query.data == "rfx:no":
+        await asyncio.to_thread(bot_db.execute,
+                                "DELETE FROM sync_state WHERE key = %s", (key,))
+        await query.edit_message_text("❌ Скасовано, довідник не чіпав.")
+        return
+    raw = await asyncio.to_thread(bot_db.get_state, key)
+    if not raw:
+        await query.edit_message_text("Пакет застарів — надішли файл ще раз.")
+        return
+    actions = [tuple(a) for a in json.loads(raw)]
+    await query.edit_message_text(f"🦊 Виконую {len(actions)} дій…")
+    who = query.from_user.full_name if query.from_user else None
+    try:
+        done, failed = await asyncio.to_thread(apply_fixes, actions, who)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Пакет не пройшов: {type(e).__name__}: {e}")
+        return
+    await asyncio.to_thread(bot_db.execute,
+                            "DELETE FROM sync_state WHERE key = %s", (key,))
+    text = f"🦊 Виконано {len(done)} дій.\n" + "\n".join(done[:30])
+    if len(done) > 30:
+        text += f"\n…і ще {len(done) - 30}"
+    if failed:
+        text += "\n\n❌ не вийшло:\n" + "\n".join(failed[:5])
+    text += "\n\nСтан: /roles · перегляд канону: /roles_canon <id>"
+    await query.edit_message_text(text[:4000])
 
 
 async def roles_audit_handler(update, context):
@@ -2537,6 +2960,25 @@ async def roles_audit_handler(update, context):
     if chunk:
         text = "\n".join(chunk)
         await (msg.edit_text(text) if first else update.message.reply_text(text))
+
+    # І весь довідник файлом. Механіка бачить лише те, що видно механічно;
+    # синонімію («спікер парламенту» = «голова ВР») відрізняє людина або AI,
+    # якому цей файл віддають. Назад приїжджає пакет рішень — теж файлом.
+    import io
+    try:
+        data, canons, variants = await asyncio.to_thread(export_canons_csv)
+    except Exception as e:
+        await update.message.reply_text(f"(довідник файлом не віддався: {e})")
+        return
+    await update.message.reply_document(
+        document=io.BytesIO(data),
+        filename=f"roles_canons_{canons}.csv",
+        caption=(f"🦊 Довідник цілком: {canons} канонів, {variants} написань, "
+                 f"з носіями кожного.\n\nЦе для розбору поза ботом: у колонці "
+                 f"«носії» видно, чи це синонім (той самий носій), чи чужа "
+                 f"посада (носії різні). Назад — файл .txt із рядком "
+                 f"«# roles-fix» і рішеннями; кину його сюди — покажу, що "
+                 f"зроблю, і спитаю кнопкою."))
 
 
 # ---------- /roles_merge: злиття двох КАНОНІВ ----------
@@ -2706,6 +3148,28 @@ async def roles_rename_handler(update, context):
 
 # ---------- /roles_forget ----------
 
+def forget_one(arg):
+    """Зняти написання з канону (текстом) або розібрати канон цілком (числом).
+    Спільне ядро /roles_forget і пакета рішень файлом — рішення однакове,
+    хоч тапнуте, хоч приїхало рядком."""
+    ensure_schema()
+    arg = (arg or "").strip()
+    if arg.isdigit():
+        cid = int(arg)
+        variants = [r["raw_norm"] for r in bot_db.query(
+            "SELECT raw_norm FROM role_variants WHERE canon_id = %s", (cid,))]
+        n = bot_db.execute("DELETE FROM role_canon WHERE id = %s", (cid,))
+        _reopen(variants)
+        return ("canon", n, len(variants))
+    rn = role_norm(arg)
+    n = bot_db.execute("DELETE FROM role_variants WHERE raw_norm = %s", (rn,))
+    bot_db.execute(
+        "DELETE FROM role_canon rc WHERE NOT EXISTS "
+        "(SELECT 1 FROM role_variants rv WHERE rv.canon_id = rc.id)")
+    _reopen([rn])
+    return ("variant", n, rn)
+
+
 async def roles_forget_handler(update, context):
     """Відкат. Сирий role_at_time не чіпався ніколи, тому «відкотити» —
     це прибрати рядок довідника: варіант відв'язується від канону, пари
@@ -2720,25 +3184,8 @@ async def roles_forget_handler(update, context):
             "Сирий текст ролі в статтях не чіпається в жодному разі.")
         return
 
-    def do():
-        ensure_schema()
-        if arg.isdigit():
-            cid = int(arg)
-            variants = [r["raw_norm"] for r in bot_db.query(
-                "SELECT raw_norm FROM role_variants WHERE canon_id = %s", (cid,))]
-            n = bot_db.execute("DELETE FROM role_canon WHERE id = %s", (cid,))
-            _reopen(variants)
-            return ("canon", n, len(variants))
-        rn = role_norm(arg)
-        n = bot_db.execute("DELETE FROM role_variants WHERE raw_norm = %s", (rn,))
-        bot_db.execute(
-            "DELETE FROM role_canon rc WHERE NOT EXISTS "
-            "(SELECT 1 FROM role_variants rv WHERE rv.canon_id = rc.id)")
-        _reopen([rn])
-        return ("variant", n, rn)
-
     try:
-        kind, n, extra = await asyncio.to_thread(do)
+        kind, n, extra = await asyncio.to_thread(forget_one, arg)
     except Exception as e:
         await update.message.reply_text(f"❌ Не вдалось: {e}")
         return
