@@ -672,12 +672,20 @@ async def entity_resume_handler(update, context):
 
 # ---------- /entity_dedup ----------
 
-def _dedup_entities():
+def _dedup_entities(decided_by=None):
     """Глобальне переслияння за поточними правилами norm() (точний збіг у межах
     kind). Потрібне разово: фаза-1 писалась ДО нормалізації лапок, тож у норі
-    лишились близнюки типу «Слуга народу»/Слуга народу. Ідемпотентно."""
+    лишились близнюки типу «Слуга народу»/Слуга народу. Ідемпотентно.
+
+    Кожне злиття лишає знімок у журналі entity_merges (ENTITY_MERGE_PLAN §5):
+    зв'язки перевішуються, а картка ВИДАЛЯЄТЬСЯ — без знімка помилкове злиття
+    не відкотиш ніяк. Журнал пишеться тим самим курсором, тобто комітиться
+    рівно з тим злиттям, яке описує."""
+    from handlers import entity_merge as em
+
     conn = ep.connect()
     cur = conn.cursor()
+    cur.execute(em.MERGES_DDL)
     cur.execute("SELECT id, kind, name_ua, name_ru, mentions FROM entities")
     mentions = {}
     groups = {}
@@ -727,6 +735,8 @@ def _dedup_entities():
                 if nm and ep.norm(nm) not in {ep.norm(kua), ep.norm(kru)}:
                     aliases.add(nm)
         for oid in others:
+            # знімок ДО перевішування — інакше журнал опише вже змінений стан
+            em.record_merge(cur, keep, oid, decided_by)
             # перевісити зв'язки (дубль-пару статті лишаємо keep-версією)
             cur.execute(
                 "UPDATE article_entities ae SET entity_id = %s "
@@ -768,10 +778,13 @@ async def entity_dedup_handler(update, context):
         await update.message.reply_text("Іде бэкфіл — дедуп після нього.")
         return
     msg = await update.message.reply_text("🦊 Переслияю дублі (точний збіг norm у межах kind)…")
+    who = update.effective_user.full_name if update.effective_user else None
     try:
-        n_groups, n_removed = await asyncio.to_thread(_dedup_entities)
+        n_groups, n_removed = await asyncio.to_thread(_dedup_entities, who)
         await msg.edit_text(
             f"🦊 Дедуп завершено: груп-дублів {n_groups}, злито карток {n_removed}.\n"
+            f"Кожне злиття лишило знімок у журналі — /entity_merge_log, "
+            f"відкат /entity_unmerge <id>.\n"
             f"Зведення: /entity_status")
     except Exception as e:
         await msg.edit_text(f"❌ Збій дедупу: {e}")

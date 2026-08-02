@@ -43,6 +43,14 @@ from handlers.entity_layer import (
     entity_increment_on_handler, entity_increment_off_handler, entity_export_handler,
     entity_dedup_handler, entity_export_links_handler, entity_resync_handler,
 )
+from handlers.entity_merge import (
+    entity_scale_handler, entity_merge_log_handler, entity_unmerge_handler,
+)
+from handlers.entity_roles import (
+    roles_handler, roles_dedup_handler, roles_canon_handler,
+    roles_rename_handler, roles_forget_handler,
+    roles_pair_callback, roles_org_callback,
+)
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler, budget_date_handler
 from handlers.budget_snapshots import budget_execution_handler, budget_snapshot_check_handler, budget_execution_test_handler, budget_snapshot_reset_handler
@@ -475,6 +483,14 @@ def main():
     app.add_handler(CommandHandler("entity_export", entity_export_handler))
     app.add_handler(CommandHandler("entity_dedup", entity_dedup_handler))
     app.add_handler(CommandHandler("entity_export_links", entity_export_links_handler))
+    app.add_handler(CommandHandler("entity_scale", entity_scale_handler))
+    app.add_handler(CommandHandler("entity_merge_log", entity_merge_log_handler))
+    app.add_handler(CommandHandler("entity_unmerge", entity_unmerge_handler))
+    app.add_handler(CommandHandler("roles", roles_handler))
+    app.add_handler(CommandHandler("roles_dedup", roles_dedup_handler))
+    app.add_handler(CommandHandler("roles_canon", roles_canon_handler))
+    app.add_handler(CommandHandler("roles_rename", roles_rename_handler))
+    app.add_handler(CommandHandler("roles_forget", roles_forget_handler))
     app.add_handler(CommandHandler("tags_export", tags_export_handler))
     app.add_handler(CommandHandler("tags_wiki", tags_wiki_handler))
     app.add_handler(CommandHandler("tags_wiki_reset", tags_wiki_reset_handler))
@@ -563,6 +579,8 @@ def main():
     app.add_handler(CallbackQueryHandler(todo_today_callback, pattern="^todo_today:"))
     app.add_handler(CallbackQueryHandler(news_back_callback, pattern=f"^{BACK_CALLBACK_DATA}$"))
     app.add_handler(CallbackQueryHandler(news_select_callback, pattern=f"^{SELECT_CALLBACK_PREFIX}"))
+    app.add_handler(CallbackQueryHandler(roles_pair_callback, pattern="^rdp:"))
+    app.add_handler(CallbackQueryHandler(roles_org_callback, pattern="^rdo:"))
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.
