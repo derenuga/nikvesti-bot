@@ -377,8 +377,19 @@ INCR_MAX_ATTEMPTS = 3
 # сторож масового збою стоїть на 50% і жодного разу не взвівся. Тепер відбір
 # іде за ФАКТОМ відсутності зв'язків, тож будь-яка дірка — свіжа, стара чи
 # залишена збоєм API — затягується сама наступної години.
+# Разова амністія після зміни капа виводу: статті, що вичерпали спроби через
+# обрізаний JSON, заслуговують на новий шанс — причина була в нас, не в них.
+# Версійний ключ, щоб амністія не повторювалась щогодини.
+ATTEMPTS_AMNESTY_KEY = "entity_attempts_amnesty_v1"
+
+
 def _ensure_attempts_table():
     bot_db.execute(ep.ATTEMPTS_DDL)
+    if bot_db.get_state(ATTEMPTS_AMNESTY_KEY) is None:
+        bot_db.execute(
+            "UPDATE entity_attempts SET attempts = 0, last_error = NULL "
+            "WHERE NOT done AND last_error IS NOT NULL")
+        bot_db.set_state(ATTEMPTS_AMNESTY_KEY, int(time.time()))
 
 
 def _incr_floor():
@@ -433,6 +444,11 @@ def _extract_one(client, art):
         messages=[{"role": "user", "content": json.dumps(art, ensure_ascii=False)}],
         output_config={"format": {"type": "json_schema", "schema": api.ARTICLE_OUT}},
     )
+    if resp.stop_reason == "max_tokens":
+        # Обрив на капі — JSON гарантовано недописаний. Кажемо це прямо, щоб у
+        # /entity_status стояла причина, а не загадковий JSONDecodeError.
+        raise RuntimeError(
+            f"вихід обрізано на max_tokens={api.MAX_TOKENS} — стаття надто щільна")
     text = next((bl.text for bl in resp.content if bl.type == "text"), None)
     obj = json.loads(text)
     return obj.get("entities", []), resp.usage

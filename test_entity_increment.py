@@ -141,6 +141,21 @@ async def run():
 
     check("у черзі лишились саме недороблені", set(ids) == {101, 102}, f"черга={ids}")
 
+    # --- амністія: причина була в нас (малий кап виводу), не в статті ---
+    await asyncio.to_thread(
+        bot_db.execute, "DELETE FROM sync_state WHERE key = %s", (el.ATTEMPTS_AMNESTY_KEY,))
+    await asyncio.to_thread(el._ensure_attempts_table)
+    ids = await pending()
+    check("амністія повертає в чергу тих, хто вичерпав спроби через наш баг",
+          103 in ids, f"черга={ids}")
+    check("амністія НЕ чіпає done (стаття без сутностей лишається закритою)",
+          104 not in ids, f"черга={ids}")
+
+    await asyncio.to_thread(el._ensure_attempts_table)
+    again = await pending()
+    check("амністія разова — повторний виклик нічого не скидає",
+          sorted(again) == sorted(ids), f"{again} vs {ids}")
+
 
 def main():
     setup()
