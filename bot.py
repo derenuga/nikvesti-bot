@@ -63,6 +63,12 @@ from handlers.entity_roles import (
     roles_fix_document, roles_fix_callback,
     roles_pair_callback, roles_org_callback, roles_bulk_callback,
 )
+from handlers.promises import (
+    promises_handler, promise_show_handler, promise_test_handler,
+    promise_estimate_handler, promise_scan_handler, promise_scan_callback,
+    promise_resume_handler, promise_checked_handler, promise_forget_handler,
+    promise_restore_handler, promise_retest_handler,
+)
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler, budget_date_handler
 from handlers.budget_snapshots import budget_execution_handler, budget_snapshot_check_handler, budget_execution_test_handler, budget_snapshot_reset_handler
@@ -518,6 +524,16 @@ def main():
     app.add_handler(CommandHandler("roles_who", roles_who_handler))
     app.add_handler(CommandHandler("roles_audit", roles_audit_handler))
     app.add_handler(CommandHandler("roles_merge", roles_merge_handler))
+    app.add_handler(CommandHandler("promises", promises_handler))
+    app.add_handler(CommandHandler("promise_show", promise_show_handler))
+    app.add_handler(CommandHandler("promise_test", promise_test_handler))
+    app.add_handler(CommandHandler("promise_estimate", promise_estimate_handler))
+    app.add_handler(CommandHandler("promise_scan", promise_scan_handler))
+    app.add_handler(CommandHandler("promise_resume", promise_resume_handler))
+    app.add_handler(CommandHandler("promise_checked", promise_checked_handler))
+    app.add_handler(CommandHandler("promise_forget", promise_forget_handler))
+    app.add_handler(CommandHandler("promise_restore", promise_restore_handler))
+    app.add_handler(CommandHandler("promise_retest", promise_retest_handler))
     app.add_handler(CommandHandler("tags_export", tags_export_handler))
     app.add_handler(CommandHandler("tags_wiki", tags_wiki_handler))
     app.add_handler(CommandHandler("tags_wiki_reset", tags_wiki_reset_handler))
@@ -621,6 +637,7 @@ def main():
     app.add_handler(CallbackQueryHandler(entity_docs_canon_callback, pattern="^ejd:"))
     app.add_handler(CallbackQueryHandler(entity_org_forms_callback, pattern="^ejf:"))
     app.add_handler(CallbackQueryHandler(cards_fix_callback, pattern="^cfx:"))
+    app.add_handler(CallbackQueryHandler(promise_scan_callback, pattern="^psc:"))
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.
