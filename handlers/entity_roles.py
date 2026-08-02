@@ -1036,7 +1036,7 @@ SELECT coalesce(e.name_ua, e.name_ru) AS name, count(*) AS c
 FROM article_entities ae
 JOIN entities e ON e.id = ae.entity_id
 WHERE role_norm(ae.role_at_time) = %s
-GROUP BY 1 ORDER BY c DESC LIMIT 2
+GROUP BY 1 ORDER BY c DESC LIMIT 12
 """
 
 # Орган посади: ДВА джерела кандидатів, і порядок між ними принциповий.
@@ -1147,9 +1147,10 @@ def _role_card(rn):
     # другий — випадкова помилка витягу, а не другий носій посади. Без числа
     # такий викид виглядав би як рівноправний факт і міг збити рішення.
     rows_c = [r for r in bot_db.query(ROLE_CARRIERS_SQL, (rn,)) if r["name"]]
-    card["carriers"] = [f"{r['name']} ({r['c']})" for r in rows_c]
+    card["carriers"] = [f"{r['name']} ({r['c']})" for r in rows_c[:2]]
     card["top"] = rows_c[0]["name"] if rows_c else None
     card["names"] = [r["name"] for r in rows_c]
+    card["by_name"] = {r["name"]: r["c"] for r in rows_c}
     card["sample"] = card.get("sample") or rn
     return card
 
@@ -1227,6 +1228,30 @@ def _question_text(p):
         side, c = ("А", ca) if ca else ("Б", cb)
         warn = (f"\nℹ️ {side} уже в каноні «{c['canon']}» "
                 f"({c['variants']} написань) — інше долучиться до нього.\n")
+    # ЧУЖІ НОСІЇ КОРОТКОГО НАПИСАННЯ — головне число класів «уточнення», і
+    # саме його в картці бракувало. «Спільні носії дають 100%» рахує частку
+    # від МЕНШОГО написання, тому сліпе до решти: у пари «Миколаївський
+    # міський голова» (лише Сєнкевич) ~ «міський голова» (дев'ять носіїв)
+    # воно показувало 100%, хоча гола форма покриває ще вісьмох мерів інших
+    # міст — і «так» приписало б їх усіх Миколаєву. Саме ця різниця відділяє
+    # «секретар МІСЬКОЇ ради» (не зливати) від «міністр фінансів» (зливати),
+    # і без неї людина вирішує наосліп.
+    if (p.get("cls") or "").startswith("containment"):
+        bare, full = ((p["a"], p["b"])
+                      if len(_tokens(p.get("a_norm") or "")) < len(
+                          _tokens(p.get("b_norm") or ""))
+                      else (p["b"], p["a"]))
+        others = {n: c for n, c in (bare.get("by_name") or {}).items()
+                  if n not in (full.get("by_name") or {})}
+        if others:
+            top = sorted(others.items(), key=lambda kv: -kv[1])[:3]
+            share = sum(others.values()) / max(bare.get("links") or 1, 1)
+            warn += (f"\n⚠️ У короткого написання ще "
+                     f"{plural(len(others), 'носій', 'носії', 'носіїв')} "
+                     f"поза довгим: "
+                     + ", ".join(f"{n} ({c})" for n, c in top)
+                     + f" — {share:.0%} його згадок. «Так» припише "
+                     f"їх довгому написанню\n")
     # Клас із BULK_REJECT — це той, де відповідь майже завжди «ні». Сказати
     # це вголос дешевше, ніж сподіватись, що людина пам'ятає список класів.
     hint = ""
