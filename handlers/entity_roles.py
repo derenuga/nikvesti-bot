@@ -378,16 +378,20 @@ REGION_CODES = (
     ("mk", ("микола", "николае")),
     ("kherson", ("херсон",)),
     ("odesa", ("одес",)),
-    ("kyiv", ("київ", "киев")),
+    # Родовий відмінок міняє і→о («Києва», «Львова», «Харкова»), і без
+    # цих коренів топонім не впізнавався саме там, де він найчастіше й
+    # стоїть у назві посади: «міський голова Києва» вважався шаблоном
+    # без установи.
+    ("kyiv", ("київ", "киев", "києв")),
     ("lviv", ("львів", "львов")),
-    ("kharkiv", ("харків", "харьков")),
+    ("kharkiv", ("харків", "харьков", "харков")),
     ("dnipro", ("дніпро", "днепро", "дніпропетров")),
     ("zapor", ("запоріж", "запорож")),
     ("vinn", ("вінниц", "винниц")),
     ("poltava", ("полтав",)),
     ("cherkasy", ("черка",)),
     ("zhytomyr", ("житомир",)),
-    ("chernihiv", ("чернігів", "чернигов")),
+    ("chernihiv", ("чернігів", "чернигов", "чернігов")),
     ("sumy", ("сум",)),
     ("rivne", ("рівн", "ровен")),
     ("volyn", ("волин", "луцьк")),
@@ -1020,9 +1024,53 @@ def merge_roles(a_norm, b_norm, sample_a=None, sample_b=None, decided_by=None):
 
 
 def set_verdict(pair_id, verdict, decided_by=None):
+    now = int(time.time())
     bot_db.execute(
         "UPDATE role_pairs SET verdict = %s, decided_by = %s, updated = %s "
-        "WHERE id = %s", (verdict, decided_by, int(time.time()), pair_id))
+        "WHERE id = %s", (verdict, decided_by, now, pair_id))
+    if verdict == "different":
+        _spread_rejection(pair_id, decided_by, now)
+
+
+def _spread_rejection(pair_id, decided_by, now):
+    """«Ні» діє на рівні КАНОНУ, а не написання.
+
+    Реальний випадок 02.08: людина відхилила «прем'єр-міністерка» ~
+    «прем'єр-міністр Данії», а наступним питанням отримала «прем'єр-міністр
+    Данії» ~ «прем'єр-міністрКА» — інше написання ТОГО САМОГО канону з семи.
+    Для бота це різні пари, для людини — те саме питання вдруге, і таких
+    повторів у каноні стільки, скільки в ньому написань.
+
+    Відповідь «різні» означає «данська прем'єрка не належить цьому канону», і
+    це твердження про канон цілком. Тому гасимо всі невирішені пари, які
+    зводяться до тієї самої пари канонів."""
+    def key_of(norm, canon_id):
+        return f"c{canon_id}" if canon_id else f"n{norm}"
+
+    rows = bot_db.query(
+        "SELECT p.id, p.a_norm, p.b_norm, va.canon_id AS ca, vb.canon_id AS cb "
+        "FROM role_pairs p "
+        "LEFT JOIN role_variants va ON va.raw_norm = p.a_norm "
+        "LEFT JOIN role_variants vb ON vb.raw_norm = p.b_norm "
+        "WHERE p.verdict IS NULL OR p.id = %s", (pair_id,))
+    target = next((r for r in rows if r["id"] == pair_id), None)
+    if not target:
+        return
+    want = {key_of(target["a_norm"], target["ca"]),
+            key_of(target["b_norm"], target["cb"])}
+    # Пара всередині одного канону сенсу не має: обидва ключі однакові, і під
+    # таке «ні» підпало б усе підряд.
+    if len(want) < 2:
+        return
+    hit = [r["id"] for r in rows
+           if r["id"] != pair_id
+           and {key_of(r["a_norm"], r["ca"]), key_of(r["b_norm"], r["cb"])} == want]
+    if hit:
+        bot_db.execute(
+            "UPDATE role_pairs SET verdict = 'different', decided_by = %s, "
+            "updated = %s WHERE id = ANY(%s) AND verdict IS NULL",
+            (decided_by, now, hit))
+    return len(hit)
 
 
 # ---------- Дані для картки питання ----------
@@ -1069,8 +1117,26 @@ FROM entities e
 WHERE e.kind = 'org' AND coalesce(e.name_ua, e.name_ru) IS NOT NULL
   AND similarity(lower(coalesce(e.name_ua, e.name_ru)), %s) >= 0.25
 ORDER BY sim DESC, coalesce(e.mentions, 0) DESC
-LIMIT 3
+LIMIT 12
 """
+
+
+def _name_overlap(role_text, org_name):
+    """Чи ділять посада й організація слово, яке НЕ є топонімом.
+
+    Сама по собі трграмна схожість зводить їх за містом: у «міський голова
+    Києва» вона впевнено пропонувала «Господарський суд міста Києва» і
+    «Голосіївський районний суд Києва» — спільне в них рівно одне слово, і це
+    назва міста. Місто не називає орган, воно лише каже, де він; орган
+    називають слова «рада», «суд», «міністерство», «управління».
+
+    Порівнюємо префіксами й у обидва боки, бо відмінки й рід розводять ті самі
+    корені: «міськИЙ голова» ~ «міськА рада», «суд» ~ «суддя»."""
+    def stems(text):
+        return [w for w in _tokens(role_norm(text) or "")
+                if len(w) >= 3 and not _is_region_word(w)]
+    a, b = stems(role_text), stems(org_name)
+    return any(x.startswith(y[:5]) or y.startswith(x[:5]) for x in a for y in b)
 
 ORG_CANDIDATES_SQL = """
 SELECT e.id, coalesce(e.name_ua, e.name_ru) AS name, count(*) AS c
@@ -1098,9 +1164,17 @@ def org_candidates(canon_id):
     out, seen = [], set()
     try:
         for r in bot_db.query(ORG_BY_NAME_SQL, (role_norm(canon), role_norm(canon))):
+            # Трграмна схожість сама по собі зводить посаду з органом ЗА
+            # МІСТОМ: «міський голова Києва» впевнено тягнув «Господарський суд
+            # міста Києва» і «Голосіївський районний суд Києва». Тому лишаємо
+            # лише тих, хто ділить із посадою слово, яке не є топонімом.
+            if not _name_overlap(canon, r["name"]):
+                continue
             out.append({"id": r["id"], "name": r["name"],
                         "basis": "за назвою посади"})
             seen.add(r["id"])
+            if len(out) >= 3:
+                break
     except Exception as e:
         print(f"entity_roles: лексичний пошук органу пропущено — {e}")
     for r in bot_db.query(ORG_CANDIDATES_SQL, (variants,)):

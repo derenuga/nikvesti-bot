@@ -1133,6 +1133,83 @@ def test_affiliation():
           [r["entity_id"] for r in people] == [1], f"{people}")
 
 
+def test_org_by_name_needs_more_than_a_city():
+    """Орган пропонується за СЛОВОМ ПОСАДИ, не за містом.
+
+    Реальний випадок 02.08: під «міський голова Києва» бот упевнено підсунув
+    «Господарський суд міста Києва» і «Голосіївський районний суд Києва» —
+    спільне в них рівно одне слово, і це назва міста. Місто каже, ДЕ орган, а
+    не ЯКИЙ він."""
+    check("суд не пропонується мерові лише тому, що місто те саме",
+          not er._name_overlap("міський голова Києва",
+                               "Господарський суд міста Києва")
+          and not er._name_overlap("міський голова Києва",
+                                   "Голосіївський районний суд Києва"))
+    check("а справжній орган ловиться попри рід і відмінок (міськИЙ ~ міськА)",
+          er._name_overlap("міський голова Києва", "Київська міська рада")
+          and er._name_overlap("міністр юстиції", "Міністерство юстиції України")
+          and er._name_overlap("суддя Господарського суду Києва",
+                               "Господарський суд міста Києва"))
+    check("посада без слова органу лишається співпояву, а не вигадується",
+          not er._name_overlap("мер Миколаєва", "Миколаївська міська рада"))
+    # Родовий відмінок міняє і→о, і саме в такій формі топонім найчастіше
+    # стоїть у назві посади: без цього «міський голова Києва» вважався
+    # шаблоном без установи і питання про орган не ставилось узагалі.
+    check("Києва/Львова/Харкова впізнаються як топоніми",
+          all(er._region_code(w) for w in
+              ("києва", "львова", "харкова", "чернігова")),
+          f"{[(w, er._region_code(w)) for w in ('києва', 'львова', 'харкова')]}")
+    check("посада з містом більше не вважається шаблоном без установи",
+          not er.is_generic_role("міський голова Києва")
+          and er.is_generic_role("голова обласної військової адміністрації"))
+
+
+def test_rejection_spreads_to_canon():
+    """«Ні» діє на канон, а не на написання.
+
+    Реальний випадок 02.08: людина відхилила «прем'єр-міністерка» ~
+    «прем'єр-міністр Данії» і наступним питанням отримала «прем'єр-міністр
+    Данії» ~ «прем'єр-міністрка» — інше написання того самого канону. Питання
+    те саме, і повторів у ньому стільки, скільки написань у каноні."""
+    for n, s in (("премєр міністерка", "прем'єр-міністерка"),
+                 ("премєр міністрка", "прем'єр-міністрка"),
+                 ("премєр міністриня", "прем'єр-міністриня")):
+        bot_db.execute(
+            "INSERT INTO role_pairs (a_norm, b_norm, score, signals, updated) "
+            "VALUES (%s, 'премєр міністр данії', 5, 'тест', 0) "
+            "ON CONFLICT DO NOTHING", (n,))
+    er.merge_roles("премєр міністерка", "премєр міністрка",
+                   "прем'єр-міністерка", "прем'єр-міністрка", "тест")
+    er.merge_roles("премєр міністерка", "премєр міністриня",
+                   "прем'єр-міністерка", "прем'єр-міністриня", "тест")
+    first = bot_db.query(
+        "SELECT id FROM role_pairs WHERE a_norm = 'премєр міністерка' "
+        "AND b_norm = 'премєр міністр данії'")[0]["id"]
+    er.set_verdict(first, "different", "тест")
+    left = bot_db.query(
+        "SELECT count(*) AS n FROM role_pairs "
+        "WHERE b_norm = 'премєр міністр данії' AND verdict IS NULL")[0]["n"]
+    check("одне «ні» гасить те саме питання про решту написань канону",
+          left == 0, f"лишилось {left}")
+    # Але тільки те саме питання: інша посада проти того ж канону — це справді
+    # інше рішення, і гасити його не можна.
+    bot_db.execute(
+        "INSERT INTO role_pairs (a_norm, b_norm, score, signals, updated) "
+        "VALUES ('премєр міністерка', 'премєр міністр італії', 5, 'тест', 0) "
+        "ON CONFLICT DO NOTHING")
+    er.set_verdict(bot_db.query(
+        "SELECT id FROM role_pairs WHERE b_norm = 'премєр міністр данії' "
+        "LIMIT 1")[0]["id"], "different", "тест")
+    other = bot_db.query(
+        "SELECT verdict FROM role_pairs WHERE b_norm = 'премєр міністр італії'")
+    check("чуже питання під роздачу не потрапляє",
+          other and other[0]["verdict"] is None, f"{other}")
+    bot_db.execute("DELETE FROM role_pairs WHERE b_norm LIKE 'премєр міністр %'")
+    bot_db.execute(
+        "DELETE FROM role_canon WHERE id IN (SELECT canon_id FROM role_variants "
+        "WHERE raw_norm LIKE 'премєр міністр%')")
+
+
 def test_rejection_memory_and_rollback():
     pair = bot_db.query(
         "SELECT id, a_norm, b_norm FROM role_pairs WHERE verdict IS NULL "
@@ -1447,6 +1524,8 @@ async def run():
     test_generic_role_has_no_org()
     test_canon_warning()
     test_affiliation()
+    test_org_by_name_needs_more_than_a_city()
+    test_rejection_spreads_to_canon()
     test_rejection_memory_and_rollback()
     test_card_merge_journal()
     test_manual_merge()
