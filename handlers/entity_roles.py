@@ -846,12 +846,27 @@ def org_candidates(canon_id):
     return out[:4]
 
 
-def org_markup(canon_id, cands):
-    rows = [[InlineKeyboardButton(f"{c['name']} — {c['basis']}",
-                                  callback_data=f"rdo:{canon_id}:{c['id']}")]
-            for c in cands]
-    rows.append([InlineKeyboardButton("↷ Не зараз", callback_data=f"rdo:{canon_id}:0")])
+def org_markup(canon_id, cands, generic=False):
+    skip = InlineKeyboardButton(
+        "↷ Немає одного органу" if generic else "↷ Не зараз",
+        callback_data=f"rdo:{canon_id}:0")
+    rows = [[skip]] if generic else []
+    rows += [[InlineKeyboardButton(f"{c['name']} — {c['basis']}",
+                                   callback_data=f"rdo:{canon_id}:{c['id']}")]
+             for c in cands]
+    if not generic:
+        rows.append([skip])
     return InlineKeyboardMarkup(rows)
+
+
+ORG_QUESTION = ("\n\nЧий це орган? (дасть афіліацію людина↔організація; "
+                "змінити потім — /roles_org)")
+ORG_QUESTION_GENERIC = (
+    "\n\n⚠️ Посада не називає конкретну установу — це шаблон для кількох "
+    "органів одразу (напр. «голова обласної ВА» = і Миколаївська, і Одеська, "
+    "і Херсонська). Одного органу тут немає, тисни «Немає одного органу».\n"
+    "Прив'язувати варто лише посаду з назвою: «міський голова Миколаєва» → "
+    "Миколаївська міська рада.")
 
 NEXT_PAIR_SQL = """
 SELECT p.id, p.a_norm, p.b_norm, p.score, p.signals, p.cls, p.cls_detail
@@ -878,6 +893,21 @@ def _role_card(rn):
     return card
 
 
+CANON_OF_SQL = """
+SELECT rc.id, rc.canon, count(*) AS variants
+FROM role_variants rv
+JOIN role_canon rc ON rc.id = rv.canon_id
+JOIN role_variants all_rv ON all_rv.canon_id = rc.id
+WHERE rv.raw_norm = %s
+GROUP BY rc.id, rc.canon
+"""
+
+
+def _canon_of(raw_norm):
+    rows = bot_db.query(CANON_OF_SQL, (raw_norm,))
+    return dict(rows[0]) if rows else None
+
+
 def next_question(exclude_ids):
     rows = bot_db.query(NEXT_PAIR_SQL, (list(exclude_ids or []),))
     if not rows:
@@ -885,6 +915,13 @@ def next_question(exclude_ids):
     p = dict(rows[0])
     p["a"] = _role_card(p["a_norm"])
     p["b"] = _role_card(p["b_norm"])
+    # Чи належить котресь написання вже канону. Без цього питання бреше
+    # масштабом: людина відповідає про ДВА написання, а «так» може злити два
+    # готові канони по 20 написань кожен — і одна помилка псує обидва
+    # (реальний випадок 02.08: херсонська ОБЛАСНА ВА опинилась у каноні
+    # херсонської МІСЬКОЇ).
+    p["a_canon"] = _canon_of(p["a_norm"])
+    p["b_canon"] = _canon_of(p["b_norm"])
     return p
 
 
@@ -903,11 +940,35 @@ def _question_text(p):
     cls = CLASS_LABELS.get(p.get("cls") or "", "")
     if cls and p.get("cls_detail"):
         cls = f"{cls} — «{p['cls_detail']}»"
+    ca, cb = p.get("a_canon"), p.get("b_canon")
+    warn = ""
+    if ca and cb and ca["id"] != cb["id"]:
+        warn = (f"\n⚠️ «Так» зіллє ДВА канони: «{ca['canon']}» "
+                f"({ca['variants']} написань) + «{cb['canon']}» "
+                f"({cb['variants']}). Помилка зіпсує обидва.\n")
+    elif ca or cb:
+        c = ca or cb
+        warn = (f"\nℹ️ Одне з написань уже в каноні «{c['canon']}» "
+                f"({c['variants']} написань) — друге долучиться до нього.\n")
     return ("🦊 Це та сама посада?\n\n"
             + block("А", p["a"]) + "\n"
-            + block("Б", p["b"]) + "\n\n"
+            + block("Б", p["b"]) + "\n"
+            + warn + "\n"
             + (f"Клас: {cls}\n" if cls else "")
             + f"Підстава: {p['signals']}")
+
+
+def is_generic_role(canon_text):
+    """Чи називає посада КОНКРЕТНУ установу.
+
+    «голова обласної військової адміністрації» без області — це шаблон посади
+    для чотирьох різних областей одразу (Кім, Кіпер, Прокудін, Лисак), і
+    питати «чий це орган?» тут безглуздо: одного органу не існує. Афіліацію
+    для таких ролей дає не канон, а організація в тій самій статті."""
+    # lower() обовʼязково: у каноні написання з великої («Миколаєва»),
+    # а префікси топонімів зберігаються в нижньому регістрі.
+    return not any(_is_other_region(w)
+                   for w in _tokens((canon_text or "").lower()))
 
 
 def _question_markup(pair_id):
@@ -1039,9 +1100,10 @@ async def roles_pair_callback(update, context):
     text = ((query.message.text or "")
             + f"\n\n✅ Одна посада: «{canon}» ({n_vars} написань).")
     if orgs:
-        text += ("\n\nЧий це орган? (дасть афіліацію людина↔організація; "
-                 "змінити потім — /roles_org)")
-        await query.edit_message_text(text, reply_markup=org_markup(canon_id, orgs))
+        generic = is_generic_role(canon)
+        text += ORG_QUESTION_GENERIC if generic else ORG_QUESTION
+        await query.edit_message_text(
+            text, reply_markup=org_markup(canon_id, orgs, generic))
     else:
         await query.edit_message_text(text)
     await _send_next(query.message.chat, user_id)
@@ -1063,6 +1125,7 @@ async def roles_org_callback(update, context):
         return
     await query.answer()
     base = (query.message.text or "").split("\n\nЧий це орган?")[0]
+    base = base.split("\n\n⚠️ Посада не називає")[0]
     if not org_id:
         await query.edit_message_text(base + "\n\n↷ Орган не вказано.")
         return
@@ -1510,8 +1573,10 @@ async def roles_org_handler(update, context):
             head + "\n\nКандидатів бот не знайшов. Постав вручну: "
                    "/roles_org <id канону> <id сутності>")
         return
-    await update.message.reply_text(head + "\n\nЧий це орган?",
-                                    reply_markup=org_markup(canon_id, cands))
+    generic = is_generic_role(row["canon"])
+    await update.message.reply_text(
+        head + (ORG_QUESTION_GENERIC if generic else "\n\nЧий це орган?"),
+        reply_markup=org_markup(canon_id, cands, generic))
 
 
 # ---------- /roles_canon ----------

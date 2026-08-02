@@ -678,6 +678,58 @@ def test_carrier_counts():
           f"{card['carriers']}")
 
 
+def test_generic_role_has_no_org():
+    """«голова обласної військової адміністрації» без області — шаблон посади
+    для чотирьох областей одразу (Кім, Кіпер, Прокудін, Лисак). Одного органу
+    не існує, і питати про нього — ставити людину в глухий кут."""
+    check("посада без назви установи визнається шаблоном",
+          er.is_generic_role("голова обласної військової адміністрації"))
+    check("посада з назвою установи шаблоном НЕ вважається",
+          not er.is_generic_role("міський голова Миколаєва")
+          and not er.is_generic_role("голова Херсонської обласної адміністрації"))
+    kb = er.org_markup(1, [{"id": 9, "name": "Одеська ОВА", "basis": "за назвою"}],
+                       generic=True)
+    first = kb.inline_keyboard[0][0]
+    check("для шаблону кнопка «немає одного органу» стоїть ПЕРШОЮ",
+          "Немає одного органу" in first.text, f"{first.text}")
+    kb2 = er.org_markup(1, [{"id": 9, "name": "Одеська ОВА", "basis": "за назвою"}])
+    check("для конкретної посади першим іде орган, а не пропуск",
+          "Одеська" in kb2.inline_keyboard[0][0].text)
+
+
+def test_canon_warning():
+    """Питання про пару написань може мовчки злити два готові канони — і одна
+    помилка псує обидва. Реальний випадок 02.08: херсонська ОБЛАСНА ВА
+    опинилась у каноні херсонської МІСЬКОЇ, бо канони зчепились раніше."""
+    er.merge_roles("голова обласної ва", "керівник обласної ва",
+                   "голова обласної ВА", "керівник обласної ВА", "тест")
+    er.merge_roles("голова міської ва", "начальник міської ва",
+                   "голова міської ВА", "начальник міської ВА", "тест")
+    p = {"a": {"sample": "голова обласної ВА", "links": 5, "people": 1,
+               "lo": "2024-01", "hi": "2026-01", "carriers": []},
+         "b": {"sample": "голова міської ВА", "links": 5, "people": 1,
+               "lo": "2024-01", "hi": "2026-01", "carriers": []},
+         "signals": "схожість написання 0.8", "cls": "word_swap",
+         "cls_detail": "обласної → міської",
+         "a_canon": er._canon_of("голова обласної ва"),
+         "b_canon": er._canon_of("голова міської ва")}
+    txt = er._question_text(p)
+    check("картка попереджає, що «так» зіллє ДВА канони",
+          "зіллє ДВА канони" in txt and "написань" in txt,
+          txt.split("\n")[-3] if txt else "")
+    p2 = dict(p, b_canon=None)
+    txt2 = er._question_text(p2)
+    check("коли канон один — сказано, до чого саме долучиться друге написання",
+          "уже в каноні" in txt2 and "зіллє ДВА" not in txt2)
+    # Прибираємо ТІЛЬКИ свої канони: далі test_affiliation спирається на канон
+    # мера, створений раніше.
+    bot_db.execute(
+        "DELETE FROM role_canon WHERE id IN ("
+        "  SELECT canon_id FROM role_variants WHERE raw_norm = ANY(%s))",
+        (["голова обласної ва", "керівник обласної ва",
+          "голова міської ва", "начальник міської ва"],))
+
+
 def test_affiliation():
     canon = bot_db.query(
         "SELECT rc.id FROM role_canon rc JOIN role_variants rv ON rv.canon_id = rc.id "
@@ -992,6 +1044,8 @@ async def run():
     test_carrier_counts()
     test_outliers()
     test_org_suggestion_prefers_name()
+    test_generic_role_has_no_org()
+    test_canon_warning()
     test_affiliation()
     test_rejection_memory_and_rollback()
     test_card_merge_journal()
