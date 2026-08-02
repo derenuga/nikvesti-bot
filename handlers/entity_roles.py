@@ -965,6 +965,21 @@ def pick_canon(sample_a, sample_b):
     return a if len(a) >= len(b) else b
 
 
+def _general_name(canon, variants):
+    """Назва, істинна для КОЖНОГО написання: із двох, де одне вкладене в
+    друге, така лише загальніша. `variants` — [(raw_norm, raw_sample)].
+
+    Живе окремою функцією, щоб прев'ю злиття канонів рахувало назву тим самим
+    правилом, яким її потім поставить `_regeneralize`. Розійдуться — прев'ю
+    покаже одну назву, а бот поставить іншу, і довіри до кнопки не буде."""
+    best, best_t = canon, set(_tokens(role_norm(canon) or ""))
+    for raw_norm, sample in variants:
+        t = set(_tokens(raw_norm or ""))
+        if t and t < best_t:
+            best, best_t = (sample or raw_norm), t
+    return best
+
+
 def _regeneralize(canon_id):
     """Якщо в каноні з'явилось написання ЗАГАЛЬНІШЕ за його назву — переназвати.
 
@@ -983,12 +998,7 @@ def _regeneralize(canon_id):
     if not rows:
         return None
     canon = rows[0]["canon"]
-    best, best_t = canon, set(_tokens(role_norm(canon) or ""))
-    for r in rows:
-        sample = r["raw_sample"] or r["raw_norm"]
-        t = set(_tokens(r["raw_norm"] or ""))
-        if t and t < best_t:
-            best, best_t = sample, t
+    best = _general_name(canon, [(r["raw_norm"], r["raw_sample"]) for r in rows])
     if best != canon:
         # canon_norm унікальний: якщо загальніша назва вже зайнята іншим
         # каноном, мовчки лишаємо стару — переназвати можна руками
@@ -1013,6 +1023,37 @@ def _canon_size(canon_id):
     return rows[0]["n"] if rows else 0
 
 
+def merge_canons(keep, drop, decided_by=None):
+    """Злити два КАНОНИ: написання програшного переїжджають до переможця,
+    орган підтягується, якщо в переможця його не було, порожній канон
+    зникає. Повертає (id канону, назва після зведення).
+
+    Ядро спільне з відповіддю «так» на пару написань (там канони зливаються
+    побічним ефектом) і з /roles_merge, де це САМЕ рішення людини: два канони
+    про один орган інакше звести нічим — детектор питає про написання, а не
+    про канони.
+
+    `_regeneralize` наприкінці обов'язковий: після переїзду написань назва
+    переможця мусить лишитись істинною для КОЖНОГО з них, інакше вужча назва
+    тихо накриває ширшу групу (той самий випадок, що §3.1 доку дефектів)."""
+    ensure_schema()
+    if keep == drop:
+        rows = bot_db.query("SELECT canon FROM role_canon WHERE id = %s", (keep,))
+        return keep, (rows[0]["canon"] if rows else None)
+    with bot_db.transaction():
+        bot_db.execute(
+            "UPDATE role_variants SET canon_id = %s WHERE canon_id = %s",
+            (keep, drop))
+        bot_db.execute(
+            "UPDATE role_canon SET org_entity_id = coalesce(org_entity_id, "
+            "  (SELECT org_entity_id FROM role_canon WHERE id = %s)) "
+            "WHERE id = %s", (drop, keep))
+        bot_db.execute("DELETE FROM role_canon WHERE id = %s", (drop,))
+    _regeneralize(keep)
+    rows = bot_db.query("SELECT canon FROM role_canon WHERE id = %s", (keep,))
+    return keep, (rows[0]["canon"] if rows else None)
+
+
 def merge_roles(a_norm, b_norm, sample_a=None, sample_b=None, decided_by=None):
     """Звести два написання до одного канону. Повертає (canon_id, canon_text).
 
@@ -1032,18 +1073,7 @@ def merge_roles(a_norm, b_norm, sample_a=None, sample_b=None, decided_by=None):
     if ca and cb:
         # обидва вже мають канон — зливаємо канони (більший поглинає менший)
         keep, drop = (ca, cb) if _canon_size(ca) >= _canon_size(cb) else (cb, ca)
-        with bot_db.transaction():
-            bot_db.execute(
-                "UPDATE role_variants SET canon_id = %s WHERE canon_id = %s",
-                (keep, drop))
-            bot_db.execute(
-                "UPDATE role_canon SET org_entity_id = coalesce(org_entity_id, "
-                "  (SELECT org_entity_id FROM role_canon WHERE id = %s)) "
-                "WHERE id = %s", (drop, keep))
-            bot_db.execute("DELETE FROM role_canon WHERE id = %s", (drop,))
-        _regeneralize(keep)
-        rows = bot_db.query("SELECT canon FROM role_canon WHERE id = %s", (keep,))
-        return keep, (rows[0]["canon"] if rows else None)
+        return merge_canons(keep, drop)
 
     if ca or cb:
         canon_id = ca or cb
@@ -2359,6 +2389,283 @@ async def roles_canon_handler(update, context):
         size += len(ln) + 1
     if chunk:
         await update.message.reply_text("\n".join(chunk))
+
+
+# ---------- /roles_audit: канони, названі вужче, ніж покривають ----------
+#
+# Код лагодився 02.08 (pick_canon бере загальніше написання, _regeneralize
+# переназиває канон, щойно до нього долучилось загальніше), але вже створені
+# канони фікс не чіпає: назви лишились ті, що були на момент злиття. Знайти їх
+# можна лише очима по всьому списку — саме це й робиться зараз руками.
+#
+# Дві ознаки, обидві механічні:
+#
+#   1. У назві канону є ТОПОНІМ, а серед написань є таке саме без топоніма.
+#      «перший заступник МИКОЛАЇВСЬКОГО міського голови» покриває «першого
+#      заступника міського голови», якого носять заступники інших міст — і
+#      миколаївська назва для них хибна. Лікується /roles_rename.
+#   2. У назві канону одне ПРЕДМЕТНЕ слово, а в написанні інше: «культури»
+#      проти «освіти» — це різні управління й різні люди. Лікується
+#      /roles_forget (написання виходить із канону й повертається в чергу).
+#
+# Звіт read-only й друкує готові рядки команд: рішення однаково за людиною,
+# але шукати їх очима більше не треба.
+
+AUDIT_SQL = """
+SELECT rc.id, rc.canon, rv.raw_norm, rv.raw_sample,
+       (SELECT count(*) FROM article_entities ae
+         WHERE role_norm(ae.role_at_time) = rv.raw_norm) AS links
+FROM role_canon rc JOIN role_variants rv ON rv.canon_id = rc.id
+ORDER BY rc.id
+"""
+
+# Класи, у яких написання говорить про ІНШИЙ предмет, ніж назва канону.
+# Вкладеність (containment_fill / containment_own) сюди не входить: це або
+# нормальна повніша назва, або ознака №1, у якої свій розділ звіту.
+AUDIT_SUSPECT = {"place_swap", "level_swap", "word_swap", "numbers",
+                 "status_diff", "containment_disc", "other"}
+
+
+def audit_canons():
+    """(вужчі назви, чужі написання). Нічого не змінює."""
+    ensure_schema()
+    canons = {}
+    for r in bot_db.query(AUDIT_SQL):
+        c = canons.setdefault(r["id"], {"id": r["id"], "canon": r["canon"],
+                                        "variants": []})
+        c["variants"].append(r)
+
+    narrow, alien = [], []
+    for c in canons.values():
+        cn = role_norm(c["canon"]) or ""
+        ct = _tokens(cn)
+        if any(_is_region_word(w) for w in ct):
+            # ТА САМА посада без топоніма — і саме «та сама»: написання без
+            # топоніма замало. У каноні «начальник управління КУЛЬТУРИ
+            # Миколаївської міської ради» лежить «керівниця управління
+            # ОСВІТИ міської ради» — топоніма в ньому теж немає, але це інше
+            # управління, і перейменувати канон на нього означало б назвати
+            # групу чужим предметом. Тому вимагаємо, щоб решта слів написання
+            # уже була в назві канону: тоді воно справді лише ширше.
+            base = {w for w in ct if not _is_region_word(w)}
+            bare = [v for v in c["variants"]
+                    if v["raw_norm"] != cn
+                    and not any(_is_region_word(w) for w in _tokens(v["raw_norm"]))
+                    # `<=`, а не `<`: написання без топоніма й так коротше за
+                    # назву канону рівно на топонім — рівність тут і є той
+                    # самий випадок, заради якого звіт писався.
+                    and set(_tokens(v["raw_norm"])) <= base]
+            if bare:
+                pick = max(bare, key=lambda v: v["links"])
+                narrow.append({"id": c["id"], "canon": c["canon"],
+                               "suggest": pick["raw_sample"] or pick["raw_norm"],
+                               "links": pick["links"], "bare": len(bare)})
+        for v in c["variants"]:
+            if v["raw_norm"] == cn:
+                continue
+            cls, detail = classify_pair(cn, v["raw_norm"])
+            if cls in AUDIT_SUSPECT:
+                alien.append({"id": c["id"], "canon": c["canon"],
+                              "raw": v["raw_sample"] or v["raw_norm"],
+                              "links": v["links"], "cls": cls, "detail": detail})
+    narrow.sort(key=lambda x: -x["links"])
+    alien.sort(key=lambda x: -x["links"])
+    return narrow, alien
+
+
+def format_audit(narrow, alien):
+    lines = ["🦊 Ревізія канонів (read-only, нічого не змінено)\n"]
+    lines.append(f"━━ НАЗВА ВУЖЧА, НІЖ ПОКРИТТЯ — {len(narrow)} ━━")
+    if not narrow:
+        lines.append("Порожньо: жоден канон із топонімом не покриває голої форми.")
+    for r in narrow:
+        lines.append(f"\n[{r['id']}] «{r['canon']}»")
+        lines.append(f"   всередині та сама посада без топоніма: «{r['suggest']}» "
+                     f"({plural(r['links'], 'зв’язок', 'зв’язки', 'зв’язків')}"
+                     + (f", таких написань {r['bare']}" if r["bare"] > 1 else "")
+                     + ")")
+        lines.append(f"   /roles_rename {r['id']} {r['suggest']}")
+    lines.append(f"\n━━ ЧУЖЕ НАПИСАННЯ В КАНОНІ — {len(alien)} ━━")
+    if not alien:
+        lines.append("Порожньо: усі написання говорять про той самий предмет.")
+    for r in alien:
+        det = f" ({r['detail']})" if r["detail"] else ""
+        lines.append(f"\n[{r['id']}] «{r['canon']}»")
+        lines.append(f"   ← «{r['raw']}» · {CLASS_LABELS.get(r['cls'], r['cls'])}"
+                     f"{det} · "
+                     f"{plural(r['links'], 'зв’язок', 'зв’язки', 'зв’язків')}")
+        lines.append(f"   /roles_forget {r['raw']}")
+    lines.append("\nОбидва списки — підозри, а не вироки: рішення за людиною. "
+                 "Канон цілком видно в /roles_canon <id>.")
+    return lines
+
+
+async def roles_audit_handler(update, context):
+    """/roles_audit — знайти канони, названі вужче, ніж покривають, і чужі
+    написання всередині. Read-only, з готовими рядками команд ремонту."""
+    if not _allowed(update):
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Нора недоступна (BOT_DATABASE_URL).")
+        return
+    msg = await update.message.reply_text("🦊 Переглядаю канони…")
+    try:
+        narrow, alien = await asyncio.to_thread(audit_canons)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось: {type(e).__name__}: {e}")
+        return
+    lines = format_audit(narrow, alien)
+    # Ріжемо на повідомлення, а не обрізаємо: підозри відсортовані за вагою,
+    # і хвіст — це дрібні канони, які лагодити доводиться найчастіше.
+    first, chunk, size = True, [], 0
+    for ln in lines:
+        if size + len(ln) > 3800 and chunk:
+            text = "\n".join(chunk)
+            await (msg.edit_text(text) if first else
+                   update.message.reply_text(text))
+            first, chunk, size = False, [], 0
+        chunk.append(ln)
+        size += len(ln) + 1
+    if chunk:
+        text = "\n".join(chunk)
+        await (msg.edit_text(text) if first else update.message.reply_text(text))
+
+
+# ---------- /roles_merge: злиття двох КАНОНІВ ----------
+#
+# Канони досі об'єднувались лише побічним ефектом: людина відповідала «так»
+# на пару НАПИСАНЬ, і якщо обидва вже під канонами, канони зчіплювались. Але
+# два канони про один орган («начальник управління культури Миколаївської
+# міської ради» і «начальник управління культури Миколаєва») можуть не мати
+# жодної спільної пари в черзі — і звести їх нічим.
+#
+# Запобіжники ті самі, що в /entity_merge: прев'ю з підставою (скільки
+# написань і зв'язків на кону, який орган лишиться, як зватиметься результат)
+# і рішення тапом по кнопці, а не самим фактом набору команди — id набирають
+# руками, і одна цифра помилки зчіплює не ті посади.
+#
+# Сирий role_at_time при цьому не змінюється жодного разу: усе, що
+# відбувається, — переїзд рядків довідника.
+
+CANON_CARD_SQL = """
+SELECT rc.id, rc.canon, rc.org_entity_id,
+       coalesce(o.name_ua, o.name_ru) AS org,
+       (SELECT count(*) FROM role_variants rv WHERE rv.canon_id = rc.id) AS variants,
+       (SELECT count(*) FROM article_entities ae
+          JOIN role_variants rv2 ON rv2.raw_norm = role_norm(ae.role_at_time)
+         WHERE rv2.canon_id = rc.id) AS links
+FROM role_canon rc LEFT JOIN entities o ON o.id = rc.org_entity_id
+WHERE rc.id = %s
+"""
+
+
+def canon_merge_preview(keep, drop):
+    """(дані прев'ю, помилка). Назва результату рахується тим самим
+    `_general_name`, який поставить її насправді."""
+    ensure_schema()
+    a = bot_db.query(CANON_CARD_SQL, (keep,))
+    b = bot_db.query(CANON_CARD_SQL, (drop,))
+    if not a or not b:
+        missing = [i for i, r in ((keep, a), (drop, b)) if not r]
+        return None, f"немає канонів: {', '.join(str(i) for i in missing)}"
+    a, b = a[0], b[0]
+    vars_ = bot_db.query(
+        "SELECT raw_norm, raw_sample, canon_id FROM role_variants "
+        "WHERE canon_id = ANY(%s)", ([keep, drop],))
+    name = _general_name(a["canon"], [(v["raw_norm"], v["raw_sample"])
+                                      for v in vars_])
+    org = a["org"] or b["org"]
+    org_from = "" if a["org"] or not b["org"] else " (підтягнеться з другого)"
+    sample = [v["raw_sample"] or v["raw_norm"]
+              for v in vars_ if v["canon_id"] == drop][:6]
+    return {"a": a, "b": b, "name": name, "org": org, "org_from": org_from,
+            "moving": sample}, None
+
+
+def format_canon_preview(p):
+    a, b = p["a"], p["b"]
+
+    def card(mark, c, tail):
+        org = f" · 🏛 {c['org']}" if c["org"] else " · орган не вказано"
+        return (f"{mark} [{c['id']}] «{c['canon']}»{org}\n"
+                f"   {plural(c['variants'], 'написання', 'написання', 'написань')}"
+                f" · {plural(c['links'], 'зв’язок', 'зв’язки', 'зв’язків')}\n"
+                f"   {tail}")
+
+    moving = "\n".join(f"   · {s}" for s in p["moving"])
+    return (
+        "🦊 Звести ці канони посад?\n\n"
+        + card("✅", a, "ЛИШАЄТЬСЯ") + "\n"
+        + card("🗑", b, "написання переїдуть сюди ↑, канон зникне") + "\n\n"
+        + (f"Переїжджають:\n{moving}\n\n" if moving else "")
+        + f"Після зведення: «{p['name']}»\n"
+        + f"Орган: {p['org'] or '—'}{p['org_from']}\n\n"
+        + "Назва береться ЗАГАЛЬНІША — вона мусить лишитись істинною для "
+          "кожного написання всередині.\n"
+        + "Сирі ролі в статтях не змінюються: це переїзд рядків довідника.\n"
+        + "Щоб лишився ІНШИЙ канон — поміняй id місцями в команді."
+    )
+
+
+async def roles_merge_handler(update, context):
+    if not _allowed(update):
+        return
+    args = context.args or []
+    if len(args) < 2 or not all(a.isdigit() for a in args[:2]):
+        await update.message.reply_text(
+            "Формат: /roles_merge <id що ЛИШАЄТЬСЯ> <id другого канону>\n"
+            "Напр.: /roles_merge 29 60\n\n"
+            "id підкаже /roles_canon (або /roles_canon <слово>).\n"
+            "Зводить КАНОНИ цілком — коли про один орган їх завелось два. "
+            "Одне написання знімається окремо: /roles_forget <написання>")
+        return
+    keep, drop = int(args[0]), int(args[1])
+    if keep == drop:
+        await update.message.reply_text("Це той самий канон.")
+        return
+    try:
+        p, err = await asyncio.to_thread(canon_merge_preview, keep, drop)
+    except Exception as e:
+        await update.message.reply_text(f"❌ {type(e).__name__}: {e}")
+        return
+    if err:
+        await update.message.reply_text(f"🦊 Не зводжу: {err}")
+        return
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Звести", callback_data=f"rmc:{keep}:{drop}"),
+        InlineKeyboardButton("❌ Скасувати", callback_data="rmc:0:0"),
+    ]])
+    await update.message.reply_text(format_canon_preview(p), reply_markup=kb)
+
+
+async def roles_merge_callback(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id if query.from_user else None
+    if _ALLOWED_USER_IDS and user_id not in _ALLOWED_USER_IDS:
+        await query.answer("⛔ Тільки для редакції.", show_alert=True)
+        return
+    try:
+        _, k, d = query.data.split(":", 2)
+        keep, drop = int(k), int(d)
+    except (ValueError, AttributeError):
+        await query.answer()
+        return
+    await query.answer()
+    base = (query.message.text or "").split("\n\nЩоб лишився")[0]
+    if not keep:
+        await query.edit_message_text(base + "\n\n❌ Скасовано.")
+        return
+    who = query.from_user.full_name if query.from_user else None
+    try:
+        canon_id, canon = await asyncio.to_thread(merge_canons, keep, drop, who)
+    except Exception as e:
+        await query.edit_message_text(base + f"\n\n❌ Не звелось: {e}")
+        return
+    await query.edit_message_text(
+        base + f"\n\n✅ Зведено в [{canon_id}] «{canon}».\n"
+               f"Перегляд: /roles_canon {canon_id}\n"
+               f"Переназвати: /roles_rename {canon_id} <текст>\n"
+               f"Зняти написання назад у чергу: /roles_forget <написання>")
 
 
 # ---------- /roles_rename ----------

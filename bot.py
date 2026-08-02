@@ -48,10 +48,15 @@ from handlers.entity_merge import (
     entity_merge_handler, entity_merge_callback, entity_find_callback,
     entity_merge_log_handler, entity_unmerge_handler,
 )
+from handlers.entity_junk import (
+    entity_junk_handler, entity_junk_callback, entity_junk_undo_handler,
+    entity_org_dupes_handler, entity_org_dupes_callback,
+)
 from handlers.entity_roles import (
     roles_handler, roles_dedup_handler, roles_canon_handler, roles_bulk_handler,
     roles_rename_handler, roles_forget_handler, roles_org_handler,
     roles_outliers_handler, roles_who_handler,
+    roles_audit_handler, roles_merge_handler, roles_merge_callback,
     roles_pair_callback, roles_org_callback, roles_bulk_callback,
 )
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
@@ -492,6 +497,9 @@ def main():
     app.add_handler(CommandHandler("entity_merge", entity_merge_handler))
     app.add_handler(CommandHandler("entity_merge_log", entity_merge_log_handler))
     app.add_handler(CommandHandler("entity_unmerge", entity_unmerge_handler))
+    app.add_handler(CommandHandler("entity_junk", entity_junk_handler))
+    app.add_handler(CommandHandler("entity_junk_undo", entity_junk_undo_handler))
+    app.add_handler(CommandHandler("entity_org_dupes", entity_org_dupes_handler))
     app.add_handler(CommandHandler("roles", roles_handler))
     app.add_handler(CommandHandler("roles_dedup", roles_dedup_handler))
     app.add_handler(CommandHandler("roles_canon", roles_canon_handler))
@@ -501,6 +509,8 @@ def main():
     app.add_handler(CommandHandler("roles_org", roles_org_handler))
     app.add_handler(CommandHandler("roles_outliers", roles_outliers_handler))
     app.add_handler(CommandHandler("roles_who", roles_who_handler))
+    app.add_handler(CommandHandler("roles_audit", roles_audit_handler))
+    app.add_handler(CommandHandler("roles_merge", roles_merge_handler))
     app.add_handler(CommandHandler("tags_export", tags_export_handler))
     app.add_handler(CommandHandler("tags_wiki", tags_wiki_handler))
     app.add_handler(CommandHandler("tags_wiki_reset", tags_wiki_reset_handler))
@@ -592,8 +602,11 @@ def main():
     app.add_handler(CallbackQueryHandler(roles_pair_callback, pattern="^rdp:"))
     app.add_handler(CallbackQueryHandler(roles_org_callback, pattern="^rdo:"))
     app.add_handler(CallbackQueryHandler(roles_bulk_callback, pattern="^rb[cmro]:"))
+    app.add_handler(CallbackQueryHandler(roles_merge_callback, pattern="^rmc:"))
     app.add_handler(CallbackQueryHandler(entity_merge_callback, pattern="^emg:"))
     app.add_handler(CallbackQueryHandler(entity_find_callback, pattern="^ef[nm]:"))
+    app.add_handler(CallbackQueryHandler(entity_junk_callback, pattern="^ej[bp]:"))
+    app.add_handler(CallbackQueryHandler(entity_org_dupes_callback, pattern="^ejo:"))
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.
