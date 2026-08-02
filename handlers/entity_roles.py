@@ -320,6 +320,7 @@ def plural(n, one, few, many):
 
 CLASS_LABELS = {
     "numbers": "РІЗНІ НОМЕРИ — не злиття",
+    "status_diff": "різний СТАТУС (в.о. / екс / тимчасовий)",
     "permutation": "ті самі слова, інший порядок",
     "abbrev": "скорочення / розгортання",
     "containment_fill": "уточнення: доповнює назву",
@@ -343,7 +344,7 @@ CLASS_LABELS = {
 # Голу форму посади («прем'єр-міністр» без країни) взагалі не можна злити ні з
 # чим конкретним: у кожній статті вона означає свою людину.
 BULK_MERGE = {"permutation", "abbrev", "typo"}
-BULK_REJECT = {"numbers", "containment_geo", "containment_disc"}
+BULK_REJECT = {"numbers", "status_diff", "containment_geo", "containment_disc"}
 
 # Корені топонімів: у «керівник обласної ВА» ~ «керівник обласної ВА
 # ХЕРСОНСЬКОЇ області» зайве слово не доповнює назву, а вказує на інше місце,
@@ -376,6 +377,22 @@ OTHER_REGIONS = (
     "іран", "иран", "сирі", "сири", "афган", "корей", "вєтнам", "вьетнам",
     "бразил", "аргентин", "мексик", "австрал", "євросоюз", "евросоюз", "нато",
 )
+
+
+# Маркери СТАТУСУ посади. «в.о. мера Миколаєва» — це не мер: якщо звести їх в
+# один канон, довідник на питання «хто був мером» відповість «Сєнкевич і
+# Гранатуров», і це неправда. Через токенізацію «в.о.» розпадається на «в» і
+# «о» (обидва по одному символу), тому в DISCRIMINATING воно не ловилось, і
+# пара падала в «лексично різні, спільний носій» — тобто в найцінніший клас,
+# де людина схильна тиснути «так».
+ACTING_RE = re.compile(
+    r"\bв\.?\s?о\.?\s|виконувач|тимчасов|\bекс\b|екс-|колишн|"
+    r"новообран|майбутн|обраний")
+
+
+def _status_marker(text):
+    m = ACTING_RE.search(text or "")
+    return m.group(0).strip() if m else None
 
 
 def _has_digits(tokens):
@@ -472,6 +489,11 @@ def classify_pair(a, b, has_carrier=False):
     na, nb = _has_digits(ta), _has_digits(tb)
     if na != nb:
         return "numbers", f"{' '.join(na) or '—'} ≠ {' '.join(nb) or '—'}"
+    # Статус посади — перед лексикою: «в.о. мера» ~ «мер» лексично схожі, але
+    # це різні відповіді на питання «хто обіймав посаду».
+    ma, mb = _status_marker(a), _status_marker(b)
+    if bool(ma) != bool(mb):
+        return "status_diff", f"«{ma or mb}» лише в одному написанні"
     if sorted(ta) == sorted(tb) and ta != tb:
         return "permutation", None
     short_t, long_t = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
