@@ -395,6 +395,18 @@ def test_bulk():
     counts = dict(er.class_counts())
     check("класи в черзі рахуються", counts, f"{counts}")
 
+    # Гурт по ЗАСТАРІЛІЙ розкладці — найдорожча помилка: «ні» пам'ятається
+    # назавжди. Тому меню класів має спиратись на свіжий перерахунок, а не на
+    # те, що збереглось із часів попередньої версії детектора.
+    bot_db.execute("UPDATE role_pairs SET cls = 'вигаданий_старий_клас' "
+                   "WHERE verdict IS NULL")
+    stale = dict(er.class_counts())
+    er.scan_pairs(min_links=1, top_roles=200)
+    fresh = dict(er.class_counts())
+    check("перерахунок прибирає застарілі класи з меню гурту",
+          "вигаданий_старий_клас" in stale
+          and "вигаданий_старий_клас" not in fresh, f"{list(fresh)}")
+
     geo = er.bulk_apply("containment_geo", "different", "тест")
     check("гурт «ні» закриває клас цілком", geo >= 1, f"{geo}")
     left = dict(er.class_counts()).get("containment_geo", 0)

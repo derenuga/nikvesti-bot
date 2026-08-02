@@ -1949,8 +1949,17 @@ async def roles_bulk_handler(update, context):
     if not bot_db.is_configured():
         await update.message.reply_text("🦊 Нора недоступна (BOT_DATABASE_URL).")
         return
-    msg = await update.message.reply_text("🦊 Рахую класи в черзі…")
+    msg = await update.message.reply_text(
+        "🦊 Перераховую класи за нинішніми правилами…")
     try:
+        # ОБОВ'ЯЗКОВО перед показом: /roles_bulk раніше лише читав збережені
+        # класи, а перераховував їх тільки /roles_dedup. Через це після зміни
+        # детектора в меню світились СТАРІ класи — і «відхилити всі» по класу
+        # «ІНШЕ МІСЦЕ» закрило б назавжди пари на кшталт «міністр оборони» ~
+        # «міністр оборони УКРАЇНИ», які за новими правилами належать до
+        # «нашої країни» і мають зливатись. Гурт по застарілій розкладці —
+        # найдорожча з можливих помилок, бо «ні» пам'ятається назавжди.
+        await asyncio.to_thread(scan_pairs, MIN_LINKS, TOP_ROLES)
         counts = await asyncio.to_thread(class_counts)
     except Exception as e:
         await msg.edit_text(f"❌ Не вдалось: {type(e).__name__}: {e}")
