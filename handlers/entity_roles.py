@@ -1149,6 +1149,7 @@ def _role_card(rn):
     rows_c = [r for r in bot_db.query(ROLE_CARRIERS_SQL, (rn,)) if r["name"]]
     card["carriers"] = [f"{r['name']} ({r['c']})" for r in rows_c]
     card["top"] = rows_c[0]["name"] if rows_c else None
+    card["names"] = [r["name"] for r in rows_c]
     card["sample"] = card.get("sample") or rn
     return card
 
@@ -1205,8 +1206,14 @@ def _question_text(p):
     # Найпростіша перевірка, яку людина робить очима першою: чи це взагалі про
     # тих самих людей. «президент» = Зеленський, «президент США» = Трамп —
     # головні носії різні, і це видно швидше за будь-які бали.
+    # Порівнюємо не «перший проти першого», а ПЕРЕТИН: у пари «суддя
+    # Центрального райсуду» ~ «…Миколаєва» ті самі Медюк і Алєйніков просто
+    # помінялись місцями за кількістю, і попередження про різних носіїв там
+    # брехало. Кричимо лише коли головний носій одного взагалі не трапляється
+    # в другого — як Зеленський і Трамп.
     ta, tb = p["a"].get("top"), p["b"].get("top")
-    if ta and tb and ta != tb:
+    na, nb = p["a"].get("names") or [], p["b"].get("names") or []
+    if ta and tb and ta != tb and ta not in nb and tb not in na:
         warn += f"\n⚠️ Головні носії РІЗНІ: {ta} vs {tb}\n"
     if ca and cb and ca["id"] != cb["id"]:
         warn = (f"\n⚠️ «Так» зіллє ДВА канони: «{ca['canon']}» "
