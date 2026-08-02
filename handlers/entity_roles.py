@@ -1272,14 +1272,17 @@ def _question_text(p):
     if cands and "Головні носії РІЗНІ" not in warn:
         share, others, _, side = max(cands, key=lambda t: t[0])
         top = sorted(others.items(), key=lambda kv: -kv[1])[:3]
-        # ОДНА згадка — це майже завжди викид витягу («директор зоопарку» на
-        # людині з іншого міста в беку статті), а не другий носій посади. Без
-        # цієї приписки картка виглядає однаково для двох різних ситуацій:
-        # «дев'ять мерів інших міст» (не зливати) і «двоє по одній згадці»
-        # (зливати, а викид лікується окремо через /entity_resync).
-        noise = ("\n   Але всі по одній згадці — схоже на викид витягу, "
-                 "а не на другого носія посади"
-                 if max(others.values()) == 1 else "")
+        # КІЛЬКІСТЬ ЗГАДОК ТУТ НІЧОГО НЕ ВИРІШУЄ, і перша версія цього рядка
+        # підказувала протилежне («по одній згадці — схоже на викид витягу»).
+        # Олег виправив 02.08 на живому прикладі: у пари «директор зоопарку» ~
+        # «директор МИКОЛАЇВСЬКОГО зоопарку» ті двоє по одній згадці — цілком
+        # справжні директори зоопарків ІНШИХ міст, і «так» зробило б їх
+        # миколаївськими назавжди. Одна згадка однаково буває і випадковим
+        # зачепом у беку, і законним фактом; відрізнити їх можна тільки
+        # глянувши, ХТО ці люди. Тому картка не радить, а показує перевірку.
+        noise = ("\n   Подивись, ХТО вони: /roles_who "
+                 + (p["a_norm"] if side == "А" else p["b_norm"])
+                 if max(others.values()) <= 2 else "")
         warn += (f"\n⚠️ У «{side}» ще "
                  f"{plural(len(others), 'носій', 'носії', 'носіїв')}, "
                  f"яких немає в другого: "
@@ -1500,6 +1503,106 @@ async def roles_org_callback(update, context):
     await query.edit_message_text(base + f"\n\n🏛 Орган: {name}")
 
 
+# ---------- /roles_who ----------
+#
+# Хто носить це написання посади — з лінками на статті для рідкісних носіїв.
+#
+# Питання, на яке немає відповіді в картці злиття і не може бути: у пари
+# «директор зоопарку» ~ «директор МИКОЛАЇВСЬКОГО зоопарку» двоє чужих носіїв
+# мали по одній згадці, і я порадив злити («схоже на викид витягу»). Олег
+# перевірив: це справжні директори зоопарків інших міст, тобто «так» зробило б
+# їх миколаївськими назавжди. Одна згадка однаково буває і зачепом у беку, і
+# законним фактом — розрізняє їх ТІЛЬКИ заголовок статті, тому бот дає лінк, а
+# рішення лишає людині.
+
+WHO_CARRIERS_SQL = """
+SELECT ae.entity_id AS eid, coalesce(e.name_ua, e.name_ru) AS name,
+       count(*) AS c,
+       to_char(to_timestamp(min(a.published)), 'YYYY-MM') AS lo,
+       to_char(to_timestamp(max(a.published)), 'YYYY-MM') AS hi
+FROM article_entities ae
+JOIN entities e ON e.id = ae.entity_id
+JOIN articles a ON a.id = ae.article_id
+WHERE role_norm(ae.role_at_time) = %s
+GROUP BY 1, 2
+ORDER BY c DESC
+LIMIT 20
+"""
+
+WHO_ARTICLES_SQL = """
+SELECT a.id, a.published, a.title_ua, a.title_ru, a.slug, a.category, a.kind,
+       ae.role_at_time
+FROM article_entities ae
+JOIN articles a ON a.id = ae.article_id
+WHERE role_norm(ae.role_at_time) = %s AND ae.entity_id = %s
+ORDER BY a.published DESC
+LIMIT 3
+"""
+
+# Скільки згадок ще вважається «рідкісним носієм», якого варто розкрити
+# лінками. Троє — бо саме на одній-трьох губиться різниця між помилкою витягу
+# і законним фактом; у головного носія з десятками згадок питань не виникає.
+WHO_RARE = 3
+
+
+def who_holds(role_text):
+    """(написання, [носії з лінками для рідкісних]). Нічого не змінює."""
+    # Імпорт ЛІНИВИЙ: archive_search тягне за собою news_archive → ai_messages
+    # → anthropic і db.py → pymysql, тобто пів бота заради одного складача
+    # URL. Сутнісний шар має лишатись легким — його ганяють тести на живому
+    # Postgres без жодного з цих модулів.
+    from handlers import archive_search
+    ensure_schema()
+    rn = role_norm(role_text)
+    if not rn:
+        return None, []
+    rows = [dict(r) for r in bot_db.query(WHO_CARRIERS_SQL, (rn,))]
+    for r in rows:
+        if r["c"] <= WHO_RARE:
+            r["articles"] = [
+                archive_search._fmt_item(i + 1, dict(a))
+                | {"raw": a["role_at_time"]}
+                for i, a in enumerate(bot_db.query(WHO_ARTICLES_SQL,
+                                                   (rn, r["eid"])))]
+    return rn, rows
+
+
+async def roles_who_handler(update, context):
+    if not _allowed(update):
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Нора недоступна (BOT_DATABASE_URL).")
+        return
+    text = " ".join(context.args or []).strip()
+    if not text:
+        await update.message.reply_text(
+            "🦊 Хто носить посаду: /roles_who <написання>\n"
+            "Напр.: /roles_who директор зоопарку")
+        return
+    msg = await update.message.reply_text("🦊 Дивлюсь носіїв…")
+    try:
+        rn, rows = await asyncio.to_thread(who_holds, text)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось: {type(e).__name__}: {e}")
+        return
+    if not rows:
+        await msg.edit_text(f"🦊 Написання «{rn or text}» у норі не носить ніхто.")
+        return
+    lines = [f"🦊 Хто носить «{rn}»\n"]
+    for r in rows:
+        lines.append(f"• {r['name']} — "
+                     f"{plural(r['c'], 'згадка', 'згадки', 'згадок')} · "
+                     f"{r['lo']} … {r['hi']}")
+        for a in r.get("articles") or []:
+            lines.append(f"    {a['date']} {a['title']}\n    {a['url']}")
+    lines.append("\nЛінки — для рідкісних носіїв: із заголовка видно, чи це "
+                 "справжня посада іншого міста (тоді злиття «ні»), чи зачеп у "
+                 "беку (тоді /entity_resync <id статті>).")
+    out = "\n".join(lines)
+    await msg.edit_text(out[:4000] + ("…" if len(out) > 4000 else ""),
+                        disable_web_page_preview=True)
+
+
 # ---------- /roles ----------
 
 async def roles_handler(update, context):
@@ -1524,6 +1627,19 @@ async def roles_handler(update, context):
             "  ON rv.raw_norm = role_norm(ae.role_at_time)")[0]["links"]
         canons = bot_db.query(
             "SELECT count(*) AS n, count(org_entity_id) AS with_org FROM role_canon")[0]
+        # СКІЛЬКИ ЩЕ МОЖНА НАБРАТИ ПИТАННЯМИ. Без цього числа відсоток
+        # покриття читається як шкала до 100%, а це неправда: написання, у
+        # якого немає жодного кандидата на злиття, не потрапить під канон
+        # ніколи — і не має, бо зливати його нема з чим. Реальне питання
+        # 02.08: «дивно, що % не змінився» після десятка відповідей — уся
+        # решта черги коштує кілька відсотків, і це видно тільки так.
+        stake = bot_db.query(
+            "SELECT count(*) AS links FROM article_entities ae "
+            "WHERE role_norm(ae.role_at_time) IN ("
+            "   SELECT a_norm FROM role_pairs WHERE verdict IS NULL "
+            "   UNION SELECT b_norm FROM role_pairs WHERE verdict IS NULL) "
+            "AND role_norm(ae.role_at_time) NOT IN "
+            "   (SELECT raw_norm FROM role_variants)")[0]["links"]
         top = bot_db.query(
             """
             SELECT rc.canon, count(DISTINCT rv.raw_norm) AS variants,
@@ -1536,20 +1652,24 @@ async def roles_handler(update, context):
             GROUP BY rc.id, rc.canon, o.name_ua, o.name_ru
             ORDER BY links DESC LIMIT 5
             """)
-        return tot, cov, canons, top, _pending_count()
+        return tot, cov, canons, top, _pending_count(), stake
 
     try:
-        tot, cov, canons, top, pending = await asyncio.to_thread(build)
+        tot, cov, canons, top, pending, stake = await asyncio.to_thread(build)
     except Exception as e:
         await msg.edit_text(f"❌ Нора недоступна: {e}")
         return
     links = tot["links"] or 0
     pct = (100 * cov // links) if links else 0
+    stake_pct = (100 * stake / links) if links else 0
     lines = ["🦊 Канон ролей\n",
              f"Сирих написань: {tot['variants']} на {links} зв'язків",
              f"Зведено до канону: {canons['n']} посад, покриття {cov} зв'язків ({pct}%)",
              f"З афіліацією (орган вказано): {canons['with_org']}",
-             f"У черзі питань: {pending}"]
+             f"У черзі питань: {pending} — на кону ще {stake} зв'язків "
+             f"(+{stake_pct:.1f}% покриття, якщо звести ВСЕ)",
+             "Решта написань кандидатів на злиття не має — їх нема з чим "
+             "зливати, і 100% тут недосяжні за задумом."]
     if top:
         lines.append("\nНайбільші канони:")
         for r in top:
