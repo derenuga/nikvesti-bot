@@ -477,6 +477,35 @@ def test_bulk():
     check("повторний гурт по закритому класу нічого не робить",
           er.bulk_apply("carrier_only", "same", "тест") == 0)
 
+    # ГОЛОВНЕ про гурт: одне «звести всі» не має зчіплювати два готові канони.
+    # Саме через ланцюжок A→B→C→D двічі за сесію зліпились усі ОВА країни в
+    # один канон на півсотні написань.
+    bot_db.execute("DELETE FROM role_variants")
+    bot_db.execute("DELETE FROM role_canon")
+    bot_db.execute("UPDATE role_pairs SET verdict = NULL")
+    er.merge_roles("голова обласної ва", "керівник обласної ва",
+                   "голова обласної ВА", "керівник обласної ВА", "тест")
+    er.merge_roles("голова міської ва", "начальник міської ва",
+                   "голова міської ВА", "начальник міської ВА", "тест")
+    n_before = bot_db.query("SELECT count(*) AS n FROM role_canon")[0]["n"]
+    bot_db.execute(
+        "INSERT INTO role_pairs (a_norm, b_norm, score, signals, cls, updated) "
+        "VALUES ('голова міської ва', 'голова обласної ва', 9, 'тест', "
+        "'typo', 0) ON CONFLICT (a_norm, b_norm) DO UPDATE SET "
+        "verdict = NULL, cls = 'typo'")
+    er.bulk_apply("typo", "same", "тест")
+    n_after = bot_db.query("SELECT count(*) AS n FROM role_canon")[0]["n"]
+    check("гурт НЕ зчіплює два готові канони — пара лишається людині",
+          n_after == n_before and er._bulk_skipped["n"] >= 1,
+          f"канонів {n_before}→{n_after}, пропущено {er._bulk_skipped['n']}")
+    still = bot_db.query(
+        "SELECT verdict FROM role_pairs WHERE a_norm = 'голова міської ва' "
+        "AND b_norm = 'голова обласної ва'")
+    check("і така пара лишається невирішеною в черзі",
+          still and still[0]["verdict"] is None, f"{still}")
+    bot_db.execute("DELETE FROM role_variants")
+    bot_db.execute("DELETE FROM role_canon")
+
     # З екрана класу має бути вихід у питання по одній парі — інакше людина
     # бачить список і не може на нього відповісти, а команда /roles_dedup
     # починає з початку всієї черги.

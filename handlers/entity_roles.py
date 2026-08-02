@@ -2075,6 +2075,10 @@ def _samples(norms):
     return {r["rn"]: r["sample"] for r in rows}
 
 
+# Скільки пар останній гурт лишив людині (злиття двох готових канонів).
+_bulk_skipped = {"n": 0}
+
+
 def bulk_apply(cls, verdict, decided_by=None):
     """Закрити весь клас одним рішенням. verdict: 'same' (звести) або
     'different' (більше не питати). Повертає скільки пар закрито."""
@@ -2091,8 +2095,19 @@ def bulk_apply(cls, verdict, decided_by=None):
             return len(rows)
         norms = {r["a_norm"] for r in rows} | {r["b_norm"] for r in rows}
         samples = _samples(norms)
-        done = 0
+        done = skipped = 0
         for r in rows:
+            # ГУРТ НЕ ЗЧІПЛЮЄ ДВА ГОТОВІ КАНОНИ. Одне «звести всі» по класу з
+            # тридцяти пар інакше збирає ланцюжок A→B→C→D і робить канон на
+            # півсотні написань: саме так двічі за сесію зліпились усі ОВА
+            # країни — спершу під херсонською назвою, потім під одеською.
+            # Пара, що об'єднує два канони, — це рішення про десятки написань
+            # одразу, і воно має ухвалюватись поштучно, з попередженням у
+            # картці. Такі пари лишаються в черзі.
+            ca, cb = _variant_canon(r["a_norm"]), _variant_canon(r["b_norm"])
+            if ca and cb and ca != cb:
+                skipped += 1
+                continue
             try:
                 merge_roles(r["a_norm"], r["b_norm"],
                             samples.get(r["a_norm"]), samples.get(r["b_norm"]),
@@ -2101,6 +2116,7 @@ def bulk_apply(cls, verdict, decided_by=None):
                 done += 1
             except Exception as e:
                 print(f"roles_bulk: пара {r['id']} не звелась — {e}")
+        _bulk_skipped["n"] = skipped
         return done
 
 
@@ -2233,9 +2249,14 @@ async def roles_bulk_callback(update, context):
         return
     what = ("зведено в канони" if verdict == "same"
             else "позначено різними — більше не спитаю")
+    tail = ""
+    if verdict == "same" and _bulk_skipped["n"]:
+        tail = (f"\n⚠️ {_bulk_skipped['n']} пар лишив у черзі: вони зчіплюють "
+                f"ДВА готові канони, а це рішення про десятки написань одразу "
+                f"— тільки поштучно, з попередженням у картці.")
     counts = await asyncio.to_thread(class_counts)
     await query.edit_message_text(
-        f"🦊 Клас «{CLASS_LABELS.get(cls, cls)}»: {n} пар {what}.\n"
+        f"🦊 Клас «{CLASS_LABELS.get(cls, cls)}»: {n} пар {what}.{tail}\n"
         + ("Відкат — /roles_forget <написання> або /roles_canon для перегляду.\n\n"
            if verdict == "same" else "\n")
         + _bulk_menu_text(counts),
