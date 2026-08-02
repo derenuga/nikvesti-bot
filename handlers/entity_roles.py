@@ -38,6 +38,7 @@ view `v_entity_roles`. Через це відкат тривіальний — �
 """
 
 import asyncio
+import math
 import os
 import re
 import time
@@ -130,6 +131,9 @@ CREATE TABLE IF NOT EXISTS role_pairs (
     UNIQUE (a_norm, b_norm)
 );
 CREATE INDEX IF NOT EXISTS idx_role_pairs_open ON role_pairs (score DESC) WHERE verdict IS NULL;
+ALTER TABLE role_pairs ADD COLUMN IF NOT EXISTS cls TEXT;
+ALTER TABLE role_pairs ADD COLUMN IF NOT EXISTS cls_detail TEXT;
+ALTER TABLE role_pairs ADD COLUMN IF NOT EXISTS stake INT;
 """
 
 # Індекс по нормалізованій ролі: усі запити довідника групують саме по ній,
@@ -228,6 +232,75 @@ def plural(n, one, few, many):
     return f"{n} {many}"
 
 
+# ---------- Класи кандидатів ----------
+#
+# Замір 02.08 показав, що черга «одна пара — одне питання» при 3757 парах по
+# картках і 2091 по ролях не працює: навіть по 10 секунд це десяток годин, а на
+# третій сотні людина перестає читати підстави. Тому кандидати спершу
+# розкладаються на КЛАСИ — у кожного класу своя ціна рішення:
+#
+#   permutation — ті самі слова, інший порядок («проспект Центральний» ~
+#                 «Центральний проспект»). Дубль механічно, без сумнівів.
+#   abbrev      — скорочення/розгортання («ОВА» ~ «обласна військова
+#                 адміністрація»). Теж майже завжди дубль.
+#   containment — одне написання ВКЛАДЕНЕ в інше. Найпідступніший клас: сюди
+#                 разом падають «голова обласної ВА» ~ «голова МИКОЛАЇВСЬКОЇ
+#                 обласної ВА» (та сама посада) і «міський голова» ~ «міський
+#                 голова ЛЬВОВА» (різні). Розрізняє їх саме зайве слово, тому
+#                 воно віддається окремо — і в картку питання, і в гістограму.
+#   typo        — те саме написання з друкарською різницею («Сєнкевич»/«Сенкевич»).
+#   carrier_only— лексично не схожі взагалі, спільний лише носій. Це і є
+#                 «мер» ~ «міський голова»: найцінніший клас і єдиний, де без
+#                 людини не обійтись.
+#
+# Клас — це НЕ вердикт. Він лише каже, скільки коштує рішення і чи можна
+# питати класом, а не парою.
+
+CLASS_LABELS = {
+    "permutation": "ті самі слова, інший порядок",
+    "abbrev": "скорочення / розгортання",
+    "containment": "уточнення (одне вкладене в інше)",
+    "typo": "друкарська різниця",
+    "carrier_only": "лексично різні, спільний носій",
+    "other": "інше",
+}
+
+
+def _is_acronym_of(short, long_tokens):
+    """«ова» = перші літери «обласна військова адміністрація»: збіг із
+    початковими літерами будь-якого суцільного відрізка довгої назви."""
+    if not (2 <= len(short) <= 6) or len(long_tokens) < 2:
+        return False
+    initials = "".join(t[0] for t in long_tokens)
+    return short in initials and len(short) >= 2
+
+
+def classify_pair(a, b, has_carrier=False):
+    """Клас пари нормалізованих написань → (ключ, деталь). Деталь — те, що
+    людині треба побачити, щоб вирішити за секунду (зайві слова для
+    containment). Спільна для обох осей: імена карток і ролі різняться лише
+    тим, звідки взялись.
+
+    `has_carrier` є тільки в ролей: коли структурного зв'язку між рядками
+    немає взагалі, а носій спільний — це і є «мер» ~ «міський голова», клас
+    carrier_only. Для карток такого сигналу немає, і залишок іде в other."""
+    ta, tb = _tokens(a), _tokens(b)
+    sa, sb = set(ta), set(tb)
+    if sorted(ta) == sorted(tb) and ta != tb:
+        return "permutation", None
+    short_t, long_t = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    for t in short_t:
+        if t not in set(long_t) and _is_acronym_of(t, long_t):
+            return "abbrev", t
+    if sa < sb or sb < sa:
+        extra = sorted((sb - sa) if sa < sb else (sa - sb))
+        return "containment", " ".join(extra)
+    import difflib
+    if difflib.SequenceMatcher(None, a, b).ratio() >= 0.85:
+        return "typo", None
+    return ("carrier_only" if has_carrier else "other"), None
+
+
 def find_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
     """ЧИСТИЙ детектор: рахує кандидатів і НІЧОГО не пише (з нього ж живе
     read-only замір /entity_scale). Повертає (ролей у переборі, [(a, b, score,
@@ -300,7 +373,12 @@ def find_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
         ov = overlap.get((a, b), 0)
         sh = shared.get((a, b), 0)
         if ov:
-            score += 3
+            # Єдиний сигнал, що означає саме «та сама посада», а не «схожі
+            # рядки». Тому важить більше за будь-яку лексичну комбінацію:
+            # інакше пара «депутатка міської ради» ~ «...ради Львова», у якої
+            # спільного носія немає взагалі, ставала б урівень із «мер» ~
+            # «міський голова».
+            score += 4
             sig.append(f"спільних носіїв у перетинні періоди: {ov}")
         elif sh:
             score += 1
@@ -311,9 +389,24 @@ def find_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
             sig.append(f"схожість написання {sim:.2f}")
         ta, tb = toks[a], toks[b]
         short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
-        if len(short) >= 2 and short < long_:
+        nested = len(short) >= 2 and short < long_
+        cls, detail = classify_pair(a, b, has_carrier=bool(sh))
+        if cls == "permutation":
+            # ті самі слова в іншому порядку — це дубль механічно, без сумнівів
+            score += 3
+            sig.append("ті самі слова, інший порядок")
+        elif cls == "abbrev":
             score += 2
-            sig.append("одне написання вкладене в інше")
+            sig.append(f"скорочення: {detail}")
+        elif nested:
+            # Вкладеність СВІДОМО важить мало (було 2, стало 1): на реальних
+            # даних вона масово тягне нагору «уточнення» — «міський голова» ~
+            # «міський голова Львова», — які зливати не можна. Сигналом лишається
+            # (спорідненість справжня), але чергу більше не забиває; що саме
+            # відрізняє пару, видно з класу в картці питання.
+            score += 1
+            sig.append(f"вкладене, різниця: {detail}" if detail
+                       else "одне написання вкладене в інше")
         common_rare = sorted(
             t for t in (ta & tb) if len(t) >= 5 and df.get(t, 0) <= rare_cap)
         if common_rare:
@@ -321,12 +414,17 @@ def find_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
             sig.append("спільне слово: " + ", ".join(common_rare[:2]))
         # рідкісне слово САМЕ ПО СОБІ кандидатом не робить: «департаменту»
         # ділять десятки різних посад
-        if not (sh or sim is not None or "вкладене" in " ".join(sig)):
+        if not (sh or sim is not None or nested):
             continue
         if score < SCORE_MIN:
             continue
-        rows.append((a, b, score, " · ".join(sig)))
-    rows.sort(key=lambda r: -r[2])
+        # Скільки зв'язків на кону. Питати про пару з 2345 зв'язками треба
+        # раніше, ніж про пару з вісьмома, навіть коли сигнали в них однакові —
+        # інакше вечір іде на посади, які трапились двічі.
+        stake = min(roles[a]["links"], roles[b]["links"])
+        score += min(2.0, math.log10(max(stake, 1)))
+        rows.append((a, b, round(score, 2), " · ".join(sig), cls, detail, stake))
+    rows.sort(key=lambda r: (-r[2], -r[6]))
     return len(names), rows
 
 
@@ -340,15 +438,17 @@ def scan_pairs(min_links=MIN_LINKS, top_roles=TOP_ROLES):
     n_roles, rows = find_pairs(min_links, top_roles)
     added = 0
     now = int(time.time())
-    for a, b, score, sig in rows:
+    for a, b, score, sig, cls, detail, stake in rows:
         n = bot_db.execute(
-            "INSERT INTO role_pairs (a_norm, b_norm, score, signals, updated) "
-            "VALUES (%s, %s, %s, %s, %s) "
+            "INSERT INTO role_pairs (a_norm, b_norm, score, signals, cls, "
+            "  cls_detail, stake, updated) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (a_norm, b_norm) DO UPDATE SET "
             "  score = EXCLUDED.score, signals = EXCLUDED.signals, "
-            "  updated = EXCLUDED.updated "
+            "  cls = EXCLUDED.cls, cls_detail = EXCLUDED.cls_detail, "
+            "  stake = EXCLUDED.stake, updated = EXCLUDED.updated "
             "WHERE role_pairs.verdict IS NULL",
-            (a, b, score, sig, now))
+            (a, b, score, sig, cls, detail, stake, now))
         added += 1 if n else 0
     return n_roles, len(rows), added, _pending_count()
 
@@ -500,7 +600,7 @@ GROUP BY 1, 2 ORDER BY c DESC LIMIT 3
 """
 
 NEXT_PAIR_SQL = """
-SELECT p.id, p.a_norm, p.b_norm, p.score, p.signals
+SELECT p.id, p.a_norm, p.b_norm, p.score, p.signals, p.cls, p.cls_detail
 FROM role_pairs p
 LEFT JOIN role_variants va ON va.raw_norm = p.a_norm
 LEFT JOIN role_variants vb ON vb.raw_norm = p.b_norm
@@ -541,9 +641,15 @@ def _question_text(p):
                 f"{plural(card.get('people', 0), 'носій', 'носії', 'носіїв')} · "
                 f"{period}{who}")
 
+    # Клас окремим рядком: він вирішує питання швидше за підставу. «уточнення,
+    # різниця: львова» — це миттєве «ні», а не читання балів.
+    cls = CLASS_LABELS.get(p.get("cls") or "", "")
+    if cls and p.get("cls_detail"):
+        cls = f"{cls} — «{p['cls_detail']}»"
     return ("🦊 Це та сама посада?\n\n"
             + block("А", p["a"]) + "\n"
             + block("Б", p["b"]) + "\n\n"
+            + (f"Клас: {cls}\n" if cls else "")
             + f"Підстава: {p['signals']}")
 
 

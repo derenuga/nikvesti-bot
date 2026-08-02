@@ -44,7 +44,8 @@ from handlers.entity_layer import (
     entity_dedup_handler, entity_export_links_handler, entity_resync_handler,
 )
 from handlers.entity_merge import (
-    entity_scale_handler, entity_merge_log_handler, entity_unmerge_handler,
+    entity_scale_handler, entity_classes_handler,
+    entity_merge_log_handler, entity_unmerge_handler,
 )
 from handlers.entity_roles import (
     roles_handler, roles_dedup_handler, roles_canon_handler,
@@ -484,6 +485,7 @@ def main():
     app.add_handler(CommandHandler("entity_dedup", entity_dedup_handler))
     app.add_handler(CommandHandler("entity_export_links", entity_export_links_handler))
     app.add_handler(CommandHandler("entity_scale", entity_scale_handler))
+    app.add_handler(CommandHandler("entity_classes", entity_classes_handler))
     app.add_handler(CommandHandler("entity_merge_log", entity_merge_log_handler))
     app.add_handler(CommandHandler("entity_unmerge", entity_unmerge_handler))
     app.add_handler(CommandHandler("roles", roles_handler))

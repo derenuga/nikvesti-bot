@@ -451,10 +451,105 @@ def format_measure(m):
     lines.append(f"\nДетектор знайшов пар-кандидатів: {m['role_pairs']} "
                  f"(з них сильних: {m['role_pairs_strong']}), "
                  f"ролей у переборі: {m['role_scan_roles']}")
-    for a, b, score, sig in m.get("role_pairs_top") or []:
+    for a, b, score, sig, cls, detail, stake in m.get("role_pairs_top") or []:
         lines.append(f"  «{a}» ~ «{b}» ({score:.0f}: {sig})")
-    lines.append("\nПитати кнопками по ролях: /roles_dedup · стан: /roles")
+    lines.append("\nРозкладка кандидатів по класах: /entity_classes")
+    lines.append("Питати кнопками по ролях: /roles_dedup · стан: /roles")
     return "\n".join(lines)
+
+
+# ---------- /entity_classes (розкладка кандидатів по класах) ----------
+#
+# Замір 02.08 дав 3757 пар по картках і 2091 по ролях. Черга «одна пара — одне
+# питання» на такому обсязі не працює фізично, тому перед тим як будувати
+# масове підтвердження, треба знати РОЗМІР КОЖНОГО КЛАСУ: якщо перестановок
+# слів три тисячі — картки закриваються за вечір одним підтвердженням на клас;
+# якщо триста — масовість не варта коду. Розкладка read-only, вона саме про це.
+
+SCALE_SIM_ALL_SQL = """
+SELECT a.kind, a.name_ua AS an, b.name_ua AS bn, a.mentions AS am, b.mentions AS bm
+FROM entities a JOIN entities b ON a.kind = b.kind AND a.id < b.id
+WHERE a.name_ua IS NOT NULL AND b.name_ua IS NOT NULL
+  AND coalesce(a.mentions, 0) >= %s AND coalesce(b.mentions, 0) >= %s
+  AND lower(a.name_ua) %% lower(b.name_ua)
+"""
+
+
+def _tally(pairs):
+    """pairs: [(cls, detail, ліва, права)] → зведення по класах + гістограма
+    зайвих слів класу «уточнення»."""
+    classes, extra = {}, {}
+    for cls, detail, left, right in pairs:
+        slot = classes.setdefault(cls, {"n": 0, "examples": []})
+        slot["n"] += 1
+        if len(slot["examples"]) < 2:
+            slot["examples"].append(f"{left} ~ {right}")
+        if cls == "containment" and detail:
+            for w in detail.split():
+                extra[w] = extra.get(w, 0) + 1
+    return {"total": len(pairs), "classes": classes,
+            "extra": sorted(extra.items(), key=lambda kv: -kv[1])[:12]}
+
+
+def classify_cards():
+    rows = bot_db.query(SCALE_SIM_ALL_SQL, (SIM_MIN_MENTIONS, SIM_MIN_MENTIONS))
+    pairs = []
+    for r in rows:
+        a, b = entity_roles.role_norm(r["an"]), entity_roles.role_norm(r["bn"])
+        if not a or not b:
+            continue
+        cls, detail = entity_roles.classify_pair(a, b)
+        pairs.append((cls, detail, f"[{r['kind']}] {r['an']}", r["bn"]))
+    return _tally(pairs)
+
+
+def classify_roles():
+    _, rows = entity_roles.find_pairs()
+    return _tally([(cls, detail, a, b) for a, b, _s, _sig, cls, detail, _st in rows])
+
+
+def format_classes(title, data):
+    lines = [f"🦊 {title} · {data['total']} пар\n"]
+    if not data["total"]:
+        lines.append("Кандидатів немає.")
+        return "\n".join(lines)
+    order = sorted(data["classes"].items(), key=lambda kv: -kv[1]["n"])
+    for cls, slot in order:
+        pct = 100 * slot["n"] // data["total"]
+        lines.append(f"{entity_roles.CLASS_LABELS.get(cls, cls)}: "
+                     f"{slot['n']} ({pct}%)")
+        for ex in slot["examples"]:
+            lines.append(f"   · {ex}")
+    if data["extra"]:
+        lines.append("\nЗайві слова у класі «уточнення» (що саме відрізняє пару):")
+        lines.append("   " + ", ".join(f"{w} ×{n}" for w, n in data["extra"]))
+    return "\n".join(lines)
+
+
+async def entity_classes_handler(update, context):
+    """/entity_classes — розкладка кандидатів по класах, обидві осі, read-only.
+    Від цих чисел залежить, чи будувати масове підтвердження класом."""
+    if not _allowed(update):
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Нора недоступна (BOT_DATABASE_URL).")
+        return
+    msg = await update.message.reply_text("🦊 Розкладаю кандидатів по класах…")
+    try:
+        cards = await asyncio.to_thread(classify_cards)
+    except Exception as e:
+        await msg.edit_text(f"❌ Картки не розклались: {type(e).__name__}: {e}")
+        return
+    await msg.edit_text(format_classes("Класи кандидатів · КАРТКИ", cards)[:4000])
+    try:
+        roles = await asyncio.to_thread(classify_roles)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ролі не розклались: {type(e).__name__}: {e}")
+        return
+    await update.message.reply_text(
+        format_classes("Класи кандидатів · РОЛІ", roles)[:4000]
+        + "\n\nМасового підтвердження класом ще немає — це наступний крок, "
+          "коли скажеш, який клас закривати гуртом.")
 
 
 async def entity_scale_handler(update, context):
