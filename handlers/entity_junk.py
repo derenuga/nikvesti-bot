@@ -1125,6 +1125,9 @@ ORG_DUPE_CLASSES = {"permutation", "abbrev", "typo", "function_words",
 
 ORG_DUPES_LIMIT = 10
 
+# У скільки разів вжиток має різнитися, щоб він переважив повноту назви.
+DOMINANT_RATIO = 5
+
 
 def find_org_dupes(threshold=ORG_SIM_THRESHOLD, limit=ORG_DUPES_LIMIT):
     """Кандидати-дублі організацій. Read-only: нічого не зливає й не пише.
@@ -1151,9 +1154,14 @@ def find_org_dupes(threshold=ORG_SIM_THRESHOLD, limit=ORG_DUPES_LIMIT):
             continue
         # Хто лишається: при вкладеності — ПОВНІША офіційна назва («Офіс
         # Президента України», не «Офіс президента»), інакше та картка, у якої
-        # більше згадок. Помилку напрямку видно в прев'ю, і виправляється вона
-        # тим самим /entity_merge з переставленими id.
-        if cls.startswith("containment"):
+        # більше згадок.
+        #
+        # АЛЕ повнота програє разючій різниці у вжитку: «МикВісті» (1543) і
+        # «ЗМІ «МикВісті»» (2) — це не повніша офіційна назва, а випадкове
+        # означення в одній статті, і лишати треба першу. Живий випадок 02.08.
+        big, small = max(r["am"], r["bm"]), min(r["am"], r["bm"])
+        lopsided = small * DOMINANT_RATIO <= big
+        if cls.startswith("containment") and not lopsided:
             keep_a = len(er._tokens(a)) > len(er._tokens(b))
         else:
             keep_a = r["am"] >= r["bm"]
