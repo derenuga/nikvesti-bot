@@ -1164,6 +1164,35 @@ def test_org_by_name_needs_more_than_a_city():
           and er.is_generic_role("голова обласної військової адміністрації"))
 
 
+def test_canon_search():
+    """Канон шукається за словом — інакше дрібний канон недосяжний.
+
+    Список сортований за кількістю написань і ріжеться лімітом Telegram, тож
+    канон із двома написаннями («міський голова Києва») просто не доїжджав до
+    екрана, і поставити йому орган не було як."""
+    er.merge_roles("міський голова києва", "мер києва",
+                   "міський голова Києва", "мер Києва", "тест")
+    rows = bot_db.query(
+        "SELECT rc.id, rc.canon FROM role_canon rc "
+        "JOIN role_variants rv ON rv.canon_id = rc.id "
+        "WHERE lower(rc.canon) LIKE %s OR rc.id IN "
+        "  (SELECT canon_id FROM role_variants WHERE raw_norm LIKE %s) "
+        "GROUP BY rc.id, rc.canon", ("%києва%", "%києва%"))
+    check("пошук канону за словом знаходить дрібний канон",
+          any("Києва" in r["canon"] for r in rows), f"{[r['canon'] for r in rows]}")
+    rows2 = bot_db.query(
+        "SELECT rc.id FROM role_canon rc "
+        "JOIN role_variants rv ON rv.canon_id = rc.id "
+        "WHERE lower(rc.canon) LIKE %s OR rc.id IN "
+        "  (SELECT canon_id FROM role_variants WHERE raw_norm LIKE %s) "
+        "GROUP BY rc.id", ("%мер києва%", "%мер києва%"))
+    check("шукає і за написанням усередині канону, не лише за назвою",
+          len(rows2) == 1, f"{rows2}")
+    bot_db.execute(
+        "DELETE FROM role_canon WHERE id IN (SELECT canon_id FROM role_variants "
+        "WHERE raw_norm IN ('міський голова києва', 'мер києва'))")
+
+
 def test_rejection_spreads_to_canon():
     """«Ні» діє на канон, а не на написання.
 
@@ -1525,6 +1554,7 @@ async def run():
     test_canon_warning()
     test_affiliation()
     test_org_by_name_needs_more_than_a_city()
+    test_canon_search()
     test_rejection_spreads_to_canon()
     test_rejection_memory_and_rollback()
     test_card_merge_journal()

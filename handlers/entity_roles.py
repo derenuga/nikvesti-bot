@@ -2176,6 +2176,10 @@ async def roles_canon_handler(update, context):
         return
     args = context.args or []
     one = int(args[0]) if args and args[0].isdigit() else None
+    # Пошук за назвою — бо в списку канон із двома написаннями стоїть у
+    # хвості, а хвіст зрізав ліміт Telegram: «міський голова Києва» просто не
+    # доїжджав до екрана, і виправити його орган не було як.
+    find = " ".join(args).strip().lower() if args and one is None else None
 
     def build_one():
         ensure_schema()
@@ -2195,16 +2199,25 @@ async def roles_canon_handler(update, context):
 
     def build_list():
         ensure_schema()
+        # Шукаємо і за назвою канону, і за написаннями всередині: людина
+        # пам'ятає ту форму, яку бачила в картці, а канон міг назватись інакше.
+        where, params = "", ()
+        if find:
+            where = ("WHERE lower(rc.canon) LIKE %s OR rc.id IN "
+                     "  (SELECT canon_id FROM role_variants "
+                     "   WHERE raw_norm LIKE %s) ")
+            params = (f"%{find}%", f"%{role_norm(find)}%")
         return bot_db.query(
-            """
+            f"""
             SELECT rc.id, rc.canon, coalesce(o.name_ua, o.name_ru) AS org,
                    count(*) AS variants
             FROM role_canon rc
             JOIN role_variants rv ON rv.canon_id = rc.id
             LEFT JOIN entities o ON o.id = rc.org_entity_id
+            {where}
             GROUP BY rc.id, rc.canon, o.name_ua, o.name_ru
             ORDER BY count(*) DESC, rc.id
-            """)
+            """, params)
 
     try:
         if one is not None:
@@ -2229,19 +2242,34 @@ async def roles_canon_handler(update, context):
         return
     if not rows:
         await update.message.reply_text(
+            f"За «{find}» канону не знайшлось — спробуй одне слово."
+            if find else
             "Канонів ще немає — /roles_dedup поставить перші питання.")
         return
-    lines = [f"🦊 Канон посад — {len(rows)}\n"]
+    head = (f"🦊 Канони за «{find}» — {len(rows)}\n" if find
+            else f"🦊 Канон посад — {len(rows)}\n")
+    lines = [head]
     for r in rows:
         org = f" · 🏛 {r['org']}" if r["org"] else ""
         lines.append(f"[{r['id']}] «{r['canon']}» — {r['variants']} написань{org}")
-    lines.append("\nОдин канон із написаннями: /roles_canon <id>")
+    lines.append("\nОдин канон із написаннями: /roles_canon <id> · "
+                 "пошук: /roles_canon <слово>")
     lines.append("Переназвати: /roles_rename <id> <текст> · "
                  "відкат: /roles_forget <текст|id>")
-    text = "\n".join(lines)
-    if len(text) > 4000:
-        text = text[:3960] + "\n…(список обрізано)"
-    await update.message.reply_text(text)
+    # РІЖЕМО НА ПОВІДОМЛЕННЯ, а не обрізаємо. Список сортований за кількістю
+    # написань, тож обрізання з'їдало саме дрібні канони — а лагодити частіше
+    # доводиться їх («міський голова Києва» з двома написаннями просто не
+    # доїжджав до екрана).
+    chunk = []
+    size = 0
+    for ln in lines:
+        if size + len(ln) > 3800 and chunk:
+            await update.message.reply_text("\n".join(chunk))
+            chunk, size = [], 0
+        chunk.append(ln)
+        size += len(ln) + 1
+    if chunk:
+        await update.message.reply_text("\n".join(chunk))
 
 
 # ---------- /roles_rename ----------
