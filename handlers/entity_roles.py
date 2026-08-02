@@ -438,11 +438,30 @@ def _is_other_region(word):
 # що канон №7 зібрав шість областей, три міські ВА і одну районну: обидві
 # заміни падали в клас «одне слово замінено», який позначений «по одній», і
 # людина на сотому питанні тиснула «так».
-ADMIN_LEVELS = ("обласн", "міськ", "районн", "сільськ", "селищн", "громад")
+# Рівень зводиться до КОДУ, а не порівнюється як слово: інакше «ОВА» і
+# «обласної військової адміністрації» виглядають як різні рівні, хоча це те
+# саме в скороченні. Абревіатури — точним збігом (корінь «ова» зловив би
+# «овальний»), решта — префіксом.
+LEVEL_CODES = (
+    ("обл", ("обласн",), {"ова", "ода"}),
+    ("міс", ("міськ",), {"мва", "мда"}),
+    ("рай", ("районн",), {"рва", "рда"}),
+    ("сіл", ("сільськ",), set()),
+    ("сел", ("селищн",), set()),
+    ("гром", ("громад",), set()),
+)
+ADMIN_LEVELS = tuple(r for _c, roots, _a in LEVEL_CODES for r in roots)
+
+
+def _level_code(word):
+    for code, roots, abbr in LEVEL_CODES:
+        if word in abbr or any(word.startswith(r) for r in roots):
+            return code
+    return None
 
 
 def _is_level_word(word):
-    return any(word.startswith(root) for root in ADMIN_LEVELS)
+    return _level_code(word) is not None
 
 
 # Слова, які в класі «уточнення» РОЗРІЗНЯЮТЬ, а не доповнюють: «заступник» ≠
@@ -509,12 +528,30 @@ def classify_pair(a, b, has_carrier=False):
     ma, mb = _status_marker(a), _status_marker(b)
     if bool(ma) != bool(mb):
         return "status_diff", f"«{ma or mb}» лише в одному написанні"
+
     if sorted(ta) == sorted(tb) and ta != tb:
         return "permutation", None
     short_t, long_t = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
     hit = _abbrev_match(short_t, long_t)
     if hit:
         return "abbrev", hit
+    # ПІСЛЯ скорочень — інакше «ова» ↔ «обласної військової адміністрації»
+    # читалось би як різний рівень, хоча це те саме слово в скороченні.
+    # Обидва написання називають МІСЦЕ, і місця різні — це різні органи, хоч
+    # скільки б слів іще відрізнялось. Перевірка стоїть тут, а не лише в гілці
+    # «одне слово замінено», бо «депутатКА ОБЛАСНОЇ ради» ~ «депутат МІСЬКОЇ
+    # ради» різняться двома словами і провалювались у клас «інше», де рішення
+    # доводилось ухвалювати вручну 312 разів.
+    pa = {w for w in ta if _is_place_word(w)}
+    pb = {w for w in tb if _is_place_word(w)}
+    if pa and pb and pa != pb:
+        return "place_swap", f"{' '.join(sorted(pa))} ↔ {' '.join(sorted(pb))}"
+    la = {_level_code(w) for w in ta if _is_level_word(w)}
+    lb = {_level_code(w) for w in tb if _is_level_word(w)}
+    if la and lb and la != lb:
+        wa = " ".join(sorted(w for w in ta if _is_level_word(w)))
+        wb = " ".join(sorted(w for w in tb if _is_level_word(w)))
+        return "level_swap", f"{wa} ↔ {wb}"
     if sa < sb or sb < sa:
         extra = sorted((sb - sa) if sa < sb else (sa - sb))
         detail = " ".join(extra)
@@ -538,7 +575,8 @@ def classify_pair(a, b, has_carrier=False):
                 # («обласної» → «міської») — це різні органи, а не синоніми.
                 if _is_place_word(x) or _is_place_word(y):
                     return "place_swap", f"{x} → {y}"
-                if _is_level_word(x) or _is_level_word(y):
+                if _level_code(x) != _level_code(y) and (
+                        _is_level_word(x) or _is_level_word(y)):
                     return "level_swap", f"{x} → {y}"
                 return "word_swap", f"{x} → {y}"
             return "typo", f"{x} / {y}"
