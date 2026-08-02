@@ -1877,7 +1877,8 @@ org {ctx["rank"]} 9202
 
     lines, counts = er.describe_fixes(actions)
     check("прев'ю пакета рахує дії по типах",
-          counts == {"forget": 1, "rename": 1, "merge": 1, "org": 1}, str(counts))
+          counts == {"forget": 1, "attach": 0, "rename": 1, "merge": 1,
+                     "org": 1}, str(counts))
     check("прев'ю показує, скільки зв'язків на кону в зняття",
           any("зв'язк" in ln for ln in lines), str(lines[:2]))
 
@@ -1900,8 +1901,48 @@ org {ctx["rank"]} 9202
     check("сирий role_at_time пакет не чіпає жодним рядком",
           raw_roles_snapshot() == raw_before)
 
-    bad, errs = er.parse_fix("# roles-fix\nmerge 12\nrename абв\n")
-    check("покалічені рядки не стають діями", not bad and len(errs) == 2, str(errs))
+    # ↪️ Перевішування написання на ПРАВИЛЬНИЙ канон. Живий випадок 02.08:
+    # під «заступником директора департаменту ЖКГ» лежали написання про
+    # самого ДИРЕКТОРА — інша посада й інша людина, — а канон директора вже
+    # існував поруч. forget викинув би їх у чергу питань чекати детектора;
+    # attach ставить рядок туди, куди треба, одразу.
+    deputy = bot_db.query(
+        "INSERT INTO role_canon (canon, canon_norm, created) VALUES "
+        "(%s, %s, 1780000000) RETURNING id",
+        ("заступник директора департаменту ЖКГ",
+         er.role_norm("заступник директора департаменту ЖКГ")))[0]["id"]
+    director = bot_db.query(
+        "INSERT INTO role_canon (canon, canon_norm, created) VALUES "
+        "(%s, %s, 1780000000) RETURNING id",
+        ("директор Департаменту ЖКГ",
+         er.role_norm("директор Департаменту ЖКГ")))[0]["id"]
+    for text, cid in (("заступник директора департаменту ЖКГ", deputy),
+                      ("директор департаменту ЖКГ Миколаєва", deputy),
+                      ("директор Департаменту ЖКГ", director)):
+        bot_db.execute(
+            "INSERT INTO role_variants (raw_norm, raw_sample, canon_id, created) "
+            "VALUES (%s, %s, %s, 1780000000) ON CONFLICT (raw_norm) DO UPDATE "
+            "SET canon_id = EXCLUDED.canon_id",
+            (er.role_norm(text), text, cid))
+    moves, _e = er.parse_fix(
+        f"# roles-fix\nattach {director} директор департаменту ЖКГ Миколаєва\n")
+    desc, cnt = er.describe_fixes(moves)
+    check("прев'ю перевішування каже, ЗВІДКИ забираємо",
+          cnt["attach"] == 1 and f"[{deputy}]" in desc[0], str(desc))
+    er.apply_fixes(moves, "тест")
+    check("написання переїхало на правильний канон",
+          bot_db.query("SELECT canon_id FROM role_variants WHERE raw_norm = %s",
+                       (er.role_norm("директор департаменту ЖКГ Миколаєва"),)
+                       )[0]["canon_id"] == director)
+    check("канон-донор лишився живим (у нього ще є свої написання)",
+          bool(bot_db.query("SELECT 1 AS x FROM role_canon WHERE id = %s", (deputy,))))
+    check("назва канону-приймача не звузилась",
+          bot_db.query("SELECT canon FROM role_canon WHERE id = %s",
+                       (director,))[0]["canon"] == "директор Департаменту ЖКГ")
+    bot_db.execute("DELETE FROM role_canon WHERE id = ANY(%s)", ([deputy, director],))
+
+    bad, errs = er.parse_fix("# roles-fix\nmerge 12\nrename абв\nattach абв\n")
+    check("покалічені рядки не стають діями", not bad and len(errs) == 3, str(errs))
 
     for cid in (ctx["syn"], ctx["rank"], ctx["level"], ctx["subj"], ctx["narrow"]):
         bot_db.execute("DELETE FROM role_canon WHERE id = %s", (cid,))

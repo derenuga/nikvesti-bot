@@ -2712,7 +2712,7 @@ def export_canons_csv():
 # бюджету. Обробник бере ЛИШЕ .txt і ЛИШЕ з цим рядком усередині.
 FIX_MARKER = "roles-fix"
 
-FIX_OPS = {"forget", "rename", "merge", "org"}
+FIX_OPS = {"forget", "attach", "rename", "merge", "org"}
 
 
 def parse_fix(text):
@@ -2720,9 +2720,17 @@ def parse_fix(text):
 
         # roles-fix
         forget керівниця управління освіти міської ради
+        attach 35 директор департаменту ЖКГ Миколаєва
         rename 29 начальник управління культури
         merge 29 60
         org 29 4711        (0 — зняти орган)
+
+    `attach` — це перевішування написання на правильний канон. Без нього
+    єдиним способом прибрати чуже написання було `forget`, тобто викинути
+    його в чергу питань і чекати, поки детектор колись запропонує потрібну
+    пару. Живий випадок: під «заступником директора департаменту ЖКГ» лежали
+    написання про самого ДИРЕКТОРА, а канон директора вже існував поруч —
+    єдине, чого бракувало, це переставити рядок.
 
     Рядки, скопійовані просто зі звіту («/roles_forget …»), теж розуміються:
     у них лише префікс інший, і змушувати людину його прибирати немає сенсу.
@@ -2745,6 +2753,12 @@ def parse_fix(text):
                 errors.append(f"порожній forget: {line[:60]}")
                 continue
             actions.append(("forget", rest))
+        elif op == "attach":
+            bits = rest.split(None, 1)
+            if len(bits) < 2 or not bits[0].isdigit():
+                errors.append(f"attach очікує <id канону> <написання>: {line[:60]}")
+                continue
+            actions.append(("attach", int(bits[0]), bits[1].strip()))
         elif op == "rename":
             bits = rest.split(None, 1)
             if len(bits) < 2 or not bits[0].isdigit():
@@ -2771,7 +2785,8 @@ def describe_fixes(actions):
     нори: у пакеті їх немає, а «зняти написання» без кількості зв'язків
     неможливо оцінити."""
     ensure_schema()
-    lines, counts = [], {"forget": 0, "rename": 0, "merge": 0, "org": 0}
+    lines, counts = [], {"forget": 0, "attach": 0, "rename": 0, "merge": 0,
+                         "org": 0}
     for a in actions:
         counts[a[0]] += 1
         if a[0] == "forget":
@@ -2789,6 +2804,23 @@ def describe_fixes(actions):
                     "SELECT canon_id FROM role_variants WHERE raw_norm = %s", (rn,))
                 where = f" з канону {known[0]['canon_id']}" if known else " (у довіднику немає)"
                 lines.append(f"🗑 зняти «{a[1]}»{where} · {links} зв'язків")
+        elif a[0] == "attach":
+            rn = role_norm(a[2])
+            links = bot_db.query(
+                "SELECT count(*) AS n FROM article_entities "
+                "WHERE role_norm(role_at_time) = %s", (rn,))[0]["n"]
+            now_in = bot_db.query(
+                "SELECT rc.id, rc.canon FROM role_variants rv "
+                "JOIN role_canon rc ON rc.id = rv.canon_id WHERE rv.raw_norm = %s",
+                (rn,))
+            to = bot_db.query("SELECT canon FROM role_canon WHERE id = %s", (a[1],))
+            # Показуємо, ЗВІДКИ забираємо: перевішування з чужого канону і
+            # додавання нового написання — різні за наслідками дії, а рядок
+            # у файлі однаковий.
+            src = (f" (зараз у [{now_in[0]['id']}] «{now_in[0]['canon']}»)"
+                   if now_in else " (зараз без канону)")
+            dst = f"«{to[0]['canon']}»" if to else f"канону {a[1]} НЕМАЄ"
+            lines.append(f"↪️ «{a[2]}»{src} → [{a[1]}] {dst} · {links} зв'язків")
         elif a[0] == "rename":
             cur = bot_db.query("SELECT canon FROM role_canon WHERE id = %s", (a[1],))
             was = f"«{cur[0]['canon']}» " if cur else ""
@@ -2818,6 +2850,27 @@ def apply_fixes(actions, decided_by=None):
             if a[0] == "forget":
                 kind, n, extra = forget_one(a[1])
                 done.append(f"🗑 {a[1]}" if n else f"— {a[1]} (не було)")
+            elif a[0] == "attach":
+                if not bot_db.query("SELECT 1 AS x FROM role_canon WHERE id = %s",
+                                    (a[1],)):
+                    failed.append(f"attach {a[1]} — такого канону немає")
+                    continue
+                rn = role_norm(a[2])
+                bot_db.execute(
+                    "INSERT INTO role_variants (raw_norm, raw_sample, canon_id, "
+                    "decided_by, created) VALUES (%s, %s, %s, %s, %s) "
+                    "ON CONFLICT (raw_norm) DO UPDATE SET canon_id = EXCLUDED.canon_id, "
+                    "raw_sample = EXCLUDED.raw_sample, decided_by = EXCLUDED.decided_by",
+                    (rn, a[2], a[1], decided_by, int(time.time())))
+                # Канон міг лишитись порожнім, якщо забрали його останнє
+                # написання, — прибираємо, як це робить /roles_forget.
+                bot_db.execute(
+                    "DELETE FROM role_canon rc WHERE NOT EXISTS "
+                    "(SELECT 1 FROM role_variants rv WHERE rv.canon_id = rc.id)")
+                # Назва канону-приймача мусить лишитись істинною для нового
+                # написання теж — це те саме правило, що при злитті.
+                _regeneralize(a[1])
+                done.append(f"↪️ {a[2]} → {a[1]}")
             elif a[0] == "rename":
                 n = bot_db.execute(
                     "UPDATE role_canon SET canon = %s, canon_norm = %s WHERE id = %s",
@@ -2874,9 +2927,9 @@ async def roles_fix_document(update, context):
     except Exception as e:
         await msg.reply_text(f"❌ Не змалював пакет: {type(e).__name__}: {e}")
         return
-    head = (f"🦊 Пакет рішень: зняти {counts['forget']} · переназвати "
-            f"{counts['rename']} · звести {counts['merge']} · орган "
-            f"{counts['org']}\n")
+    head = (f"🦊 Пакет рішень: зняти {counts['forget']} · перевісити "
+            f"{counts['attach']} · переназвати {counts['rename']} · звести "
+            f"{counts['merge']} · орган {counts['org']}\n")
     body = "\n".join(lines[:40])
     if len(lines) > 40:
         body += f"\n…і ще {len(lines) - 40} дій"
