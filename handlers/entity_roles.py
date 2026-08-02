@@ -1145,7 +1145,7 @@ JOIN entities e ON e.id = ae.entity_id AND e.kind = 'org'
 WHERE ae.article_id IN (
     SELECT ae2.article_id FROM article_entities ae2
     WHERE role_norm(ae2.role_at_time) = ANY(%s))
-GROUP BY 1, 2 ORDER BY c DESC LIMIT 3
+GROUP BY 1, 2 ORDER BY c DESC LIMIT 25
 """
 
 
@@ -1161,27 +1161,39 @@ def org_candidates(canon_id):
     if not rows:
         return []
     canon, variants = rows[0]["canon"], rows[0]["variants"]
-    out, seen = [], set()
+    # ЖОДЕН із двох сигналів поодинці не працює, і це видно на двох реальних
+    # провалах. Сам співпояв дав Галущенку НАБУ, САП і «Квартал 95» — він
+    # ловить СЮЖЕТ, а не афіліацію. Сама лексика дала «міському голові Києва»
+    # «Київський міський суд», «Міський сад» і «Першу міську лікарню Києва» —
+    # у мера з міською радою спільне тільки слово «міськ», рівно як і в суду.
+    # Розрізняє їх ПЕРЕТИН: правильний орган і називається схоже, і трапляється
+    # в тих самих статтях. Тому спершу ті, у кого є обидва сигнали.
+    co = {}
+    for r in bot_db.query(ORG_CANDIDATES_SQL, (variants,)):
+        co[r["id"]] = {"id": r["id"], "name": r["name"], "c": r["c"]}
+    named = {}
     try:
         for r in bot_db.query(ORG_BY_NAME_SQL, (role_norm(canon), role_norm(canon))):
-            # Трграмна схожість сама по собі зводить посаду з органом ЗА
-            # МІСТОМ: «міський голова Києва» впевнено тягнув «Господарський суд
-            # міста Києва» і «Голосіївський районний суд Києва». Тому лишаємо
-            # лише тих, хто ділить із посадою слово, яке не є топонімом.
-            if not _name_overlap(canon, r["name"]):
-                continue
-            out.append({"id": r["id"], "name": r["name"],
-                        "basis": "за назвою посади"})
-            seen.add(r["id"])
-            if len(out) >= 3:
-                break
+            if _name_overlap(canon, r["name"]):
+                named[r["id"]] = {"id": r["id"], "name": r["name"], "c": 0}
     except Exception as e:
         print(f"entity_roles: лексичний пошук органу пропущено — {e}")
-    for r in bot_db.query(ORG_CANDIDATES_SQL, (variants,)):
-        if r["id"] in seen:
-            continue
-        out.append({"id": r["id"], "name": r["name"],
-                    "basis": f"{r['c']} спільних статей"})
+    for oid, r in co.items():
+        if _name_overlap(canon, r["name"]):
+            named.setdefault(oid, r)["c"] = r["c"]
+
+    both = sorted((r for r in named.values() if r["c"]),
+                  key=lambda r: -r["c"])
+    only_name = [r for r in named.values() if not r["c"]]
+    only_co = [r for r in co.values() if r["id"] not in named]
+    out = ([{"id": r["id"], "name": r["name"],
+             "basis": f"за назвою посади · {r['c']} спільних статей"}
+            for r in both]
+           + [{"id": r["id"], "name": r["name"], "basis": "за назвою посади"}
+              for r in only_name]
+           + [{"id": r["id"], "name": r["name"],
+               "basis": f"{r['c']} спільних статей"}
+              for r in only_co[:3]])
     return out[:4]
 
 

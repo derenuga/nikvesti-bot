@@ -1163,6 +1163,48 @@ def test_org_by_name_needs_more_than_a_city():
           not er.is_generic_role("міський голова Києва")
           and er.is_generic_role("голова обласної військової адміністрації"))
 
+    # ЛЕКСИКИ ЗАМАЛО: у «міського голови Києва» спільне з «Київською міською
+    # радою» рівно слово «міськ» — рівно те саме, що з «Київським міським
+    # судом» і «Міським садом». Розрізняє їх перетин двох сигналів: правильний
+    # орган і називається схоже, і трапляється в тих самих статтях.
+    bot_db.execute(
+        "INSERT INTO entities (id, kind, name_ua) VALUES "
+        "(411, 'org', 'Київська міська рада'), (412, 'org', 'Київський міський суд'), "
+        "(413, 'org', 'Міський сад'), (414, 'org', 'Державна служба з надзвичайних ситуацій') "
+        "ON CONFLICT (id) DO NOTHING")
+    bot_db.execute(
+        "INSERT INTO entities (id, kind, name_ua) VALUES (415, 'person', 'Віталій Кличко') "
+        "ON CONFLICT (id) DO NOTHING")
+    for aid in range(5100, 5110):
+        bot_db.execute(
+            "INSERT INTO articles (id, published, title_ua) VALUES (%s, %s, %s) "
+            "ON CONFLICT (id) DO NOTHING", (aid, 1740000000, f"Стаття {aid}"))
+        bot_db.execute(
+            "INSERT INTO article_entities (article_id, entity_id, role_at_time, salience) "
+            "VALUES (%s, 415, 'міський голова Києва', 'main') ON CONFLICT DO NOTHING",
+            (aid,))
+        for oid in (411, 414):        # рада й ДСНС трапляються поруч
+            bot_db.execute(
+                "INSERT INTO article_entities (article_id, entity_id, salience) "
+                "VALUES (%s, %s, 'mentioned') ON CONFLICT DO NOTHING", (aid, oid))
+    cid, _ = er.merge_roles("міський голова києва", "мер києва",
+                            "міський голова Києва", "мер Києва", "тест")
+    cands = er.org_candidates(cid)
+    names = [c["name"] for c in cands]
+    check("орган із двома сигналами стоїть першим, а не суд із тим самим містом",
+          names and names[0] == "Київська міська рада", f"{names}")
+    check("підстава чесно каже, що сигналів два",
+          cands and "за назвою" in cands[0]["basis"]
+          and "спільних статей" in cands[0]["basis"], f"{cands[0]['basis']}")
+    check("співпояв без збігу назви лишається, але нижче — це сюжет, не орган",
+          "Державна служба з надзвичайних ситуацій" not in names[:1], f"{names}")
+    bot_db.execute("DELETE FROM article_entities WHERE article_id >= 5100")
+    bot_db.execute("DELETE FROM articles WHERE id >= 5100")
+    bot_db.execute(
+        "DELETE FROM role_canon WHERE id IN (SELECT canon_id FROM role_variants "
+        "WHERE raw_norm IN ('міський голова києва', 'мер києва'))")
+    bot_db.execute("DELETE FROM entities WHERE id BETWEEN 411 AND 415")
+
 
 def test_canon_search():
     """Канон шукається за словом — інакше дрібний канон недосяжний.
