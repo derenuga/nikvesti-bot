@@ -1169,6 +1169,61 @@ LIMIT %s
 OUTLIER_MIN_TOP = 20
 OUTLIER_RATIO = 20
 
+# Скільки символів між іменем і словом посади в тексті ще вважаємо «поруч».
+# Абзац новини — 300–600 символів, тож 250 приблизно означає «в одному реченні
+# або сусідньому».
+NEAR_CHARS = 250
+
+
+def _prefix(word):
+    """Грубий «корінь» для пошуку по тексту: відмінки міняють хвіст слова
+    («Кіма», «Чайки», «мером»), а не початок. Морфології тут не треба —
+    достатньо не промахнутись повз відмінок."""
+    return word[:max(4, len(word) - 2)]
+
+
+def role_near_name(text, name, role_norm_text):
+    """Чи стоїть посада в тексті ПОРУЧ із цим іменем.
+
+    Це і є те, чого не дають ні числа, ні періоди: у статті-ретроспективі
+    «тодішній мер Володимир Чайка» слова стоять поряд, а в помилці витягу
+    «Віталій Кім» згадано в одному абзаці, а «мер Миколаєва Сєнкевич» — в
+    іншому, за кілометр. Повертає (відстань, чи знайдене ім'я) — рішення
+    лишається за людиною, але тепер воно спирається на текст.
+    """
+    if not text or not name:
+        return None, False
+    low = text.lower()
+    name_pos = []
+    for w in _tokens(name.lower()):
+        if len(w) < 4:
+            continue
+        start = 0
+        pref = _prefix(w)
+        while True:
+            i = low.find(pref, start)
+            if i < 0:
+                break
+            name_pos.append(i)
+            start = i + 1
+    if not name_pos:
+        return None, False
+    role_pos = []
+    for w in _tokens(role_norm_text or ""):
+        if len(w) < 3:
+            continue
+        start = 0
+        pref = _prefix(w)
+        while True:
+            i = low.find(pref, start)
+            if i < 0:
+                break
+            role_pos.append(i)
+            start = i + 1
+    if not role_pos:
+        return None, True
+    return min(abs(n - r) for n in name_pos for r in role_pos), True
+
 
 async def roles_outliers_handler(update, context):
     """/roles_outliers [N] — де роль приписана явно не тому носієві."""
@@ -1209,9 +1264,10 @@ async def roles_outliers_handler(update, context):
         (dup if same >= 0.5 else other).append(r)
 
     lines = [f"🦊 Рідкісні носії сталої посади — {len(rows)}\n",
-             "Рідкісний ≠ помилковий: у 17-річному архіві попередник на посаді "
-             "це норма (Чайка мер 2001–2013, Сєнкевич з 2015). Тому дивись на "
-             "періоди, а не на числа.\n"]
+             "Рідкісний ≠ помилковий: попередник на посаді це норма (Чайка мер "
+             "2001–2013, Сєнкевич з 2015). Розрізняє їх не число і не період "
+             "(ретроспектива про мера 2001-го виходить у 2025-му), а ТЕКСТ: чи "
+             "стоїть посада поруч з іменем.\n"]
 
     if dup:
         lines.append(f"━ Схоже ім'я — дубль КАРТКИ або однофамілець ({len(dup)}) ━")
@@ -1222,23 +1278,64 @@ async def roles_outliers_handler(update, context):
                          f"{r['main_name']} ({r['top']})")
         lines.append("")
 
+    # Перевірка по ТЕКСТУ: чи стоїть посада поруч з іменем. Періоди тут не
+    # рятують — стаття-ретроспектива про мера 2001 року виходить у 2025-му, і
+    # відрізок часу в попередника такий самий «сучасний», як у помилки.
+    def with_proximity(items):
+        art_ids = sorted({a for r in items for a in (r["articles"] or [])})
+        texts = {}
+        if art_ids:
+            for row in bot_db.query(
+                    "SELECT id, coalesce(text_ua, text_ru) AS t FROM articles "
+                    "WHERE id = ANY(%s)", (art_ids,)):
+                texts[row["id"]] = row["t"]
+        out = []
+        for r in items:
+            best, found_any = None, False
+            for aid in (r["articles"] or []):
+                dist, found = role_near_name(texts.get(aid), r["name"], r["rn"])
+                found_any = found_any or found
+                if dist is not None and (best is None or dist < best):
+                    best = dist
+            out.append((r, best, found_any))
+        return out
+
+    try:
+        checked = await asyncio.to_thread(with_proximity, other)
+    except Exception as e:
+        print(f"roles_outliers: перевірка по тексту пропущена — {e}")
+        checked = [(r, None, True) for r in other]
+
+    near = [(r, d) for r, d, f in checked if d is not None and d <= NEAR_CHARS]
+    far = [(r, d, f) for r, d, f in checked if d is None or d > NEAR_CHARS]
+
+    def block(r, tail=""):
+        arts = ", ".join(str(a) for a in (r["articles"] or []))
+        return (f"«{r['rn']}»\n   {r['name']} ({r['c']}) {r['lo']}…{r['hi']}"
+                f"  ·  при {r['main_name']} ({r['top']})"
+                f"\n   статті: {arts}{tail}")
+
+    if near:
+        lines.append(f"━ Роль СТОЇТЬ поруч з іменем у тексті ({len(near)}) ━")
+        lines.append("Тобто в статті прямо написано «мер Володимир Чайка» — це "
+                     "попередник на посаді, а не помилка. Не чіпаємо.")
+        for r, d in near:
+            lines.append(block(r, f" · {d} симв. від імені"))
+        lines.append("")
+
     ids = []
-    if other:
-        lines.append(f"━ Інша людина — попередник або помилка витягу ({len(other)}) ━")
-        for r in other:
-            arts = list(r["articles"] or [])
-            ids.extend(arts)
-            lines.append(
-                f"«{r['rn']}»\n   {r['name']} ({r['c']}) {r['lo']}…{r['hi']}"
-                f"  ·  при {r['main_name']} ({r['top']}) {r['main_lo']}…{r['main_hi']}"
-                f"\n   статті: " + ", ".join(str(a) for a in arts))
-        lines.append(
-            "\nПопередник має СВІЙ відрізок часу — його не чіпаємо. "
-            "Помилка витягу виглядає як одна-дві згадки посеред періоду "
-            "головного носія.")
-        lines.append("Подивитись текст: /nora_article <id>")
-        lines.append("Полагодити ЛИШЕ помилкові (спершу правимо статтю на "
-                     "сайті, якщо винен текст):\n/entity_resync "
+    if far:
+        lines.append(f"━ Роль ДАЛЕКО від імені — підозра на помилку ({len(far)}) ━")
+        lines.append("Ім'я в одному абзаці, посада в іншому — саме так виглядав "
+                     "Прокудін під миколаївською ОВА.")
+        for r, d, f in far:
+            ids.extend(r["articles"] or [])
+            why = ("імені немає в тексті" if not f
+                   else "посади немає поруч" if d is None else f"{d} симв.")
+            lines.append(block(r, f" · {why}"))
+        lines.append("\nПодивитись текст: /nora_article <id>")
+        lines.append("Полагодити (спершу правимо статтю на сайті, якщо винен "
+                     "текст):\n/entity_resync "
                      + " ".join(str(i) for i in ids[:20]))
     await msg.edit_text("\n".join(lines)[:4000])
 
