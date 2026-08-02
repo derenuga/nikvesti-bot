@@ -591,6 +591,27 @@ def test_queue_and_merge():
     check("callback_data кнопок вкладається в ліміт Telegram (64 байти)",
           all(len(c.encode()) <= 64 for c in cbs), f"{cbs}")
 
+    # КЛАС У ПИТАННІ — перерахований, а не той, що лежить у role_pairs. Скан
+    # міг пройти тижні тому іншою версією детектора, і людина відповідала б на
+    # застарілу підказку: реальний випадок 02.08 — «голова обласної ВА» ~
+    # «очільник обласної ВА» світилось як «ІНШЕ МІСЦЕ ← зазвичай ні», бо стара
+    # версія вважала «голова» топонімом (Голованівськ у списку місць нори).
+    bot_db.execute(
+        "UPDATE role_pairs SET cls = 'place_swap', cls_detail = 'застаріле' "
+        "WHERE id = %s", (p["id"],))
+    fresh = er.next_question(set(x["id"] for x in bot_db.query(
+        "SELECT id FROM role_pairs WHERE id <> %s", (p["id"],))))
+    check("клас у питанні перерахований за нинішніми правилами",
+          fresh and fresh["id"] == p["id"]
+          and (fresh["cls"], fresh["cls_detail"]) != ("place_swap", "застаріле"),
+          f"{fresh['cls'] if fresh else None} / "
+          f"{fresh['cls_detail'] if fresh else None}")
+    stored = bot_db.query("SELECT cls, cls_detail FROM role_pairs WHERE id = %s",
+                          (p["id"],))[0]
+    check("і записаний назад — інакше меню гурту рахувало б пару в старому класі",
+          (stored["cls"], stored["cls_detail"])
+          == (fresh["cls"], fresh["cls_detail"]), f"{dict(stored)}")
+
     canon_id, canon = er.merge_roles(
         "мер миколаєва", "міський голова миколаєва",
         "мер Миколаєва", "міський голова Миколаєва", "тест")
