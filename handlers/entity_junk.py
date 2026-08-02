@@ -1349,3 +1349,69 @@ async def entity_org_dupes_callback(update, context):
         InlineKeyboardButton("❌ Скасувати", callback_data="emg:0:0"),
     ]])
     await query.edit_message_text(em.format_preview(p), reply_markup=kb)
+
+
+# ---------- /nora_reindex ----------
+#
+# «mergejoin input data is out of order» — не наші дані, а зіпсований індекс:
+# фізичний порядок у ньому не збігається з тим, як база порівнює рядки ЗАРАЗ.
+# Класика після зміни collation (оновлення Postgres на хості) і після підміни
+# IMMUTABLE-функції, по якій побудований вираженний індекс: Postgres не
+# перебудовує його сам, бо вважає функцію незмінною за визначенням.
+#
+# Живий випадок 02.08: після дня злиттів /roles почав падати з цією помилкою,
+# бо merge join зводив idx_ae_role_norm із ключем довідника ролей.
+#
+# REINDEX під це і потрібен. /nora_sql його не пустить (він read-only, і
+# правильно робить), тому окрема команда — з явним переліком індексів
+# сутнісного шару, а не REINDEX DATABASE наосліп.
+REINDEX_TARGETS = [
+    ("idx_ae_role_norm", "індекс по нормалізованій ролі (той, що падає)"),
+    ("role_variants", "довідник написань"),
+    ("role_canon", "канони посад"),
+    ("role_pairs", "черга питань"),
+    ("article_entities", "зв'язки стаття↔сутність"),
+    ("entities", "картки"),
+]
+
+
+def reindex_entity_layer():
+    """REINDEX індексів сутнісного шару. Повертає [(що, результат)].
+
+    Кожен окремим запитом: якщо один упаде (немає такого індексу на старій
+    схемі), решта мусить пройти — саме заради цього тут не один REINDEX
+    DATABASE."""
+    done = []
+    for name, human in REINDEX_TARGETS:
+        kind = "INDEX" if name.startswith("idx_") else "TABLE"
+        try:
+            bot_db.execute(f"REINDEX {kind} {name}")
+            done.append((f"{name} — {human}", "ok"))
+        except Exception as e:
+            done.append((f"{name} — {human}", f"{type(e).__name__}: {e}"))
+    return done
+
+
+async def nora_reindex_handler(update, context):
+    """/nora_reindex — перебудувати індекси сутнісного шару."""
+    if not _allowed(update):
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Нора недоступна (BOT_DATABASE_URL).")
+        return
+    msg = await update.message.reply_text(
+        "🦊 Перебудовую індекси сутнісного шару (кілька хвилин)…")
+    try:
+        done = await asyncio.to_thread(reindex_entity_layer)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось: {type(e).__name__}: {e}")
+        return
+    ok = sum(1 for _n, r in done if r == "ok")
+    lines = [f"🦊 Перебудовано {ok} з {len(done)}\n"]
+    for name, res in done:
+        lines.append(("✅ " if res == "ok" else "❌ ") + name
+                     + ("" if res == "ok" else f"\n     {res[:120]}"))
+    lines.append("\nЯкщо «mergejoin input data is out of order» повернеться — "
+                 "це збій на боці бази (зміна collation при оновленні "
+                 "Postgres), і тоді треба REINDEX усієї бази з боку Railway.")
+    await msg.edit_text("\n".join(lines)[:4000])
