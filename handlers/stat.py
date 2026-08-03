@@ -15,8 +15,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import unquote
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, DateRange, Metric, Dimension, FilterExpression, Filter
 from google.oauth2 import service_account
@@ -52,7 +51,6 @@ def _extract_article_id(url):
 
 
 FB_SEARCH_FORWARD_DAYS = 10  # від дати публікації дивимось уперед — статтю постять у ці дні
-KYIV_TZ = ZoneInfo("Europe/Kiev")  # дата статті без пояса — це київський час
 
 
 def _parse_iso_date(value):
@@ -182,49 +180,19 @@ def _fetch_article_context(article_url):
 
 # ---------- Facebook ----------
 
-POST_FIELDS = (
-    "id,message,story,permalink_url,created_time,"
-    "reactions.summary(true),comments.summary(true),shares,"
-    # description/title вкладення — там лежить підпис ВІДЕО-поста: у такому пості
-    # message буває порожній, а лінк на статтю живе саме в описі вкладення
-    "attachments{media_type,title,description,target,url,unshimmed_url}"
-)
-
-
-def fb_search_window(pub_date):
-    """Вікно пошуку у ФБ (since_ts, until_ts) — спільне для стрічки постів,
-    рілзів і діагностики /fbdebug: від дати публікації статті −1 день і вперед
-    FB_SEARCH_FORWARD_DAYS (але не далі «зараз»). Без дати — 14 днів назад.
-
-    Рахуємо в UTC-aware: pub_date приходить із JSON-LD із поясом (+03:00), а
-    datetime.now() на Railway — UTC. Наївне віднімання зсувало межі на 3 години."""
-    now = datetime.now(timezone.utc)
-    if not pub_date:
-        return int((now - timedelta(days=14)).timestamp()), int(now.timestamp())
-    pub = pub_date if pub_date.tzinfo else pub_date.replace(tzinfo=KYIV_TZ)
-    since_dt = pub - timedelta(days=1)
-    until_dt = min(pub + timedelta(days=FB_SEARCH_FORWARD_DAYS), now)
-    return int(since_dt.timestamp()), int(until_dt.timestamp())
-
-
 def _get_fb_posts(since_ts, until_ts, max_pages=15):
     """Усі пости у вікні [since, until] з пагінацією. FB віддає по 100 і
     найновіші перші — без гортання старий край вікна (де і лежить пост
-    про давню статтю) не потрапляє у вибірку.
-
-    Повертає (пости, помилка_обриву): якщо пагінація впала на другій-третій
-    сторінці, частину постів ми маємо, але вибірка НЕПОВНА — і мовчати про це
-    не можна, інакше «переглянув N постів» бреше повнотою."""
+    про давню статтю) не потрапляє у вибірку."""
     url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
-        "fields": POST_FIELDS,
+        "fields": "id,message,story,permalink_url,created_time,reactions.summary(true),comments.summary(true),shares,attachments{media_type,target,url,unshimmed_url}",
         "since": since_ts,
         "until": until_ts,
         "limit": 100,
         "access_token": FACEBOOK_PAGE_TOKEN,
     }
     all_posts = []
-    partial_error = None
     for _ in range(max_pages):
         # Один ретрай на таймаут: сторінка з summary-полями інколи відповідає
         # довше 30с, повторна спроба зазвичай проходить
@@ -240,16 +208,14 @@ def _get_fb_posts(since_ts, until_ts, max_pages=15):
                 raise
         if "error" in data:
             if all_posts:
-                # частину вже маємо — віддаємо, що встигли, але з ознакою обриву
-                partial_error = data["error"]["message"]
-                break
+                break  # частину вже маємо — віддаємо, що встигли
             raise Exception(data["error"]["message"])
         all_posts.extend(data.get("data", []))
         next_url = data.get("paging", {}).get("next")
         if not next_url:
             break
         url, params = next_url, None  # next_url уже містить усі параметри
-    return all_posts, partial_error
+    return all_posts
 
 def _get_post_views(post_id):
     url = f"https://graph.facebook.com/v25.0/{post_id}/insights"
@@ -298,51 +264,17 @@ def _collect_attachment_urls(post):
     return urls
 
 
-def _collect_attachment_texts(post):
-    """Текст вкладень (description, title) — рекурсивно. У ВІДЕО-поста підпис із
-    лінком на статтю лежить не в message поста, а в описі вкладення-відео:
-    Graph API для таких публікацій message часто взагалі не віддає, і пост,
-    який лежав у вибірці, тихо не збігався з жодною статтею."""
-    texts = []
-
-    def walk(node):
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if key in ("description", "title") and isinstance(value, str):
-                    texts.append(value)
-                else:
-                    walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(post.get("attachments", {}))
-    return texts
-
-
-def match_source(post, clean_url, article_id):
-    """Де саме пост зачепився за статтю: 'message' | 'story' |
-    'attachments.description' | 'attachments.url' або None. Назва поля потрібна
-    діагностиці (/fbdebug) — «знайшовся, але лише в описі вкладення» і «не
-    знайшовся взагалі» це різні поломки."""
+def _post_matches_article(post, clean_url, article_id):
+    """Пост стосується статті, якщо посилання є в тексті/story АБО у вкладенні
+    (fb-лінки бувають shimmed — l.facebook.com/l.php?u=... — тому декодуємо)."""
     if _matches_article(post.get("message", "") or "", clean_url, article_id):
-        return "message"
+        return True
     if _matches_article(post.get("story", "") or "", clean_url, article_id):
-        return "story"
-    for text in _collect_attachment_texts(post):
-        if _matches_article(text, clean_url, article_id):
-            return "attachments.description"
+        return True
     for u in _collect_attachment_urls(post):
         if _matches_article(unquote(u), clean_url, article_id):
-            return "attachments.url"
-    return None
-
-
-def _post_matches_article(post, clean_url, article_id):
-    """Пост стосується статті, якщо посилання є в тексті/story, в описі
-    вкладення АБО у самому вкладенні (fb-лінки бувають shimmed —
-    l.facebook.com/l.php?u=... — тому декодуємо)."""
-    return match_source(post, clean_url, article_id) is not None
+            return True
+    return False
 
 
 def _reel_ts(reel):
@@ -448,7 +380,14 @@ def get_fb_stats(article_url, article_id, pub_date=None):
     # дефолт 14 днів назад.
     if pub_date is None:
         pub_date = get_article_published_date(article_url)
-    since_ts, until_ts = fb_search_window(pub_date)
+    now = datetime.now()
+    if pub_date:
+        since_dt = pub_date.replace(tzinfo=None) - timedelta(days=1)
+        until_dt = min(pub_date.replace(tzinfo=None) + timedelta(days=FB_SEARCH_FORWARD_DAYS), now)
+    else:
+        until_dt = now
+        since_dt = until_dt - timedelta(days=14)
+    since_ts, until_ts = int(since_dt.timestamp()), int(until_dt.timestamp())
 
     # Рілзи спершу — щоб потім впізнати і прибрати їх дублі зі стрічки постів.
     # З вікном і пагінацією рілз знаходиться на будь-якій глибині (без дати —
@@ -478,9 +417,8 @@ def get_fb_stats(article_url, article_id, pub_date=None):
     # Помилку стрічки ловимо окремо — щоб не занулити всю секцію: рілзи вже
     # зібрані, і повертаємо ознаку помилки
     error = None
-    partial_error = None
     try:
-        posts, partial_error = _get_fb_posts(since_ts, until_ts)
+        posts = _get_fb_posts(since_ts, until_ts)
     except Exception as e:
         posts = []
         error = str(e)
@@ -502,12 +440,6 @@ def get_fb_stats(article_url, article_id, pub_date=None):
             "comments": post.get("comments", {}).get("summary", {}).get("total_count", 0),
             "shares": post.get("shares", {}).get("count", 0),
         })
-
-    # Пагінація обірвалась і збігів немає — це НЕ «поста немає», а неповна
-    # вибірка. Кажемо про помилку (у /stat — «спробуйте ще раз», у fb_missing —
-    # 'unknown', тобто без алерту редакції на неповних даних)
-    if not posts_out and not reels_out and partial_error:
-        error = partial_error
 
     return posts_out + reels_out, len(posts), error
 
