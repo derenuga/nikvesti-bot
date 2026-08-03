@@ -1551,6 +1551,21 @@ def test_reminders():
           len(left["items"]) == kept, str(len(left["items"])))
     check("щоденний прогін спить без опт-іну", pr.is_on() is False)
 
+    # Доля черги має бути видна З ПУЛЬТА, а не з коду: питання Олега «63
+    # будуть поститись 21 день, щоб догнати в нуль, чи що?» виникло рівно
+    # тому, що обидві кнопки вмикання виглядали однаково.
+    conn = ep.connect()
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM promise_reminders")
+    conn.close()
+    board = pr.plan(weekly=True)
+    text = pr._summary(board, False)
+    check("пульт називає обидва варіанти долі черги",
+          "наздогнати" in text and "тільки нове" in text, text)
+    check("пульт рахує строк розбору черги вголос",
+          "приблизно" in text and "д" in text, text)
+
     # Автора тегаємо розміткою з TEAM і вставляємо БЕЗ обробки, тож нотатка
     # для людини на кшталт «(тег за id)» надрукувалась би в канал як є.
     from handlers.ai_messages import TEAM

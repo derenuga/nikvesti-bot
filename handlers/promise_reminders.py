@@ -475,10 +475,17 @@ async def daily(bot):
 # ---------- /promise_remind ----------
 
 def _summary(data, on):
+    """Пульт. Головне тут — щоб було видно, ЩО СТАНЕТЬСЯ З РЕШТОЮ.
+
+    Питання Олега 03.08: «63 будуть поститись наступні 21 день, щоб догнати в
+    нуль, чи що?» — і з самих кнопок відповіді не було, хоча вона різна для
+    кожної. Тому число днів рахується вголос, а кнопки названі наслідком, а
+    не дією.
+    """
     counts = data["counts"]
     if not counts:
         return "🦊 Нагадувати нема про що — про все, що мало, вже нагадали."
-    lines = [f"🦊 <b>Обіцянки, які можна перевірити</b>",
+    lines = ["🦊 <b>Обіцянки, які можна перевірити</b>",
              f"Щоденні нагадування: {'увімкнені, 09:10' if on else '<b>вимкнені</b>'}",
              ""]
     for kind in KINDS:
@@ -487,12 +494,27 @@ def _summary(data, on):
             lines.append(f"{REASON_WORD[kind]} — <b>{n}</b>")
     n = len(data["items"])
     lines.append("")
-    lines.append(f"Сьогодні пішло б <b>{n}</b> "
+    lines.append(f"Зараз пішло б <b>{n}</b> "
                  f"{pp.plural(n, 'повідомлення', 'повідомлення', 'повідомлень')}"
-                 " — ті, які найпростіше перевірити."
-                 + (f" Решта ({data['held']}) чекає на наступні дні."
-                    if data["held"] else ""))
+                 " — ті, які найпростіше перевірити.")
+    if data["held"]:
+        lines.append(f"Решта — <b>{data['held']}</b>. З ними два варіанти:")
+        lines.append(f"• <b>наздогнати</b> — по {DAILY_MAX} на день, "
+                     f"{_catchup_days(data)}, і далі тільки нове;")
+        lines.append("• <b>тільки нове</b> — про давні не нагадувати взагалі, "
+                     "вони лишаються в банку й в апці.")
     return "\n".join(lines)
+
+
+def _catchup_days(data):
+    """Скільки днів піде на розбір черги. Прикидка, і підписана як прикидка:
+    щогодинний добір увесь цей час доносить нові обіцянки, а «строк спливає»
+    згодом повертається вже як «строк минув» — це інший привід, і він
+    нагадає ще раз (свідомо: тиждень тому питання було «встигнуть?», тепер
+    «не встигли»)."""
+    total = sum(data["counts"].values())
+    days = -(-total // max(1, DAILY_MAX))
+    return f"це приблизно {days} {pp.plural(days, 'день', 'дні', 'днів')}"
 
 
 async def promise_remind_handler(update, context):
@@ -520,16 +542,22 @@ async def promise_remind_handler(update, context):
                 parse_mode="HTML")
             return
 
-        rows = [[InlineKeyboardButton("📨 Надіслати в «винюхав»",
-                                      callback_data="prm:send")]]
+        held = data["held"]
+        rows = [[InlineKeyboardButton(
+            f"📨 Надіслати {len(data['items'])} зараз, без розкладу",
+            callback_data="prm:send")]]
         if on:
             rows.append([InlineKeyboardButton("🔕 Вимкнути щоденні",
                                               callback_data="prm:off")])
         else:
-            silence = sum(data["counts"].values()) - BASELINE_KEEP
+            # Дві кнопки вмикання, а не одна: у них РІЗНА доля черги, і раніше
+            # це було видно тільки з коду.
             rows.append([InlineKeyboardButton(
-                f"🔔 Увімкнути · про {max(0, silence)} давніх не нагадувати",
-                callback_data="prm:on")])
+                f"🔔 Щодня · наздогнати всі {sum(data['counts'].values())}",
+                callback_data="prm:on_catchup")])
+            rows.append([InlineKeyboardButton(
+                f"🔔 Щодня · тільки нове (про {max(0, held)} давніх не згадувати)",
+                callback_data="prm:on_fresh")])
         await msg.edit_text(_summary(data, on), parse_mode="HTML",
                             reply_markup=InlineKeyboardMarkup(rows))
         for item in data["items"]:
@@ -557,19 +585,28 @@ async def promise_remind_callback(update, context):
             "Увімкнути знову — /promise_remind.")
         return
 
-    if action == "on":
-        await q.edit_message_text("🦊 Розбираюсь із накопиченим…")
-        silenced, kept = await asyncio.to_thread(baseline)
+    if action in ("on_catchup", "on_fresh"):
+        head = (f"🔔 Увімкнено: щодня о 09:10 у «винюхав», не більше "
+                f"{DAILY_MAX} на день.\n\n")
+        if action == "on_fresh":
+            await q.edit_message_text("🦊 Розбираюсь із накопиченим…")
+            silenced, _ = await asyncio.to_thread(baseline)
+            head += (f"Про <b>{silenced}</b> давніх у канал не піде — вони "
+                     f"лишились у банку й в апці. Далі нагадуватиму лише про "
+                     f"те, що з'явиться чи прострочиться від сьогодні.\n\n")
+        else:
+            data = await asyncio.to_thread(plan, True, None, False, 0)
+            total = len(data["items"])
+            days = -(-total // max(1, DAILY_MAX))
+            head += (f"Черга — <b>{total}</b>, розберу приблизно за {days} "
+                     f"{pp.plural(days, 'день', 'дні', 'днів')}, найпростіші "
+                     f"для перевірки першими. Далі канал затихне сам і "
+                     f"нагадуватиме лише про нове.\n\n")
         await asyncio.to_thread(bot_db.set_state, ON_KEY, int(time.time()))
         sent = await send_reminders(context.bot, weekly=True)
         await q.edit_message_text(
-            f"🔔 Нагадування увімкнено, щодня о 09:10 у «винюхав», "
-            f"не більше {DAILY_MAX} на день.\n\n"
-            f"Про <b>{silenced}</b> давніх нагадувати не буду — вони лишились "
-            f"у банку й в апці, просто в канал про них не піде.\n"
-            f"Лишив <b>{kept}</b>"
-            + (f" — {sent} уже пішло в канал, перевір формат."
-               if sent else " (у канал зараз нічого не пішло)."),
+            head + (f"Перші <b>{sent}</b> уже в каналі — перевір формат."
+                    if sent else "Зараз у канал нічого не пішло."),
             parse_mode="HTML")
         return
 
