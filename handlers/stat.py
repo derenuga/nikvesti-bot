@@ -233,42 +233,97 @@ def _get_fb_posts(since_ts, until_ts, max_pages=15):
         url, params = next_url, None  # next_url уже містить усі параметри
     return all_posts
 
-def _get_post_engagement(post_id):
-    """Реакції/коментарі/шери ОДНОГО поста окремим запитом за id.
-    Повертає (реакції, коменти, шери); None замість числа, якщо API не
-    відповів — метрика не зійшлась, але сам пост від цього не зникає
-    (у листингу ці ж поля коштували нам пропущеного поста)."""
+def _graph(path, params, timeout=15):
+    """GET до Graph API → (дані, текст помилки). Помилку віддаємо рядком, а не
+    винятком: у залученості кожна метрика тягнеться окремо і падіння однієї не
+    має гасити решту."""
     try:
         data = requests.get(
-            f"https://graph.facebook.com/v25.0/{post_id}",
-            params={"fields": "reactions.summary(true),comments.summary(true),shares",
-                    "access_token": FACEBOOK_PAGE_TOKEN},
-            timeout=15,
+            f"https://graph.facebook.com/v25.0/{path}",
+            params={**params, "access_token": FACEBOOK_PAGE_TOKEN},
+            timeout=timeout,
         ).json()
     except Exception as e:
-        print(f"stat: не вдалось зчитати залученість {post_id} — {e}")
-        return None, None, None
-    if "error" in data:
-        print(f"stat: залученість {post_id} — {data['error'].get('message')}")
-        return None, None, None
-    return (
-        data.get("reactions", {}).get("summary", {}).get("total_count", 0),
-        data.get("comments", {}).get("summary", {}).get("total_count", 0),
-        data.get("shares", {}).get("count", 0),
-    )
+        return None, str(e)
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"].get("message") or "невідома помилка Graph API"
+    return data, None
 
 
-def _get_post_views(post_id):
-    url = f"https://graph.facebook.com/v25.0/{post_id}/insights"
-    params = {"metric": "post_media_view", "access_token": FACEBOOK_PAGE_TOKEN}
-    resp = requests.get(url, params=params, timeout=15)
-    data = resp.json()
-    if "error" in data:
-        return None
-    try:
-        return data["data"][0]["values"][0]["value"]
-    except Exception:
-        return None
+# Метрики поста — з INSIGHTS, одним запитом. Поля об'єкта
+# (reactions.summary/comments.summary/shares) джерелом бути не можуть: на
+# пості 1710649447730196 вони віддають (#100) «Object does not exist, cannot
+# be loaded due to missing permission…», хоча сам пост читається, а insights
+# на ньому ж дає {like: 5, sorry: 10} = 15 реакцій і {share: 1, comment: 1} —
+# рівно те, що видно в інтерфейсі. Ті самі поля в ЛИСТИНГУ ще й ховали пост
+# зі списку (див. POST_LIST_FIELDS), тож вони прибрані з обох шляхів.
+POST_INSIGHT_METRICS = (
+    "post_media_view,post_reactions_by_type_total,post_activity_by_action_type"
+)
+
+
+def _parse_post_insights(data):
+    """Відповідь /insights → {'views','reactions','comments','shares'}.
+    Реакції — сума по типах (like/sorry/love/…); коментарі й шери —
+    з post_activity_by_action_type. None = метрики в відповіді не було."""
+    out = {"views": None, "reactions": None, "comments": None, "shares": None}
+    values = {}
+    for metric in (data or {}).get("data", []):
+        try:
+            values[metric["name"]] = metric["values"][0]["value"]
+        except (KeyError, IndexError, TypeError):
+            continue
+
+    views = values.get("post_media_view")
+    if isinstance(views, int):
+        out["views"] = views
+
+    reactions = values.get("post_reactions_by_type_total")
+    if isinstance(reactions, dict):
+        out["reactions"] = sum(v for v in reactions.values() if isinstance(v, int))
+    elif isinstance(reactions, int):
+        out["reactions"] = reactions
+
+    activity = values.get("post_activity_by_action_type")
+    if isinstance(activity, dict):
+        out["comments"] = activity.get("comment", 0)
+        out["shares"] = activity.get("share", 0)
+        if out["reactions"] is None and isinstance(activity.get("like"), int):
+            out["reactions"] = activity["like"]
+    return out
+
+
+def _get_post_metrics(post_id):
+    """Перегляди + залученість ОДНОГО поста: {'views','reactions','comments',
+    'shares','note'}. Один запит до insights замість двох (перегляди окремо +
+    поля об'єкта), тобто ще й дешевше за попередній варіант.
+
+    Якщо insights чогось не дав — добираємо полями об'єкта (на звичайних
+    постах вони працюють). None замість числа = метрики немає, причина лежить
+    у 'note': пост лишається знайденим, а прочерк у виводі підписаний."""
+    data, err = _graph(f"{post_id}/insights", {"metric": POST_INSIGHT_METRICS})
+    out = _parse_post_insights(data) if not err else {
+        "views": None, "reactions": None, "comments": None, "shares": None}
+    out["note"] = err
+
+    if any(out[k] is None for k in ("reactions", "comments", "shares")):
+        fields, f_err = _graph(post_id, {
+            "fields": "reactions.summary(true),comments.summary(true),shares"})
+        if not f_err:
+            if out["reactions"] is None:
+                out["reactions"] = fields.get("reactions", {}).get("summary", {}).get("total_count")
+            if out["comments"] is None:
+                out["comments"] = fields.get("comments", {}).get("summary", {}).get("total_count")
+            if out["shares"] is None:
+                out["shares"] = fields.get("shares", {}).get("count", 0)
+        elif out["note"] is None:
+            out["note"] = f_err
+
+    if any(out[k] is None for k in ("views", "reactions", "comments", "shares")):
+        print(f"stat: метрики {post_id} — перегляди:{out['views']} реакції:{out['reactions']} "
+              f"коменти:{out['comments']} шери:{out['shares']} ({out['note']})")
+    return out
+
 
 def _fb_date(created_time):
     try:
@@ -473,16 +528,17 @@ def get_fb_stats(article_url, article_id, pub_date=None):
         post_id_short = post["id"].split("_")[1]
         # Залученість — окремим запитом за id (у листингу її просити не можна,
         # див. коментар до POST_LIST_FIELDS). Запит рівно один: на знайдений пост
-        reactions, comments, shares = _get_post_engagement(post["id"])
+        metrics = _get_post_metrics(post["id"])
         posts_out.append({
             "type": "post",
             "id": str(post["id"]),  # ключ швидкого шляху /stat (article_stats)
             "permalink": f"https://www.facebook.com/nikvesti/posts/{post_id_short}",
             "date": _fb_date(post.get("created_time")),
-            "views": _get_post_views(post["id"]),
-            "reactions": reactions,
-            "comments": comments,
-            "shares": shares,
+            "views": metrics["views"],
+            "reactions": metrics["reactions"],
+            "comments": metrics["comments"],
+            "shares": metrics["shares"],
+            "eng_note": metrics["note"],
         })
 
     return posts_out + reels_out, len(posts), error
@@ -504,21 +560,22 @@ def get_fb_stats_by_objects(stored_items):
             out.append({**it, "views": _get_reel_views(oid), "reactions": reactions,
                         "comments": comments, "shares": shares, "method": "index"})
         else:
-            data = requests.get(
-                f"https://graph.facebook.com/v25.0/{oid}",
-                params={"fields": "reactions.summary(true),comments.summary(true),shares",
-                        "access_token": FACEBOOK_PAGE_TOKEN},
-                timeout=15,
-            ).json()
-            if "error" in data:
-                raise RuntimeError(data["error"].get("message") or "пост недоступний")
+            # Той самий добір, що в живому пошуку: збій ОДНІЄЇ метрики не має
+            # зносити відомий пост у фолбек «з Нори» — прочерк чесніший за
+            # вчорашній снімок. Виняток кидаємо нижче, лише якщо не зчиталось НІЧОГО
+            metrics = _get_post_metrics(oid)
             out.append({
-                **it, "views": _get_post_views(oid),
-                "reactions": data.get("reactions", {}).get("summary", {}).get("total_count", 0),
-                "comments": data.get("comments", {}).get("summary", {}).get("total_count", 0),
-                "shares": data.get("shares", {}).get("count", 0),
+                **it, "views": metrics["views"],
+                "reactions": metrics["reactions"], "comments": metrics["comments"],
+                "shares": metrics["shares"], "eng_note": metrics["note"],
                 "method": "index",
             })
+    if out and all(
+        it.get("views") is None and it.get("reactions") is None
+        and it.get("comments") is None and it.get("shares") is None
+        for it in out
+    ):
+        raise RuntimeError("Graph API не віддав жодної метрики")
     if not out:
         raise RuntimeError("жоден збережений об'єкт не прочитався")
     return out, None, None
@@ -658,10 +715,16 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
             lines.append(f'{num}<a href="{item["permalink"]}">{label} від {item["date"]}</a>')
             if item["views"] is not None:
                 lines.append(f'👁 Перегляди: {item["views"]:,}'.replace(",", " "))
-            # None = метрику не віддав API; сам пост при цьому знайдений
+            # None = метрику не віддав API; сам пост при цьому знайдений,
+            # а причина прочерку підписана рядком нижче (не мовчазна)
             lines.append(f'❤️ Реакції: {_num(item["reactions"])}')
             lines.append(f'💬 Коментарі: {_num(item["comments"])}')
             lines.append(f'🔄 Шери: {_num(item["shares"])}')
+            if item.get("eng_note") and any(
+                    item.get(k) is None for k in ("views", "reactions", "comments", "shares")):
+                note_text = str(item["eng_note"])[:120].replace("&", "&amp;") \
+                    .replace("<", "&lt;").replace(">", "&gt;")
+                lines.append(f'<i>частину метрик Facebook не віддав: {note_text}</i>')
         views_known = [it["views"] for it in fb_stats if it["views"] is not None]
         if views_known:
             fb_views_total = sum(views_known)
