@@ -197,13 +197,18 @@ def format_item(row, rev=None, n=None, now=None):
         short = quote if len(quote) <= QUOTE_CAP else quote[:QUOTE_CAP] + "…"
         lines.append(f"<i>«{escape_html(short)}»</i>")
     if row.get("populism"):
-        # Мітка ніколи не йде без підстави — інакше це ярлик, а не факт (§2.1)
-        lines.append(f"🏷 <b>Популізм</b>: {escape_html(row['populism'])}")
+        # Підказка, а не вирок, і ніколи без підстави: рішення брати тему в
+        # роботу лишається за людиною, бот лише показує, чого в тексті немає.
+        lines.append(f"🏷 <b>Схоже на популізм</b>: {escape_html(row['populism'])}")
     meta = []
     if row.get("deadline"):
         meta.append(f"строк {pp.fmt_date(row['deadline'])}")
     if row.get("trigger_event"):
         meta.append(f"розбудить: {escape_html(row['trigger_event'][:60])}")
+    elif row.get("polarity") == "not_do":
+        # Тригер не вигадуємо: якщо в тексті події не названо, чесно кажемо, як
+        # ця обіцянка перевіряється взагалі.
+        meta.append("перевіряється дією")
     if row.get("revisions"):
         meta.append(f"{row['revisions']} ревіз." if row["revisions"] > 1 else "1 ревізія")
     money = _amount_text(row.get("amount"))
@@ -550,7 +555,9 @@ async def promise_show_handler(update, context):
     if row.get("based_on_document"):
         parts.append(f"Підстава: {escape_html(row['based_on_document'])}")
     if row.get("populism"):
-        parts.append(f"🏷 <b>Популізм</b>: {escape_html(row['populism'])}")
+        parts.append(f"🏷 <b>Схоже на популізм</b>: {escape_html(row['populism'])}"
+                     "\n<i>Це підказка, а не вирок: брати тему в роботу — "
+                     "рішення людини.</i>")
     if row.get("actor_hidden"):
         parts.append("<i>У тексті безособова форма — актора названо поруч, "
                      "а не в самій обіцянці.</i>")
@@ -957,7 +964,7 @@ def _fmt_test_item(p, n):
         lines.append("прапорці: " + ", ".join(flags))
     reason = pp.populism_reason(item)
     if reason:
-        lines.append(f"🏷 <b>популізм</b>: {escape_html(reason)}")
+        lines.append(f"🏷 <b>схоже на популізм</b>: {escape_html(reason)}")
     lines.append(f"<i>«{escape_html((item.get('quote') or '')[:300])}»</i>")
     if not (item.get("quote") or "").strip():
         lines.append("⚠️ <b>без цитати — такий запис у банк НЕ пишеться</b>")

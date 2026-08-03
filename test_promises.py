@@ -314,20 +314,33 @@ def test_populism_reason():
     with conn.cursor() as cur:
         koblevo = pp.prepare(cur, case_item(320092))
         reason = pp.populism_reason(koblevo)
-        check("мітка «популізм» стоїть на Коблевому", bool(reason), reason or "")
-        check("мітка йде РАЗОМ із підставою (порожні поля названі)",
+        check("підказка «схоже на популізм» стоїть на Коблевому", bool(reason),
+              reason or "")
+        check("підказка йде РАЗОМ із підставою (порожні поля названі)",
               bool(reason) and "немає дати" in reason and "немає критерію" in reason,
               reason or "")
+        # Головне рішення 03.08: підказка НЕ залежить від того, чи модель
+        # лишила criterion порожнім. Вписаний переказ обіцянки її не вимикає —
+        # він показується дослівно, і людина сама бачить, що це не критерій.
+        with_crit = pp.prepare(cur, case_item(
+            320092, criterion="Коблеве відновлено краще, ніж було"))
+        crit_reason = pp.populism_reason(with_crit)
+        check("вписаний у критерій переказ обіцянки підказки НЕ вимикає",
+              bool(crit_reason), crit_reason or "вимкнув")
+        check("…і сам критерій показано дослівно, щоб судила людина",
+              bool(crit_reason) and "краще, ніж було" in crit_reason,
+              crit_reason or "")
         check("у підставі видно джерело — коментар у соцмережі",
               bool(reason) and "соцмереж" in reason, reason or "")
         for aid in (294413, 311271, 320276, 317853, 321833, 312757):
             p = pp.prepare(cur, case_item(aid))
             if pp.populism_reason(p):
-                check(f"мітки «популізм» немає там, де є критерій ({aid})", False,
-                      "мітка з'явилась помилково")
+                check(f"підказки немає там, де є дата чи підстава ({aid})", False,
+                      "з'явилась помилково")
                 break
         else:
-            check("мітки «популізм» немає там, де є критерій або документ", True)
+            check("підказки немає там, де є дата, документ-підстава "
+                  "або полярність «не робити»", True)
     conn.close()
 
 
