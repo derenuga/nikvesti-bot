@@ -18,8 +18,10 @@
 видно не вирок, а підставу — «немає дати · немає критерію · коментар у
 соцмережі».
 
-**Ідемпотентність.** Ревізія ключується парою «стаття + дослівна цитата»
-(`dedup`), тому повторний прогін місяця нічого не подвоїть, навіть якщо слід
+**Ідемпотентність.** Ревізія ключується статтею, дослівною цитатою і тим, чим
+різняться зобов'язання, витягнуті з ОДНОГО речення (`_dedup_key` — там же
+пояснено, чому самої цитати замало: у 294413 одна фраза несе два різні
+горизонти). Повторний прогін місяця нічого не подвоїть, навіть якщо слід
 спроби (`promise_attempts`) загубився. Перевірка йде ДО створення обіцянки —
 інакше повтор лишав би порожню картку-сироту.
 
@@ -568,6 +570,29 @@ def candidates(cur, prepared, limit=CANDIDATE_LIMIT):
     if key:
         conds.append("c.subject_key = %s")
         params.append(key)
+    # Третє джерело кандидатів: ТОЙ САМИЙ обіцяльник із ТИМ САМИМ строком.
+    #
+    # Потрібне через перейменування об'єкта. Умова тендеру «Житлопромбуд-8 мав
+    # виконати роботи до 31.12.2024» переказана і в статті 2024 року про
+    # ГІМНАЗІЮ №2, і в статті 2025-го про ЛІЦЕЙ №2 — це одне зобов'язання, але
+    # предмети резолвляться в РІЗНІ картки, тож за предметом кандидат не
+    # знаходиться і ланцюг рветься рівно там, де він найцінніший.
+    #
+    # Схожість назв тут не рятує: вимірювання на живих написаннях дало
+    # similarity('гімназія №2', 'ліцей №2') = 0.12, тобто поріг, який зловив би
+    # цю пару, зліпив би пів бази. А от «той самий актор + та сама дата» —
+    # сигнал вузький і перевірюваний.
+    #
+    # Це джерело КАНДИДАТІВ, не рішення: зливає далі суддя, і він же відсіює
+    # випадок «один підрядник, дві різні будівлі, один строк».
+    promiser = prepared.get("promiser_entity_id")
+    deadline = prepared.get("deadline")
+    if promiser and deadline:
+        conds.append(
+            "(c.deadline = %s AND EXISTS ("
+            "  SELECT 1 FROM commitment_revisions r2 "
+            "  WHERE r2.commitment_id = c.id AND r2.promiser_entity_id = %s))")
+        params.extend([deadline, promiser])
     if not conds:
         return []
     params.extend([prepared.get("polarity") or "do", limit])
@@ -588,16 +613,35 @@ def candidates(cur, prepared, limit=CANDIDATE_LIMIT):
 
 # ---------- Запис ----------
 
-def _dedup_key(article_id, quote):
-    raw = f"{article_id}|{ep.norm(quote) or ''}"
+def _dedup_key(article_id, quote, title=None, deadline=None, polarity=None):
+    """Ключ ідемпотентності ревізії.
+
+    Спершу тут була пара «стаття + цитата» — і на першому ж реальному тексті
+    вона почала ГУБИТИ дані. У статті 294413 одне речення Скарлата несе два
+    різні горизонти одразу: «Основну частину робіт планується завершити до
+    кінця цього року, але остаточне завершення може бути відкладене до 2025
+    року». Це два зобов'язання з різними датами й різною модальністю (§2,
+    висновок 2), і другого при ключі-цитаті просто не існувало б. Так само
+    §2.2 вимагає віддати з ОДНОГО блоку і перевірювану обіцянку, і риторику.
+
+    Тому в ключ входить ще й те, чим ці записи різняться. Ціна відома й
+    прийнята: якщо модель на перечиті інакше сформулює `title`, з'явиться
+    видимий дубль, який лікується /promise_forget. Мовчазна втрата
+    обов'язкового запису гірша за помітний дубль, а всі шляхи, що можуть
+    перечитати статтю (/promise_retest, повторний скан), спершу знімають з
+    неї старе.
+    """
+    raw = "|".join([str(article_id), ep.norm(quote) or "", ep.norm(title) or "",
+                    str(deadline or ""), polarity or ""])
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
-def existing_revision(cur, article_id, quote):
-    """Ця цитата з цієї статті вже записана? Перевіряємо ДО створення
+def existing_revision(cur, article_id, prepared):
+    """Цей самий запис із цієї статті вже є? Перевіряємо ДО створення
     обіцянки — інакше повторний прогін лишав би картку-сироту без ревізій."""
     cur.execute("SELECT id, commitment_id FROM commitment_revisions WHERE dedup = %s",
-                (_dedup_key(article_id, quote),))
+                (_dedup_key(article_id, prepared.get("quote"), prepared.get("title"),
+                            prepared.get("deadline"), prepared.get("polarity")),))
     row = cur.fetchone()
     return {"id": row[0], "commitment_id": row[1]} if row else None
 
@@ -659,7 +703,7 @@ def record(cur, article, prepared, commitment_id=None, link_confidence=None):
         # §3: немає дослівного фрагмента — обіцянку не записуємо. Найдешевший
         # спосіб не отримати реєстр галюцинацій.
         return None, "noquote"
-    dup = existing_revision(cur, article["id"], quote)
+    dup = existing_revision(cur, article["id"], prepared)
     if dup:
         return dup["commitment_id"], "dup"
 
@@ -701,7 +745,9 @@ def record(cur, article, prepared, commitment_id=None, link_confidence=None):
          prepared.get("promiser"), prepared.get("promiser_role"),
          prepared.get("reported_by_entity_id"), prepared.get("reported_by"),
          prepared.get("condition"), prepared.get("trigger_event"), quote[:1000],
-         link_confidence, _dedup_key(article["id"], quote), now))
+         link_confidence,
+         _dedup_key(article["id"], quote, prepared.get("title"),
+                    prepared.get("deadline"), prepared.get("polarity")), now))
 
     for eid in prepared.get("object_ids") or []:
         cur.execute(
@@ -1005,7 +1051,8 @@ def restore(cur, purge_id):
             f"VALUES (%s, {', '.join(['%s'] * len(rcols))}, %s) "
             "ON CONFLICT (id) DO NOTHING",
             [r["id"]] + [r[k] for k in rcols]
-            + [_dedup_key(r["article_id"], r["quote"])])
+            + [_dedup_key(r["article_id"], r["quote"], c.get("title"),
+                          r.get("stated_deadline"), c.get("polarity"))])
     for eid in payload.get("objects") or []:
         cur.execute("INSERT INTO commitment_objects (commitment_id, entity_id) "
                     "VALUES (%s, %s) ON CONFLICT DO NOTHING", (c["id"], eid))

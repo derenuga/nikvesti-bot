@@ -67,7 +67,7 @@ from handlers.promises import (
     promises_handler, promise_show_handler, promise_test_handler,
     promise_estimate_handler, promise_scan_handler, promise_scan_callback,
     promise_resume_handler, promise_checked_handler, promise_forget_handler,
-    promise_restore_handler, promise_retest_handler,
+    promise_restore_handler, promise_retest_handler, promise_eval_handler,
 )
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler, budget_date_handler
@@ -527,6 +527,7 @@ def main():
     app.add_handler(CommandHandler("promises", promises_handler))
     app.add_handler(CommandHandler("promise_show", promise_show_handler))
     app.add_handler(CommandHandler("promise_test", promise_test_handler))
+    app.add_handler(CommandHandler("promise_eval", promise_eval_handler))
     app.add_handler(CommandHandler("promise_estimate", promise_estimate_handler))
     app.add_handler(CommandHandler("promise_scan", promise_scan_handler))
     app.add_handler(CommandHandler("promise_resume", promise_resume_handler))

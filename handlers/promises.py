@@ -1013,6 +1013,99 @@ async def promise_test_handler(update, context):
                         parse_mode="HTML", disable_web_page_preview=True)
 
 
+# ---------- /promise_eval ----------
+
+def _eval_payload(ids):
+    """Прогнати витяг на еталонах і перевірити умову приймання §6.1.
+    Нічого не пише — як /promise_test, тільки одразу по всіх семи."""
+    import promise_eval as pev
+
+    arts = api.fetch_ids(ids)
+    by_id = {a["id"]: a for a in arts}
+    results, errors, usage = _extract_sync([by_id[i] for i in ids if i in by_id])
+    out = []
+    for res in results:
+        aid = res["article"]["id"]
+        items = res["commitments"]
+        out.append({"id": aid, "items": items,
+                    "checks": pev.run_checks(aid, items),
+                    "why": pev.CASE_WHY.get(aid, "")})
+    missing = [i for i in ids if i not in by_id]
+    return {"cases": out, "errors": errors, "usage": usage, "missing": missing}
+
+
+async def promise_eval_handler(update, context):
+    """/promise_eval [id] — умова приймання §6.1 однією командою.
+
+    Женемо справжній витяг на семи РЕАЛЬНИХ статтях, кожна з яких свого часу
+    зламала наївну модель, і перевіряємо не «схожість на еталон», а рівно те,
+    чого не можна допустити: вигадану дату там, де дати немає; злиту з
+    риторикою обіцянку; загублену полярність. Без цього приймання виглядало б
+    як «сім разів /promise_test і читай очима» — а на третьому кейсі очі
+    перестають читати.
+
+    Нічого не пише в банк. Коштує центи (7 статей звичайним API).
+    """
+    if not _allowed(update):
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not os.environ.get("ANTHROPIC_API_KEY") or not bot_db.is_configured():
+        await update.message.reply_text("🦊 Потрібні нора і ANTHROPIC_API_KEY.")
+        return
+    import promise_eval as pev
+
+    args = context.args or []
+    ids = [int(a) for a in args if a.isdigit()] or list(pev.CASE_IDS)
+    unknown = [i for i in ids if i not in pev.CHECKS]
+    if unknown:
+        await update.message.reply_text(
+            f"Немає умови приймання для {unknown}. Еталони: "
+            + ", ".join(str(i) for i in pev.CASE_IDS))
+        return
+
+    msg = await update.message.reply_text(
+        f"🦊 Жену витяг на {len(ids)} еталонах і звіряю з умовою приймання…")
+    try:
+        data = await asyncio.to_thread(_eval_payload, ids)
+    except Exception as e:
+        await msg.edit_text(f"❌ Прогін упав: {type(e).__name__}: {e}")
+        return
+
+    usage = data["usage"]
+    record_ai_usage(api.MODEL, input_tokens=usage["input"], output_tokens=usage["output"],
+                    cache_read=usage["cache_read"], cache_creation=usage["cache_creation"])
+    total = passed = 0
+    lines = ["🦊 <b>Приймання банку тем — еталони §6.1</b>", ""]
+    details = []
+    for case in data["cases"]:
+        ok_n = sum(1 for _, ok, _ in case["checks"] if ok)
+        total += len(case["checks"])
+        passed += ok_n
+        mark = "✅" if ok_n == len(case["checks"]) else "❌"
+        lines.append(f"{mark} <b>{case['id']}</b> — {ok_n}/{len(case['checks'])} · "
+                     f"зобов'язань {len(case['items'])}")
+        lines.append(f"   <i>{escape_html(case['why'])}</i>")
+        for name, ok, why in case["checks"]:
+            if not ok:
+                details.append(f"❌ <b>{case['id']}</b>: {escape_html(name)}\n"
+                               f"   <i>{escape_html(why)}</i>")
+    if data["missing"]:
+        lines.append(f"⚠️ немає в норі: {data['missing']} — спершу /nora_resync")
+    if data["errors"]:
+        lines.append("⚠️ " + escape_html("; ".join(data["errors"])[:300]))
+
+    verdict = ("<b>Умову приймання пройдено — можна гнати місяць "
+               "(/promise_scan).</b>" if passed == total else
+               "<b>Приймання НЕ пройдено.</b> Кожен червоний рядок — конкретне "
+               "правило промпту, яке не спрацювало; деталі по кейсу — "
+               "/promise_test &lt;id&gt;.")
+    cost = usage["input"] * api.PRICE_IN + usage["output"] * api.PRICE_OUT
+    tail = [f"\nРазом: <b>{passed}/{total}</b> перевірок", verdict,
+            f"<i>У банк не записано нічого. ≈ ${cost:.3f}</i>"]
+    await msg.edit_text(_clip("\n".join(lines + [""] + details + tail)),
+                        parse_mode="HTML", disable_web_page_preview=True)
+
+
 # ---------- /promise_retest ----------
 
 async def promise_retest_handler(update, context):
