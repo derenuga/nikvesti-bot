@@ -77,6 +77,7 @@ from handlers.promises import (
     promise_notdupe_handler, promise_glitches_handler,
     promise_glitches_callback, promise_vague_handler,
 )
+from handlers.promise_reminders import promise_remind_handler
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler, budget_date_handler
 from handlers.budget_snapshots import budget_execution_handler, budget_snapshot_check_handler, budget_execution_test_handler, budget_snapshot_reset_handler
@@ -547,6 +548,7 @@ def main():
     app.add_handler(CommandHandler("promise_scan", promise_scan_handler))
     app.add_handler(CommandHandler("promise_resume", promise_resume_handler))
     app.add_handler(CommandHandler("promise_status", promise_status_handler))
+    app.add_handler(CommandHandler("promise_remind", promise_remind_handler))
     app.add_handler(CommandHandler("promise_increment_on", promise_increment_on_handler))
     app.add_handler(CommandHandler("promise_increment_off", promise_increment_off_handler))
     app.add_handler(CommandHandler("promise_checked", promise_checked_handler))

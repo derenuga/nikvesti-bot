@@ -1408,6 +1408,85 @@ def test_fresh_facet():
           str(fresh["items"][0]["found"]))
 
 
+def test_reminders():
+    """Нагадування в «винюхав» (§5).
+
+    Головне тут — не те, що дзвонить, а те, що НЕ дзвонить. Банк, який
+    смикає всім підряд, вимикають за тиждень: «планують» нема чого
+    прострочувати, а умовна обіцянка («після завершення війни») має горизонт
+    поза контролем того, хто обіцяв, і рахувати таке зривом нечесно.
+    """
+    from handlers import promise_reminders as pr
+
+    pr.ensure_schema()
+    conn = ep.connect()
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM commitment_revisions")
+        cur.execute("DELETE FROM commitments")
+        cur.execute("DELETE FROM promise_reminders")
+        cases = [
+            ("Зрізати огорожу на Соборній", NOW - 34 * DAY, "promised", None),
+            ("Відкрити апаратні наради", NOW + 5 * DAY, "promised", None),
+            ("Відновити Коблеве краще ніж було", NOW - 90 * DAY, "hedged", None),
+            ("Побудувати комплекс", NOW - 90 * DAY, "promised", "після війни"),
+            ("Далекий строк", NOW + 300 * DAY, "promised", None),
+        ]
+        ids = {}
+        for i, (title, dl, mod, cond) in enumerate(cases):
+            aid = 740000 + i
+            cur.execute(
+                "INSERT INTO articles (id, published, status, title_ua, slug, "
+                "category, kind, region, text_ua) VALUES "
+                "(%s,%s,1,%s,%s,'municipal','news',1,'т') ON CONFLICT (id) DO NOTHING",
+                (aid, NOW - 40 * DAY, f"Стаття {i}", f"rem{i}"))
+            p = pp.prepare(cur, {
+                "title": title, "subject": f"обʼєкт {i}", "objects": [],
+                "promiser": "Олександр Сєнкевич", "polarity": "do",
+                "modality": mod, "source_type": "official_statement",
+                "verification_method": "field_check", "condition": cond,
+                "criterion": "перевірено", "quote": f"цитата {i}"})
+            p["deadline"], p["deadline_precision"] = dl, "day"
+            p["verifiability"] = pp.derive_verifiability(p)
+            cid, _ = pp.record(cur, {"id": aid, "published": NOW - 40 * DAY,
+                                     "title_ua": "ст"}, p)
+            ids[title] = cid
+    conn.close()
+
+    groups, first, links = pr.collect(weekly=True)
+    called = {r["title"] for rows in groups.values() for r in rows}
+    check("прострочена обіцянка дзвонить",
+          "Зрізати огорожу на Соборній" in called, str(called))
+    check("строк за пʼять днів теж", "Відкрити апаратні наради" in called, str(called))
+    check("«планують» НЕ дзвонить — нема чого прострочувати",
+          "Відновити Коблеве краще ніж було" not in called, str(called))
+    check("умовна НЕ дзвонить — горизонт поза контролем обіцяльника",
+          "Побудувати комплекс" not in called, str(called))
+    check("далекий строк не смикає завчасно", "Далекий строк" not in called, str(called))
+
+    line = pr._line(groups["overdue"][0], first.get(groups["overdue"][0]["id"]),
+                    links, NOW)
+    check("у рядку є лінк на матеріал — нагадування без доказу це докір",
+          "<a href=" in line, line[:80])
+
+    # Ідемпотентність: та сама обіцянка не смикає двічі за той самий привід
+    conn = ep.connect()
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        for rows in groups.values():
+            for r in rows:
+                cur.execute(
+                    "INSERT INTO promise_reminders (commitment_id, kind, sent) "
+                    "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                    (r["id"], "overdue" if r["class"] == "overdue" else "soon",
+                     NOW))
+    conn.close()
+    again, _, _ = pr.collect(weekly=True)
+    check("повторний прогін мовчить — позначки тримають", not again, str(again))
+    ignored, _, _ = pr.collect(weekly=True, ignore_sent=True)
+    check("прев'ю формату показує все, ігноруючи позначки", bool(ignored))
+
+
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
     формулювання розійдуться з чатом за три тижні."""
@@ -1464,6 +1543,7 @@ def main():
     test_check_outcome()
     test_author_filter()
     test_fresh_facet()
+    test_reminders()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")

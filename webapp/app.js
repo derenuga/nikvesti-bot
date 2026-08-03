@@ -6428,9 +6428,12 @@ async function boot() {
       // Куди відкривати: ?screen= від web_app-кнопки (пінг Лиса) або
       // start_param від t.me-лінка (кнопка «Дедлайни в апці» у чаті фінансів)
       const start = (tg.initDataUnsafe || {}).start_param || "";
-      nav(startScreen() || (start === "reports" ? "reports" : "home"));
+      nav(startScreen() || (start === "reports" ? "reports"
+        : start === "promises" ? "promises" : "home"));
     } else {
-      nav(startScreen() || "home");
+      // Журналістці лінк із «винюхав» теж має відкривати банк одразу
+      const start = (tg.initDataUnsafe || {}).start_param || "";
+      nav(startScreen() || (start === "promises" ? "promises" : "home"));
     }
     syncBackButton();
   } catch (e) {
