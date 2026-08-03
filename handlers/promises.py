@@ -40,6 +40,7 @@
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -708,9 +709,26 @@ def _prune_scan():
         pp.ensure_schema(conn)
         conn.autocommit = True
         with conn.cursor() as cur:
-            return pp.prune_scan(cur, api.REGION_MYKOLAIV)
+            st = pp.prune_scan(cur, api.REGION_MYKOLAIV)
+            # Хто лишиться ПІСЛЯ чистки за регіоном. Це і є список кандидатів
+            # для другої осі: регіон ловить рубрику, а не зміст, і чужий актор
+            # у миколаївській статті переживає чистку спокійно.
+            st["remaining"] = pp.top_promisers(cur, region=api.REGION_MYKOLAIV)
+            return st
     finally:
         conn.close()
+
+
+def _remaining_block(st):
+    """Готові рядки другої осі. Без них «почисти за обіцяльником» означало б
+    ходити чергою очима — рівно те, чого просили не робити."""
+    if not st.get("remaining"):
+        return []
+    return ["", "<b>Хто обіцяє в миколаївських статтях</b> (лишиться після чистки):",
+            *[f"{escape_html(w)} — {n} · <code>/promise_prune_who {escape_html(w)}</code>"
+              for w, n in st["remaining"]],
+            "<i>Це не список на видалення, а числа: загальнонаціональний актор "
+            "потрапляє і в миколаївську статтю, і регіоном його не прибрати.</i>"]
 
 
 async def promise_prune_handler(update, context):
@@ -727,10 +745,12 @@ async def promise_prune_handler(update, context):
         await msg.edit_text(f"❌ Не порахувалось: {e}")
         return
     if not st["total"]:
-        await msg.edit_text(
-            "🦊 Немиколаївських обіцянок у банку немає — прибирати нічого.\n"
+        await msg.edit_text(_clip("\n".join([
+            "🦊 Немиколаївських обіцянок у банку немає — прибирати нічого.",
             f"Змішаних (є і миколаївська ревізія): {st['mixed']} · "
-            f"без відомого регіону: {st['unknown']} — ці лишаються.")
+            f"без відомого регіону: {st['unknown']} — ці лишаються.",
+            *_remaining_block(st)])), parse_mode="HTML",
+            disable_web_page_preview=True)
         return
     lines = ["🦊 <b>Чистка банку від немиколаївських</b>",
              f"Приберу зобов'язань: <b>{st['total']}</b>"]
@@ -747,6 +767,7 @@ async def promise_prune_handler(update, context):
               f"миколаївська ревізія) і {st['unknown']} без відомого регіону — "
               f"на «не знаємо» не видаляємо. Кожна прибрана лягає в журнал, "
               f"відкат усього прогону — /promise_prune_undo.</i>"]
+    lines += _remaining_block(st)
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         f"Прибрати {st['total']}", callback_data=f"ppr:{st['total']}")]])
     await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML",
@@ -780,6 +801,117 @@ async def promise_prune_callback(update, context):
         return
     await query.edit_message_text(
         f"🦊 Прибрав {result['removed']} зобов'язань"
+        + (f", тем спорожніло {result['topics']}" if result["topics"] else "")
+        + f".\nВідкат усього прогону: /promise_prune_undo {result['run']}")
+
+
+# ---------- /promise_prune_who — чистка за обіцяльником ----------
+#
+# Друга вісь. Регіон ловить рубрику, а не зміст: «Зеленський пообіцяв виплати
+# всім ВПО» може лежати в миколаївській статті через місцевий бек, і регіоном
+# таке не приберемо ніколи. Вирішити, чи актор нам чужий, машина не може —
+# Укрзалізниця завтра обіцятиме приміський поїзд на Миколаїв. Тому бот називає
+# кандидатів числами, показує, що саме зникне, і чекає команду людини.
+#
+# Ім'я в callback_data не кладеться свідомо: там 64 байти, а кирилиця по два —
+# «Кабінет Міністрів України» вже не влазить. Запит живе в норі під коротким
+# ключем, тож і редеплой посеред підтвердження його не з'їдає.
+
+def _who_key(who):
+    return hashlib.md5(who.strip().lower().encode()).hexdigest()[:10]
+
+
+def _prune_who_scan(who):
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            return pp.prune_who_scan(cur, who, region=api.REGION_MYKOLAIV)
+    finally:
+        conn.close()
+
+
+async def promise_prune_who_handler(update, context):
+    """/promise_prune_who <обіцяльник> — прибрати обіцянки цього актора."""
+    if not _allowed(update):
+        return
+    who = " ".join(context.args or []).strip()
+    if len(who) < 3:
+        await update.message.reply_text(
+            "Використання: /promise_prune_who &lt;обіцяльник&gt;\n"
+            "Напр.: <code>/promise_prune_who Зеленський</code>\n\n"
+            "Збіг за підрядком — «Зеленський» забере й «Володимир Зеленський». "
+            "Кого прибирати, підкаже /promise_prune: він показує топ "
+            "обіцяльників банку.", parse_mode="HTML")
+        return
+    msg = await update.message.reply_text("🦊 Рахую (нічого не видаляю)…")
+    try:
+        st = await asyncio.to_thread(_prune_who_scan, who)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не порахувалось: {e}")
+        return
+    if not st["total"]:
+        await msg.edit_text(f"🦊 Обіцянок від «{escape_html(who)}» у банку немає.",
+                            parse_mode="HTML")
+        return
+    lines = [f"🦊 <b>Прибрати обіцянки: {escape_html(who)}</b>",
+             f"Зобов'язань: <b>{st['total']}</b>"]
+    if st["writings"]:
+        lines.append("Підпадають написання: " + " · ".join(
+            f"{escape_html(w)} {n}" for w, n in st["writings"]))
+    if st["local"]:
+        # Найважливіший рядок екрана: підрядок міг захопити зайве, і саме
+        # миколаївські записи — те, заради чого банк існує.
+        lines.append(f"⚠️ З них <b>{st['local']}</b> із МИКОЛАЇВСЬКИХ статей — "
+                     f"перевір написання перед тим, як тиснути.")
+    if st["sample"]:
+        lines.append("")
+        lines += [f"• {escape_html(s['title'] or '—')}"
+                  + (f" — {escape_html(s['promiser'])}" if s["promiser"] else "")
+                  for s in st["sample"]]
+    lines += ["", "<i>Кожна прибрана лягає в журнал; відкат усього прогону — "
+                  "/promise_prune_undo.</i>"]
+    key = _who_key(who)
+    await asyncio.to_thread(bot_db.set_state, f"promise_prune_who:{key}", who)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        f"Прибрати {st['total']}", callback_data=f"ppw:{key}")]])
+    await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML",
+                        reply_markup=kb, disable_web_page_preview=True)
+
+
+async def promise_prune_who_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not _allowed(update):
+        return
+    key = query.data.split(":", 1)[1]
+    who = await asyncio.to_thread(bot_db.get_state, f"promise_prune_who:{key}")
+    if not who:
+        await query.edit_message_text(
+            "Запит загубився — повтори /promise_prune_who.")
+        return
+    decided_by = update.effective_user.full_name if update.effective_user else None
+    await query.edit_message_text("🦊 Прибираю…")
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                result = pp.prune_who(cur, who, decided_by=decided_by)
+            conn.commit()
+            return result
+        finally:
+            conn.close()
+
+    try:
+        result = await asyncio.to_thread(run)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Не прибралось: {e}")
+        return
+    await query.edit_message_text(
+        f"🦊 Прибрав {result['removed']} зобов'язань «{who}»"
         + (f", тем спорожніло {result['topics']}" if result["topics"] else "")
         + f".\nВідкат усього прогону: /promise_prune_undo {result['run']}")
 

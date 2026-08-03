@@ -199,6 +199,10 @@ CREATE TABLE IF NOT EXISTS promise_purges (
 -- знімає сотні одразу, і повертати їх по одній неможливо фізично.
 ALTER TABLE promise_purges ADD COLUMN IF NOT EXISTS run BIGINT;
 CREATE INDEX IF NOT EXISTS idx_promise_purges_run ON promise_purges (run);
+-- Номер прогону — послідовність, а не час: два прибирання в одну секунду
+-- (тап по кнопці, потім одразу другий) злиплись би в один прогін, і відкат
+-- одного повернув би обидва. Заодно 1, 2, 3 набирати руками легше за unix.
+CREATE SEQUENCE IF NOT EXISTS promise_purge_run_seq;
 """
 
 
@@ -1195,9 +1199,15 @@ def prune_scan(cur, region, limit=12):
             "sample": sample, "promisers": promisers, "region": region}
 
 
+def next_run(cur):
+    """Номер наступного прогону прибирання."""
+    cur.execute("SELECT nextval('promise_purge_run_seq')")
+    return cur.fetchone()[0]
+
+
 def prune(cur, region, reason=None, who=None, run=None):
     """Прибрати немиколаївські обіцянки — кожну зі знімком у журнал."""
-    run = run or int(time.time())
+    run = run or next_run(cur)
     cur.execute(f"SELECT c.id, c.topic_id FROM commitments c "
                 f"WHERE {_OUTSIDE} AND NOT {_INSIDE} ORDER BY c.id",
                 (region, region))
@@ -1234,6 +1244,87 @@ def prune_undo(cur, run):
     ids = [r[0] for r in cur.fetchall()]
     back = sum(1 for pid in ids if (restore(cur, pid) or {}).get("commitment_id"))
     return {"run": run, "restored": back, "snapshots": len(ids)}
+
+
+# ---------- Друга вісь чистки: ОБІЦЯЛЬНИК ----------
+#
+# Регіон ловить не все. Стаття може лежати в рубриці «Миколаїв» (бо там є
+# місцева реакція чи місцевий бек), а зобов'язання в ній — загальнонаціональне:
+# «Зеленський пообіцяв виплати всім ВПО». Редакція не перевірятиме його
+# незалежно від рубрики, тож регіоном таке не приберемо ніколи.
+#
+# Робочий сигнал тут — сам АКТОР. Але вирішувати, чи «Укрзалізниця» нам чужа,
+# машина не може: завтра вона обіцятиме приміський поїзд на Миколаїв. Тому бот
+# лише НАЗИВАЄ кандидатів (хто найчастіше обіцяє в банку) і показує, що саме
+# зникне, а команду дає людина.
+
+_WHO_EXPR = ("coalesce((SELECT promiser_text FROM commitment_revisions "
+             "          WHERE commitment_id = c.id AND promiser_text IS NOT NULL "
+             "          ORDER BY id LIMIT 1), c.owner_text)")
+
+
+def top_promisers(cur, limit=10, region=None):
+    """Хто найбільше обіцяє в банку. З `region` — лише по статтях цього
+    регіону, тобто «хто лишиться після чистки за регіоном»."""
+    where = ""
+    params = []
+    if region is not None:
+        where = (f"WHERE {_INSIDE}")
+        params.append(region)
+    cur.execute(
+        f"SELECT {_WHO_EXPR} AS who, count(*) FROM commitments c {where} "
+        "GROUP BY 1 HAVING count(*) > 0 ORDER BY 2 DESC NULLS LAST LIMIT %s",
+        params + [limit])
+    return [(w, n) for w, n in cur.fetchall() if w]
+
+
+def prune_who_scan(cur, who, region=None, limit=10):
+    """Що знесе чистка за обіцяльником — і скільки з цього МІСЦЕВЕ.
+
+    Збіг за підрядком, бо в банку одна людина живе кількома написаннями
+    («Володимир Зеленський», «Зеленський», «президент Зеленський»). Саме тому
+    прев'ю показує написання окремо: підрядок може захопити зайве, і побачити
+    це треба до видалення, а не після.
+    """
+    like = f"%{who.strip()}%"
+    match = ("(EXISTS (SELECT 1 FROM commitment_revisions r "
+             "         WHERE r.commitment_id = c.id AND r.promiser_text ILIKE %s) "
+             " OR c.owner_text ILIKE %s)")
+    cur.execute(f"SELECT count(*) FROM commitments c WHERE {match}", (like, like))
+    total = cur.fetchone()[0]
+    local = 0
+    if region is not None:
+        cur.execute(f"SELECT count(*) FROM commitments c "
+                    f"WHERE {match} AND {_INSIDE}", (like, like, region))
+        local = cur.fetchone()[0]
+    cur.execute(
+        f"SELECT {_WHO_EXPR} AS who, count(*) FROM commitments c WHERE {match} "
+        "GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT %s", (like, like, limit))
+    writings = [(w, n) for w, n in cur.fetchall() if w]
+    cur.execute(
+        f"SELECT c.id, c.title, {_WHO_EXPR} FROM commitments c WHERE {match} "
+        "ORDER BY c.revisions DESC, c.id LIMIT %s", (like, like, limit))
+    sample = [{"id": i, "title": t, "promiser": p} for i, t, p in cur.fetchall()]
+    return {"who": who.strip(), "total": total, "local": local,
+            "writings": writings, "sample": sample, "region": region}
+
+
+def prune_who(cur, who, reason=None, decided_by=None, run=None):
+    """Прибрати всі обіцянки цього обіцяльника — кожну зі знімком у журнал."""
+    like = f"%{who.strip()}%"
+    run = run or next_run(cur)
+    cur.execute(
+        "SELECT c.id, c.topic_id FROM commitments c WHERE "
+        "(EXISTS (SELECT 1 FROM commitment_revisions r "
+        "         WHERE r.commitment_id = c.id AND r.promiser_text ILIKE %s) "
+        " OR c.owner_text ILIKE %s) ORDER BY c.id", (like, like))
+    rows = cur.fetchall()
+    touched = sorted({r[1] for r in rows if r[1]})
+    done = sum(1 for cid, _ in rows
+               if forget(cur, cid, reason=reason or f"не наш обіцяльник: {who}",
+                         who=decided_by, run=run))
+    return {"run": run, "removed": done,
+            "topics": prune_orphan_topics(cur, touched)}
 
 
 def purge_runs(cur, limit=10):

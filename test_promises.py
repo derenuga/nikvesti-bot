@@ -877,6 +877,41 @@ def test_region_prune():
                   tid is None or cur.fetchone()[0] == 1, str(tid))
             check("повторний відкат нічого не дублює",
                   pp.prune_undo(cur, res["run"])["restored"] == 0)
+
+            # Друга вісь: обіцяльник. Регіон ловить рубрику, а не зміст —
+            # чужий актор у миколаївській статті переживає чистку за регіоном.
+            national = put(710001, quote="Виплати отримають усі ВПО до кінця року",
+                           subject="виплати ВПО", objects=[],
+                           promiser="Володимир Зеленський")
+            who = pp.prune_who_scan(cur, "Зеленський", region=1)
+            check("чистка за обіцяльником бачить його в МИКОЛАЇВСЬКІЙ статті",
+                  who["total"] == 1 and who["local"] == 1, str(who["total"]))
+            check("підрядок «Зеленський» ловить повне написання",
+                  [w for w, _ in who["writings"]] == ["Володимир Зеленський"],
+                  str(who["writings"]))
+            check("…і показує, скільки з них миколаївських — до видалення",
+                  who["local"] == 1, str(who["local"]))
+            top = pp.top_promisers(cur, region=1)
+            check("бот САМ називає кандидатів другої осі",
+                  any(w == "Володимир Зеленський" for w, _ in top), str(top))
+
+            res2 = pp.prune_who(cur, "Зеленський", decided_by="тест")
+            check("чистка за обіцяльником прибрала рівно його",
+                  res2["removed"] == 1, str(res2["removed"]))
+            # Два прибирання в одну секунду мають лишитись РІЗНИМИ прогонами,
+            # інакше відкат одного повернув би обидва.
+            check("номер прогону не злипається з попереднім",
+                  res2["run"] != res["run"], f"{res['run']} vs {res2['run']}")
+            cur.execute("SELECT count(*) FROM commitments WHERE id = %s", (national,))
+            check("обіцянка актора зникла", cur.fetchone()[0] == 0)
+            cur.execute("SELECT count(*) FROM commitments WHERE id = %s", (local,))
+            check("миколаївська обіцянка не зачеплена", cur.fetchone()[0] == 1)
+            back2 = pp.prune_undo(cur, res2["run"])
+            check("і ця чистка відкочується тим самим журналом",
+                  back2["restored"] == 1, str(back2))
+            cur.execute("SELECT count(*) FROM commitments WHERE id = %s", (national,))
+            check("обіцянка актора повернулась із тим самим id",
+                  cur.fetchone()[0] == 1)
         conn.commit()
     finally:
         conn.close()
