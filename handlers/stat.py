@@ -15,8 +15,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import unquote
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, DateRange, Metric, Dimension, FilterExpression, Filter
 from google.oauth2 import service_account
@@ -52,7 +51,6 @@ def _extract_article_id(url):
 
 
 FB_SEARCH_FORWARD_DAYS = 10  # від дати публікації дивимось уперед — статтю постять у ці дні
-KYIV_TZ = ZoneInfo("Europe/Kiev")  # дата статті без пояса — це київський час
 
 
 def _parse_iso_date(value):
@@ -182,49 +180,35 @@ def _fetch_article_context(article_url):
 
 # ---------- Facebook ----------
 
-POST_FIELDS = (
+# Поля ЛИСТИНГУ — навмисно без залученості (реакції/коменти/шери).
+# Перевірено на живому API 03.08.2026, те саме вікно й той самий токен:
+#   id,message,created_time                          → 18 постів
+#   + attachments{...}                               → 18 постів
+#   + reactions.summary,comments.summary,shares      → 17 постів
+# Зайвим був пост 1710649447730196 (16:21 Київ, матеріал 321935): Facebook
+# МОВЧКИ викидає елемент зі списку, коли на нього просять важку залученість —
+# без помилки, без будь-якої ознаки. Для бота це виглядало як «поста немає»,
+# і редакція отримала фальшивий алерт fb_missing про пост, що висів 3 години.
+# Тому залученість тягнемо окремо і лише для ЗНАЙДЕНОГО поста (_get_post_engagement).
+POST_LIST_FIELDS = (
     "id,message,story,permalink_url,created_time,"
-    "reactions.summary(true),comments.summary(true),shares,"
-    # description/title вкладення — там лежить підпис ВІДЕО-поста: у такому пості
-    # message буває порожній, а лінк на статтю живе саме в описі вкладення
-    "attachments{media_type,title,description,target,url,unshimmed_url}"
+    "attachments{media_type,target,url,unshimmed_url}"
 )
-
-
-def fb_search_window(pub_date):
-    """Вікно пошуку у ФБ (since_ts, until_ts) — спільне для стрічки постів,
-    рілзів і діагностики /fbdebug: від дати публікації статті −1 день і вперед
-    FB_SEARCH_FORWARD_DAYS (але не далі «зараз»). Без дати — 14 днів назад.
-
-    Рахуємо в UTC-aware: pub_date приходить із JSON-LD із поясом (+03:00), а
-    datetime.now() на Railway — UTC. Наївне віднімання зсувало межі на 3 години."""
-    now = datetime.now(timezone.utc)
-    if not pub_date:
-        return int((now - timedelta(days=14)).timestamp()), int(now.timestamp())
-    pub = pub_date if pub_date.tzinfo else pub_date.replace(tzinfo=KYIV_TZ)
-    since_dt = pub - timedelta(days=1)
-    until_dt = min(pub + timedelta(days=FB_SEARCH_FORWARD_DAYS), now)
-    return int(since_dt.timestamp()), int(until_dt.timestamp())
 
 
 def _get_fb_posts(since_ts, until_ts, max_pages=15):
     """Усі пости у вікні [since, until] з пагінацією. FB віддає по 100 і
     найновіші перші — без гортання старий край вікна (де і лежить пост
-    про давню статтю) не потрапляє у вибірку.
-
-    Повертає (пости, помилка_обриву): якщо пагінація впала на другій-третій
-    сторінці, частину постів ми маємо, але вибірка НЕПОВНА — і мовчати про це
-    не можна, інакше «переглянув N постів» бреше повнотою."""
+    про давню статтю) не потрапляє у вибірку."""
     url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
-        "fields": POST_FIELDS,
+        "fields": POST_LIST_FIELDS,
         "since": since_ts,
         "until": until_ts,
         "limit": 100,
         "access_token": FACEBOOK_PAGE_TOKEN,
     }
     all_posts = []
-    partial_error = None
     for _ in range(max_pages):
         # Один ретрай на таймаут: сторінка з summary-полями інколи відповідає
         # довше 30с, повторна спроба зазвичай проходить
@@ -240,16 +224,39 @@ def _get_fb_posts(since_ts, until_ts, max_pages=15):
                 raise
         if "error" in data:
             if all_posts:
-                # частину вже маємо — віддаємо, що встигли, але з ознакою обриву
-                partial_error = data["error"]["message"]
-                break
+                break  # частину вже маємо — віддаємо, що встигли
             raise Exception(data["error"]["message"])
         all_posts.extend(data.get("data", []))
         next_url = data.get("paging", {}).get("next")
         if not next_url:
             break
         url, params = next_url, None  # next_url уже містить усі параметри
-    return all_posts, partial_error
+    return all_posts
+
+def _get_post_engagement(post_id):
+    """Реакції/коментарі/шери ОДНОГО поста окремим запитом за id.
+    Повертає (реакції, коменти, шери); None замість числа, якщо API не
+    відповів — метрика не зійшлась, але сам пост від цього не зникає
+    (у листингу ці ж поля коштували нам пропущеного поста)."""
+    try:
+        data = requests.get(
+            f"https://graph.facebook.com/v25.0/{post_id}",
+            params={"fields": "reactions.summary(true),comments.summary(true),shares",
+                    "access_token": FACEBOOK_PAGE_TOKEN},
+            timeout=15,
+        ).json()
+    except Exception as e:
+        print(f"stat: не вдалось зчитати залученість {post_id} — {e}")
+        return None, None, None
+    if "error" in data:
+        print(f"stat: залученість {post_id} — {data['error'].get('message')}")
+        return None, None, None
+    return (
+        data.get("reactions", {}).get("summary", {}).get("total_count", 0),
+        data.get("comments", {}).get("summary", {}).get("total_count", 0),
+        data.get("shares", {}).get("count", 0),
+    )
+
 
 def _get_post_views(post_id):
     url = f"https://graph.facebook.com/v25.0/{post_id}/insights"
@@ -298,51 +305,17 @@ def _collect_attachment_urls(post):
     return urls
 
 
-def _collect_attachment_texts(post):
-    """Текст вкладень (description, title) — рекурсивно. У ВІДЕО-поста підпис із
-    лінком на статтю лежить не в message поста, а в описі вкладення-відео:
-    Graph API для таких публікацій message часто взагалі не віддає, і пост,
-    який лежав у вибірці, тихо не збігався з жодною статтею."""
-    texts = []
-
-    def walk(node):
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if key in ("description", "title") and isinstance(value, str):
-                    texts.append(value)
-                else:
-                    walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(post.get("attachments", {}))
-    return texts
-
-
-def match_source(post, clean_url, article_id):
-    """Де саме пост зачепився за статтю: 'message' | 'story' |
-    'attachments.description' | 'attachments.url' або None. Назва поля потрібна
-    діагностиці (/fbdebug) — «знайшовся, але лише в описі вкладення» і «не
-    знайшовся взагалі» це різні поломки."""
+def _post_matches_article(post, clean_url, article_id):
+    """Пост стосується статті, якщо посилання є в тексті/story АБО у вкладенні
+    (fb-лінки бувають shimmed — l.facebook.com/l.php?u=... — тому декодуємо)."""
     if _matches_article(post.get("message", "") or "", clean_url, article_id):
-        return "message"
+        return True
     if _matches_article(post.get("story", "") or "", clean_url, article_id):
-        return "story"
-    for text in _collect_attachment_texts(post):
-        if _matches_article(text, clean_url, article_id):
-            return "attachments.description"
+        return True
     for u in _collect_attachment_urls(post):
         if _matches_article(unquote(u), clean_url, article_id):
-            return "attachments.url"
-    return None
-
-
-def _post_matches_article(post, clean_url, article_id):
-    """Пост стосується статті, якщо посилання є в тексті/story, в описі
-    вкладення АБО у самому вкладенні (fb-лінки бувають shimmed —
-    l.facebook.com/l.php?u=... — тому декодуємо)."""
-    return match_source(post, clean_url, article_id) is not None
+            return True
+    return False
 
 
 def _reel_ts(reel):
@@ -448,7 +421,14 @@ def get_fb_stats(article_url, article_id, pub_date=None):
     # дефолт 14 днів назад.
     if pub_date is None:
         pub_date = get_article_published_date(article_url)
-    since_ts, until_ts = fb_search_window(pub_date)
+    now = datetime.now()
+    if pub_date:
+        since_dt = pub_date.replace(tzinfo=None) - timedelta(days=1)
+        until_dt = min(pub_date.replace(tzinfo=None) + timedelta(days=FB_SEARCH_FORWARD_DAYS), now)
+    else:
+        until_dt = now
+        since_dt = until_dt - timedelta(days=14)
+    since_ts, until_ts = int(since_dt.timestamp()), int(until_dt.timestamp())
 
     # Рілзи спершу — щоб потім впізнати і прибрати їх дублі зі стрічки постів.
     # З вікном і пагінацією рілз знаходиться на будь-якій глибині (без дати —
@@ -478,9 +458,8 @@ def get_fb_stats(article_url, article_id, pub_date=None):
     # Помилку стрічки ловимо окремо — щоб не занулити всю секцію: рілзи вже
     # зібрані, і повертаємо ознаку помилки
     error = None
-    partial_error = None
     try:
-        posts, partial_error = _get_fb_posts(since_ts, until_ts)
+        posts = _get_fb_posts(since_ts, until_ts)
     except Exception as e:
         posts = []
         error = str(e)
@@ -492,22 +471,19 @@ def get_fb_stats(article_url, article_id, pub_date=None):
         if reel_key_union and (_post_keys(post) & reel_key_union):
             continue
         post_id_short = post["id"].split("_")[1]
+        # Залученість — окремим запитом за id (у листингу її просити не можна,
+        # див. коментар до POST_LIST_FIELDS). Запит рівно один: на знайдений пост
+        reactions, comments, shares = _get_post_engagement(post["id"])
         posts_out.append({
             "type": "post",
             "id": str(post["id"]),  # ключ швидкого шляху /stat (article_stats)
             "permalink": f"https://www.facebook.com/nikvesti/posts/{post_id_short}",
             "date": _fb_date(post.get("created_time")),
             "views": _get_post_views(post["id"]),
-            "reactions": post.get("reactions", {}).get("summary", {}).get("total_count", 0),
-            "comments": post.get("comments", {}).get("summary", {}).get("total_count", 0),
-            "shares": post.get("shares", {}).get("count", 0),
+            "reactions": reactions,
+            "comments": comments,
+            "shares": shares,
         })
-
-    # Пагінація обірвалась і збігів немає — це НЕ «поста немає», а неповна
-    # вибірка. Кажемо про помилку (у /stat — «спробуйте ще раз», у fb_missing —
-    # 'unknown', тобто без алерту редакції на неповних даних)
-    if not posts_out and not reels_out and partial_error:
-        error = partial_error
 
     return posts_out + reels_out, len(posts), error
 
@@ -614,6 +590,11 @@ def _short_fb_error(error):
     return f"помилка Facebook API: {error[:150]}"
 
 
+def _num(value):
+    """Число для виводу; '—' якщо метрики немає (API не віддав)."""
+    return "—" if value is None else value
+
+
 def _nora_note(items):
     """Рядок-помітка фолбека: items узяті зі снімка Нори (живе джерело впало)."""
     if items and isinstance(items[0], dict) and items[0].get("nora"):
@@ -677,9 +658,10 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
             lines.append(f'{num}<a href="{item["permalink"]}">{label} від {item["date"]}</a>')
             if item["views"] is not None:
                 lines.append(f'👁 Перегляди: {item["views"]:,}'.replace(",", " "))
-            lines.append(f'❤️ Реакції: {item["reactions"]}')
-            lines.append(f'💬 Коментарі: {item["comments"]}')
-            lines.append(f'🔄 Шери: {item["shares"]}')
+            # None = метрику не віддав API; сам пост при цьому знайдений
+            lines.append(f'❤️ Реакції: {_num(item["reactions"])}')
+            lines.append(f'💬 Коментарі: {_num(item["comments"])}')
+            lines.append(f'🔄 Шери: {_num(item["shares"])}')
         views_known = [it["views"] for it in fb_stats if it["views"] is not None]
         if views_known:
             fb_views_total = sum(views_known)
