@@ -3096,13 +3096,17 @@ function promiseCard(p) {
         ${p.how ? `<span class="pr-how${p.cheap ? " cheap" : ""}">${esc(p.how)}</span>` : ""}
       </div>
       <div class="pr-title">${esc(p.title)}</div>
+      ${p.image ? `<img class="pr-img" src="${esc(p.image)}" alt="" loading="lazy"
+        onerror="this.remove()">` : ""}
       ${who ? `<div class="pr-who">${who}</div>` : ""}
       ${p.quote ? `<div class="pr-quote">«${esc(p.quote)}»</div>` : ""}
       ${p.populism ? `<div class="pr-pop">
           <span class="pr-pop-tag">Схоже на популізм</span>
           <span class="pr-pop-why">${esc(p.populism)}</span>
         </div>` : ""}
-      ${p.meta.length ? `<div class="pr-meta">${p.meta.map(esc).join(" · ")}</div>` : ""}
+      ${p.meta.length || p.author ? `<div class="pr-meta">${
+        [...p.meta, p.author ? "автор: " + p.author : ""]
+          .filter(Boolean).map(esc).join(" · ")}</div>` : ""}
     </article>`;
 }
 
@@ -3190,6 +3194,8 @@ async function renderPromise() {
     <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
     <div class="pr-detail ${p.cls}">
       <div class="pr-dtitle">${esc(p.title)}</div>
+      ${p.image ? `<img class="pr-img" src="${esc(p.image)}" alt="" loading="lazy"
+        onerror="this.remove()">` : ""}
       <div class="pr-tags">${(p.tags || []).map((t) =>
         `<span class="pr-tag${t.danger ? " danger" : ""}">${esc(t.text)}</span>`).join("")}</div>
       ${promiseWho(p.who) ? `<div class="pr-who">${promiseWho(p.who)}</div>` : ""}
@@ -3233,6 +3239,8 @@ function chainStep(s) {
           ${s.source ? esc(s.source) + " · " : ""}
           ${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${
             esc(s.article_title || "матеріал")}</a>` : "джерела немає"}
+          ${s.author ? `<div class="pr-author">${icon("edit", "ic xs")}
+            ${esc(s.author)}</div>` : ""}
         </div>
       </div>
     </div>`;
@@ -3243,16 +3251,51 @@ function wirePromiseCard(d) {
   document.querySelectorAll("[data-sib]").forEach((b) => b.onclick = () =>
     nav("promise", +b.dataset.sib));
   const check = $("pr-check");
-  if (check) check.onclick = async () => {
-    check.disabled = true;
-    try {
-      await api(`/api/promises/${id}/check`, { method: "POST" });
-      haptic("success");
-      toast("Позначив перевіреною — тема пішла вниз черги");
-      STATE.promises = null;
-      nav("promises");
-    } catch (e) { toast(e.message); check.disabled = false; }
-  };
+  // «Перевірили» ПИТАЄ результат, а не просто відсуває тему вниз. Висновок і
+  // є продукт банку: обіцянка, перевірена й зірвана, — факт, на який
+  // посилаються в наступному тексті, а не «менш терміновий рядок черги».
+  if (check) check.onclick = () => openSheet(`
+    <h2>Що з обіцянкою?</h2>
+    <p class="sheet-note">Відповідь лишиться в банку назавжди — саме з неї
+      потім видно, хто скільки разів зривав.</p>
+    <button class="pick-row" data-outcome="done">
+      <span class="door-ic c-good-ic">${icon("check")}</span>
+      <span class="pk-txt"><span class="pk-name">Виконано</span>
+      <span class="pk-meta">зробили, питання закрите</span></span>
+    </button>
+    <button class="pick-row" data-outcome="failed">
+      <span class="door-ic c-red-ic">${icon("x")}</span>
+      <span class="pk-txt"><span class="pk-name">Не виконано</span>
+      <span class="pk-meta">строк минув, обіцянку зірвано</span></span>
+    </button>
+    <button class="pick-row" data-outcome="expected">
+      <span class="door-ic c-blue-ic">${icon("chevron-right")}</span>
+      <span class="pk-txt"><span class="pk-name">Ще в процесі</span>
+      <span class="pk-meta">подивився, лишається в черзі</span></span>
+    </button>
+    <input id="pr-note" maxlength="300" autocomplete="off"
+      placeholder="Що саме побачив? (не обов'язково)">`);
+
+  if (check) check.addEventListener("click", () => {
+    // Кнопки шторки вішаємо ПІСЛЯ її відкриття, як усюди в апці: openSheet
+    // щоразу підміняє вузол, тож делегат на document накопичувався б.
+    $("sheet").querySelectorAll("[data-outcome]").forEach((b) => b.onclick = async () => {
+      const outcome = b.dataset.outcome;
+      const note = ($("pr-note") || {}).value || "";
+      b.disabled = true;
+      try {
+        await api(`/api/promises/${id}/check`, { method: "POST",
+          body: JSON.stringify({ outcome, note }) });
+        haptic("success");
+        closeSheet();
+        toast(outcome === "failed" ? "Записав: обіцянку зірвано"
+          : outcome === "done" ? "Записав: виконано"
+          : "Позначив перевіреною — лишається в черзі");
+        STATE.promises = null;
+        nav("promises");
+      } catch (e) { toast(e.message); b.disabled = false; }
+    });
+  });
   const work = $("pr-work");
   if (work) work.onclick = async () => {
     if (STATE.me.manager) {

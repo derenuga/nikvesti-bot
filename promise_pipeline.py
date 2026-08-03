@@ -172,6 +172,14 @@ CREATE TABLE IF NOT EXISTS commitment_revisions (
 -- ревізія або відкат зі знімка). §3 казав «немає дослівної цитати — немає
 -- запису», але перевірялось лише «поле непорожнє»; тепер видно й фантазію.
 ALTER TABLE commitment_revisions ADD COLUMN IF NOT EXISTS quote_verified BOOLEAN;
+-- Що людина побачила, коли пішла перевіряти. Текстом, бо «не виконано, бо
+-- підрядник зник» і «не виконано, перенесли на осінь» — різні історії, а
+-- статус в обох однаковий.
+ALTER TABLE commitments ADD COLUMN IF NOT EXISTS check_note TEXT;
+-- og:image статті. Кеш, а не завантаження на кожен показ: сайт віддає вже
+-- ресайзнутий .webp 600×315, але це все одно мережевий похід — тридцять
+-- карток черги = тридцять запитів. Тягнемо ОДИН раз на статтю й назавжди.
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS og_image TEXT;
 CREATE INDEX IF NOT EXISTS idx_revisions_commitment ON commitment_revisions (commitment_id);
 CREATE INDEX IF NOT EXISTS idx_revisions_article ON commitment_revisions (article_id);
 
@@ -382,8 +390,12 @@ def queue_class(row, now=None):
     deadline = row.get("deadline")
     if deadline:
         due = int(deadline) + grace_seconds(row.get("deadline_precision"))
-        checked = row.get("checked_at") or 0
-        if now > due and checked < int(deadline):
+        if now > due:
+            # Строк минув — це ФАКТ, і перевірка його не скасовує. Раніше тут
+            # стояла умова `checked < deadline`, і обіцянка, яку щойно
+            # подивились, провалювалась у `soon`: міст 2020 року отримував
+            # підпис «Строк за 0 днів». Клас = стан обіцянки, а «щойно
+            # дивились» — це терміновість, і вона знижується в priority().
             return "overdue"
         if int(deadline) - now <= SOON_DAYS * 86400:
             return "soon"
@@ -433,6 +445,15 @@ def priority(row, now=None):
         p += 10
     if row.get("framed_as_promise"):
         p += 15          # редакція вже вважала це вартим фіксації
+    # Щойно ходили дивитись — тема опускається, але з черги не зникає. Саме це
+    # й обіцяє кнопка «Перевірили»: «тема йде вниз, але з банку не зникає».
+    checked = row.get("checked_at") or 0
+    if checked:
+        days = (now - int(checked)) / 86400
+        if days < 14:
+            p -= 70
+        elif days < 45:
+            p -= 30
     if row.get("audience") == "media":
         p += 10          # «обіцяв редакції й не зробив» — окремий сюжет
     if not rings(row):
@@ -1093,7 +1114,8 @@ COMMITMENT_COLS = """
     c.polarity, c.trigger_event, c.deadline, c.deadline_precision, c.criterion,
     c.verification_method, c.condition, c.condition_self_judged, c.actor_hidden,
     c.framed_as_promise, c.based_on_document, c.amount, c.modality, c.source_type,
-    c.revisions, c.first_seen, c.last_seen, c.checked_at, c.checked_by
+    c.revisions, c.first_seen, c.last_seen, c.checked_at, c.checked_by,
+    c.check_note
 """
 
 _COMMITMENT_KEYS = [s.strip().split(".")[-1]
@@ -1116,13 +1138,32 @@ def _decorate(rows, now=None):
     return rows
 
 
-def list_queue(cur, cls=None, limit=20, now=None):
+def list_queue(cur, cls=None, limit=20, now=None, author_id=None):
     """Черга банку тем: що горить сьогодні. Порядок — той самий, що стане
-    головним екраном апки (§6): спершу те, що горить, а не алфавіт."""
+    головним екраном апки (§6): спершу те, що горить, а не алфавіт.
+
+    `author_id` — users.id автора статті (нора зберігає `articles.owner_id`).
+    Це «обіцянки з МОЇХ новин»: журналістка писала матеріал, у ньому влада
+    щось пообіцяла, і саме їй природно повернутись і спитати. Фільтр по
+    ревізіях, а не по обіцянці: ланцюг міг зшитись через двох авторів, і тоді
+    тема законно з'явиться в обох.
+    """
+    # `closed` — окремий кошик перевіреного. Без нього обіцянка, яку людина
+    # сходила й позначила зірваною, ЗНИКАЛА б з екрана: статус більше не
+    # 'expected', а іншого входу до неї немає. А саме ці записи — головний
+    # продукт банку: на них посилаються в наступному тексті.
+    where = ["c.status <> 'expected'" if cls == "closed" else "c.status = 'expected'"]
+    params = []
+    if author_id:
+        where.append(
+            "EXISTS (SELECT 1 FROM commitment_revisions r "
+            "        JOIN articles a ON a.id = r.article_id "
+            "       WHERE r.commitment_id = c.id AND a.owner_id = %s)")
+        params.append(int(author_id))
     cur.execute(f"SELECT {COMMITMENT_COLS} FROM commitments c "
-                "WHERE c.status = 'expected'")
+                f"WHERE {' AND '.join(where)}", params)
     rows = _decorate(_rows(cur), now)
-    if cls:
+    if cls and cls != "closed":
         rows = [r for r in rows if r["class"] == cls]
     return rows[:limit] if limit else rows
 
@@ -1249,9 +1290,39 @@ def search(cur, term, limit=20):
     return _decorate(_rows(cur)), matched
 
 
-def mark_checked(cur, commitment_id, who):
-    cur.execute("UPDATE commitments SET checked_at = %s, checked_by = %s WHERE id = %s",
-                (int(time.time()), who, commitment_id))
+# Чим міг закінчитись похід журналіста. Порядок = порядок кнопок в апці.
+#
+# Це головне, чого бракувало першій версії: «Перевірили» лише відсувало тему
+# вниз, і ВИСНОВОК людини нікуди не записувався. А він і є продукт: обіцянка,
+# перевірена й зірвана, — не «менш терміновий рядок черги», а факт, на який
+# посилаються в наступному тексті й з якого рахується, хто скільки разів
+# зривав. Без цього банк лишався списком справ, а не реєстром.
+CHECK_OUTCOMES = {
+    "done": "виконано",
+    "failed": "не виконано",
+    "expected": "ще в процесі",
+}
+
+
+def mark_checked(cur, commitment_id, who, outcome=None, note=None):
+    """Позначити перевіреною — і записати ЧИМ скінчилось.
+
+    `outcome=None` лишає статус як був (стара поведінка: «подивився, воно ще
+    в процесі»). Явний `done`/`failed` закриває обіцянку, і вона виходить із
+    черги, але з банку не зникає — саме заради цих двох значень банк і
+    ведеться.
+    """
+    fields = ["checked_at = %s", "checked_by = %s"]
+    params = [int(time.time()), who]
+    if outcome in CHECK_OUTCOMES:
+        fields.append("status = %s")
+        params.append(outcome)
+    if note:
+        fields.append("check_note = %s")
+        params.append(note[:500])
+    params.append(commitment_id)
+    cur.execute(f"UPDATE commitments SET {', '.join(fields)} WHERE id = %s", params)
+    return cur.rowcount > 0
 
 
 def data_bounds(cur):

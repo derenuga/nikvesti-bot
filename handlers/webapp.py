@@ -1321,8 +1321,8 @@ async def api_todo_delete(request):
 # погодження.
 
 async def api_promises(request):
-    await _authenticate(request)
-    from handlers import promise_app
+    person, _, _ = await _authenticate(request)
+    from handlers import promise_app, team_kpi
 
     cls = request.query.get("cls") or None
     q = (request.query.get("q") or "").strip() or None
@@ -1330,8 +1330,16 @@ async def api_promises(request):
         offset = max(0, int(request.query.get("offset", "0")))
     except ValueError:
         offset = 0
+    # users.id людини — щоб порахувати «з моїх новин». Резолв кешований
+    # (10 хв), а без БД сайту просто немає фасета, і решта екрана живе.
+    author_id = None
+    try:
+        author_id = await asyncio.to_thread(team_kpi.resolve_site_user_id, person)
+    except Exception as e:
+        print(f"webapp: не резолвнув автора «{person}» — {e}")
     return web.json_response(
-        await asyncio.to_thread(promise_app.queue, cls, q, offset))
+        await asyncio.to_thread(promise_app.queue, cls, q, offset,
+                                promise_app.PAGE, None, author_id))
 
 
 async def api_promise_card(request):
@@ -1345,14 +1353,23 @@ async def api_promise_card(request):
 
 
 async def api_promise_check(request):
+    """«Перевірили» — і ЧИМ скінчилось. Висновок людини це продукт банку, а
+    не службова позначка: обіцянка, перевірена й зірвана, лишається фактом,
+    на який посилаються в наступному тексті."""
     person, _, _ = await _authenticate(request)
     from handlers import promise_app
+    import promise_pipeline as pp
 
+    payload = await _json(request) if request.can_read_body else {}
+    outcome = (payload or {}).get("outcome")
+    if outcome not in pp.CHECK_OUTCOMES:
+        outcome = None
     ok = await asyncio.to_thread(
-        promise_app.check, int(request.match_info["cid"]), person)
+        promise_app.check, int(request.match_info["cid"]), person, outcome,
+        ((payload or {}).get("note") or "").strip() or None)
     if not ok:
         raise web.HTTPNotFound(text="Обіцянки немає")
-    return web.json_response({"ok": True})
+    return web.json_response({"ok": True, "outcome": outcome})
 
 
 async def api_promise_take(request):

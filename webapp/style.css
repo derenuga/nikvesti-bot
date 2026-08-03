@@ -1925,3 +1925,22 @@ body.dark { --stale: #a596e0; --stale-soft: rgba(165, 150, 224, .18);
   font-size: 13px; font-weight: 700; color: var(--muted); background: var(--fill);
 }
 .dp-keep:disabled { opacity: .5; }
+
+/* Ілюстрація новини в картці обіцянки. Сайт віддає вже ресайзнутий .webp
+   600×315, тож це легка картинка, а не оригінал зі статті. */
+.pr-img {
+  display: block; width: 100%; border-radius: 12px; margin: 2px 0;
+  aspect-ratio: 40 / 21; object-fit: cover; background: var(--fill);
+}
+/* Автор матеріалу під лінком: обіцянку в його тексті природно перевіряти
+   саме йому — він уже в темі й знає, кому дзвонити. */
+.pr-author { display: inline-flex; align-items: center; gap: 4px; margin-top: 2px; }
+.ic.xs { width: 12px; height: 12px; }
+.pick-row .c-good-ic { background: var(--good-soft); color: var(--good); }
+.pick-row .c-red-ic { background: var(--red-soft); color: var(--red); }
+/* Поле нотатки в шторці «що з обіцянкою» */
+#pr-note {
+  width: 100%; margin-top: 12px; padding: 12px 14px; border-radius: 14px;
+  border: 1.5px solid var(--line); background: var(--card); color: var(--ink);
+  font: inherit; font-size: 14.5px;
+}

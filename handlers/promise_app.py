@@ -35,12 +35,16 @@ QUOTE_CAP = 260
 
 FACETS = [
     ("all", "Усе"),
+    ("mine", "З моїх новин"),
     ("overdue", "Строк минув"),
     ("soon", "Скоро"),
     ("waiting", "Чекає події"),
     ("stale", "Давно не питали"),
     ("noproof", "Перевірити нічим"),
     ("populism", "Популізм"),
+    # Перевірене з банку не зникає — це і є продукт. Окремий кошик, а не
+    # видалення: на «зірвано» посилаються в наступному тексті.
+    ("closed", "Перевірені"),
 ]
 
 
@@ -144,6 +148,88 @@ def _item(row, rev, now):
     }
 
 
+# ---------- Автор новини ----------
+#
+# Нора зберігає `articles.owner_id` — той самий, за яким рахується факт KPI.
+# Показуємо автора в ланцюгу з простої причини: обіцянку в його матеріалі
+# природно перевіряти саме йому, він уже в темі й знає, кому дзвонити. Це ж
+# дає «мої обіцянки» на дверях журналістки.
+#
+# Резолв через ростер, а не окремим запитом імен: у `users` бувають дублі
+# акаунтів (звільнена + нинішня), і ПІБ звідти інколи розходиться з тим, як
+# людину звуть в апці. Пін `team_user_link` це вже лікує — беремо його.
+
+_authors = {"at": 0.0, "map": {}}
+
+
+def author_map():
+    """{users.id: ПІБ} для людей ростера. Кеш 10 хв — стільки ж, скільки в
+    самого резолвера KPI, тож зайвих походів у БД сайту немає."""
+    import time as _t
+    if _t.monotonic() - _authors["at"] < 600 and _authors["map"]:
+        return _authors["map"]
+    try:
+        from handlers import team_kpi, team_roster
+        links = team_kpi.get_user_links()
+        names = team_kpi._user_id_map()
+        out = {}
+        for person in team_roster.ROSTER:
+            uid = team_kpi.resolve_site_user_id(person, links, names)
+            if uid:
+                out.setdefault(int(uid), person)
+    except Exception as e:
+        print(f"promise_app: автори недоступні — {e}")
+        return _authors["map"]
+    _authors["at"], _authors["map"] = _t.monotonic(), out
+    return out
+
+
+def _authors_for(cur, article_ids):
+    """{article_id: ПІБ} — по одному запиту в нору й нуль у БД сайту."""
+    ids = [int(i) for i in article_ids if i]
+    if not ids:
+        return {}
+    by_id = author_map()
+    cur.execute("SELECT id, owner_id FROM articles WHERE id = ANY(%s)", (ids,))
+    return {aid: by_id[owner] for aid, owner in cur.fetchall()
+            if owner and int(owner) in by_id}
+
+
+# ---------- Ілюстрація ----------
+#
+# Питання Олега: «чи сильно вантажить?». Вантажить рівно тоді, коли тягнути
+# на кожен показ — тридцять карток черги дали б тридцять мережевих походів.
+# Тому кеш у норі (`articles.og_image`): один запит на статтю за все життя.
+#
+# Черга показує ЛИШЕ вже закешоване й нічого не тягне. Картка, відкрита
+# вперше, доганяє своє зображення сама — це один похід і він однаково
+# швидший за прогортування.
+
+def _images_for(cur, article_ids):
+    ids = [int(i) for i in article_ids if i]
+    if not ids:
+        return {}
+    cur.execute("SELECT id, og_image FROM articles "
+                "WHERE id = ANY(%s) AND og_image IS NOT NULL", (ids,))
+    return dict(cur.fetchall())
+
+
+def _fetch_image(cur, article_id, url):
+    """Дотягнути og:image і запам'ятати. Збій — просто без картинки."""
+    if not url:
+        return None
+    try:
+        from handlers.team_matching import fetch_card_meta
+        _, image = fetch_card_meta(url)
+    except Exception as e:
+        print(f"promise_app: не дістав зображення {article_id} — {e}")
+        return None
+    if image:
+        cur.execute("UPDATE articles SET og_image = %s WHERE id = %s",
+                    (image, int(article_id)))
+    return image
+
+
 def _first_revisions(cur, ids):
     """Перша ревізія кожної обіцянки — вона несе цитату й обіцяльника."""
     if not ids:
@@ -155,7 +241,7 @@ def _first_revisions(cur, ids):
     return out
 
 
-def queue(cls=None, q=None, offset=0, limit=PAGE, now=None):
+def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
     """Черга банку: фасети з числами + сторінка карток + межі даних."""
     now = now or int(time.time())
     conn = _conn()
@@ -168,19 +254,39 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None):
                 # з канону ролей), тому це не «фільтр списку», а окремий
                 # запит — і фасети рахуються вже по знайденому.
                 rows, matched = pp.search(cur, q, limit=200)
+            elif cls == "closed":
+                rows = pp.list_queue(cur, cls="closed", limit=None, now=now)
             else:
                 rows = pp.list_queue(cur, limit=None, now=now)
             counts = pp.facet_counts(rows)
             counts["populism"] = sum(1 for r in rows if r.get("populism"))
             counts["all"] = len(rows)
+            # «З моїх новин» і «Перевірені» рахуються окремими запитами: перше
+            # звужує вибірку іншою умовою, друге бере зовсім інший статус.
+            if author_id:
+                counts["mine"] = len(pp.list_queue(
+                    cur, limit=None, now=now, author_id=author_id))
+            counts["closed"] = len(pp.list_queue(cur, cls="closed", limit=None, now=now))
             if cls == "populism":
                 rows = [r for r in rows if r.get("populism")]
-            elif cls and cls != "all":
+            elif cls == "mine" and author_id:
+                rows = pp.list_queue(cur, limit=None, now=now, author_id=author_id)
+            elif cls and cls not in ("all", "closed"):
                 rows = [r for r in rows if r["class"] == cls]
             total = len(rows)
             page = rows[offset:offset + limit]
             revs = _first_revisions(cur, [r["id"] for r in page])
-            items = [_item(r, revs.get(r["id"]), now) for r in page]
+            art_ids = [(revs.get(r["id"]) or {}).get("article_id") for r in page]
+            authors = _authors_for(cur, art_ids)
+            images = _images_for(cur, art_ids)
+            items = []
+            for r in page:
+                rev = revs.get(r["id"])
+                aid = (rev or {}).get("article_id")
+                it = _item(r, rev, now)
+                it["author"] = authors.get(aid)
+                it["image"] = images.get(aid)
+                items.append(it)
             bounds = pp.data_bounds(cur)
             dupes = pp.dupe_count(cur)
     finally:
@@ -226,6 +332,7 @@ def card(commitment_id):
             revs = pp.revisions(cur, [row["id"]])
             from handlers.promises import _links_for
             links = _links_for(cur, {r["article_id"] for r in revs})
+            authors = _authors_for(cur, {r["article_id"] for r in revs})
             now = int(time.time())
             steps, prev = [], None
             for r in revs:
@@ -241,14 +348,28 @@ def card(commitment_id):
                     "promiser": r.get("promiser_text"),
                     "url": link.get("url"),
                     "article_title": link.get("title"),
+                    # Автор матеріалу: обіцянку в його тексті природно
+                    # перевіряти саме йому — він уже в темі й знає, кому
+                    # дзвонити.
+                    "author": authors.get(r["article_id"]),
                 })
                 prev = r
+            first_art = revs[0]["article_id"] if revs else None
+            images = _images_for(cur, [first_art])
+            image = images.get(first_art)
+            if not image and first_art:
+                image = _fetch_image(cur, first_art,
+                                     (links.get(first_art) or {}).get("url"))
             head = _item(row, revs[0] if revs else None, now)
+            head["image"] = image
+            head["author"] = authors.get(first_art)
             head["tags"] = _tags(row, now)
             head["criterion"] = row.get("criterion")
             head["based_on"] = row.get("based_on_document")
             head["condition"] = row.get("condition")
             head["checked_at"] = row.get("checked_at")
+            head["check_note"] = row.get("check_note")
+            head["status"] = row.get("status")
             return {
                 "commitment": head, "chain": steps,
                 "siblings": [{"id": s["id"], "title": s["title"]}
@@ -275,15 +396,19 @@ def _tags(row, now):
 
 # ---------- Дії ----------
 
-def check(commitment_id, who):
-    """«Перевірили»: тема йде вниз черги, але з банку не зникає — обіцянку
-    можна перевірити й не писати про неї (§6)."""
+def check(commitment_id, who, outcome=None, note=None):
+    """«Перевірили» — і ЧИМ це скінчилось.
+
+    Перша версія лише відсувала тему вниз, і висновок людини нікуди не
+    записувався. А він і є продукт: обіцянка, перевірена й зірвана, — не
+    «менш терміновий рядок черги», а факт, на який посилаються в наступному
+    тексті. `outcome=None` лишає стару поведінку («подивився, ще в процесі»).
+    """
     conn = ep.connect()
     try:
         pp.ensure_schema(conn)
         with conn.cursor() as cur:
-            pp.mark_checked(cur, int(commitment_id), who)
-            ok = cur.rowcount > 0
+            ok = pp.mark_checked(cur, int(commitment_id), who, outcome, note)
         conn.commit()
         return ok
     finally:

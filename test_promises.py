@@ -1197,6 +1197,96 @@ def test_vague_titles():
           f"{len(rows)} шт")
 
 
+def test_check_outcome():
+    """«Перевірили» мусить питати РЕЗУЛЬТАТ.
+
+    Олег натиснув кнопку і отримав «тема пішла вниз» — а чекав питання
+    «виконано чи ні», щоб сказати «обіцянку п'ятирічної давнини зірвано» і
+    щоб це збереглось. Висновок людини і є продукт банку: обіцянка,
+    перевірена й зірвана, — факт, на який посилаються в наступному тексті, а
+    не менш терміновий рядок черги.
+    """
+    conn = ep.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            art = {"id": 710001, "published": 1780000000, "title_ua": "Стаття"}
+            p = pp.prepare(cur, case_item(320276))
+            cid, _ = pp.record(cur, art, p)
+
+            pp.mark_checked(cur, cid, "тест")
+            cur.execute("SELECT status, checked_at FROM commitments WHERE id = %s", (cid,))
+            st, at = cur.fetchone()
+            check("без висновку статус не чіпається (подивився — ще в процесі)",
+                  st == "expected" and at, str(st))
+
+            # Строк минув — це ФАКТ, і перевірка його не скасовує. Обіцянка
+            # 2020 року після «Перевірили» отримувала клас `soon` і підпис
+            # «Строк за 0 днів»: умова `checked < deadline` вибивала її з
+            # `overdue`, і вона провалювалась у наступну гілку.
+            old = {"status": "expected", "verifiability": "measurable",
+                   "deadline": NOW - 5 * 365 * DAY, "deadline_precision": "year",
+                   "checked_at": NOW - DAY}
+            check("перевірена обіцянка 2020 року лишається простроченою, "
+                  "а не «скоро»", pp.queue_class(old, NOW) == "overdue",
+                  pp.queue_class(old, NOW))
+            fresh = dict(old, checked_at=0)
+            check("…але щойно перевірена стоїть у черзі НИЖЧЕ за неперевірену",
+                  pp.priority(old, NOW) < pp.priority(fresh, NOW),
+                  f"{pp.priority(old, NOW)} vs {pp.priority(fresh, NOW)}")
+
+            pp.mark_checked(cur, cid, "Олег", "failed", "будову навіть не починали")
+            cur.execute("SELECT status, check_note FROM commitments WHERE id = %s", (cid,))
+            st, note = cur.fetchone()
+            check("«не виконано» записується статусом, а не тільки датою",
+                  st == "failed", str(st))
+            check("…і те, що людина побачила, теж", note == "будову навіть не починали",
+                  str(note))
+
+            check("зірвана обіцянка виходить із черги",
+                  not any(r["id"] == cid for r in pp.list_queue(cur, limit=None)))
+            closed = pp.list_queue(cur, cls="closed", limit=None)
+            check("…але НЕ зникає — лежить у «перевірених», бо це і є продукт",
+                  any(r["id"] == cid for r in closed), str(len(closed)))
+            check("і підписана словом, а не кодом",
+                  pp.STATE_WORD["failed"] == "зірвано")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_author_filter():
+    """«З моїх новин»: обіцянка з матеріалу журналістки має знаходитись за
+    автором — це і є механізм «обіцянки з твоїх новин прилітають тобі»."""
+    conn = ep.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            cur.execute(
+                "INSERT INTO articles (id, published, status, title_ua, slug, "
+                "category, kind, region, owner_id, text_ua) VALUES "
+                "(730001,1780000000,1,'Її стаття','a1','municipal','news',1,777,'т'),"
+                "(730002,1780000000,1,'Чужа стаття','a2','municipal','news',1,888,'т') "
+                "ON CONFLICT (id) DO UPDATE SET owner_id = EXCLUDED.owner_id")
+            for aid, q in ((730001, "Огорожу зріжуть до кінця тижня"),
+                           (730002, "Дорогу здадуть за рік")):
+                p = pp.prepare(cur, case_item(320276, quote=q, subject=f"об'єкт {aid}"))
+                pp.record(cur, {"id": aid, "published": 1780000000,
+                                "title_ua": "Стаття"}, p)
+            mine = pp.list_queue(cur, limit=None, author_id=777)
+            check("фільтр за автором бере лише його матеріали", len(mine) == 1,
+                  str(len(mine)))
+            check("чужу обіцянку не показує",
+                  all(r["title"] for r in mine) and len(pp.list_queue(
+                      cur, limit=None, author_id=888)) == 1)
+            check("без автора черга повна", len(pp.list_queue(cur, limit=None)) == 2)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
     формулювання розійдуться з чатом за три тижні."""
@@ -1204,8 +1294,8 @@ def test_app_payload():
 
     q = pa.queue()
     keys = {f["key"] for f in q["facets"]}
-    check("фасети з числами приїжджають усі", keys == {"all", "overdue", "soon",
-          "waiting", "stale", "noproof", "populism"}, str(keys))
+    check("фасети з числами приїжджають усі", keys == {"all", "mine", "overdue",
+          "soon", "waiting", "stale", "noproof", "populism", "closed"}, str(keys))
     check("лічильник «усе» збігається з довжиною черги",
           dict((f["key"], f["n"]) for f in q["facets"])["all"] >= q["total"],
           str(q["total"]))
@@ -1249,6 +1339,8 @@ def main():
     test_retest_id_reading()
     test_glitch_and_quote_verification()
     test_vague_titles()
+    test_check_outcome()
+    test_author_filter()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")
