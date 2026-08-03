@@ -1713,6 +1713,11 @@ body.dark .aw-chip.k-trip { background: #199e70; }
 body.dark { --stale: #a596e0; --stale-soft: rgba(165, 150, 224, .18);
             --ghost: #93a8bd; --ghost-soft: rgba(147, 168, 189, .16); }
 
+/* Шапка банку — заголовок і кнопка пошуку в один рядок. Відступ ставимо
+   тут, а не на .head-row: іконка вища за текст, і 6px від .h-big її не
+   рятують — блок під нею злипався з кнопкою. */
+#pr-body { margin-top: 16px; }
+
 .pr-q {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   background: var(--sky); border-radius: 14px; padding: 10px 12px;
