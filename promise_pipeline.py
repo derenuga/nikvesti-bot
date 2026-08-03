@@ -854,9 +854,22 @@ def candidates(cur, prepared, limit=CANDIDATE_LIMIT):
             "             WHERE r3.commitment_id = c.id "
             "               AND lower(coalesce(r3.promiser_text,'')) = %s)))")
         params.extend([deadline, promiser_text, promiser_text])
+    # УВАГА на `IS NOT DISTINCT FROM`, а не `=`. У SQL `NULL = NULL` це не
+    # «істина», а «невідомо», тож із простим `=` це джерело мовчало для всіх
+    # обіцянок БЕЗ СТРОКУ — а їх майже половина (214 з 479 у липні). Саме так
+    # у банк лягло п'ять копій «Просувати інтереси Миколаївської області у
+    # державному бюджеті» з п'яти статей про призначення Кіма і чотири копії
+    # «Аналізувати фінансовий стан Миколаєва» — судді просто не поставили
+    # питання.
+    #
+    # Для недатованих єдиною опорою лишається схожість назви, і цього досить:
+    # поріг 0.4 на повних назвах вузький, а рішення однаково ухвалює суддя.
+    # Прив'язувати недатовані до самого лише обіцяльника не можна — у Кіма
+    # таких обіцянок десятки, і кандидати перетворились би на кашу.
     title = (prepared.get("title") or "").strip()
-    if title and deadline:
-        conds.append("(c.deadline = %s AND similarity(c.title, %s) >= %s)")
+    if title:
+        conds.append("(c.deadline IS NOT DISTINCT FROM %s "
+                     " AND similarity(c.title, %s) >= %s)")
         params.extend([deadline, title, DUPE_SIM])
     if not conds:
         return []

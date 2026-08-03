@@ -1006,6 +1006,28 @@ def test_dupes_and_merge():
                   "а не масове злиття)", len(cands) <= pp.CANDIDATE_LIMIT,
                   str(len(cands)))
 
+            # НЕДАТОВАНІ. Липень показав, що попереднє виправлення лікувало
+            # лише половину: `c.deadline = %s` при NULL не збігається ніколи
+            # (у SQL NULL = NULL це «невідомо»), тож для обіцянок без строку
+            # кандидатів не було взагалі. У банк лягло п'ять копій «Просувати
+            # інтереси Миколаївської області у державному бюджеті» з п'яти
+            # статей про призначення Кіма — судді не поставили питання.
+            same = "Просувати інтереси Миколаївської області у державному бюджеті"
+            und1 = pp.prepare(cur, case_item(
+                320276, title=same, deadline=None, subject="інтереси області",
+                objects=[], promiser="Віталій Кім",
+                quote="Кім пообіцяв лобіювати інтереси Миколаївщини"))
+            uid, _ = pp.record(cur, {"id": 710007, "published": 1780000000,
+                                     "title_ua": "Стаття"}, und1)
+            und2 = pp.prepare(cur, case_item(
+                320276, title=same, deadline=None,
+                subject="представництво інтересів області", objects=[],
+                promiser="Віталій Кім",
+                quote="Просуватиме інтереси області в держбюджеті"))
+            cands = {c["id"] for c in pp.candidates(cur, und2)}
+            check("недатована обіцянка теж знаходить кандидата (NULL = NULL "
+                  "у SQL не працює)", uid in cands, str(cands))
+
             pairs = pp.dupe_pairs(cur)
             found = {(p["a"], p["b"]) for p in pairs}
             check("детектор бачить пару, яку не зшив суддя ланцюга",
