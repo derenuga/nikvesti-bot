@@ -44,6 +44,7 @@ docs/PROMISES_BANK.md узагалі писався.
 import os
 import sys
 import time
+from datetime import datetime
 
 os.environ.setdefault(
     "BOT_DATABASE_URL", "postgresql://nora@/nora?host=/tmp&port=55432"
@@ -753,20 +754,48 @@ def test_increment_queue():
     check("лічильник черги збігається зі списком",
           ph._pending(floor) == len(ids), f"{ph._pending(floor)} vs {len(ids)}")
 
-    # Підлога рахується з РОЗІБРАНОГО і закріплюється: повторний виклик не
-    # перераховує (інакше вона повзла б за кожним новим скану вглиб).
+    # ПІДЛОГА. Інцидент 03.08, за який мало не заплатили $790: вона
+    # рахувалась як «найдавніша стаття, якої торкався витяг», і один
+    # /promise_retest на ноду 2009 року відкотив її на сімнадцять років —
+    # у черзі опинилось 132 387 статей замість десятка свіжих.
     conn = ep.connect(); conn.autocommit = True
     with conn.cursor() as cur:
+        cur.execute("DELETE FROM sync_state WHERE key LIKE 'promise_%floor'")
         cur.execute("DELETE FROM sync_state WHERE key LIKE 'promise_incr%'")
+        # стаття 2009 року, розібрана діагностикою — саме такою була пастка
+        cur.execute(
+            "INSERT INTO articles (id, published, status, title_ua, slug, "
+            "category, kind, region, text_ua) VALUES "
+            "(700099,1242000000,1,'Стаття 2009','st-2009','municipal','news',1,'т') "
+            "ON CONFLICT (id) DO NOTHING")
+        pp.mark_attempt(cur, 700099, marked=True, done=True, found=0)
     conn.close()
-    first = ph._incr_floor()
-    check("підлога стає на початок уже розібраного", first == 1790000000, str(first))
+
+    now = int(time.time())
+    floor = ph._incr_floor()
+    check("розібрана стаття 2009 року НЕ тягне підлогу за собою",
+          floor > 1600000000, pp.fmt_date(floor))
+    check("без ручного скану підлога стає «відсьогодні» — просили саме нове",
+          abs(floor - now) < 120, pp.fmt_date(floor))
+
     conn = ep.connect(); conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("UPDATE articles SET published = 1600000000 WHERE id = 700002")
+        cur.execute("DELETE FROM sync_state WHERE key LIKE 'promise_%floor'")
     conn.close()
-    check("…і закріплюється, а не перераховується щоразу",
-          ph._incr_floor() == first, str(ph._incr_floor()))
+    ph._note_scan_floor("2026-06-01")
+    june = int(datetime(2026, 6, 1).timestamp())
+    check("ручний скан задає підлогу — інкремент продовжує оплачене",
+          ph._incr_floor() == june, pp.fmt_date(ph._incr_floor()))
+    conn = ep.connect(); conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM sync_state WHERE key = 'promise_incr_floor'")
+    conn.close()
+    ph._note_scan_floor("2026-07-01")
+    check("пізніший скан підлогу НЕ піднімає (глибина лише росте)",
+          ph._incr_floor() == june, pp.fmt_date(ph._incr_floor()))
+    explicit = int(datetime(2026, 8, 1).timestamp())
+    check("людина може назвати підлогу явно і це сильніше за все",
+          ph._incr_floor(explicit) == explicit, pp.fmt_date(ph._incr_floor()))
 
 
 # ---------- Регіон: банк веде підзвітність МІСЦЕВОЇ влади ----------

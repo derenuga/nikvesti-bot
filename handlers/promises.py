@@ -1948,6 +1948,10 @@ async def promise_test_handler(update, context):
 
 INCR_KEY = "promise_incr_on"        # наявність ключа = інкремент увімкнено
 INCR_FLOOR_KEY = "promise_incr_floor"   # unix: глибше не заглядаємо
+SCAN_FLOOR_KEY = "promise_scan_floor"   # початок найранішого ручного скану
+# Скільки статей у черзі — це вже не «інкремент», а прихований бекфіл за
+# гроші. Вмикати мовчки не можна: на 132к статей це $790.
+INCR_SANITY_MAX = 3000
 INCR_MAX_PER_RUN = 60               # ~40 нових матеріалів на добу, запас удвічі
 
 PENDING_SQL = """
@@ -1973,19 +1977,43 @@ WHERE a.published >= %s
 """
 
 
-def _incr_floor():
-    """Підлога добору. Береться раз: початок уже розібраного діапазону — усе,
-    що давніше, лишається територією ручного /promise_scan. Банк порожній —
-    стаємо на «відсьогодні», щоб інкремент не поліз у весь архів."""
+def _incr_floor(explicit=None):
+    """Підлога добору: глибше інкремент не заглядає ніколи.
+
+    Раніше вона рахувалась як «найдавніша стаття, якої колись торкався
+    витяг» — і це виявилось катастрофічно крихким. Один `/promise_retest 92`
+    на статтю 2009 року відкотив підлогу на СІМНАДЦЯТЬ років: у черзі
+    опинилось 132 387 статей, тобто ≈$790 і три місяці роботи. Помилки такого
+    класу не можна лікувати «акуратніше рахувати мінімум» — треба прибрати
+    саму можливість.
+
+    Тепер підлога береться лише з ЯВНИХ джерел, і жодне з них не рухається
+    від діагностики:
+      1. дата, яку назвала людина (`/promise_increment_on 2026-06-01`);
+      2. початок найранішого РУЧНОГО скану (`/promise_scan YYYY-MM` пише його
+         сам) — інкремент природно продовжує те, що вже оплачено;
+      3. «відсьогодні», якщо сканів не було. Це саме те, чого просили:
+         автоперевірка НОВИХ матеріалів, а не архіву.
+    """
+    if explicit:
+        bot_db.set_state(INCR_FLOOR_KEY, int(explicit))
+        return int(explicit)
     raw = bot_db.get_state(INCR_FLOOR_KEY)
     if raw is not None:
         return int(raw)
-    rows = bot_db.query(
-        "SELECT min(a.published) AS m FROM promise_attempts t "
-        "JOIN articles a ON a.id = t.article_id")
-    floor = (rows[0]["m"] if rows else None) or int(time.time())
+    scanned = bot_db.get_state(SCAN_FLOOR_KEY)
+    floor = int(scanned) if scanned else int(time.time())
     bot_db.set_state(INCR_FLOOR_KEY, floor)
     return floor
+
+
+def _note_scan_floor(from_date):
+    """Запам'ятати початок найранішого ручного скану. Саме звідси інкремент
+    дізнається, докуди вглиб уже заплачено."""
+    ts = int(datetime.strptime(from_date, "%Y-%m-%d").timestamp())
+    cur = bot_db.get_state(SCAN_FLOOR_KEY)
+    if cur is None or ts < int(cur):
+        bot_db.set_state(SCAN_FLOOR_KEY, ts)
 
 
 def _pending(floor, limit=None):
@@ -2053,22 +2081,53 @@ async def sync_promises_incremental(bot):
 
 
 async def promise_increment_on_handler(update, context):
-    """/promise_increment_on — увімкнути щогодинний добір свіжих статей."""
+    """/promise_increment_on [YYYY-MM-DD] — щогодинний добір свіжих статей.
+
+    Дата — підлога: глибше не заглядаємо. Без неї береться початок
+    найранішого ручного скану, а якщо сканів не було — сьогодні.
+    """
     if not _allowed(update):
         return
-    if await asyncio.to_thread(bot_db.get_state, INCR_KEY) is not None:
+    args = context.args or []
+    explicit = None
+    if args:
+        try:
+            explicit = int(datetime.strptime(args[0], "%Y-%m-%d").timestamp())
+        except ValueError:
+            await update.message.reply_text(
+                "Формат дати: /promise_increment_on 2026-06-01")
+            return
+    already = await asyncio.to_thread(bot_db.get_state, INCR_KEY) is not None
+    if already and not explicit:
         floor = await asyncio.to_thread(_incr_floor)
         await update.message.reply_text(
             f"Інкремент уже увімкнено (від {pp.fmt_date(floor)}). "
-            f"Стан — /promise_status, вимкнути — /promise_increment_off")
+            f"Змінити підлогу — /promise_increment_on YYYY-MM-DD, "
+            f"вимкнути — /promise_increment_off")
         return
     await asyncio.to_thread(pp.ensure_schema)
-    floor = await asyncio.to_thread(_incr_floor)
-    await asyncio.to_thread(bot_db.set_state, INCR_KEY, int(time.time()))
+    floor = await asyncio.to_thread(_incr_floor, explicit)
     pending = await asyncio.to_thread(_pending, floor)
+    # Запобіжник. Тиха катастрофа 03.08: підлога рахувалась як «найдавніша
+    # стаття, якої торкався витяг», один /promise_retest на ноду 2009 року
+    # відкотив її на 17 років, і в черзі опинилось 132 387 статей — ≈$790.
+    # Число мусить бути ПЕРЕД очима, а не в /promise_status постфактум.
+    if pending > INCR_SANITY_MAX:
+        await update.message.reply_text(
+            f"⛔ Не вмикаю: у черзі <b>{pending}</b> статей від "
+            f"{pp.fmt_date(floor)} — це ≈${pending * 0.006:.0f} і "
+            f"{pending // (INCR_MAX_PER_RUN * 24) + 1} днів роботи. Це вже не "
+            f"добір свіжого, а бекфіл за гроші.\n\n"
+            f"Якщо треба саме свіже: <code>/promise_increment_on "
+            f"{datetime.now().strftime('%Y-%m-%d')}</code>\n"
+            f"Якщо справді потрібна глибина — назви дату явно, і я ввімкну.",
+            parse_mode="HTML")
+        return
+    await asyncio.to_thread(bot_db.set_state, INCR_KEY, int(time.time()))
     await update.message.reply_text(
         f"🦊 Авто-інкремент банку тем увімкнено (від {pp.fmt_date(floor)}).\n"
-        f"У черзі {pending} статей — щогодини о :25 бере до {INCR_MAX_PER_RUN}.\n"
+        f"У черзі {pending} статей — щогодини о :25 бере до {INCR_MAX_PER_RUN}"
+        f" (≈${pending * 0.006:.2f} на всю чергу).\n"
         f"Пре-фільтр тут вимкнено свідомо: на денному потоці він економив би "
         f"центи, а втратити обіцянку може назавжди.\n"
         f"Вартість видно в /aicost, стан — /promise_status.")
@@ -2534,6 +2593,10 @@ async def promise_scan_callback(update, context):
     await query.edit_message_text(f"🦊 Вивантажую {month} і відправляю батчі…")
 
     from_date, to_date = api.month_bounds(month)
+    # Ручний скан — єдине джерело правди про те, докуди вглиб уже заплачено.
+    # Саме звідси інкремент бере підлогу, і саме тому вона більше не залежить
+    # від діагностичних команд на випадкових старих нодах.
+    await asyncio.to_thread(_note_scan_floor, from_date)
     state = {"month": month, "from": from_date, "to": to_date,
              "marked_only": marked_only, "batch_ids": [], "done": [],
              "chat_id": query.message.chat_id, "started": int(time.time()),
