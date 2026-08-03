@@ -1837,6 +1837,30 @@ def test_judge_memory():
             check("невпевнене «різні» пару НЕ ховає — це питання, а не рішення",
                   bool(pp.dupe_pairs(cur)))
 
+            # Кеш вердиктів по ТЕМАХ: прогони йдуть шарами, і без нього
+            # кожен наступний питав би про ті самі відкинуті пари.
+            cur.execute("DELETE FROM topic_pair_verdicts")
+            cur.execute("INSERT INTO topics (title, status, opened, last_event) "
+                        "VALUES ('дорога на Намиві', 'open', 0, 0) RETURNING id")
+            t1 = cur.fetchone()[0]
+            cur.execute("INSERT INTO topics (title, status, opened, last_event) "
+                        "VALUES ('дорога на Намиві у Миколаєві', 'open', 0, 0) "
+                        "RETURNING id")
+            t2 = cur.fetchone()[0]
+            fake = [{"keep": t1, "drop": t2}]
+            check("пара тем іще не суджена", not pp.topic_verdicts(cur, fake))
+            pp.save_topic_verdict(cur, t1, t2, {"same": False,
+                                                "confidence": "high",
+                                                "why": "різні дороги"})
+            check("вердикт по темах запам'ятався",
+                  bool(pp.topic_verdicts(cur, fake)))
+            cur.execute("UPDATE commitments SET topic_id = %s WHERE id = %s", (t1, a))
+            cur.execute("UPDATE commitments SET topic_id = %s WHERE id = %s", (t2, b))
+            cands = pp.topic_candidates(cur)
+            check("впевнено відкинута пара тем не повертається в кандидати",
+                  not any({c["keep"], c["drop"]} == {t1, t2} for c in cands),
+                  str(cands))
+
             judged = [{"a": {"id": a}, "b": {"id": b},
                        "verdict": {"same": True, "confidence": "high"}},
                       {"a": {"id": a}, "b": {"id": b},

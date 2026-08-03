@@ -3092,16 +3092,30 @@ async def promise_topics_handler(update, context):
     # водопостачання Вознесенська» і «…у Баштанці» правило розрізняє лише
     # тому, що я вручну навчив його топонімів, а модель просто знає, що це
     # різні міста Миколаївщини.
-    judged = []
+    judged, auto, ask, skip = [], [], [], []
     if pairs:
-        await msg.edit_text(f"🦊 Правило знайшло {len(pairs)} пар. "
-                            f"Питаю суддю (це десь пів хвилини)…")
         sides = await asyncio.to_thread(_topic_sides, pairs)
+        # Платимо лише за нові пари: прогони йдуть шарами (за раз тема бере
+        # участь в одній парі), і без кеша кожен наступний прогін заново
+        # питав би про ті самі сорок відкинутих.
+        known = await asyncio.to_thread(_topic_known, sides)
+        fresh = [p for p in sides
+                 if tuple(sorted((p["keep"], p["drop"]))) not in known]
+        for p in sides:
+            v = known.get(tuple(sorted((p["keep"], p["drop"]))))
+            if v:
+                p["verdict"] = v
+        if fresh:
+            await msg.edit_text(
+                f"🦊 Правило знайшло {len(sides)} пар, з них нових {len(fresh)}. "
+                f"Питаю суддю…")
 
-        async def progress(done, total):
-            await msg.edit_text(f"🦊 Суддя: {done} з {total}…")
+            async def progress(done, total):
+                await msg.edit_text(f"🦊 Суддя: {done} з {total}…")
 
-        judged = await pj.judge_pairs("topic", sides, on_progress=progress)
+            await pj.judge_pairs("topic", fresh, on_progress=progress)
+            await asyncio.to_thread(_topic_remember, fresh)
+        judged = sides
         auto, ask, skip = pj.split(judged)
         _TOPIC_CONFIRMED[:] = auto
         pairs = auto + ask
@@ -3144,6 +3158,28 @@ async def promise_topics_handler(update, context):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
             f"Об'єднати {len(auto)} впевнених", callback_data="ptp:go")]]))
+
+
+def _topic_known(sides):
+    conn = ep.connect()
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            return pp.topic_verdicts(cur, sides)
+    finally:
+        conn.close()
+
+
+def _topic_remember(judged):
+    conn = ep.connect()
+    try:
+        with conn.cursor() as cur:
+            for p in judged:
+                if p.get("verdict"):
+                    pp.save_topic_verdict(cur, p["keep"], p["drop"], p["verdict"])
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _topic_sides(pairs):

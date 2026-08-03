@@ -118,6 +118,19 @@ CREATE INDEX IF NOT EXISTS idx_topic_merges_run ON topic_merges (run);
 -- і воно вічне): вердикт машини має право бути переглянутим, коли зміняться
 -- правила чи модель. Пам'ять потрібна, щоб два екрани — чат і апка — бачили
 -- одне й те саме й щоб не платити за ту саму пару щогодини.
+-- Те саме для пар ТЕМ. Окрема таблиця, а не спільна з `promise_pair_verdicts`:
+-- там ключ — id зобовʼязань, тут id тем, і послідовності в них різні, тож в
+-- одній таблиці числа тихо накладались би одне на одне.
+CREATE TABLE IF NOT EXISTS topic_pair_verdicts (
+    a          BIGINT NOT NULL,
+    b          BIGINT NOT NULL,
+    same       BOOLEAN,
+    confidence TEXT,
+    why        TEXT,
+    created    BIGINT,
+    PRIMARY KEY (a, b)
+);
+
 CREATE TABLE IF NOT EXISTS promise_pair_verdicts (
     a          BIGINT NOT NULL,
     b          BIGINT NOT NULL,
@@ -2345,6 +2358,34 @@ def topic_pair_reason(ta, tb):
     return None
 
 
+def save_topic_verdict(cur, a, b, verdict):
+    a, b = sorted((int(a), int(b)))
+    cur.execute(
+        "INSERT INTO topic_pair_verdicts (a, b, same, confidence, why, created) "
+        "VALUES (%s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (a, b) DO UPDATE SET same = EXCLUDED.same, "
+        "  confidence = EXCLUDED.confidence, why = EXCLUDED.why, "
+        "  created = EXCLUDED.created",
+        (a, b, bool(verdict.get("same")), verdict.get("confidence"),
+         (verdict.get("why") or "")[:300], int(time.time())))
+
+
+def topic_verdicts(cur, pairs=None):
+    """{(a,b): вердикт}. Без аргументу — всі, бо кандидати рахуються в Python,
+    а не в SQL, і фільтрувати їх треба до побудови пар."""
+    if pairs is None:
+        cur.execute("SELECT a, b, same, confidence, why FROM topic_pair_verdicts")
+    else:
+        keys = [tuple(sorted((int(p["keep"]), int(p["drop"])))) for p in pairs]
+        keys = list(dict.fromkeys(keys))
+        if not keys:
+            return {}
+        cur.execute("SELECT a, b, same, confidence, why FROM topic_pair_verdicts "
+                    "WHERE (a, b) IN %s", (tuple(keys),))
+    return {(r[0], r[1]): {"same": r[2], "confidence": r[3], "why": r[4]}
+            for r in cur.fetchall()}
+
+
 def topic_candidates(cur, limit=400):
     """Пари тем, які схоже на одну справу. Read-only, нічого не міняє."""
     cur.execute(
@@ -2354,12 +2395,18 @@ def topic_candidates(cur, limit=400):
         "GROUP BY t.id, t.title HAVING coalesce(t.title, '') <> '' "
         "ORDER BY count(c.id) DESC, t.id")
     rows = [{"id": r[0], "title": r[1], "n": r[2]} for r in cur.fetchall()]
+    # Пари, які суддя вже впевнено назвав різними, у кандидати не повертаємо:
+    # інакше кожен наступний прогін платив би за ті самі сорок відповідей.
+    rejected = {k for k, v in topic_verdicts(cur).items()
+                if v.get("same") is False and v.get("confidence") == "high"}
     out, taken = [], set()
     for i, a in enumerate(rows):
         if a["id"] in taken:
             continue
         for b in rows[i + 1:]:
             if b["id"] in taken:
+                continue
+            if tuple(sorted((a["id"], b["id"]))) in rejected:
                 continue
             reason = topic_pair_reason(a["title"], b["title"])
             if not reason:
@@ -2429,6 +2476,9 @@ def merge_topics(cur, keep_id, drop_id, run=None):
         "  last_event = %s "
         "WHERE id = %s", (drop_id, drop_id, now, keep_id))
     cur.execute("DELETE FROM topics WHERE id = %s", (drop_id,))
+    # Вердикти про зниклу тему більше ні до чого не належать.
+    cur.execute("DELETE FROM topic_pair_verdicts WHERE a = %s OR b = %s",
+                (drop_id, drop_id))
     return len(ids)
 
 
