@@ -134,10 +134,7 @@ def _viewed(request, person):
     if not who or who == person:
         return person
     info = team_roster.ROSTER.get(person) or {}
-    from handlers import team_roster as _tr
-    if info.get("manager") and who in _tr.ROSTER:
-        return who
-    return person
+    return who if info.get("manager") and who in team_roster.ROSTER else person
 
 
 async def _authenticate(request):

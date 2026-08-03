@@ -3456,3 +3456,88 @@ async def promise_resplit_callback(update, context):
         f"🦊 Відправив {n} статей у батчі. Результат прийде сюди сам "
         f"(зазвичай хвилини, іноді години). Після редеплою — /promise_resume.")
     asyncio.create_task(_poll(context.bot, state))
+
+
+# ---------- /promise_mine ----------
+#
+# Фасет «З моїх новин» показав НУЛЬ усім (Олег, 04.08), і причин могло бути
+# три: у норі немає авторів на цих статтях; резолв людини в `users.id` дає не
+# той акаунт; або параметр перегляду чужими очима не доїжджає. Гадати наосліп
+# по одному фіксу за раунд — найдорожчий спосіб; ця команда називає причину за
+# один прогін.
+
+async def promise_mine_handler(update, context):
+    """/promise_mine [прізвище] — чому «З моїх новин» порожньо."""
+    if not _allowed(update):
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Нора не налаштована.")
+        return
+    arg = " ".join(context.args or []).strip().lower()
+    msg = await update.message.reply_text("🦊 Звіряю авторів…")
+
+    def run():
+        from handlers import team_kpi, team_roster
+        conn = ep.connect()
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT a.owner_id, count(DISTINCT r.commitment_id) "
+                    "FROM commitment_revisions r JOIN articles a ON a.id = r.article_id "
+                    "WHERE a.owner_id IS NOT NULL GROUP BY a.owner_id")
+                by_owner = {int(r[0]): r[1] for r in cur.fetchall()}
+        finally:
+            conn.close()
+        # Резолв — ТІЄЮ САМОЮ функцією, що в апці. Інакше діагностика
+        # перевіряла б інший шлях, ніж той, що зламався.
+        try:
+            links = team_kpi.get_user_links()
+            names = team_kpi._user_id_map()
+            err = None
+        except Exception as e:
+            links, names, err = {}, {}, f"{type(e).__name__}: {e}"
+        people = []
+        for person in team_roster.ROSTER:
+            if arg and arg not in person.lower():
+                continue
+            uid = None
+            try:
+                uid = team_kpi.resolve_site_user_id(person, links, names)
+            except Exception as e:
+                err = err or f"{type(e).__name__}: {e}"
+            people.append((person, uid, by_owner.get(int(uid)) if uid else None))
+        return by_owner, people, err, bool(names)
+
+    try:
+        by_owner, people, err, has_names = await asyncio.to_thread(run)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вийшло: {type(e).__name__}: {e}")
+        return
+
+    lines = ["🦊 <b>Чому «З моїх новин» порожньо</b>", ""]
+    if err:
+        lines.append(f"⚠️ Резолв авторів упав: <code>{escape_html(err)}</code>")
+    if not has_names:
+        lines.append("⚠️ БД сайту не віддала список users — резолв неможливий, "
+                     "і фасет буде нулем у всіх незалежно від даних.")
+    lines.append(f"Авторів у норі на статтях банку: <b>{len(by_owner)}</b>")
+    matched = sum(1 for _, uid, n in people if n)
+    lines.append(f"Людей ростера, чий id збігся: <b>{matched}</b> із {len(people)}")
+    lines.append("")
+    for person, uid, n in sorted(people, key=lambda x: -(x[2] or 0)):
+        if n:
+            lines.append(f"✅ {escape_html(person)} — id {uid}, обіцянок {n}")
+        elif uid:
+            lines.append(f"➖ {escape_html(person)} — id {uid}, у банку немає")
+        else:
+            lines.append(f"❌ {escape_html(person)} — <b>id не резолвиться</b>")
+    unknown = sorted(((oid, n) for oid, n in by_owner.items()
+                      if oid not in {u for _, u, _ in people if u}),
+                     key=lambda x: -x[1])[:8]
+    if unknown:
+        lines += ["", "<i>Автори в норі, яких немає в ростері (звільнені або "
+                  "дублі акаунтів):</i>",
+                  ", ".join(f"{oid}→{n}" for oid, n in unknown)]
+    lines.append("\n<i>Якщо id не резолвиться — /kpi_link &lt;прізвище&gt; &lt;users.id&gt;.</i>")
+    await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML")
