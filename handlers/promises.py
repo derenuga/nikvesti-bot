@@ -1738,7 +1738,7 @@ def _judge_chain_sync(client, article, prepared, candidates):
             "usage": msg.usage}
 
 
-def ingest(results, judge=True, mark=True):
+def ingest(results, judge=True, mark=True, drop_first=False):
     """Злити результати витягу в банк тем.
 
     results — [{"article": payload, "commitments": [...]}] у будь-якому
@@ -1760,7 +1760,7 @@ def ingest(results, judge=True, mark=True):
             # обіцянками: це видно і лікується руками, на відміну від тиші.
             print(f"promises: суддя ланцюга недоступний ({e}) — пишу без зшивання")
     stats = {"articles": 0, "new": 0, "revisions": 0, "dup": 0, "noquote": 0,
-             "glitch": 0, "unverified": 0,
+             "glitch": 0, "unverified": 0, "dropped": 0,
              "judged": 0, "judge_usage": {"input": 0, "output": 0}}
     conn = ep.connect()
     try:
@@ -1772,6 +1772,11 @@ def ingest(results, judge=True, mark=True):
             for res in ordered:
                 art = res["article"]
                 stats["articles"] += 1
+                if drop_first:
+                    # Перечит статті: старе знімаємо РІВНО перед записом
+                    # нового, а не при відправці батча. Інакше при збої батча
+                    # банк лишався б без цих обіцянок на години.
+                    stats["dropped"] += pp.drop_article(cur, art["id"])
                 found = glitches = 0
                 for item in res["commitments"]:
                     prepared = pp.prepare(cur, item)
@@ -2918,7 +2923,8 @@ async def _finish(bot, state, client):
 
     try:
         results, errors, usage = await asyncio.to_thread(collect)
-        stats = await asyncio.to_thread(ingest, results)
+        stats = await asyncio.to_thread(ingest, results, True, True,
+                                        bool(state.get("drop_first")))
         await asyncio.to_thread(mark_errors, errors)
         record_ai_usage(api.MODEL, input_tokens=usage["input"],
                         output_tokens=usage["output"],
@@ -2926,6 +2932,18 @@ async def _finish(bot, state, client):
                         cache_creation=usage["cache_creation"])
         report = await asyncio.to_thread(_scan_report, state["month"])
         await asyncio.to_thread(_clear_state)
+        if state.get("drop_first"):
+            head = (f"🦊 <b>Перечит {stats['articles']} статей завершено</b>\n\n"
+                    f"Знято старих записів: {stats['dropped']}\n"
+                    f"Записано нових: <b>{stats['new'] + stats['revisions']}</b>"
+                    f" (нових {stats['new']}, ревізій {stats['revisions']})\n"
+                    f"Вартість ≈ ${(usage['input'] * api.PRICE_IN_BATCH + usage['output'] * api.PRICE_OUT_BATCH):.2f}")
+            if errors:
+                head += (f"\n<i>Збоїв: {len(errors)} — ці статті лишились "
+                         f"як були, повторний /promise_resplit їх добере.</i>")
+            await bot.send_message(chat_id, _clip(head), parse_mode="HTML",
+                                   disable_web_page_preview=True)
+            return
         cost = (usage["input"] * api.PRICE_IN_BATCH
                 + usage["output"] * api.PRICE_OUT_BATCH)
         head = (f"🦊 <b>Скан {state['month']} завершено</b>"
@@ -3289,3 +3307,126 @@ async def promise_topics_undo_handler(update, context):
     await update.message.reply_text(
         f"↩️ Повернув {n} {pp.plural(n, 'зобовʼязання', 'зобовʼязання', 'зобовʼязань')} "
         f"під свої теми." if n else "🦊 Такого прогону немає.")
+
+
+# ---------- /promise_resplit ----------
+#
+# Замір 03.08 (Олег): 919 зобов'язань у банку, з них 770 — із 286 статей, що
+# дали більше одного запису. Саме там і сталося дроблення: витяг робив ОДИН
+# запис на КОЖЕН об'єкт замість одного на рішення (одна ухвала про демонтаж
+# чотирьох кіосків — чотири записи). Правило проти цього вже в промпті, але
+# воно діє тільки на НОВИХ статтях; накопичене лікується лише перечитом.
+#
+# Чому саме «статті з >1 записом»: там, де запис один, дробити не було чого,
+# і платити за перечит немає сенсу. Це не гарантія помилки — стаття про сесію
+# міськради законно несе кілька різних обіцянок, — але це рівно та підмножина,
+# у якій помилка можлива.
+
+def _resplit_targets():
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT r.article_id, count(DISTINCT r.commitment_id) n "
+                "FROM commitment_revisions r "
+                "JOIN commitments c ON c.id = r.commitment_id "
+                # Перевірене людиною не чіпаємо: висновок редакції дорожчий за
+                # охайність реєстру, і перечит його б стер.
+                "WHERE c.status = 'expected' AND c.checked_at IS NULL "
+                "GROUP BY r.article_id HAVING count(DISTINCT r.commitment_id) > 1 "
+                "ORDER BY n DESC, r.article_id")
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [r[0] for r in rows], sum(r[1] for r in rows)
+
+
+async def promise_resplit_handler(update, context):
+    """/promise_resplit — перечитати статті, де витяг дробив одне рішення.
+
+    Оцінка безкоштовна, гроші — тільки після кнопки.
+    """
+    if not _allowed(update):
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not os.environ.get("ANTHROPIC_API_KEY") or not bot_db.is_configured():
+        await update.message.reply_text("🦊 Потрібні нора і ANTHROPIC_API_KEY.")
+        return
+    if await asyncio.to_thread(_load_state):
+        await update.message.reply_text(
+            "Уже є незавершений прогін. Стан і полінг — /promise_resume.")
+        return
+    msg = await update.message.reply_text("🦊 Рахую (безкоштовно)…")
+    try:
+        ids, records = await asyncio.to_thread(_resplit_targets)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не порахувалось: {type(e).__name__}: {e}")
+        return
+    if not ids:
+        await msg.edit_text("🦊 Статей із кількома записами немає — дробити "
+                            "не було чого.")
+        return
+    cost, _tin, _tout = api.estimate(len(ids))
+    await msg.edit_text(
+        f"🦊 <b>Перечит статей, де витяг дробив</b>\n\n"
+        f"Статей: <b>{len(ids)}</b>\n"
+        f"Записів із них зараз: <b>{records}</b>\n"
+        f"Вартість: <b>≈ ${cost:.2f}</b> (Haiku 4.5, батч)\n\n"
+        f"Кожна стаття читається наново промптом із правилом «одне рішення — "
+        f"один запис»; старі записи з неї знімаються РІВНО перед вставкою "
+        f"нових, тож збій батча нічого не з'їдає.\n"
+        f"<i>Перевірене людиною не чіпається.</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+            f"Перечитати {len(ids)} ≈ ${cost:.2f}", callback_data="prs:go")]]))
+
+
+async def promise_resplit_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not _allowed(update):
+        return
+    if await asyncio.to_thread(_load_state):
+        await query.edit_message_text("Уже є незавершений прогін — /promise_resume.")
+        return
+    await query.edit_message_text("🦊 Вивантажую статті й відправляю батчі…")
+
+    state = {"month": "перечит", "drop_first": True, "batch_ids": [], "done": [],
+             "chat_id": query.message.chat_id, "started": int(time.time()),
+             "articles": 0}
+
+    def submit():
+        import anthropic
+        client = anthropic.Anthropic()
+        ids, _ = _resplit_targets()
+        arts = api.fetch_ids(ids)
+        if not arts:
+            return 0
+        state["articles"] = len(arts)
+        _save_state(state)
+        sys_len = len(api.get_system_prompt().encode("utf-8"))
+        for chunk in api.chunk_articles(arts, sys_len):
+            batch = client.messages.batches.create(
+                requests=[api._make_request(client, a) for a in chunk])
+            state["batch_ids"].append(batch.id)
+            _save_state(state)
+        return len(arts)
+
+    try:
+        n = await asyncio.to_thread(submit)
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ Збій відправки: {e}"
+            + ("\nСтворені батчі не загубляться — /promise_resume."
+               if state["batch_ids"] else ""))
+        return
+    if not n:
+        await asyncio.to_thread(_clear_state)
+        await query.edit_message_text("🦊 Статей не знайшлось.")
+        return
+    await query.edit_message_text(
+        f"🦊 Відправив {n} статей у батчі. Результат прийде сюди сам "
+        f"(зазвичай хвилини, іноді години). Після редеплою — /promise_resume.")
+    asyncio.create_task(_poll(context.bot, state))
