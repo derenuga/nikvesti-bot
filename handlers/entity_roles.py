@@ -2979,6 +2979,12 @@ async def roles_fix_document(update, context):
         from handlers import entity_junk as ej
         await ej.cards_fix_document(msg, text)
         return
+    if "promises-fix" in head:
+        # Третя вісь — БАНК ТЕМ. Той самий обробник, бо .txt у боті ловить
+        # рівно один MessageHandler; маркер у першому рядку і розводить.
+        from handlers import promises as pr
+        await pr.promises_fix_document(msg, text)
+        return
     if FIX_MARKER not in head:
         return          # не наш файл — мовчки повз
     actions, errors = parse_fix(text)

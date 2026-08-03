@@ -950,6 +950,33 @@ def test_dupes_and_merge():
             other = put(710001, "Встановити освітлення на майданчику «Казка»",
                         "Освітлення на майданчику обіцяють встановити до 10 червня")
 
+            # КОРІНЬ проблеми: пре-фільтр кандидатів мусить побачити другий
+            # запис ЩЕ ДО вставки — інакше судді не задають питання взагалі, і
+            # дубль лягає в банк. Саме це й сталось на 762 статтях червня:
+            # усі три старі джерела кандидатів вимагали або резолвнутої картки
+            # (майданчика й адміністрації району в сутнісному шарі немає), або
+            # точного збігу ключа предмета (він різниться на одне слово).
+            p2 = pp.prepare(cur, case_item(
+                320276, title="Організувати прибирання на майданчику «Казка» у Корабельному районі",
+                quote="До 10 червня там має організувати прибирання адміністрація",
+                subject="майданчик «Казка» у Корабельному районі", objects=[],
+                promiser="адміністрація Корабельного району", deadline="2026-06-10"))
+            check("предмет НЕ має картки сутності — старі джерела мовчали б",
+                  not p2.get("subject_entity_id"), str(p2.get("subject_entity_id")))
+            check("обіцяльник теж без картки",
+                  not p2.get("promiser_entity_id"), str(p2.get("promiser_entity_id")))
+            cands = {c["id"] for c in pp.candidates(cur, p2)}
+            check("пре-фільтр усе одно знаходить кандидата — по написанню "
+                  "обіцяльника й однаковому строку", a in cands, str(cands))
+            # `other` (освітлення того самого майданчика) у кандидатах БУТИ
+            # МАЄ: це питання до судді, а не відповідь. Різні дії щодо одного
+            # об'єкта лишаються різними обіцянками (§2.6), і відсіює їх він.
+            # Пре-фільтр тут навмисно широкий — його ціна копійчана, а от
+            # непоставлене питання коштує дубля назавжди.
+            check("список кандидатів лишається коротким (це питання до судді, "
+                  "а не масове злиття)", len(cands) <= pp.CANDIDATE_LIMIT,
+                  str(len(cands)))
+
             pairs = pp.dupe_pairs(cur)
             found = {(p["a"], p["b"]) for p in pairs}
             check("детектор бачить пару, яку не зшив суддя ланцюга",
@@ -977,6 +1004,41 @@ def test_dupes_and_merge():
         conn.commit()
     finally:
         conn.close()
+
+
+def test_export_and_fix_packet():
+    """Експорт + пакет рішень: шлях «файл із бота → розбір поза ботом →
+    .txt назад». Без нього сотню злиттів довелось би натиснути по одному."""
+    from handlers import promises as ph
+
+    rows, bounds = ph._export_payload()
+    check("експорт віддає весь банк", len(rows) > 0, str(len(rows)))
+    first = rows[0]
+    check("у кожної обіцянки їдуть ревізії з ЦИТАТАМИ — саме вони "
+          "відрізняють дубль від двох різних обіцянок",
+          bool(first["revisions"]) and bool(first["revisions"][0]["quote"]))
+    check("і лінк на матеріал (nikvesti.com/<id> не існує)",
+          bool(first["revisions"][0]["url"]),
+          str(first["revisions"][0]["url"]))
+    check("похідні поля теж у файлі — розбір поза ботом бачить те саме, що бот",
+          "class" in first and "verifiability" in first and "populism" in first)
+
+    actions, errors = ph.parse_fix(
+        "# promises-fix\nmerge 12 34\n/promise_merge 55 66\n"
+        "drop 77 не наша тема\ncheck 88\nказна-що\n")
+    check("пакет розуміє merge/drop/check", len(actions) == 4, str(actions))
+    check("…і рядок, скопійований зі звіту як /promise_merge",
+          ("merge", 55, 66, None) in actions, str(actions))
+    check("причина drop доїжджає", actions[2][3] == "не наша тема", str(actions[2]))
+    check("нерозібране НЕ ковтається мовчки", errors == ["казна-що"], str(errors))
+
+    ids = [r["id"] for r in rows[:2]]
+    lines, counts, missing = ph.describe_fixes(
+        [("merge", ids[0], ids[1], None), ("drop", 999999, None, None)])
+    check("прев'ю показує НАЗВИ, а не самі id (число перевірити не можна)",
+          lines and "id" not in lines[0].lower(), str(lines[:1]))
+    check("неіснуючий id рахується окремо, а не тихо зникає",
+          missing == 1 and counts["drop"] == 0, f"{missing}, {counts}")
 
 
 def test_app_payload():
@@ -1027,6 +1089,7 @@ def main():
     test_region_scope()
     test_region_prune()
     test_dupes_and_merge()
+    test_export_and_fix_packet()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")

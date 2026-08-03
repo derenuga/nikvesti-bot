@@ -585,6 +585,12 @@ def prepare(cur, item):
 
 CANDIDATE_LIMIT = 8
 
+# Поріг схожості назв. Живе тут, бо ним користуються ДВІ речі, які мусять
+# збігатись: пре-фільтр кандидатів (щоб дубль не з'явився) і детектор дублів
+# (щоб знайти вже наявні). Розійдуться — і детектор показуватиме пари, які
+# пре-фільтр більше не створює, або навпаки.
+DUPE_SIM = 0.4
+
 
 def candidates(cur, prepared, limit=CANDIDATE_LIMIT):
     """Обіцянки, з якими ЦЯ може виявитись тією самою (§4 крок 1).
@@ -631,6 +637,38 @@ def candidates(cur, prepared, limit=CANDIDATE_LIMIT):
             "  SELECT 1 FROM commitment_revisions r2 "
             "  WHERE r2.commitment_id = c.id AND r2.promiser_entity_id = %s))")
         params.extend([deadline, promiser])
+    # Четверте й п'яте джерела — БЕЗ жодної картки сутності.
+    #
+    # Додано 03.08 після першого місяця на обсязі, і це головна причина, чому
+    # банк роздувся: усі три джерела вище вимагають або резолвнутої картки
+    # (subject_entity_id, promiser_entity_id), або ТОЧНОГО збігу рядка
+    # (subject_key). Жодне з них не спрацювало на парі «Організувати
+    # прибирання та покос трави на майданчику „Казка"» / «…прибирання на
+    # майданчику „Казка" у Корабельному районі»: майданчик картки не має,
+    # адміністрація району теж, а ключі предмета різні на одне слово. Немає
+    # кандидата — немає й ПИТАННЯ до судді, і другий запис лягає новою
+    # обіцянкою. Саме тому суддя відпрацював 63 рази на 762 статті.
+    #
+    # Обидва нові джерела прив'язані до ОДНАКОВОГО СТРОКУ, і це не
+    # обережність заради обережності: без нього текстова схожість зліпила б
+    # «відремонтувати» й «освітити» ту саму вулицю, а similarity('гімназія
+    # №2', 'ліцей №2') = 0.12 показує, що самій схожості вірити не можна в
+    # принципі. Пара «той самий день + той самий актор (або схожа назва)» —
+    # вузька, і рішення однаково ухвалює суддя.
+    # Ключ `promiser` — сире написання з витягу; саме воно лягає в
+    # revisions.promiser_text, тож порівнюємо з тим самим, що записано.
+    promiser_text = (prepared.get("promiser") or "").strip().lower()
+    if promiser_text and deadline:
+        conds.append(
+            "(c.deadline = %s AND (lower(coalesce(c.owner_text,'')) = %s "
+            "  OR EXISTS (SELECT 1 FROM commitment_revisions r3 "
+            "             WHERE r3.commitment_id = c.id "
+            "               AND lower(coalesce(r3.promiser_text,'')) = %s)))")
+        params.extend([deadline, promiser_text, promiser_text])
+    title = (prepared.get("title") or "").strip()
+    if title and deadline:
+        conds.append("(c.deadline = %s AND similarity(c.title, %s) >= %s)")
+        params.extend([deadline, title, DUPE_SIM])
     if not conds:
         return []
     params.extend([prepared.get("polarity") or "do", limit])
@@ -1184,9 +1222,6 @@ def restore(cur, purge_id):
 #   • спільний предмет або той самий обіцяльник.
 # Зливає ЛЮДИНА: однакові назва+строк бувають і в двох сусідніх дитсадків.
 
-DUPE_SIM = 0.4
-
-
 def dupe_pairs(cur, limit=40, sim=DUPE_SIM):
     """Пари «схоже на один запис двічі». Read-only, нічого не зливає."""
     cur.execute(
@@ -1229,6 +1264,33 @@ def dupe_count(cur, sim=DUPE_SIM):
                    AND coalesce(a.owner_text, '') <> '')
         """, (sim,))
     return cur.fetchone()[0]
+
+
+def export_all(cur):
+    """Увесь банк одним списком — для розбору ПОЗА ботом.
+
+    Той самий підхід, що `/roles_audit` і `/entity_junk`: коли рішень сотні,
+    їх не натиснути по одному, і файл виявляється швидшим за будь-який
+    інтерфейс. Тут — повний зріз: обіцянка, її ревізії з цитатами й лінками,
+    похідні поля. Достатньо, щоб знайти дублі й сміття, не заглядаючи в базу.
+    """
+    cur.execute(f"SELECT {COMMITMENT_COLS} FROM commitments c ORDER BY c.id")
+    rows = _decorate(_rows(cur))
+    by_id = {r["id"]: r for r in rows}
+    for r in rows:
+        r["revisions_list"] = []
+    cur.execute(
+        f"SELECT {REVISION_COLS}, coalesce(a.published, r.created) AS published, "
+        "a.slug, a.category, a.kind, coalesce(a.title_ua, a.title_ru) AS art_title "
+        "FROM commitment_revisions r LEFT JOIN articles a ON a.id = r.article_id "
+        "ORDER BY r.commitment_id, r.id")
+    keys = _REVISION_KEYS + ["published", "slug", "category", "kind", "art_title"]
+    for row in cur.fetchall():
+        rev = dict(zip(keys, row))
+        target = by_id.get(rev.pop("commitment_id"))
+        if target is not None:
+            target["revisions_list"].append(rev)
+    return rows
 
 
 def merge_commitments(cur, keep_id, dup_id, who=None, run=None):

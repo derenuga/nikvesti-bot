@@ -45,6 +45,7 @@ import json
 import os
 import time
 from datetime import datetime
+from io import BytesIO
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -803,6 +804,255 @@ async def promise_prune_callback(update, context):
         f"🦊 Прибрав {result['removed']} зобов'язань"
         + (f", тем спорожніло {result['topics']}" if result["topics"] else "")
         + f".\nВідкат усього прогону: /promise_prune_undo {result['run']}")
+
+
+# ---------- /promise_export і пакет рішень файлом ----------
+#
+# Той самий шлях, яким лікували ролі й картки сутностей, і з тієї ж причини:
+# коли рішень сотні, по одному їх не натиснути. Бот віддає ВЕСЬ банк файлом,
+# розбір іде поза ботом, назад приїжджає .txt із маркером — бот показує, що
+# зробить, і чекає кнопку.
+#
+# Формат JSON, а не CSV: у обіцянки є вкладені ревізії з цитатами й лінками,
+# і плаский рядок їх втрачає — а саме цитата відрізняє дубль від двох різних
+# обіцянок про той самий об'єкт.
+
+FIX_MARKER = "promises-fix"
+
+
+def _export_payload():
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            rows = pp.export_all(cur)
+            links = _links_for(cur, {r["article_id"] for row in rows
+                                     for r in row["revisions_list"]
+                                     if r.get("article_id")})
+            bounds = pp.data_bounds(cur)
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"], "topic_id": r["topic_id"], "title": r["title"],
+            "subject": r["subject"], "subject_key": r["subject_key"],
+            "owner": r["owner_text"], "polarity": r["polarity"],
+            "deadline": pp.fmt_date(r["deadline"]) if r["deadline"] else None,
+            "deadline_precision": r["deadline_precision"],
+            "modality": r["modality"], "source_type": r["source_type"],
+            "verifiability": r["verifiability"], "class": r["class"],
+            "verification_method": r["verification_method"],
+            "criterion": r["criterion"], "based_on_document": r["based_on_document"],
+            "condition": r["condition"], "trigger_event": r["trigger_event"],
+            "amount": r["amount"], "populism": r["populism"],
+            "checked_at": pp.fmt_date(r["checked_at"]) if r["checked_at"] else None,
+            "revisions": [{
+                "article_id": v["article_id"],
+                "date": pp.fmt_date(v["published"]) if v["published"] else None,
+                "article_title": v.get("art_title"),
+                "url": (links.get(v["article_id"]) or {}).get("url"),
+                "promiser": v["promiser_text"], "role": v["promiser_role"],
+                "reported_by": v["reported_by_text"],
+                "modality": v["modality"], "source_type": v["source_type"],
+                "stated_deadline": (pp.fmt_date(v["stated_deadline"])
+                                    if v["stated_deadline"] else None),
+                "quote": v["quote"],
+            } for v in r["revisions_list"]],
+        })
+    return out, bounds
+
+
+async def promise_export_handler(update, context):
+    """/promise_export — увесь банк тем одним JSON-файлом."""
+    if not _allowed(update):
+        return
+    msg = await update.message.reply_text("🦊 Збираю…")
+    try:
+        rows, bounds = await asyncio.to_thread(_export_payload)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не зібралось: {e}")
+        return
+    if not rows:
+        await msg.edit_text("🦊 Банк порожній.")
+        return
+    payload = json.dumps(
+        {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+         "bounds": bounds, "count": len(rows), "commitments": rows},
+        ensure_ascii=False, indent=1).encode("utf-8")
+    await msg.delete()
+    await update.message.reply_document(
+        document=BytesIO(payload), filename="promises.json",
+        caption=(
+            f"🦊 Банк тем: {len(rows)} зобов'язань з ревізіями, цитатами й "
+            f"лінками.\n\nРозбирається поза ботом, назад — .txt із рядком "
+            f"<code># promises-fix</code> і рішеннями:\n"
+            f"<code>merge &lt;що лишається&gt; &lt;дубль&gt;</code> — склеїти "
+            f"ланцюг (цитати обох лишаються)\n"
+            f"<code>drop &lt;id&gt; [причина]</code> — прибрати запис\n"
+            f"<code>check &lt;id&gt;</code> — позначити перевіреним\n\n"
+            f"Покажу, що зроблю, і чекатиму кнопку. Усе зі знімками — "
+            f"відкат /promise_prune_undo."),
+        parse_mode="HTML")
+
+
+def parse_fix(text):
+    """Пакет рішень → список дій. Рядки, скопійовані зі звіту як
+    `/promise_merge 12 34`, теж розуміються: людина копіює те, що бачить."""
+    actions, errors = [], []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        line = line.lstrip("/").replace("promise_", "", 1)
+        parts = line.split()
+        verb = parts[0].lower() if parts else ""
+        try:
+            if verb == "merge" and len(parts) >= 3:
+                actions.append(("merge", int(parts[1]), int(parts[2]), None))
+            elif verb in ("drop", "forget") and len(parts) >= 2:
+                actions.append(("drop", int(parts[1]), None,
+                                " ".join(parts[2:]) or None))
+            elif verb in ("check", "checked") and len(parts) >= 2:
+                actions.append(("check", int(parts[1]), None, None))
+            else:
+                errors.append(raw.strip()[:80])
+        except ValueError:
+            errors.append(raw.strip()[:80])
+    return actions, errors
+
+
+def describe_fixes(actions):
+    """Що саме зробить пакет — з НАЗВАМИ, а не самими id. Число «merge 218 164»
+    людина перевірити не може, назви — може."""
+    ids = {a[1] for a in actions} | {a[2] for a in actions if a[2]}
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, title FROM commitments WHERE id = ANY(%s)",
+                        (list(ids),))
+            names = dict(cur.fetchall())
+    finally:
+        conn.close()
+    lines, counts, missing = [], {"merge": 0, "drop": 0, "check": 0}, 0
+    for verb, a, b, note in actions:
+        na, nb = names.get(a), names.get(b)
+        if na is None or (b is not None and nb is None):
+            missing += 1
+            continue
+        counts[verb] += 1
+        if verb == "merge":
+            lines.append(f"🔗 {escape_html(na)}\n   ← {escape_html(nb)}")
+        elif verb == "drop":
+            lines.append(f"🗑 {escape_html(na)}"
+                         + (f" — {escape_html(note)}" if note else ""))
+        else:
+            lines.append(f"✔️ {escape_html(na)}")
+    return lines, counts, missing
+
+
+async def promises_fix_document(msg, text, who=None):
+    """Пакет рішень .txt у приваті. Викликається з єдиного обробника
+    документів, тому маркер перевіряє викликач."""
+    actions, errors = parse_fix(text)
+    if not actions:
+        await msg.reply_text("🦊 Пакет порожній — жодного рядка не розібрав.\n"
+                             + "\n".join(errors[:5]))
+        return
+    try:
+        lines, counts, missing = await asyncio.to_thread(describe_fixes, actions)
+    except Exception as e:
+        await msg.reply_text(f"❌ Не змалював пакет: {type(e).__name__}: {e}")
+        return
+    if not lines:
+        await msg.reply_text(
+            f"🦊 Жодної з {len(actions)} обіцянок у банку немає — "
+            f"схоже, пакет зібрано зі старого експорту.")
+        return
+    head = (f"🦊 <b>Пакет рішень</b>: склеїти {counts['merge']} · "
+            f"прибрати {counts['drop']} · позначити {counts['check']}")
+    if missing:
+        head += f"\n<i>{missing} рядків пропущено — таких id у банку немає.</i>"
+    body = "\n".join(lines[:40])
+    if len(lines) > 40:
+        body += f"\n…і ще {len(lines) - 40} дій"
+    if errors:
+        body += "\n\n⚠️ не розібрав:\n" + "\n".join(escape_html(e) for e in errors[:5])
+    key = f"promise_fix:{int(time.time())}"
+    await asyncio.to_thread(
+        bot_db.set_state, key, json.dumps(actions, ensure_ascii=False))
+    await msg.reply_text(
+        _clip(head + "\n\n" + body + "\n\n<i>Склеювання не видаляє цитат: "
+              "ревізії другого запису переходять у перший. Усе зі знімками.</i>"),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"✅ Виконати {len(lines)}",
+                                 callback_data=f"pfx:{key}"),
+            InlineKeyboardButton("❌ Ні", callback_data="pfx:no"),
+        ]]))
+
+
+async def promises_fix_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not _allowed(update):
+        return
+    key = query.data.split(":", 1)[1]
+    if key == "no":
+        await query.edit_message_text("Скасував — нічого не змінював.")
+        return
+    raw = await asyncio.to_thread(bot_db.get_state, key)
+    if not raw:
+        await query.edit_message_text("Пакет загубився — надішли файл ще раз.")
+        return
+    actions = json.loads(raw)
+    who = update.effective_user.full_name if update.effective_user else None
+    await query.edit_message_text("🦊 Виконую…")
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            done = {"merge": 0, "drop": 0, "check": 0}
+            skipped = []
+            with conn.cursor() as cur:
+                run_id = pp.next_run(cur)
+                for verb, a, b, note in actions:
+                    try:
+                        if verb == "merge":
+                            ok = pp.merge_commitments(cur, a, b, who=who, run=run_id)
+                        elif verb == "drop":
+                            ok = pp.forget(cur, a, reason=note or "пакет рішень",
+                                           who=who, run=run_id)
+                        else:
+                            pp.mark_checked(cur, a, who)
+                            ok = True
+                    except Exception as e:
+                        skipped.append(f"{verb} {a}: {type(e).__name__}")
+                        continue
+                    if ok:
+                        done[verb] += 1
+                    else:
+                        skipped.append(f"{verb} {a}")
+            conn.commit()
+            return run_id, done, skipped
+        finally:
+            conn.close()
+
+    try:
+        run_id, done, skipped = await asyncio.to_thread(run)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Не виконалось: {e}")
+        return
+    text = (f"🦊 Готово: склеїв {done['merge']} · прибрав {done['drop']} · "
+            f"позначив {done['check']}.\n"
+            f"Відкат усього пакета: /promise_prune_undo {run_id}")
+    if skipped:
+        text += f"\n\n⚠️ пропущено {len(skipped)}: " + ", ".join(skipped[:5])
+    await query.edit_message_text(text)
 
 
 async def promise_dupes_handler(update, context):

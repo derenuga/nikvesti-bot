@@ -73,6 +73,7 @@ from handlers.promises import (
     promise_prune_callback, promise_prune_undo_handler,
     promise_prune_who_handler, promise_prune_who_callback,
     promise_dupes_handler, promise_merge_handler,
+    promise_export_handler, promises_fix_callback,
 )
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler, budget_date_handler
@@ -544,6 +545,7 @@ def main():
     app.add_handler(CommandHandler("promise_restore", promise_restore_handler))
     app.add_handler(CommandHandler("promise_retest", promise_retest_handler))
     app.add_handler(CommandHandler("promise_prune", promise_prune_handler))
+    app.add_handler(CommandHandler("promise_export", promise_export_handler))
     app.add_handler(CommandHandler("promise_dupes", promise_dupes_handler))
     app.add_handler(CommandHandler("promise_merge", promise_merge_handler))
     app.add_handler(CommandHandler("promise_prune_who", promise_prune_who_handler))
@@ -654,6 +656,7 @@ def main():
     app.add_handler(CallbackQueryHandler(promise_scan_callback, pattern="^psc:"))
     app.add_handler(CallbackQueryHandler(promise_prune_callback, pattern="^ppr:"))
     app.add_handler(CallbackQueryHandler(promise_prune_who_callback, pattern="^ppw:"))
+    app.add_handler(CallbackQueryHandler(promises_fix_callback, pattern="^pfx:"))
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.
