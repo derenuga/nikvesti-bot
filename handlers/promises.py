@@ -2040,18 +2040,48 @@ async def promise_retest_handler(update, context):
         await update.message.reply_text("Не видно id матеріалу.")
         return
     aid = int(aid)
-    msg = await update.message.reply_text("🦊 Знімаю старий запис і перечитую…")
+    # Число могло бути id ОБІЦЯНКИ, а не статті — у чаті вони виглядають
+    # однаково, і саме на цьому команда вже зіграла злий жарт: `/promise_retest
+    # 92` прочитав 92 як статтю (стаття з таким id у норі є, вона з 2008 року),
+    # чесно нічого в ній не знайшов і відзвітував «нових 0» — тобто виглядав
+    # так, наче виправлення не спрацювало. `/promise_show` це прочитання вже
+    # має; тут його бракувало.
+    #
+    # Порядок саме такий: спершу стаття. Якщо id є І статтею, І обіцянкою,
+    # виграє стаття — бо аргумент команди названий статтею, а обіцянка це
+    # здогадка.
+    def resolve():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM articles WHERE id = %s", (aid,))
+                if cur.fetchone():
+                    return aid, None
+                cur.execute("SELECT r.article_id FROM commitment_revisions r "
+                            "WHERE r.commitment_id = %s ORDER BY r.id LIMIT 1",
+                            (aid,))
+                row = cur.fetchone()
+                return (row[0], aid) if row else (aid, None)
+        finally:
+            conn.close()
+
+    target, via_commitment = await asyncio.to_thread(resolve)
+    msg = await update.message.reply_text(
+        "🦊 Знімаю старий запис і перечитую…" if not via_commitment else
+        f"🦊 {via_commitment} — це обіцянка, читаю її статтю {target}…")
 
     def run():
         conn = ep.connect()
         try:
             pp.ensure_schema(conn)
             with conn.cursor() as cur:
-                dropped = pp.drop_article(cur, aid)
+                dropped = pp.drop_article(cur, target)
             conn.commit()
         finally:
             conn.close()
-        arts = api.fetch_ids([aid])
+        arts = api.fetch_ids([target])
         if not arts:
             return dropped, None, None, None
         results, errors, usage = _extract_sync(arts)
@@ -2064,23 +2094,32 @@ async def promise_retest_handler(update, context):
         await msg.edit_text(f"❌ Перечит не вдався: {type(e).__name__}: {e}")
         return
     if stats is None:
-        await msg.edit_text(f"🦊 Статті {aid} у норі немає — спершу /nora_resync {aid}.")
+        await msg.edit_text(
+            f"🦊 Статті {target} у норі немає — спершу /nora_resync {target}.")
         return
     if usage:
         record_ai_usage(api.MODEL, input_tokens=usage["input"],
                         output_tokens=usage["output"],
                         cache_read=usage["cache_read"],
                         cache_creation=usage["cache_creation"])
-    lines = [f"🦊 Перечит статті {aid}",
+    lines = [f"🦊 Перечит статті {target}"
+             + (f" (за обіцянкою {via_commitment})" if via_commitment else ""),
              f"Знято старих обіцянок: {len(dropped['removed'])} "
              f"(зачеплено {len(dropped['touched'])})",
              f"Записано: нових {stats.get('new', 0)} · ревізій {stats.get('revisions', 0)}"]
     if stats.get("noquote"):
         lines.append(f"Без цитати (не записано): {stats['noquote']}")
+    # Нуль по обидва боки — не «спрацювало», а «нічого не було й не з'явилось».
+    # Саме так виглядав промах по id, і відрізнити його від чесного «у статті
+    # зобов'язань немає» було неможливо.
+    if not dropped["removed"] and not stats.get("new") and not stats.get("revisions"):
+        lines.append("<i>У цій статті зобов'язань не знайшлось — ні до, ні "
+                     "після. Якщо чекав інше, перевір id: команда бере id "
+                     "СТАТТІ або її URL.</i>")
     if errors:
         lines.append("⚠️ " + "; ".join(errors))
-    lines.append(f"Дивитись: /promise_show {aid}")
-    await msg.edit_text("\n".join(lines))
+    lines.append(f"Дивитись: /promise_show {target}")
+    await msg.edit_text("\n".join(lines), parse_mode="HTML")
 
 
 # ---------- /promise_estimate ----------

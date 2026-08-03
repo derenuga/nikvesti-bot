@@ -1041,6 +1041,54 @@ def test_export_and_fix_packet():
           missing == 1 and counts["drop"] == 0, f"{missing}, {counts}")
 
 
+def test_retest_id_reading():
+    """Число в чаті виглядає однаково, чи то id статті, чи id обіцянки.
+
+    Реальний випадок 03.08: `/promise_retest 92` прочитав 92 як статтю
+    (стаття з таким id у норі є — вона з 2008 року), чесно нічого не знайшов
+    і відзвітував «нових 0». Тобто виглядав так, наче виправлення промпту не
+    спрацювало, хоч насправді читалась зовсім інша стаття.
+    """
+    conn = ep.connect()
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM commitment_revisions")
+        cur.execute("DELETE FROM commitments")
+        cur.execute(
+            "INSERT INTO articles (id, published, status, title_ua, slug, "
+            "category, kind, region, text_ua) "
+            "VALUES (92,1670000000,1,'Стара стаття 2008','st-92','municipal',"
+            "'news',1,'текст') ON CONFLICT (id) DO NOTHING")
+        p = pp.prepare(cur, case_item(320276))
+        cid, _ = pp.record(cur, {"id": 710001, "published": 1780000000,
+                                 "title_ua": "Стаття 710001"}, p)
+    conn.close()
+
+    def resolve(aid):
+        """Те саме прочитання, що в promise_retest_handler."""
+        conn = ep.connect()
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM articles WHERE id = %s", (aid,))
+                if cur.fetchone():
+                    return aid, None
+                cur.execute("SELECT r.article_id FROM commitment_revisions r "
+                            "WHERE r.commitment_id = %s ORDER BY r.id LIMIT 1",
+                            (aid,))
+                row = cur.fetchone()
+                return (row[0], aid) if row else (aid, None)
+        finally:
+            conn.close()
+
+    check("id ОБІЦЯНКИ веде до її статті, а не читається як стаття",
+          resolve(cid) == (710001, cid), str(resolve(cid)))
+    check("id СТАТТІ лишається статтею (стаття виграє — так названо аргумент)",
+          resolve(92) == (92, None), str(resolve(92)))
+    check("невідоме число не вигадує статті", resolve(999999) == (999999, None),
+          str(resolve(999999)))
+
+
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
     формулювання розійдуться з чатом за три тижні."""
@@ -1090,6 +1138,7 @@ def main():
     test_region_prune()
     test_dupes_and_merge()
     test_export_and_fix_packet()
+    test_retest_id_reading()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")
