@@ -1913,3 +1913,10 @@ body.dark { --stale: #a596e0; --stale-soft: rgba(165, 150, 224, .18);
   font-weight: 700; font-size: 13.5px; background: var(--fill); color: var(--ink);
 }
 .dp-act .sbtn:disabled { opacity: .5; }
+/* «Це різні» — окремим рядком під парою, а не третьою кнопкою в ряд: рішення
+   іншого роду (нічого не змінює в даних, лише закриває питання назавжди). */
+.dp-keep {
+  width: 100%; padding: 10px; border-radius: 13px; margin-top: 2px;
+  font-size: 13px; font-weight: 700; color: var(--muted); background: var(--fill);
+}
+.dp-keep:disabled { opacity: .5; }

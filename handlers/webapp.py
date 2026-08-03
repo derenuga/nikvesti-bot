@@ -1386,6 +1386,20 @@ async def api_promise_dupes(request):
     return web.json_response(await asyncio.to_thread(promise_app.dupes))
 
 
+async def api_promise_not_dupe(request):
+    person, _, _ = await _require_manager(request)
+    from handlers import promise_app
+
+    payload = await _json(request)
+    try:
+        other = int(payload.get("other_id"))
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="Немає other_id")
+    await asyncio.to_thread(
+        promise_app.not_dupe, int(request.match_info["cid"]), other, person)
+    return web.json_response({"ok": True})
+
+
 async def api_promise_merge(request):
     person, _, _ = await _require_manager(request)
     from handlers import promise_app
@@ -1798,6 +1812,7 @@ async def start_webapp(application):
         web.post("/api/promises/{cid:\\d+}/take", api_promise_take),
         web.post("/api/promises/{cid:\\d+}/drop", api_promise_drop),
         web.post("/api/promises/{cid:\\d+}/merge", api_promise_merge),
+        web.post("/api/promises/{cid:\\d+}/notdupe", api_promise_not_dupe),
         web.static("/static", _STATIC_DIR),
     ])
     runner = web.AppRunner(app)

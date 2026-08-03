@@ -3305,7 +3305,9 @@ function dupePair(pair, mgr) {
           Лишити перший</button>
         <button class="sbtn" data-merge="${pair.b.id}:${pair.a.id}">
           Лишити другий</button>
-      </div>` : ""}
+      </div>
+      <button class="dp-keep" data-keep="${pair.a.id}:${pair.b.id}">
+        Це різні — лишити обидві</button>` : ""}
     </div>`;
 }
 
@@ -3320,6 +3322,22 @@ function wireDupes() {
       await api(`/api/promises/${keep}/merge`, { method: "POST",
         body: JSON.stringify({ dup_id: dup }) });
       haptic("success");
+      STATE.dupes = null;
+      STATE.promises = null;
+      renderDupes();
+    } catch (e) { toast(e.message); b.disabled = false; }
+  });
+  // «Це різні» — рішення на все життя пари: детектор бачить сигнали, а не
+  // суть, і два меморіальні комплекси з однаковим строком він розрізнити не
+  // може ніколи. Без цієї кнопки та сама пара поверталась би щоразу.
+  document.querySelectorAll("[data-keep]").forEach((b) => b.onclick = async () => {
+    const [a, other] = b.dataset.keep.split(":").map(Number);
+    b.disabled = true;
+    try {
+      await api(`/api/promises/${a}/notdupe`, { method: "POST",
+        body: JSON.stringify({ other_id: other }) });
+      haptic("success");
+      toast("Запам'ятав — більше не питатиму");
       STATE.dupes = null;
       STATE.promises = null;
       renderDupes();

@@ -984,6 +984,26 @@ def test_dupes_and_merge():
             check("різна дія щодо того самого об'єкта дублем НЕ вважається",
                   not any(other in (p["a"], p["b"]) for p in pairs), str(found))
 
+            # «Це різні — лишити обидві». Детектор бачить СИГНАЛИ, а не суть:
+            # у пари «меморіальний комплекс на Центральному кладовищі» /
+            # «…у Корабельному районі» збіглись усі три (строк 15.06.2028,
+            # обіцяльник, схожа назва), а це два різні комплекси. Без пам'яті
+            # пара поверталась би в екран щоразу — урок role_pairs.
+            pp.reject_pair(cur, a, b, who="тест")
+            after = {(p["a"], p["b"]) for p in pp.dupe_pairs(cur)}
+            check("«різні» прибирає пару з детектора назавжди",
+                  (min(a, b), max(a, b)) not in after, str(after))
+            check("…і з лічильника теж (інакше «дублів 3» без жодної пари)",
+                  pp.dupe_count(cur) == len(after), str(pp.dupe_count(cur)))
+            check("рішення видно, щоб помилкове «різні» не ховало дубль мовчки",
+                  any(r["a"] == min(a, b) for r in pp.rejected_pairs(cur)))
+            check("порядок id не має значення — рішення про пару одне",
+                  pp.reject_pair(cur, b, a, who="тест") and
+                  len(pp.rejected_pairs(cur)) == 1, str(pp.rejected_pairs(cur)))
+            check("рішення відкочується", pp.unreject_pair(cur, a, b))
+            check("…і пара повертається в детектор",
+                  (min(a, b), max(a, b)) in {(p["a"], p["b"]) for p in pp.dupe_pairs(cur)})
+
             res = pp.merge_commitments(cur, a, b, who="тест")
             check("злиття переносить ревізії, а не видаляє докази",
                   res and res["revisions"] == 1, str(res))

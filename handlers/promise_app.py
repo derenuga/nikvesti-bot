@@ -336,6 +336,25 @@ def dupes(limit=40):
         conn.close()
 
 
+def not_dupe(a, b, who):
+    """«Різні» — рішення людини, яке пам'ятається назавжди.
+
+    Потрібне тому, що детектор працює на сигналах, а не на знанні: у пари
+    «меморіальний комплекс на Центральному кладовищі» / «…у Корабельному
+    районі» збіглись усі три (строк 15.06.2028, обіцяльник, схожа назва), а це
+    два різні комплекси. Без пам'яті пара поверталась би в екран щоразу.
+    """
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        with conn.cursor() as cur:
+            ok = pp.reject_pair(cur, a, b, who)
+        conn.commit()
+        return ok
+    finally:
+        conn.close()
+
+
 def merge(keep_id, dup_id, who):
     conn = ep.connect()
     try:

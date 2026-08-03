@@ -203,6 +203,22 @@ CREATE INDEX IF NOT EXISTS idx_promise_purges_run ON promise_purges (run);
 -- (тап по кнопці, потім одразу другий) злиплись би в один прогін, і відкат
 -- одного повернув би обидва. Заодно 1, 2, 3 набирати руками легше за unix.
 CREATE SEQUENCE IF NOT EXISTS promise_purge_run_seq;
+
+-- «Ні, різні» — рішення, яке треба пам'ятати НАЗАВЖДИ.
+--
+-- Детектор дублів працює на сигналах, а не на знанні: «Побудувати
+-- меморіальний комплекс на Центральному кладовищі» і «…у Корабельному
+-- районі» мають однаковий строк (15.06.2028), спільного обіцяльника і схожу
+-- назву — тобто всі три сигнали. Це два РІЗНІ комплекси, і жоден сигнал
+-- цього не бачить. Без пам'яті пара поверталась би в екран щоразу, і людина
+-- ухвалювала б те саме рішення до нескінченності (урок role_pairs).
+CREATE TABLE IF NOT EXISTS promise_pairs (
+    a          BIGINT NOT NULL,
+    b          BIGINT NOT NULL,
+    decided_by TEXT,
+    created    BIGINT,
+    PRIMARY KEY (a, b)
+);
 """
 
 
@@ -1222,15 +1238,7 @@ def restore(cur, purge_id):
 #   • спільний предмет або той самий обіцяльник.
 # Зливає ЛЮДИНА: однакові назва+строк бувають і в двох сусідніх дитсадків.
 
-def dupe_pairs(cur, limit=40, sim=DUPE_SIM):
-    """Пари «схоже на один запис двічі». Read-only, нічого не зливає."""
-    cur.execute(
-        """
-        SELECT a.id, b.id, similarity(a.title, b.title) AS sim,
-               a.title, b.title, a.revisions, b.revisions,
-               coalesce(a.owner_text, ''), a.deadline
-        FROM commitments a
-        JOIN commitments b ON b.id > a.id
+_DUPE_WHERE = """
         WHERE a.status = 'expected' AND b.status = 'expected'
           AND similarity(a.title, b.title) >= %s
           AND coalesce(a.deadline, 0) = coalesce(b.deadline, 0)
@@ -1240,9 +1248,22 @@ def dupe_pairs(cur, limit=40, sim=DUPE_SIM):
                    AND coalesce(a.subject_key, '') <> ''
                OR lower(coalesce(a.owner_text, '')) = lower(coalesce(b.owner_text, ''))
                    AND coalesce(a.owner_text, '') <> '')
-        ORDER BY sim DESC, a.id
-        LIMIT %s
-        """, (sim, limit))
+          AND NOT EXISTS (SELECT 1 FROM promise_pairs p
+                          WHERE p.a = a.id AND p.b = b.id)
+"""
+
+
+def dupe_pairs(cur, limit=40, sim=DUPE_SIM):
+    """Пари «схоже на один запис двічі». Read-only, нічого не зливає.
+
+    Пари, про які людина вже сказала «різні», не повертаються ніколи.
+    """
+    cur.execute(
+        "SELECT a.id, b.id, similarity(a.title, b.title) AS sim, "
+        "       a.title, b.title, a.revisions, b.revisions, "
+        "       coalesce(a.owner_text, ''), a.deadline "
+        "FROM commitments a JOIN commitments b ON b.id > a.id "
+        + _DUPE_WHERE + " ORDER BY sim DESC, a.id LIMIT %s", (sim, limit))
     return [{"a": a, "b": b, "sim": round(float(s), 2),
              "title_a": ta, "title_b": tb, "rev_a": ra, "rev_b": rb,
              "owner": owner, "deadline": dl}
@@ -1250,20 +1271,44 @@ def dupe_pairs(cur, limit=40, sim=DUPE_SIM):
 
 
 def dupe_count(cur, sim=DUPE_SIM):
-    cur.execute(
-        """
-        SELECT count(*) FROM commitments a JOIN commitments b ON b.id > a.id
-        WHERE a.status = 'expected' AND b.status = 'expected'
-          AND similarity(a.title, b.title) >= %s
-          AND coalesce(a.deadline, 0) = coalesce(b.deadline, 0)
-          AND (a.subject_entity_id IS NOT DISTINCT FROM b.subject_entity_id
-                   AND a.subject_entity_id IS NOT NULL
-               OR coalesce(a.subject_key, '') = coalesce(b.subject_key, '')
-                   AND coalesce(a.subject_key, '') <> ''
-               OR lower(coalesce(a.owner_text, '')) = lower(coalesce(b.owner_text, ''))
-                   AND coalesce(a.owner_text, '') <> '')
-        """, (sim,))
+    cur.execute("SELECT count(*) FROM commitments a "
+                "JOIN commitments b ON b.id > a.id" + _DUPE_WHERE, (sim,))
     return cur.fetchone()[0]
+
+
+def reject_pair(cur, a, b, who=None):
+    """«Ні, різні» — назавжди. Пара більше не з'явиться в жодному екрані.
+
+    Порядок id нормалізуємо, бо в екрані пара могла приїхати будь-яким боком,
+    а рішення про неї одне.
+    """
+    a, b = sorted((int(a), int(b)))
+    if a == b:
+        return False
+    cur.execute("INSERT INTO promise_pairs (a, b, decided_by, created) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT (a, b) DO NOTHING",
+                (a, b, who, int(time.time())))
+    return True
+
+
+def rejected_pairs(cur, limit=50):
+    """Що людина вже розвела. Потрібне, щоб рішення можна було переглянути —
+    інакше помилкове «різні» ховає справжній дубль назавжди й мовчки."""
+    cur.execute(
+        "SELECT p.a, p.b, ca.title, cb.title, p.decided_by, p.created "
+        "FROM promise_pairs p "
+        "LEFT JOIN commitments ca ON ca.id = p.a "
+        "LEFT JOIN commitments cb ON cb.id = p.b "
+        "ORDER BY p.created DESC LIMIT %s", (limit,))
+    return [{"a": a, "b": b, "title_a": ta, "title_b": tb,
+             "by": by, "created": ts}
+            for a, b, ta, tb, by, ts in cur.fetchall()]
+
+
+def unreject_pair(cur, a, b):
+    a, b = sorted((int(a), int(b)))
+    cur.execute("DELETE FROM promise_pairs WHERE a = %s AND b = %s", (a, b))
+    return cur.rowcount > 0
 
 
 def export_all(cur):

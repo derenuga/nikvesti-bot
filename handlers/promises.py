@@ -911,6 +911,8 @@ def parse_fix(text):
         try:
             if verb == "merge" and len(parts) >= 3:
                 actions.append(("merge", int(parts[1]), int(parts[2]), None))
+            elif verb in ("keep", "notdupe", "different") and len(parts) >= 3:
+                actions.append(("keep", int(parts[1]), int(parts[2]), None))
             elif verb in ("drop", "forget") and len(parts) >= 2:
                 actions.append(("drop", int(parts[1]), None,
                                 " ".join(parts[2:]) or None))
@@ -937,7 +939,7 @@ def describe_fixes(actions):
             names = dict(cur.fetchall())
     finally:
         conn.close()
-    lines, counts, missing = [], {"merge": 0, "drop": 0, "check": 0}, 0
+    lines, counts, missing = [], {"merge": 0, "keep": 0, "drop": 0, "check": 0}, 0
     for verb, a, b, note in actions:
         na, nb = names.get(a), names.get(b)
         if na is None or (b is not None and nb is None):
@@ -946,6 +948,9 @@ def describe_fixes(actions):
         counts[verb] += 1
         if verb == "merge":
             lines.append(f"🔗 {escape_html(na)}\n   ← {escape_html(nb)}")
+        elif verb == "keep":
+            lines.append(f"✂️ РІЗНІ (обидві лишаються): {escape_html(na)}\n"
+                         f"   ↔ {escape_html(nb)}")
         elif verb == "drop":
             lines.append(f"🗑 {escape_html(na)}"
                          + (f" — {escape_html(note)}" if note else ""))
@@ -973,7 +978,8 @@ async def promises_fix_document(msg, text, who=None):
             f"схоже, пакет зібрано зі старого експорту.")
         return
     head = (f"🦊 <b>Пакет рішень</b>: склеїти {counts['merge']} · "
-            f"прибрати {counts['drop']} · позначити {counts['check']}")
+            f"розвести {counts['keep']} · прибрати {counts['drop']} · "
+            f"позначити {counts['check']}")
     if missing:
         head += f"\n<i>{missing} рядків пропущено — таких id у банку немає.</i>"
     body = "\n".join(lines[:40])
@@ -1016,7 +1022,7 @@ async def promises_fix_callback(update, context):
         conn = ep.connect()
         try:
             pp.ensure_schema(conn)
-            done = {"merge": 0, "drop": 0, "check": 0}
+            done = {"merge": 0, "keep": 0, "drop": 0, "check": 0}
             skipped = []
             with conn.cursor() as cur:
                 run_id = pp.next_run(cur)
@@ -1024,6 +1030,8 @@ async def promises_fix_callback(update, context):
                     try:
                         if verb == "merge":
                             ok = pp.merge_commitments(cur, a, b, who=who, run=run_id)
+                        elif verb == "keep":
+                            ok = pp.reject_pair(cur, a, b, who)
                         elif verb == "drop":
                             ok = pp.forget(cur, a, reason=note or "пакет рішень",
                                            who=who, run=run_id)
@@ -1047,8 +1055,8 @@ async def promises_fix_callback(update, context):
     except Exception as e:
         await query.edit_message_text(f"❌ Не виконалось: {e}")
         return
-    text = (f"🦊 Готово: склеїв {done['merge']} · прибрав {done['drop']} · "
-            f"позначив {done['check']}.\n"
+    text = (f"🦊 Готово: склеїв {done['merge']} · розвів {done['keep']} · "
+            f"прибрав {done['drop']} · позначив {done['check']}.\n"
             f"Відкат усього пакета: /promise_prune_undo {run_id}")
     if skipped:
         text += f"\n\n⚠️ пропущено {len(skipped)}: " + ", ".join(skipped[:5])
@@ -1101,6 +1109,74 @@ async def promise_dupes_handler(update, context):
                  "на дублі». Там видно цитати обох.</i>")
     await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML",
                         disable_web_page_preview=True)
+
+
+async def promise_notdupe_handler(update, context):
+    """/promise_notdupe <id> <id> — «це різні», запам'ятати назавжди.
+
+    Без аргументів показує, що вже розведено: помилкове «різні» ховає
+    справжній дубль мовчки, і побачити свої рішення має бути де.
+    """
+    if not _allowed(update):
+        return
+    args = context.args or []
+    if len(args) < 2 or not all(a.isdigit() for a in args[:2]):
+
+        def listing():
+            conn = ep.connect()
+            try:
+                pp.ensure_schema(conn)
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    return pp.rejected_pairs(cur)
+            finally:
+                conn.close()
+
+        rows = await asyncio.to_thread(listing)
+        if not rows:
+            await update.message.reply_text(
+                "Використання: /promise_notdupe &lt;id&gt; &lt;id&gt;\n"
+                "Прибрати рішення — /promise_notdupe undo &lt;id&gt; &lt;id&gt;\n\n"
+                "Поки нічого не розведено.", parse_mode="HTML")
+            return
+        lines = ["🦊 <b>Розведені пари</b> (детектор їх більше не показує)", ""]
+        for r in rows:
+            lines += [f"• {escape_html(r['title_a'] or ('#' + str(r['a'])))}",
+                      f"  ↔ {escape_html(r['title_b'] or ('#' + str(r['b'])))}",
+                      f"  <code>/promise_notdupe undo {r['a']} {r['b']}</code>", ""]
+        await update.message.reply_text(_clip("\n".join(lines)), parse_mode="HTML")
+        return
+    undo = args[0].lower() == "undo"
+    if undo:
+        if len(args) < 3:
+            await update.message.reply_text("Використання: /promise_notdupe undo <id> <id>")
+            return
+        a, b = int(args[1]), int(args[2])
+    else:
+        a, b = int(args[0]), int(args[1])
+    who = update.effective_user.full_name if update.effective_user else None
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                ok = (pp.unreject_pair(cur, a, b) if undo
+                      else pp.reject_pair(cur, a, b, who))
+            conn.commit()
+            return ok
+        finally:
+            conn.close()
+
+    ok = await asyncio.to_thread(run)
+    if undo:
+        await update.message.reply_text(
+            f"🦊 Пара {a}/{b} повернулась у детектор." if ok
+            else f"Пари {a}/{b} серед розведених немає.")
+        return
+    await update.message.reply_text(
+        f"🦊 Запам'ятав: {a} і {b} — різні. Детектор більше про них не спитає.\n"
+        f"Передумав: /promise_notdupe undo {a} {b}")
 
 
 async def promise_merge_handler(update, context):
