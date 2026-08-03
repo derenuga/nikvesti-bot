@@ -3168,6 +3168,16 @@ async def promise_topics_callback(update, context):
         await q.answer("Не для цього чату", show_alert=True)
         return
     await q.answer()
+    if not _TOPIC_CONFIRMED:
+        # Список підтверджених живе в пам'яті процесу, і редеплой його чистить.
+        # Це навмисне (зливати за вердиктом, якого ніхто щойно не бачив, гірше),
+        # але мовчазне «об'єднав 0» читається як поломка.
+        await q.edit_message_caption(
+            "🦊 Список підтверджених спорожнів — бот перезапустився після "
+            "цього прогону.\nПрожени <code>/promise_topics</code> ще раз: "
+            "вердикти перерахуються, і кнопка під новим файлом працюватиме.",
+            parse_mode="HTML")
+        return
     await q.edit_message_caption("🦊 Об'єдную…")
 
     def run():
