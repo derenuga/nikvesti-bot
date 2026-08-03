@@ -69,7 +69,8 @@ from handlers.promises import (
     promise_resume_handler, promise_checked_handler, promise_forget_handler,
     promise_restore_handler, promise_retest_handler, promise_eval_handler,
     promise_status_handler, promise_increment_on_handler,
-    promise_increment_off_handler,
+    promise_increment_off_handler, promise_prune_handler,
+    promise_prune_callback, promise_prune_undo_handler,
 )
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler, budget_date_handler
@@ -540,6 +541,8 @@ def main():
     app.add_handler(CommandHandler("promise_forget", promise_forget_handler))
     app.add_handler(CommandHandler("promise_restore", promise_restore_handler))
     app.add_handler(CommandHandler("promise_retest", promise_retest_handler))
+    app.add_handler(CommandHandler("promise_prune", promise_prune_handler))
+    app.add_handler(CommandHandler("promise_prune_undo", promise_prune_undo_handler))
     app.add_handler(CommandHandler("tags_export", tags_export_handler))
     app.add_handler(CommandHandler("tags_wiki", tags_wiki_handler))
     app.add_handler(CommandHandler("tags_wiki_reset", tags_wiki_reset_handler))
@@ -644,6 +647,7 @@ def main():
     app.add_handler(CallbackQueryHandler(entity_org_forms_callback, pattern="^ejf:"))
     app.add_handler(CallbackQueryHandler(cards_fix_callback, pattern="^cfx:"))
     app.add_handler(CallbackQueryHandler(promise_scan_callback, pattern="^psc:"))
+    app.add_handler(CallbackQueryHandler(promise_prune_callback, pattern="^ppr:"))
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.

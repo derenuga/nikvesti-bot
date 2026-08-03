@@ -241,6 +241,16 @@ def article_payload(row):
     }
 
 
+# Регіон матеріалу (коди сайту: 1 Миколаїв, 2 Україна, 3 Світ, 4 Херсон,
+# 5 Одеса — ті самі, що використовує fb_missing).
+#
+# Банк тем веде підзвітність МІСЦЕВОЇ влади, тому бере лише region=1. Перший
+# же прогін місяця без цього фільтра показав, у що це виливається: серед
+# обіцяльників червня Зеленський (21), Укрзалізниця (11), Уряд України (10),
+# серед об'єктів — залізничний вокзал Одеси. Загальнонаціональні обіцянки
+# редакція не перевіряє, а в черзі вони витісняють миколаївські.
+REGION_MYKOLAIV = 1
+
 # Стаття «ще чекає витягу». Не просто «не done»: стаття, чий витяг УПАВ,
 # лишається в черзі й повертається наступним скану — саме цього не робила
 # курсорна схема сутностей, і дірка від збою не затягувалась ніколи. Але
@@ -262,7 +272,7 @@ def month_bounds(month):
 
 
 def fetch_range(from_date, to_date, marked_only=True, only_missing=True,
-                limit=None):
+                limit=None, region=REGION_MYKOLAIV):
     """Статті діапазону до витягу зобов'язань.
 
     marked_only — пре-фільтр за маркерами (див. MARKERS).
@@ -280,6 +290,9 @@ def fetch_range(from_date, to_date, marked_only=True, only_missing=True,
             window = ("a.published >= extract(epoch FROM %s::date) AND "
                       "a.published <  extract(epoch FROM %s::date)")
             params = [from_date, to_date]
+            if region is not None:
+                window += " AND a.region = %s"
+                params.append(region)
             cur.execute(f"SELECT count(*) FROM articles a WHERE {window}", params)
             total = cur.fetchone()[0]
             cur.execute(
@@ -309,7 +322,8 @@ def fetch_range(from_date, to_date, marked_only=True, only_missing=True,
                   "skipped": (marked if marked_only else total) - len(arts)}
 
 
-def count_range(from_date, to_date, marked_only=True, only_missing=True):
+def count_range(from_date, to_date, marked_only=True, only_missing=True,
+                region=REGION_MYKOLAIV):
     """Скільки статей у діапазоні / з маркерами / чекають витягу — САМІ ЧИСЛА.
 
     Окремо від fetch_range саме тому, що оцінка на роках («скільки коштуватиме
@@ -324,6 +338,11 @@ def count_range(from_date, to_date, marked_only=True, only_missing=True):
             window = ("a.published >= extract(epoch FROM %s::date) AND "
                       "a.published <  extract(epoch FROM %s::date)")
             params = [from_date, to_date]
+            cur.execute(f"SELECT count(*) FROM articles a WHERE {window}", params)
+            month_total = cur.fetchone()[0]
+            if region is not None:
+                window += " AND a.region = %s"
+                params.append(region)
             cur.execute(f"SELECT count(*) FROM articles a WHERE {window}", params)
             total = cur.fetchone()[0]
             cur.execute(
@@ -342,7 +361,8 @@ def count_range(from_date, to_date, marked_only=True, only_missing=True):
             pending = cur.fetchone()[0]
     finally:
         conn.close()
-    return {"total": total, "marked": marked, "pending": pending,
+    return {"total": total, "month_total": month_total, "marked": marked,
+            "pending": pending, "region": region,
             "skipped": (marked if marked_only else total) - pending}
 
 

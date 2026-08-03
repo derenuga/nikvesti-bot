@@ -719,14 +719,17 @@ def test_increment_queue():
         cur.execute("DELETE FROM promise_attempts")
         cur.execute("DELETE FROM sync_state WHERE key LIKE 'promise_incr%'")
         # 700001 — нижче підлоги (територія ручного /promise_scan)
-        for aid, published in ((700001, 1690000000), (700002, 1790000000),
-                               (700003, 1790100000), (700004, 1790200000),
-                               (700005, 1790300000)):
+        # 700006 — свіжа, але НЕ миколаївська: у чергу не має потрапити взагалі
+        for aid, published, region in ((700001, 1690000000, 1), (700002, 1790000000, 1),
+                                       (700003, 1790100000, 1), (700004, 1790200000, 1),
+                                       (700005, 1790300000, 1), (700006, 1790400000, 2)):
             cur.execute(
                 "INSERT INTO articles (id, published, status, title_ua, slug, "
-                "category, kind, text_ua) VALUES (%s,%s,1,%s,%s,'municipal','news',%s) "
-                "ON CONFLICT (id) DO UPDATE SET published = EXCLUDED.published",
-                (aid, published, f"Стаття {aid}", f"st-{aid}", "текст"))
+                "category, kind, region, text_ua) "
+                "VALUES (%s,%s,1,%s,%s,'municipal','news',%s,%s) "
+                "ON CONFLICT (id) DO UPDATE SET published = EXCLUDED.published, "
+                "region = EXCLUDED.region",
+                (aid, published, f"Стаття {aid}", f"st-{aid}", region, "текст"))
         # 700002 розібрано, 700003 упав один раз, 700004 вичерпав спроби
         pp.mark_attempt(cur, 700002, marked=True, done=True, found=1)
         pp.mark_attempt(cur, 700003, error="RateLimit", done=False)
@@ -741,6 +744,11 @@ def test_increment_queue():
     check(f"стаття, що вичерпала {pp.MAX_ATTEMPTS} спроби, випадає з черги",
           700004 not in ids, str(ids))
     check("нижче підлоги інкремент не заглядає", 700001 not in ids, str(ids))
+    # Рішення 03.08: інкремент бере лише миколаївські. Без цього фільтра банк
+    # набирався загальнонаціональним (Зеленський, Укрзалізниця, Уряд), і в
+    # черзі воно витісняло те, що редакція реально перевіряє.
+    check("немиколаївська стаття в чергу інкремента не потрапляє",
+          700006 not in ids, str(ids))
     check("свіже береться першим", ids and ids[0] == 700005, str(ids))
     check("лічильник черги збігається зі списком",
           ph._pending(floor) == len(ids), f"{ph._pending(floor)} vs {len(ids)}")
@@ -761,6 +769,119 @@ def test_increment_queue():
           ph._incr_floor() == first, str(ph._incr_floor()))
 
 
+# ---------- Регіон: банк веде підзвітність МІСЦЕВОЇ влади ----------
+#
+# Перший прогін місяця пішов по всіх статтях нори і привів у банк Зеленського,
+# Укрзалізницю й вокзал Одеси. Тут перевіряється обидва боки лікування: фільтр
+# на вході (щоб не набиралось знову) і чистка набраного (щоб її можна було
+# відкотити, якщо правило виявиться надто широким).
+
+def test_region_scope():
+    conn = ep.connect()
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM promise_attempts")
+        for aid, region in ((710001, 1), (710002, 1), (710003, 2), (710004, None)):
+            cur.execute(
+                "INSERT INTO articles (id, published, status, title_ua, slug, "
+                "category, kind, region, text_ua) "
+                "VALUES (%s,%s,1,%s,%s,'municipal','news',%s,%s) "
+                "ON CONFLICT (id) DO UPDATE SET region = EXCLUDED.region",
+                (aid, 1670000000, f"Стаття {aid}", f"reg-{aid}", region,
+                 "мер пообіцяв відремонтувати дорогу до кінця року"))
+    conn.close()
+
+    # Вікно свідомо порожнє від решти фікстур: лічильник має показати рівно ці
+    # чотири статті, інакше перевірка міряла б не фільтр, а сусідів.
+    frm, to = "2022-12-01", "2023-01-01"
+    st = api.count_range(frm, to, marked_only=False)
+    check("лічильник статей рахує лише миколаївські", st["total"] == 2,
+          f"total {st['total']}, за місяць {st['month_total']}")
+    check("…і поруч показує, скільки всього було (щоб числа не брехали мовчки)",
+          st["month_total"] == 4, str(st["month_total"]))
+    arts, _ = api.fetch_range(frm, to, marked_only=False)
+    ids = sorted(a["id"] for a in arts)
+    check("у витяг ідуть лише миколаївські статті", ids == [710001, 710002], str(ids))
+    every = api.count_range(frm, to, marked_only=False, region=None)
+    check("фільтр вимикається явно (region=None) — для заміру",
+          every["total"] == 4, str(every["total"]))
+
+
+def test_region_prune():
+    conn = ep.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitment_objects")
+            cur.execute("DELETE FROM commitments")
+            cur.execute("DELETE FROM topics")
+            cur.execute("DELETE FROM promise_purges")
+
+            def put(aid, **over):
+                p = pp.prepare(cur, case_item(320276, **over))
+                return pp.record(cur, {"id": aid, "published": 1780000000,
+                                       "title_ua": f"Стаття {aid}"}, p)[0]
+
+            local = put(710001, quote="Огорожу зріжемо до кінця тижня")
+            outside = put(710003, quote="Вокзал Одеси відремонтують до 2027 року",
+                          subject="залізничний вокзал Одеси", objects=[],
+                          promiser="Укрзалізниця")
+            unknown = put(710004, quote="Щось пообіцяли невідомо де",
+                          subject="невідомий об'єкт", objects=[])
+            # Змішаний ланцюг: одна ревізія з немиколаївської статті, друга —
+            # з миколаївської. Викинути таке означало б втратити місцевий факт.
+            mixed = put(710003, quote="Дорогу обіцяють здати за рік",
+                        subject="об'їзна дорога", objects=[])
+            p = pp.prepare(cur, case_item(
+                320276, subject="об'їзна дорога", objects=[],
+                quote="Здачу дороги підтвердили в мерії"))
+            pp.record(cur, {"id": 710002, "published": 1780500000,
+                            "title_ua": "Стаття 710002"}, p,
+                      commitment_id=mixed, link_confidence="high")
+
+            st = pp.prune_scan(cur, 1)
+            check("чистка бачить рівно немиколаївські", st["total"] == 1,
+                  f"{st['total']}, приклади {[s['id'] for s in st['sample']]}")
+            check("змішаний ланцюг порахований окремо і не йде під ніж",
+                  st["mixed"] == 1, str(st["mixed"]))
+            check("на «регіон невідомий» нічого не видаляється",
+                  st["unknown"] == 1, str(st["unknown"]))
+            check("прибиране показано прикладом ДО видалення",
+                  [s["id"] for s in st["sample"]] == [outside],
+                  str(st["sample"]))
+
+            res = pp.prune(cur, 1, reason="не Миколаїв", who="тест")
+            check("чистка прибрала саме одну обіцянку", res["removed"] == 1,
+                  str(res["removed"]))
+            cur.execute("SELECT id FROM commitments ORDER BY id")
+            left = [r[0] for r in cur.fetchall()]
+            check("миколаївське, змішане й невідоме лишились цілими",
+                  left == sorted([local, unknown, mixed]), str(left))
+            cur.execute("SELECT count(*) FROM promise_purges WHERE run = %s",
+                        (res["run"],))
+            check("кожна прибрана лягла в журнал одним прогоном",
+                  cur.fetchone()[0] == 1)
+
+            back = pp.prune_undo(cur, res["run"])
+            check("відкат повертає ВЕСЬ прогін", back["restored"] == 1,
+                  str(back))
+            cur.execute("SELECT id FROM commitments WHERE id = %s", (outside,))
+            check("обіцянка повернулась із тим самим id", bool(cur.fetchone()))
+            cur.execute("SELECT count(*) FROM commitment_revisions "
+                        "WHERE commitment_id = %s", (outside,))
+            check("разом із ревізією", cur.fetchone()[0] == 1)
+            cur.execute("SELECT topic_id FROM commitments WHERE id = %s", (outside,))
+            tid = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM topics WHERE id = %s", (tid,))
+            check("тема, що спорожніла й була знята, повернулась разом з нею",
+                  tid is None or cur.fetchone()[0] == 1, str(tid))
+            check("повторний відкат нічого не дублює",
+                  pp.prune_undo(cur, res["run"])["restored"] == 0)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def main():
     setup()
     test_verifiability()
@@ -777,6 +898,8 @@ def main():
     test_render()
     test_scan_report_and_bounds()
     test_increment_queue()
+    test_region_scope()
+    test_region_prune()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")
     sys.exit(0 if ok == len(RESULTS) else 1)

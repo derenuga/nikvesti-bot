@@ -695,6 +695,153 @@ async def promise_restore_handler(update, context):
         f"({result['revisions']} ревізій).\n/promise_show {result['commitment_id']}")
 
 
+# ---------- /promise_prune — чистка від немиколаївських ----------
+#
+# Потрібна тому, що перший прогін місяця пішов по всіх статтях нори і банк
+# набрався загальнонаціональним. Фільтр на вході вже стоїть — тут прибираємо
+# набране. Показуємо ЧИСЛОМ і прикладами перед видаленням, як /entity_junk:
+# сотні записів зникають одним тапом, і бачити треба до, а не після.
+
+def _prune_scan():
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            return pp.prune_scan(cur, api.REGION_MYKOLAIV)
+    finally:
+        conn.close()
+
+
+async def promise_prune_handler(update, context):
+    """/promise_prune — прибрати з банку обіцянки з немиколаївських статей."""
+    if not _allowed(update):
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Потрібна нора.")
+        return
+    msg = await update.message.reply_text("🦊 Рахую (нічого не видаляю)…")
+    try:
+        st = await asyncio.to_thread(_prune_scan)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не порахувалось: {e}")
+        return
+    if not st["total"]:
+        await msg.edit_text(
+            "🦊 Немиколаївських обіцянок у банку немає — прибирати нічого.\n"
+            f"Змішаних (є і миколаївська ревізія): {st['mixed']} · "
+            f"без відомого регіону: {st['unknown']} — ці лишаються.")
+        return
+    lines = ["🦊 <b>Чистка банку від немиколаївських</b>",
+             f"Приберу зобов'язань: <b>{st['total']}</b>"]
+    if st["promisers"]:
+        lines.append("Хто обіцяв: " + " · ".join(
+            f"{escape_html(w)} {n}" for w, n in st["promisers"]))
+    if st["sample"]:
+        lines.append("")
+        lines += [f"• {escape_html(s['title'] or '—')}"
+                  + (f" — {escape_html(s['promiser'])}" if s["promiser"] else "")
+                  for s in st["sample"]]
+    lines += ["",
+              f"<i>Лишаються: {st['mixed']} зі змішаного ланцюга (є хоч одна "
+              f"миколаївська ревізія) і {st['unknown']} без відомого регіону — "
+              f"на «не знаємо» не видаляємо. Кожна прибрана лягає в журнал, "
+              f"відкат усього прогону — /promise_prune_undo.</i>"]
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        f"Прибрати {st['total']}", callback_data=f"ppr:{st['total']}")]])
+    await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML",
+                        reply_markup=kb, disable_web_page_preview=True)
+
+
+async def promise_prune_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not _allowed(update):
+        return
+    who = update.effective_user.full_name if update.effective_user else None
+    await query.edit_message_text("🦊 Прибираю…")
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                result = pp.prune(cur, api.REGION_MYKOLAIV,
+                                  reason="не Миколаїв", who=who)
+            conn.commit()
+            return result
+        finally:
+            conn.close()
+
+    try:
+        result = await asyncio.to_thread(run)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Не прибралось: {e}")
+        return
+    await query.edit_message_text(
+        f"🦊 Прибрав {result['removed']} зобов'язань"
+        + (f", тем спорожніло {result['topics']}" if result["topics"] else "")
+        + f".\nВідкат усього прогону: /promise_prune_undo {result['run']}")
+
+
+async def promise_prune_undo_handler(update, context):
+    """/promise_prune_undo [прогін] — повернути весь прогін чистки."""
+    if not _allowed(update):
+        return
+    args = context.args or []
+
+    def runs():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                return pp.purge_runs(cur)
+        finally:
+            conn.close()
+
+    if not args or not args[0].isdigit():
+        rows = await asyncio.to_thread(runs)
+        if not rows:
+            await update.message.reply_text("Масових прибирань ще не було.")
+            return
+        lines = ["🦊 <b>Прогони прибирання</b>", ""]
+        for r in rows:
+            state = (f"повернуто {r['restored']} з {r['n']}"
+                     if r["restored"] else f"{r['n']} зобов'язань")
+            lines.append(f"<code>{r['run']}</code> — {pp.fmt_date(r['created'])} · "
+                         f"{escape_html(r['reason'] or '')} · {state}")
+        lines += ["", "<i>Повернути: /promise_prune_undo &lt;прогін&gt;</i>"]
+        await update.message.reply_text(_clip("\n".join(lines)), parse_mode="HTML")
+        return
+
+    run_id = int(args[0])
+
+    def undo():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                result = pp.prune_undo(cur, run_id)
+            conn.commit()
+            return result
+        finally:
+            conn.close()
+
+    msg = await update.message.reply_text("🦊 Повертаю…")
+    try:
+        result = await asyncio.to_thread(undo)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не повернулось: {e}")
+        return
+    if not result["snapshots"]:
+        await msg.edit_text(f"Прогону {run_id} немає, або його вже повернули.")
+        return
+    await msg.edit_text(
+        f"🦊 Повернув {result['restored']} із {result['snapshots']} зобов'язань "
+        f"прогону {run_id}.")
+
+
 # ---------- Витяг: спільне ядро ----------
 
 def _extract_sync(articles):
@@ -1056,6 +1203,11 @@ async def promise_test_handler(update, context):
 # слова «обіцяв» (§2.5). Побічний виграш: `promise_attempts.marked` усе одно
 # заповнюється, тож ціна фільтра тепер міряється САМА на живому потоці, без
 # окремого платного прогону.
+#
+# Зате інший фільтр тут увімкнено назавжди — РЕГІОН (api.REGION_MYKOLAIV). Він
+# коштує нуль і відсікає те, чого редакція не перевіряє в принципі: перший
+# прогін місяця без нього привів у банк Зеленського, Укрзалізницю й вокзал
+# Одеси, які в черзі просто витісняли миколаївське.
 
 INCR_KEY = "promise_incr_on"        # наявність ключа = інкремент увімкнено
 INCR_FLOOR_KEY = "promise_incr_floor"   # unix: глибше не заглядаємо
@@ -1066,6 +1218,7 @@ SELECT a.id, a.published, a.title_ua, a.title_ru, a.text_ua, a.text_ru
 FROM articles a
 LEFT JOIN promise_attempts t ON t.article_id = a.id
 WHERE a.published >= %s
+  AND a.region = %s
   AND coalesce(t.done, false) = false
   AND coalesce(t.attempts, 0) < %s
 ORDER BY a.published DESC
@@ -1077,6 +1230,7 @@ SELECT count(*) AS n
 FROM articles a
 LEFT JOIN promise_attempts t ON t.article_id = a.id
 WHERE a.published >= %s
+  AND a.region = %s
   AND coalesce(t.done, false) = false
   AND coalesce(t.attempts, 0) < %s
 """
@@ -1099,9 +1253,11 @@ def _incr_floor():
 
 def _pending(floor, limit=None):
     if limit is None:
-        rows = bot_db.query(PENDING_COUNT_SQL, (floor, pp.MAX_ATTEMPTS))
+        rows = bot_db.query(PENDING_COUNT_SQL,
+                            (floor, api.REGION_MYKOLAIV, pp.MAX_ATTEMPTS))
         return rows[0]["n"] if rows else 0
-    return bot_db.query(PENDING_SQL, (floor, pp.MAX_ATTEMPTS, limit))
+    return bot_db.query(PENDING_SQL,
+                        (floor, api.REGION_MYKOLAIV, pp.MAX_ATTEMPTS, limit))
 
 
 async def sync_promises_incremental(bot):
@@ -1465,6 +1621,18 @@ async def promise_retest_handler(update, context):
 
 # ---------- /promise_estimate ----------
 
+def _scope_line(st):
+    """Рядок «що саме ми рахуємо». Без нього числа брешуть мовчки: «статей за
+    місяць 762» і «статей за місяць 268» виглядають однаково правдоподібно, і
+    відрізняє їх лише те, що друге — миколаївські. Показуємо ОБИДВА числа."""
+    if st.get("region") is None:
+        return "Регіон: усі (загальнонаціональні теж)"
+    outside = max(0, (st.get("month_total") or st["total"]) - st["total"])
+    return (f"Беремо лише миколаївські: {st['total']} із "
+            f"{st.get('month_total') or st['total']} "
+            f"(поза Миколаєвом — {outside}, у банк не йдуть)")
+
+
 def _estimate(from_date, to_date):
     marked = api.count_range(from_date, to_date, marked_only=True)
     every = api.count_range(from_date, to_date, marked_only=False)
@@ -1491,7 +1659,7 @@ async def promise_estimate_handler(update, context):
     share = (100 * st["marked"] / st["total"]) if st["total"] else 0
     await msg.edit_text(
         f"🦊 <b>Оцінка витягу обіцянок {from_date}…{to_date}</b>\n\n"
-        f"Статей у діапазоні: {st['total']}\n"
+        f"{_scope_line(st)}\n"
         f"Проходять пре-фільтр за маркерами: {st['marked']} ({share:.0f}%)\n"
         f"З них ще не розібрано: <b>{n_marked}</b>\n"
         f"Без фільтра було б: {n_all}\n\n"
@@ -1566,7 +1734,7 @@ async def promise_scan_handler(update, context):
         callback_data=f"psc:{month}:{'m' if marked_only else 'a'}")]])
     await msg.edit_text(
         f"🦊 <b>Скан {month}</b> — {mode}\n\n"
-        f"Статей за місяць: {st['total']}\n"
+        f"{_scope_line(st)}\n"
         f"З маркерами: {st['marked']} ({share:.0f}%)\n"
         f"Піде у витяг: <b>{plan['articles']}</b> (вже розібраних: {st['skipped']})\n"
         f"Вартість: <b>≈ ${plan['cost']:.2f}</b> (Haiku 4.5, батч)\n\n"

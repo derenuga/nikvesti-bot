@@ -194,6 +194,11 @@ CREATE TABLE IF NOT EXISTS promise_purges (
     created    BIGINT,
     restored   BIGINT
 );
+-- `run` — номер ПРОГОНУ прибирання. Одна обіцянка відкочується за id знімка,
+-- але масове прибирання (напр. чистка від немиколаївських, /promise_prune)
+-- знімає сотні одразу, і повертати їх по одній неможливо фізично.
+ALTER TABLE promise_purges ADD COLUMN IF NOT EXISTS run BIGINT;
+CREATE INDEX IF NOT EXISTS idx_promise_purges_run ON promise_purges (run);
 """
 
 
@@ -1035,12 +1040,16 @@ def data_bounds(cur):
 
 # ---------- Забути / повернути ----------
 
-def forget(cur, commitment_id, reason=None, who=None):
+def forget(cur, commitment_id, reason=None, who=None, run=None):
     """Прибрати помилковий запис — зі знімком у журнал (§8).
 
     Без знімка помилку витягу не відкотиш: правити реєстр доведеться парами
     «лінк на реальну ситуацію + правило», і кожна така правка має бути
     зворотною.
+
+    `run` — номер прогону для масового прибирання: за ним відкочується весь
+    прогін одразу (/promise_prune_undo), бо сотні знімків по одному не
+    повернути.
     """
     cur.execute(f"SELECT {COMMITMENT_COLS} FROM commitments c WHERE c.id = %s",
                 (commitment_id,))
@@ -1055,12 +1064,24 @@ def forget(cur, commitment_id, reason=None, who=None):
     cur.execute("SELECT entity_id FROM commitment_objects WHERE commitment_id = %s",
                 (commitment_id,))
     objects = [r[0] for r in cur.fetchall()]
-    payload = {"commitment": snapshot, "revisions": revs, "objects": objects}
+    # Тема кладеться в той самий знімок. Поодинці вона переживає видалення
+    # обіцянки, але масова чистка вимітає й теми, що лишились порожніми, —
+    # і тоді відкат вставляв би обіцянку з посиланням на неіснуючу тему.
+    topic = None
+    if snapshot.get("topic_id"):
+        cur.execute("SELECT id, title, entity_ids, subject_keys, status, opened, "
+                    "last_event FROM topics WHERE id = %s", (snapshot["topic_id"],))
+        row = cur.fetchone()
+        if row:
+            topic = dict(zip(("id", "title", "entity_ids", "subject_keys",
+                              "status", "opened", "last_event"), row))
+    payload = {"commitment": snapshot, "revisions": revs, "objects": objects,
+               "topic": topic}
     cur.execute(
-        "INSERT INTO promise_purges (payload, reason, decided_by, created) "
-        "VALUES (%s, %s, %s, %s) RETURNING id",
+        "INSERT INTO promise_purges (payload, reason, decided_by, created, run) "
+        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
         (json.dumps(payload, ensure_ascii=False, default=str), reason, who,
-         int(time.time())))
+         int(time.time()), run))
     purge_id = cur.fetchone()[0]
     cur.execute("DELETE FROM commitments WHERE id = %s", (commitment_id,))
     return {"purge_id": purge_id, "commitment": snapshot, "revisions": len(revs)}
@@ -1076,6 +1097,18 @@ def restore(cur, purge_id):
         return {"already": True}
     payload = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     c = payload["commitment"]
+    # Спершу тема: масова чистка могла вимести її як порожню, і без цього
+    # рядка обіцянка поверталась би з посиланням у нікуди.
+    topic = payload.get("topic")
+    if topic:
+        tcols = [k for k in topic if k != "id"]
+        cur.execute(
+            f"INSERT INTO topics (id, {', '.join(tcols)}) "
+            f"VALUES (%s, {', '.join(['%s'] * len(tcols))}) ON CONFLICT (id) DO NOTHING",
+            [topic["id"]] + [topic[k] for k in tcols])
+        cur.execute(
+            "SELECT setval(pg_get_serial_sequence('topics', 'id'), "
+            "  greatest((SELECT max(id) FROM topics), 1))")
     cols = [k for k in c if k != "id"]
     cur.execute(
         f"INSERT INTO commitments (id, {', '.join(cols)}) "
@@ -1103,6 +1136,115 @@ def restore(cur, purge_id):
     cur.execute("UPDATE promise_purges SET restored = %s WHERE id = %s",
                 (int(time.time()), purge_id))
     return {"commitment_id": c["id"], "revisions": len(payload["revisions"])}
+
+
+# ---------- Чистка банку від немиколаївських обіцянок ----------
+#
+# Перший прогін місяця пішов по ВСІХ статтях нори, і банк набрався
+# загальнонаціональним: Зеленський, Укрзалізниця, Уряд України, вокзал Одеси.
+# Редакція такі обіцянки не перевіряє, а в черзі вони витісняють миколаївські.
+# Фільтр на вході вже стоїть (api.REGION_MYKOLAIV), тут прибираємо набране.
+#
+# Правило прибирання СВІДОМО вужче за «стаття не миколаївська»:
+#   • беремо лише те, про що ТОЧНО знаємо, що воно поза Миколаєвом — стаття є
+#     в норі й у неї проставлений інший регіон. Порожній регіон означає «не
+#     знаємо», і на «не знаємо» нічого не видаляється;
+#   • обіцянка, у якої хоч ОДНА ревізія приїхала з миколаївської статті,
+#     лишається цілою. Ланцюг міг зшитись через дві статті, і викинути його
+#     означало б втратити миколаївський факт заради немиколаївського.
+
+_OUTSIDE = ("EXISTS (SELECT 1 FROM commitment_revisions r "
+            "        JOIN articles a ON a.id = r.article_id "
+            "       WHERE r.commitment_id = c.id "
+            "         AND a.region IS NOT NULL AND a.region <> %s)")
+_INSIDE = ("EXISTS (SELECT 1 FROM commitment_revisions r "
+           "        JOIN articles a ON a.id = r.article_id "
+           "       WHERE r.commitment_id = c.id AND a.region = %s)")
+
+
+def prune_scan(cur, region, limit=12):
+    """Що зніме чистка: кількість, приклади і — окремо — чого вона НЕ чіпає."""
+    cur.execute(f"SELECT count(*) FROM commitments c "
+                f"WHERE {_OUTSIDE} AND NOT {_INSIDE}", (region, region))
+    total = cur.fetchone()[0]
+    cur.execute(f"SELECT count(*) FROM commitments c "
+                f"WHERE {_OUTSIDE} AND {_INSIDE}", (region, region))
+    mixed = cur.fetchone()[0]
+    cur.execute(
+        "SELECT count(*) FROM commitments c WHERE NOT EXISTS ("
+        "  SELECT 1 FROM commitment_revisions r JOIN articles a ON a.id = r.article_id"
+        "   WHERE r.commitment_id = c.id AND a.region IS NOT NULL)")
+    unknown = cur.fetchone()[0]
+    cur.execute(
+        f"SELECT c.id, c.title, coalesce(r.promiser_text, c.owner_text) "
+        f"FROM commitments c "
+        f"LEFT JOIN LATERAL (SELECT promiser_text FROM commitment_revisions "
+        f"                   WHERE commitment_id = c.id ORDER BY id LIMIT 1) r ON true "
+        f"WHERE {_OUTSIDE} AND NOT {_INSIDE} "
+        f"ORDER BY c.revisions DESC, c.id LIMIT %s", (region, region, limit))
+    sample = [{"id": i, "title": t, "promiser": p} for i, t, p in cur.fetchall()]
+    cur.execute(
+        f"SELECT coalesce(r.promiser_text, c.owner_text) AS who, count(*) "
+        f"FROM commitments c "
+        f"LEFT JOIN LATERAL (SELECT promiser_text FROM commitment_revisions "
+        f"                   WHERE commitment_id = c.id ORDER BY id LIMIT 1) r ON true "
+        f"WHERE {_OUTSIDE} AND NOT {_INSIDE} "
+        f"GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT 8", (region, region))
+    promisers = [(w, n) for w, n in cur.fetchall() if w]
+    return {"total": total, "mixed": mixed, "unknown": unknown,
+            "sample": sample, "promisers": promisers, "region": region}
+
+
+def prune(cur, region, reason=None, who=None, run=None):
+    """Прибрати немиколаївські обіцянки — кожну зі знімком у журнал."""
+    run = run or int(time.time())
+    cur.execute(f"SELECT c.id, c.topic_id FROM commitments c "
+                f"WHERE {_OUTSIDE} AND NOT {_INSIDE} ORDER BY c.id",
+                (region, region))
+    rows = cur.fetchall()
+    ids = [r[0] for r in rows]
+    touched = sorted({r[1] for r in rows if r[1]})
+    done = 0
+    for cid in ids:
+        if forget(cur, cid, reason=reason, who=who, run=run):
+            done += 1
+    topics = prune_orphan_topics(cur, touched)
+    return {"run": run, "removed": done, "topics": topics}
+
+
+def prune_orphan_topics(cur, topic_ids):
+    """Теми, у яких після чистки не лишилось жодного зобов'язання.
+
+    Лише СЕРЕД зачеплених тем: знімок кожної з них уже лежить у журналі разом
+    зі своєю обіцянкою, тож відкат поверне і їх. Порожні теми з інших причин
+    не чіпаємо взагалі — за ними знімка немає, і видалення було б незворотним.
+    """
+    if not topic_ids:
+        return 0
+    cur.execute("DELETE FROM topics t WHERE t.id = ANY(%s) AND NOT EXISTS ("
+                "  SELECT 1 FROM commitments c WHERE c.topic_id = t.id)",
+                (list(topic_ids),))
+    return cur.rowcount or 0
+
+
+def prune_undo(cur, run):
+    """Відкотити ВЕСЬ прогін чистки. Порядок — зворотний до прибирання."""
+    cur.execute("SELECT id FROM promise_purges WHERE run = %s AND restored IS NULL "
+                "ORDER BY id DESC", (run,))
+    ids = [r[0] for r in cur.fetchall()]
+    back = sum(1 for pid in ids if (restore(cur, pid) or {}).get("commitment_id"))
+    return {"run": run, "restored": back, "snapshots": len(ids)}
+
+
+def purge_runs(cur, limit=10):
+    """Останні прогони масового прибирання — для /promise_prune_undo без
+    аргументу: номер прогону це unix-час, руками його не згадаєш."""
+    cur.execute(
+        "SELECT run, count(*), count(restored), min(created), min(reason) "
+        "FROM promise_purges WHERE run IS NOT NULL "
+        "GROUP BY run ORDER BY run DESC LIMIT %s", (limit,))
+    return [{"run": r, "n": n, "restored": rs, "created": c, "reason": why}
+            for r, n, rs, c, why in cur.fetchall()]
 
 
 def drop_article(cur, article_id):
