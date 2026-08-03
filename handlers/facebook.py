@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import requests
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from handlers.helpers import parse_month_arg, get_author_from_url
@@ -62,33 +63,161 @@ def fix_permalink(url):
         url = "https://www.facebook.com" + url
     return url
 
-def get_top_posts(since_ts=None, until_ts=None):
-    if since_ts is None:
-        since_ts = int((datetime.now() - timedelta(days=7)).timestamp())
-    url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/posts"
-    params = {
-        "fields": "id,message,permalink_url,reactions.summary(true),comments.summary(true),shares,created_time",
-        "since": since_ts,
-        "access_token": FACEBOOK_PAGE_TOKEN,
-        "limit": 100
-    }
+# ---------- Спільний доступ до постів сторінки (звіт + /stat) ----------
+
+# Поля ЛИСТИНГУ — навмисно без залученості. Замір на живому API 03.08.2026,
+# те саме вікно й той самий токен:
+#   id,message,created_time                          → 18 постів
+#   + attachments{...}                               → 18 постів
+#   + reactions.summary,comments.summary,shares      → 17 постів
+# Facebook МОВЧКИ викидає елемент зі списку, коли на нього просять важку
+# залученість — без помилки, без будь-якої ознаки. Зайвим тоді був пост
+# 1710649447730196: /stat не знайшов його, а fb_missing сказав редакції, що
+# новини немає у ФБ, хоча пост висів три години. Тижневий звіт ходив тим самим
+# запитом, тобто топ постів і сума залученості мовчки недобирали такі пости.
+POST_LIST_FIELDS = (
+    "id,message,story,permalink_url,created_time,"
+    "attachments{media_type,target,url,unshimmed_url}"
+)
+
+# Метрики поста беремо з INSIGHTS: поля об'єкта на окремих постах віддають
+# (#100) «Object does not exist, cannot be loaded due to missing permission…»,
+# хоча сам пост читається, а insights на ньому ж дає правильні числа
+POST_INSIGHT_METRICS = (
+    "post_media_view,post_reactions_by_type_total,post_activity_by_action_type"
+)
+
+
+def graph_get(path, params, timeout=15, version="v25.0"):
+    """GET до Graph API → (дані, текст помилки). Помилку віддаємо рядком, а не
+    винятком: метрики тягнуться поштучно і падіння однієї не має гасити решту."""
+    try:
+        data = requests.get(
+            f"https://graph.facebook.com/{version}/{path}",
+            params={**params, "access_token": FACEBOOK_PAGE_TOKEN},
+            timeout=timeout,
+        ).json()
+    except Exception as e:
+        return None, str(e)
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"].get("message") or "невідома помилка Graph API"
+    return data, None
+
+
+def parse_post_insights(data):
+    """Відповідь /insights → {'views','reactions','comments','shares'}.
+    Реакції — сума по типах (like/sorry/love/…); коментарі й шери —
+    з post_activity_by_action_type. None = метрики в відповіді не було."""
+    out = {"views": None, "reactions": None, "comments": None, "shares": None}
+    values = {}
+    for metric in (data or {}).get("data", []):
+        try:
+            values[metric["name"]] = metric["values"][0]["value"]
+        except (KeyError, IndexError, TypeError):
+            continue
+
+    views = values.get("post_media_view")
+    if isinstance(views, int):
+        out["views"] = views
+
+    reactions = values.get("post_reactions_by_type_total")
+    if isinstance(reactions, dict):
+        out["reactions"] = sum(v for v in reactions.values() if isinstance(v, int))
+    elif isinstance(reactions, int):
+        out["reactions"] = reactions
+
+    activity = values.get("post_activity_by_action_type")
+    if isinstance(activity, dict):
+        out["comments"] = activity.get("comment", 0)
+        out["shares"] = activity.get("share", 0)
+        if out["reactions"] is None and isinstance(activity.get("like"), int):
+            out["reactions"] = activity["like"]
+    return out
+
+
+def get_post_metrics(post_id):
+    """Перегляди + залученість ОДНОГО поста: {'views','reactions','comments',
+    'shares','note'}. Один запит до insights; якщо там чогось немає —
+    добираємо полями об'єкта. None замість числа = метрики немає, причина
+    лежить у 'note'."""
+    data, err = graph_get(f"{post_id}/insights", {"metric": POST_INSIGHT_METRICS})
+    out = parse_post_insights(data) if not err else {
+        "views": None, "reactions": None, "comments": None, "shares": None}
+    out["note"] = err
+
+    if any(out[k] is None for k in ("reactions", "comments", "shares")):
+        fields, f_err = graph_get(post_id, {
+            "fields": "reactions.summary(true),comments.summary(true),shares"})
+        if not f_err:
+            if out["reactions"] is None:
+                out["reactions"] = fields.get("reactions", {}).get("summary", {}).get("total_count")
+            if out["comments"] is None:
+                out["comments"] = fields.get("comments", {}).get("summary", {}).get("total_count")
+            if out["shares"] is None:
+                out["shares"] = fields.get("shares", {}).get("count", 0)
+        elif out["note"] is None:
+            out["note"] = f_err
+
+    if any(out[k] is None for k in ("views", "reactions", "comments", "shares")):
+        print(f"facebook: метрики {post_id} — перегляди:{out['views']} реакції:{out['reactions']} "
+              f"коменти:{out['comments']} шери:{out['shares']} ({out['note']})")
+    return out
+
+
+def get_page_posts(since_ts, until_ts=None, max_pages=5):
+    """Пости сторінки у вікні, ЛЕГКИМ листингом і з пагінацією.
+    Пагінація тут не косметика: на 15-20 постах на добу тиждень не влазить у
+    одну сторінку (limit=100), і звіт рахувався по обрізаному тижню."""
+    url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/posts"
+    params = {"fields": POST_LIST_FIELDS, "since": since_ts, "limit": 100,
+              "access_token": FACEBOOK_PAGE_TOKEN}
     if until_ts:
         params["until"] = until_ts
-    response = requests.get(url, params=params)
-    data = response.json()
-    if "error" in data:
+    posts = []
+    for _ in range(max_pages):
+        try:
+            data = requests.get(url, params=params, timeout=30).json()
+        except Exception as e:
+            print(f"facebook: стрічка постів — {e}")
+            break
+        if "error" in data:
+            print(f"facebook: стрічка постів — {data['error'].get('message')}")
+            break
+        posts.extend(data.get("data", []))
+        next_url = data.get("paging", {}).get("next")
+        if not next_url:
+            break
+        url, params = next_url, None
+    return posts
+
+
+def get_top_posts(since_ts=None, until_ts=None):
+    """Топ-5 постів тижня за залученістю + скільки всього постів про матеріали.
+
+    Листинг легкий, залученість добирається ПОШТУЧНО (паралельно) — інакше
+    Facebook ховає частину постів прямо у відповіді, і топ рахується по
+    неповному тижню."""
+    if since_ts is None:
+        since_ts = int((datetime.now() - timedelta(days=7)).timestamp())
+
+    posts = [p for p in get_page_posts(since_ts, until_ts)
+             if "nikvesti.com" in (p.get("message") or "")]
+    total = len(posts)
+    if not posts:
         return [], 0
 
-    all_posts = data.get("data", [])
-    posts = [p for p in all_posts if "nikvesti.com" in (p.get("message") or "")]
-    total = len(posts)
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        metrics = list(pool.map(lambda p: get_post_metrics(p["id"]), posts))
 
-    for p in posts:
-        reactions = p.get("reactions", {}).get("summary", {}).get("total_count", 0)
-        comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
-        shares = p.get("shares", {}).get("count", 0)
-        p["engagement"] = reactions + comments + shares
-        p["permalink_url"] = fix_permalink(p.get("permalink_url", ""))
+    for post, m in zip(posts, metrics):
+        post["engagement"] = sum(
+            m[k] or 0 for k in ("reactions", "comments", "shares"))
+        post["views"] = m["views"]
+        # ті самі назви, що в рілзів — щоб звіт малював обидва списки однаково
+        post["reactions"] = m["reactions"]
+        post["comments_count"] = m["comments"]
+        post["shares_count"] = m["shares"]
+        post["permalink_url"] = fix_permalink(post.get("permalink_url", ""))
 
     posts.sort(key=lambda x: x["engagement"], reverse=True)
     return posts[:5], total
@@ -204,9 +333,10 @@ def build_facebook_report(page, stats, top_posts, total_posts, top_reels, total_
     posts_text = ""
     top_authors = []
     for i, p in enumerate(top_posts):
-        reactions = p.get("reactions", {}).get("summary", {}).get("total_count", 0)
-        comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
-        shares = p.get("shares", {}).get("count", 0)
+        # None = метрику не віддав API; «—» чесніше за нуль у топі
+        reactions = p.get("reactions") if p.get("reactions") is not None else "—"
+        comments = p.get("comments_count") if p.get("comments_count") is not None else "—"
+        shares = p.get("shares_count") if p.get("shares_count") is not None else "—"
         link = p.get("permalink_url", "")
         title = short_message(p.get("message", ""))
         article_url = extract_url_from_message(p.get("message", ""))
