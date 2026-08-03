@@ -38,8 +38,9 @@ import promise_pipeline as pp
 JUDGE_MODEL = "claude-haiku-4-5"
 
 # Скільки пар за один прогін. Стеля потрібна не через ціну (пара — це частка
-# цента), а щоб діагностична команда не з'їла годину на першому запуску.
-MAX_PAIRS = 120
+# цента), а щоб діагностична команда не з'їла хвилини на першому запуску.
+# 200 бере накопичене за один раз: на восьми паралельних це ~30 секунд.
+MAX_PAIRS = 200
 
 _TOOL = {
     "name": "verdict",
@@ -153,18 +154,40 @@ async def judge_pair(mode, a, b):
     return next((b_.input for b_ in msg.content if b_.type == "tool_use"), None)
 
 
-async def judge_pairs(mode, pairs, limit=MAX_PAIRS):
-    """Прогнати пачку. Повертає список пар із доданим `verdict`.
+# Скільки питань тримаємо в польоті. Виклики незалежні один від одного, і
+# послідовно сто пар — це три-чотири хвилини мовчазного очікування в чаті
+# (заміряно на першому прогоні). Вісім — компроміс: швидко, але не впирається
+# в ліміт запитів і не з'їдає з'єднання, коли поруч іде витяг.
+CONCURRENCY = 8
 
-    Пари без вердикту (збій моделі) лишаються з `verdict=None` — вони не
+
+async def judge_pairs(mode, pairs, limit=MAX_PAIRS, on_progress=None):
+    """Прогнати пачку ПАРАЛЕЛЬНО. Повертає список пар із доданим `verdict`.
+
+    Порядок збережено — він же порядок у файлі, який читає людина.
+
+    Пари без вердикту (збій моделі) лишаються з `verdict=None`: вони не
     зникають і не вважаються вирішеними.
     """
-    out = []
-    for p in pairs[:limit]:
-        p = dict(p)
-        p["verdict"] = await judge_pair(mode, p["a"], p["b"])
-        out.append(p)
-    return out
+    import asyncio
+
+    todo = [dict(p) for p in pairs[:limit]]
+    sem = asyncio.Semaphore(CONCURRENCY)
+    done = 0
+
+    async def one(p):
+        nonlocal done
+        async with sem:
+            p["verdict"] = await judge_pair(mode, p["a"], p["b"])
+        done += 1
+        if on_progress and done % 20 == 0:
+            try:
+                await on_progress(done, len(todo))
+            except Exception:
+                pass
+        return p
+
+    return list(await asyncio.gather(*(one(p) for p in todo)))
 
 
 def split(judged, min_confidence="high"):

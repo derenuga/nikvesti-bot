@@ -3095,9 +3095,13 @@ async def promise_topics_handler(update, context):
     judged = []
     if pairs:
         await msg.edit_text(f"🦊 Правило знайшло {len(pairs)} пар. "
-                            f"Питаю суддю…")
+                            f"Питаю суддю (це десь пів хвилини)…")
         sides = await asyncio.to_thread(_topic_sides, pairs)
-        judged = await pj.judge_pairs("topic", sides)
+
+        async def progress(done, total):
+            await msg.edit_text(f"🦊 Суддя: {done} з {total}…")
+
+        judged = await pj.judge_pairs("topic", sides, on_progress=progress)
         auto, ask, skip = pj.split(judged)
         _TOPIC_CONFIRMED[:] = auto
         pairs = auto + ask
