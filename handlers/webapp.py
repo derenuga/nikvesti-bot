@@ -1342,6 +1342,21 @@ async def api_promises(request):
                                 promise_app.PAGE, None, author_id))
 
 
+async def api_promises_mine_count(request):
+    """Число для дверей журналістки. Окремий легкий ендпойнт, а не повна
+    черга: головна вантажиться і без того довго, а тут потрібні два числа."""
+    person, _, _ = await _authenticate(request)
+    from handlers import promise_app, team_kpi
+
+    try:
+        author_id = await asyncio.to_thread(team_kpi.resolve_site_user_id, person)
+    except Exception as e:
+        print(f"webapp: не резолвнув автора «{person}» — {e}")
+        return web.json_response({"total": 0, "overdue": 0})
+    return web.json_response(
+        await asyncio.to_thread(promise_app.mine_count, author_id))
+
+
 async def api_promise_card(request):
     await _authenticate(request)
     from handlers import promise_app
@@ -1824,6 +1839,7 @@ async def start_webapp(application):
         web.put("/api/kpi/override", api_kpi_override),
         web.get("/api/promises", api_promises),
         web.get("/api/promises/dupes", api_promise_dupes),
+        web.get("/api/promises/mine/count", api_promises_mine_count),
         web.get("/api/promises/{cid:\\d+}", api_promise_card),
         web.post("/api/promises/{cid:\\d+}/check", api_promise_check),
         web.post("/api/promises/{cid:\\d+}/take", api_promise_take),

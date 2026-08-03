@@ -334,6 +334,28 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
     }
 
 
+def mine_count(author_id, now=None):
+    """Скільки обіцянок із МОЇХ матеріалів — число на двері журналістки.
+
+    Двері без числа не відкривають (правило апки), а саме тут воно й вирішує:
+    «Банк тем» звучить як чужа адміністративна штука, «Банк тем · 3
+    прострочені» — як особиста справа. Це і є та «доставка обіцянок автору»,
+    про яку йшлося: не сповіщення, а видима причина зайти.
+    """
+    if not author_id:
+        return {"total": 0, "overdue": 0}
+    now = now or int(time.time())
+    conn = _conn()
+    try:
+        pp.ensure_schema(conn)
+        with conn.cursor() as cur:
+            rows = pp.list_queue(cur, limit=None, now=now, author_id=author_id)
+    finally:
+        conn.close()
+    return {"total": len(rows),
+            "overdue": sum(1 for r in rows if r["class"] == "overdue")}
+
+
 # ---------- Картка: історія питання ----------
 
 def _step_kind(rev, prev):

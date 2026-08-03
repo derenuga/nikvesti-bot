@@ -6177,6 +6177,7 @@ async function renderMyKpi() {
     animateFill(ring);
   }
   // Двері «KPI по місяцях» отримують своє число — інакше це просто пункт меню
+  paintPromiseDoor();
   const histDoor = document.querySelector('.door[data-nav="myhist"]');
   if (histDoor && pct != null && !histDoor.querySelector(".door-n")) {
     const n = document.createElement("span");
@@ -6243,6 +6244,31 @@ async function renderMyKpi() {
    відкриття). Заміна вузла вбиває слухачі разом зі старим вузлом, тож
    помилку не можна повторити випадково — новий код вішає слухачі вже на
    свіжий вузол, який помре при наступному openSheet. */
+/* Число на двері «Банк тем» у журналістки. Доганяємо окремим легким запитом
+   після відмальовки: головна й так вантажить KPI з БД сайту, а двері без
+   числа не відкривають — «Банк тем» звучить як чужа адміністративна штука,
+   «Банк тем · 3 прострочені» як особиста справа. */
+async function paintPromiseDoor() {
+  const door = document.querySelector('.door[data-nav="promises"]');
+  if (!door || door.querySelector(".door-n")) return;
+  let d;
+  try {
+    d = await api("/api/promises/mine/count");
+  } catch (e) { return; }
+  if (!d || !d.total) return;
+  const meta = door.querySelector(".door-m");
+  if (meta) {
+    meta.textContent = d.overdue
+      ? `${d.overdue} ${plural(d.overdue, "прострочена", "прострочені", "прострочених")}`
+        + ` з твоїх матеріалів`
+      : "обіцянки з твоїх матеріалів";
+  }
+  const n = document.createElement("span");
+  n.className = "door-n";
+  n.textContent = String(d.total);
+  door.insertBefore(n, door.querySelector(".chev") || null);
+}
+
 function openSheet(html) {
   const fresh = document.createElement("div");
   fresh.id = "sheet";

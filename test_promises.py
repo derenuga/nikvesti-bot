@@ -1103,6 +1103,18 @@ def test_export_and_fix_packet():
     check("причина drop доїжджає", actions[2][3] == "не наша тема", str(actions[2]))
     check("нерозібране НЕ ковтається мовчки", errors == ["казна-що"], str(errors))
 
+    # Повторне застосування пакета: злиття, чиєї програшної картки вже немає,
+    # це «вже зроблено», а не збій. Формулювання «⚠️ пропущено 14» одного разу
+    # відправило Олега шукати поломку там, де все відпрацювало з першого разу.
+    conn = ep.connect()
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM commitments WHERE id = 999998")
+        gone = cur.fetchone()[0] == 0
+    conn.close()
+    check("злиття з неіснуючим дублем відрізняється від збою",
+          gone, "тестова картка 999998 не має існувати")
+
     ids = [r["id"] for r in rows[:2]]
     lines, counts, missing = ph.describe_fixes(
         [("merge", ids[0], ids[1], None), ("drop", 999999, None, None)])
@@ -1336,6 +1348,16 @@ def test_author_filter():
         conn.commit()
     finally:
         conn.close()
+
+    # Число на двері журналістки: без нього фасет «З моїх новин» існує, але
+    # ніхто його не відкриває — двері без числа не відкривають.
+    from handlers import promise_app as pa
+    mine = pa.mine_count(777)
+    check("двері журналістки отримують ЧИСЛО її обіцянок",
+          mine["total"] == 1, str(mine))
+    check("і окремо скільки з них прострочені", "overdue" in mine, str(mine))
+    check("без резолву автора двері мовчать, а не падають",
+          pa.mine_count(None) == {"total": 0, "overdue": 0})
 
 
 def test_fresh_facet():
