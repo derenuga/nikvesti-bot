@@ -52,6 +52,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from handlers import bot_db
 from handlers.helpers import escape_html, extract_article_id
 from handlers.notifier import notify_error
+from handlers import promise_judge as pj
 from handlers.storage import record_ai_usage
 
 import entity_pipeline as ep
@@ -1133,6 +1134,10 @@ async def promise_dupes_handler(update, context):
     # мовленнєвий акт, записаний двічі. Людині лишається тільки справді
     # спірне.
     merged, _run = await asyncio.to_thread(auto_merge_dupes)
+    # Далі суддя проходить нових кандидатів і прибирає з екрана те, що
+    # впевнено назвав різним. Схожість назви цього не вміє: замір 03.08 дав
+    # 0.56 у справжнього дубля і 0.53 у різних обіцянок.
+    seen = await judge_new_dupes()
 
     def run():
         conn = ep.connect()
@@ -1150,10 +1155,12 @@ async def promise_dupes_handler(update, context):
     except Exception as e:
         await msg.edit_text(f"❌ Не порахувалось: {e}")
         return
-    auto = (f"🤝 Сам звів {len(merged)} "
+    judged_note = (f"🧑‍⚖️ Суддя подивився {seen} нових "
+                   f"{pp.plural(seen, 'пару', 'пари', 'пар')}.\n") if seen else ""
+    auto = judged_note + (f"🤝 Сам звів {len(merged)} "
             f"{pp.plural(len(merged), 'пару', 'пари', 'пар')} — там обидва "
             f"записи цитували одне речення, питати не було про що "
-            f"(відкат: /promise_prune_undo).\n\n") if merged else ""
+            f"(відкат: /promise_prune_undo).\n\n" if merged else "")
     if not total:
         await msg.edit_text(
             auto + "🦊 Спірних пар не лишилось.", parse_mode="HTML")
@@ -2074,6 +2081,50 @@ def _pending(floor, limit=None):
                         (floor, api.REGION_MYKOLAIV, pp.MAX_ATTEMPTS, limit))
 
 
+async def judge_new_dupes(limit=None):
+    """Прогнати суддю по НОВИХ парах-кандидатах і запам'ятати вердикти.
+
+    Платимо лише за те, чого суддя ще не бачив (`pp.unjudged`), тож повторний
+    виклик команди безкоштовний, а щогодинний прогін коштує центи: нових пар
+    на день одиниці.
+
+    Зливати сам суддя тут НІЧОГО не зливає — на відміну від тем. Різниця
+    принципова: об'єднання тем міняє лише рядок черги, а злиття обіцянок
+    прибирає запис. Тому машина звужує ЧЕРГУ ПИТАНЬ (прибирає з екрана те,
+    що впевнено назвала різним), а зливає людина одним тапом.
+    """
+    def candidates():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                pairs = pp.dupe_pairs(cur, limit=limit or pj.MAX_PAIRS)
+                fresh = pp.unjudged(cur, pairs)
+                return pp.dupe_candidate_sides(cur, fresh)
+        finally:
+            conn.close()
+
+    sides = await asyncio.to_thread(candidates)
+    if not sides:
+        return 0
+    judged = await pj.judge_pairs("dupe", sides)
+
+    def remember():
+        conn = ep.connect()
+        try:
+            with conn.cursor() as cur:
+                for p in judged:
+                    if p.get("verdict"):
+                        pp.save_verdict(cur, p["a"]["id"], p["b"]["id"], p["verdict"])
+            conn.commit()
+        finally:
+            conn.close()
+
+    await asyncio.to_thread(remember)
+    return sum(1 for p in judged if p.get("verdict"))
+
+
 def auto_merge_dupes(who="Лис"):
     """Злити пари з однаковою цитатою. Синхронно, для інкремента й команди."""
     conn = ep.connect()
@@ -2141,6 +2192,13 @@ async def sync_promises_incremental(bot):
         # означає щогодини нарощувати ту чергу вдвічі швидше, ніж її можна
         # розібрати. Кожне злиття — у журнал, відкат /promise_restore.
         await asyncio.to_thread(auto_merge_dupes)
+        # І суддя по нових кандидатах — щоб екран дублів не наповнювався
+        # питаннями, на які машина вже вміє відповісти. Коштує центи: нових
+        # пар за годину одиниці.
+        try:
+            await judge_new_dupes()
+        except Exception as e:
+            print(f"банк тем: суддя дублів — {e}")
         # Сторож масового збою — той самий поріг, що в сутнісному шарі: якщо
         # впала третина пачки, це не «погана стаття», це щось зламалось.
         if errors and len(errors) * 3 >= len(arts):
@@ -3028,35 +3086,76 @@ async def promise_topics_handler(update, context):
     except Exception as e:
         await msg.edit_text(f"❌ Не порахувалось: {type(e).__name__}: {e}")
         return
+
+    # СУДДЯ поверх правила. Правило лишається пре-фільтром — воно відсіює
+    # очевидне безкоштовно, — але останнє слово за моделлю: рядок «система
+    # водопостачання Вознесенська» і «…у Баштанці» правило розрізняє лише
+    # тому, що я вручну навчив його топонімів, а модель просто знає, що це
+    # різні міста Миколаївщини.
+    judged = []
+    if pairs:
+        await msg.edit_text(f"🦊 Правило знайшло {len(pairs)} пар. "
+                            f"Питаю суддю…")
+        sides = await asyncio.to_thread(_topic_sides, pairs)
+        judged = await pj.judge_pairs("topic", sides)
+        auto, ask, skip = pj.split(judged)
+        _TOPIC_CONFIRMED[:] = auto
+        pairs = auto + ask
     if not pairs:
+        _TOPIC_CONFIRMED[:] = []
         await msg.edit_text(
-            f"🦊 Тем {topics} на {total} зобов'язань. Пар, які схоже на одну "
-            f"справу, не видно.")
+            f"🦊 Тем {topics} на {total} зобов'язань. Пар, які суддя визнав "
+            f"однією справою, не видно.")
+        return
+    if not auto:
+        await msg.edit_text(
+            f"🦊 Тем {topics} на {total} зобов'язань. Суддя не підтвердив "
+            f"упевнено жодної пари з {len(judged)} — об'єднувати нема чого.")
         return
 
-    lines = ["# Кандидати на об'єднання тем. Кожен рядок — дві теми, які схоже",
-             "# на одну справу. Підстава — спільна назва в лапках, спільна пара",
-             "# сусідніх слів або два спільні значущі слова.",
+    lines = ["# Кандидати на об'єднання тем: дві теми, які схоже на одну справу.",
+             "# Правило дало пре-фільтр, вердикт — суддя (він знає, що",
+             "# Вознесенськ і Баштанка різні міста, а рядок цього не знає).",
              "#",
-             "# Зобов'язання при цьому НЕ зливаються: у них лишаються свої",
-             "# цитати й лінки, міняється лише рядок черги, під яким вони стоять.",
+             "# Зобов'язання НЕ зливаються: у них лишаються свої цитати й",
+             "# лінки, міняється лише рядок черги, під яким вони стоять.",
+             "#",
+             f"# Відкинув суддя: {len(skip)}",
              ""]
     for p in pairs:
-        lines += [f"[{p['reason']}]",
-                  f"  лишиться: {p['keep_title']}  ({p['keep_n']})",
-                  f"  приєднаю: {p['drop_title']}  ({p['drop_n']})", ""]
+        v = p.get("verdict") or {}
+        mark = "" if v.get("confidence") == "high" else "  ⚠ під сумнівом"
+        lines += [f"[{v.get('why') or p['reason']}]{mark}",
+                  f"  лишиться: {p['a']['title']}  ({p['keep_n']})",
+                  f"  приєднаю: {p['b']['title']}  ({p['drop_n']})", ""]
     payload = "\n".join(lines).encode("utf-8")
     await msg.delete()
     await update.message.reply_document(
         document=BytesIO(payload), filename="promise_topics.txt",
         caption=(f"🦊 Тем <b>{topics}</b> на {total} зобов'язань.\n"
-                 f"Схоже на одну справу: <b>{len(pairs)}</b> "
+                 f"Суддя підтвердив: <b>{len(pairs)}</b> "
                  f"{pp.plural(len(pairs), 'пара', 'пари', 'пар')} — після "
                  f"об'єднання тем стане ~{topics - len(pairs)}.\n\n"
                  f"Подивись файл. Об'єднання нічого не видаляє й відкатне."),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-            f"Об'єднати {len(pairs)}", callback_data="ptp:go")]]))
+            f"Об'єднати {len(auto)} впевнених", callback_data="ptp:go")]]))
+
+
+def _topic_sides(pairs):
+    conn = ep.connect()
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            return pp.topic_candidate_sides(cur, pairs)
+    finally:
+        conn.close()
+
+
+# Що саме підтвердив суддя минулим /promise_topics. Тримаємо в пам'яті процесу
+# свідомо: кнопка живе хвилини, а редеплой посеред рішення має означати
+# «прожени ще раз», а не «зіллю за старим вердиктом».
+_TOPIC_CONFIRMED = []
 
 
 async def promise_topics_callback(update, context):
@@ -3073,7 +3172,7 @@ async def promise_topics_callback(update, context):
             pp.ensure_schema(conn)
             with conn.cursor() as cur:
                 run_id = pp.next_run(cur)
-                pairs = pp.topic_candidates(cur)
+                pairs = list(_TOPIC_CONFIRMED)
                 moved = 0
                 for p in pairs:
                     moved += pp.merge_topics(cur, p["keep"], p["drop"], run=run_id)

@@ -114,6 +114,20 @@ CREATE TABLE IF NOT EXISTS topic_merges (
 );
 CREATE INDEX IF NOT EXISTS idx_topic_merges_run ON topic_merges (run);
 
+-- Вердикти судді по парах. Окремо від `promise_pairs` (де рішення ЛЮДИНИ,
+-- і воно вічне): вердикт машини має право бути переглянутим, коли зміняться
+-- правила чи модель. Пам'ять потрібна, щоб два екрани — чат і апка — бачили
+-- одне й те саме й щоб не платити за ту саму пару щогодини.
+CREATE TABLE IF NOT EXISTS promise_pair_verdicts (
+    a          BIGINT NOT NULL,
+    b          BIGINT NOT NULL,
+    same       BOOLEAN,
+    confidence TEXT,
+    why        TEXT,
+    created    BIGINT,
+    PRIMARY KEY (a, b)
+);
+
 CREATE TABLE IF NOT EXISTS commitments (
     id                    BIGSERIAL PRIMARY KEY,
     topic_id              BIGINT REFERENCES topics (id) ON DELETE SET NULL,
@@ -1593,6 +1607,12 @@ _DUPE_WHERE = """
                    AND coalesce(a.owner_text, '') <> '')
           AND NOT EXISTS (SELECT 1 FROM promise_pairs p
                           WHERE p.a = a.id AND p.b = b.id)
+          -- Суддя впевнено сказав «різні» — з екрана геть. Це НЕ те саме, що
+          -- рішення людини в promise_pairs: вердикт машини переглядається,
+          -- коли зміняться правила, тому таблиці різні.
+          AND NOT EXISTS (SELECT 1 FROM promise_pair_verdicts v
+                          WHERE v.a = a.id AND v.b = b.id
+                            AND v.same IS FALSE AND v.confidence = 'high')
 """
 
 
@@ -1712,6 +1732,38 @@ def dupe_count(cur, sim=DUPE_SIM):
     cur.execute("SELECT count(*) FROM commitments a "
                 "JOIN commitments b ON b.id > a.id" + _DUPE_WHERE, (sim,))
     return cur.fetchone()[0]
+
+
+def save_verdict(cur, a, b, verdict):
+    """Запам'ятати рішення судді. Порядок id нормалізуємо — пара одна."""
+    a, b = sorted((int(a), int(b)))
+    cur.execute(
+        "INSERT INTO promise_pair_verdicts (a, b, same, confidence, why, created) "
+        "VALUES (%s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (a, b) DO UPDATE SET same = EXCLUDED.same, "
+        "  confidence = EXCLUDED.confidence, why = EXCLUDED.why, "
+        "  created = EXCLUDED.created",
+        (a, b, bool(verdict.get("same")), verdict.get("confidence"),
+         (verdict.get("why") or "")[:300], int(time.time())))
+
+
+def load_verdicts(cur, pairs):
+    """{(a,b): вердикт} для наявних пар."""
+    keys = [sorted((int(p["a"]), int(p["b"]))) for p in pairs]
+    if not keys:
+        return {}
+    cur.execute(
+        "SELECT a, b, same, confidence, why FROM promise_pair_verdicts "
+        "WHERE (a, b) IN %s", (tuple(tuple(k) for k in keys),))
+    return {(r[0], r[1]): {"same": r[2], "confidence": r[3], "why": r[4]}
+            for r in cur.fetchall()}
+
+
+def unjudged(cur, pairs):
+    """Пари, яких суддя ще не бачив — за них і платимо."""
+    known = load_verdicts(cur, pairs)
+    return [p for p in pairs
+            if tuple(sorted((int(p["a"]), int(p["b"])))) not in known]
 
 
 def reject_pair(cur, a, b, who=None):
@@ -2319,6 +2371,36 @@ def topic_candidates(cur, limit=400):
             if len(out) >= limit:
                 return out
     return out
+
+
+def topic_candidate_sides(cur, pairs):
+    """Дозбирати кандидатам те, що потрібно СУДДІ (назви й так є)."""
+    return [{"keep": p["keep"], "drop": p["drop"], "reason": p["reason"],
+             "a": {"title": p["keep_title"]}, "b": {"title": p["drop_title"]},
+             "keep_n": p["keep_n"], "drop_n": p["drop_n"]} for p in pairs]
+
+
+def dupe_candidate_sides(cur, pairs):
+    """Те саме для дублів: суддя мусить бачити не лише назви, а предмет,
+    строк, обіцяльника і ДОСЛІВНУ цитату — саме вони й розрізняють."""
+    ids = {p["a"] for p in pairs} | {p["b"] for p in pairs}
+    if not ids:
+        return []
+    cur.execute(f"SELECT {COMMITMENT_COLS} FROM commitments c "
+                "WHERE c.id = ANY(%s)", (list(ids),))
+    rows = {r["id"]: r for r in _rows(cur)}
+    quotes = {}
+    for rev in revisions(cur, list(ids)):
+        quotes.setdefault(rev["commitment_id"], rev.get("quote") or "")
+
+    def side(cid):
+        r = rows.get(cid) or {}
+        return {"id": cid, "title": r.get("title"), "subject": r.get("subject"),
+                "owner_text": r.get("owner_text"), "deadline": r.get("deadline"),
+                "quote": (quotes.get(cid) or "")[:400]}
+
+    return [{"a": side(p["a"]), "b": side(p["b"]), "sim": p["sim"]}
+            for p in pairs if p["a"] in rows and p["b"] in rows]
 
 
 def merge_topics(cur, keep_id, drop_id, run=None):

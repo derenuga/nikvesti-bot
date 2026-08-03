@@ -3407,7 +3407,8 @@ function dupePair(pair, mgr) {
   return `
     <div class="dp-pair">
       ${dupeSide(pair.a)}
-      <div class="dp-mid">схожість ${String(pair.sim).replace(".", ",")}</div>
+      <div class="dp-mid">${pair.why ? esc(pair.why)
+        : "схожість " + String(pair.sim).replace(".", ",")}</div>
       ${dupeSide(pair.b)}
       ${mgr ? `<div class="dp-act">
         <button class="sbtn prim" data-merge="${pair.keep}:${

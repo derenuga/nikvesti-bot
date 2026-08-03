@@ -1780,6 +1780,76 @@ def test_topic_stitching():
         conn.close()
 
 
+def test_judge_memory():
+    """Суддя — і його пам'ять. Сам виклик моделі тут не робиться (сесія
+    розробки не має ключа), перевіряється КОНВЕЄР навколо нього: за що
+    платимо, що ховається з екрана, і чи не сплутано вердикт машини з
+    рішенням людини.
+    """
+    from handlers import promise_judge as pj
+
+    conn = ep.connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            cur.execute("DELETE FROM promise_pairs")
+            cur.execute("DELETE FROM promise_pair_verdicts")
+
+            def put(aid, title, quote):
+                p = pp.prepare(cur, case_item(
+                    320276, title=title, quote=quote, subject="майданчик «Казка»",
+                    objects=[], promiser="адміністрація району",
+                    deadline="2026-06-10"))
+                return pp.record(cur, {"id": aid, "published": 1780000000,
+                                       "title_ua": f"Стаття {aid}"}, p)[0]
+
+            a = put(710301, "Організувати прибирання на майданчику «Казка»",
+                    "До 10 червня там мають організувати прибирання")
+            b = put(710302, "Організувати покос трави на майданчику «Казка»",
+                    "До 10 червня там мають скосити траву")
+
+            pairs = pp.dupe_pairs(cur)
+            check("детектор дає пару кандидатів", bool(pairs), str(pairs))
+            check("за неї ще не платили", len(pp.unjudged(cur, pairs)) == len(pairs))
+
+            sides = pp.dupe_candidate_sides(cur, pairs)
+            check("суддя бачить не лише назву, а цитату й строк",
+                  bool(sides) and sides[0]["a"].get("quote")
+                  and sides[0]["a"].get("deadline"), str(sides[:1]))
+
+            pp.save_verdict(cur, a, b, {"same": False, "confidence": "high",
+                                        "why": "різні дії щодо одного об'єкта"})
+            check("за вже суджену пару не платимо вдруге",
+                  not pp.unjudged(cur, pairs))
+            check("впевнене «різні» прибирає пару з екрана",
+                  not pp.dupe_pairs(cur), str(pp.dupe_pairs(cur)))
+
+            # Вердикт машини і рішення людини — РІЗНІ таблиці. Перше
+            # переглядається, коли зміняться правила; друге вічне.
+            cur.execute("SELECT count(*) FROM promise_pairs")
+            check("вердикт судді не записався як рішення людини",
+                  cur.fetchone()[0] == 0)
+
+            pp.save_verdict(cur, a, b, {"same": False, "confidence": "medium",
+                                        "why": "не впевнений"})
+            check("невпевнене «різні» пару НЕ ховає — це питання, а не рішення",
+                  bool(pp.dupe_pairs(cur)))
+
+            judged = [{"a": {"id": a}, "b": {"id": b},
+                       "verdict": {"same": True, "confidence": "high"}},
+                      {"a": {"id": a}, "b": {"id": b},
+                       "verdict": {"same": True, "confidence": "medium"}},
+                      {"a": {"id": a}, "b": {"id": b}, "verdict": None}]
+            auto, ask, skip = pj.split(judged)
+            check("саме йде лише впевнене", len(auto) == 1, str(len(auto)))
+            check("невпевнене й збій моделі лишаються ПИТАННЯМ, а не рішенням",
+                  len(ask) == 2, str(len(ask)))
+    finally:
+        conn.close()
+
+
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
     формулювання розійдуться з чатом за три тижні."""
@@ -1839,6 +1909,7 @@ def main():
     test_reminders()
     test_topic_grouping()
     test_topic_stitching()
+    test_judge_memory()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")

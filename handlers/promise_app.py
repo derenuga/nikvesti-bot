@@ -529,6 +529,7 @@ def dupes(limit=40):
             # черга дублів не розбирається ніколи.
             from handlers.promises import _links_for
             links = _links_for(cur, {r.get("article_id") for r in revs.values()})
+            verdicts = pp.load_verdicts(cur, pairs)
             now = int(time.time())
             out = []
             for p in pairs:
@@ -538,9 +539,15 @@ def dupes(limit=40):
                 # Кого лишаємо — рахуємо ТУТ, а не питаємо. Людське питання
                 # рівно одне: це одне й те саме чи ні.
                 keep, _drop = pp.merge_winner(a, b)
+                v = verdicts.get(tuple(sorted((a["id"], b["id"])))) or {}
                 out.append({
                     "sim": p["sim"],
                     "keep": keep["id"],
+                    # Що сказав суддя. Пари, які він упевнено назвав різними,
+                    # сюди взагалі не доїжджають (їх ріже детектор), тож тут
+                    # лишається його «схоже, одне» — як підказка, а не вирок.
+                    "why": v.get("why"),
+                    "sure": v.get("same") and v.get("confidence") == "high",
                     "a": _dupe_side(a, revs, links, now),
                     "b": _dupe_side(b, revs, links, now),
                 })
