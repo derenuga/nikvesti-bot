@@ -366,6 +366,9 @@ async def _ingest(bot, state, client):
 INCR_CURSOR_KEY = "entity_incr_last_id"
 # Підлога: нижче цього id не заглядаємо (старий архів веде бэкфіл, а не інкремент).
 INCR_FLOOR_KEY = "entity_incr_floor"
+# Понад стільки статей у черзі — це вже прихований бэкфіл за гроші,
+# а не добір свіжого. Мовчки вмикати не можна.
+INCR_SANITY_MAX = 3000
 INCR_MAX_PER_RUN = 120   # захист: за один прогін не більше (наздоганяння дірок частинами)
 # Скільки разів пробуємо статтю, перш ніж визнати її безнадійною. Три спроби
 # рознесені в часі на години — переживає і збій API, і разову битість відповіді.
@@ -562,19 +565,45 @@ async def entity_increment_on_handler(update, context):
             f"Стан черги — /entity_status. Вимкнути: /entity_increment_off")
         return
     await asyncio.to_thread(_ensure_attempts_table)
-    rows = await bot_db.aquery("SELECT min(article_id) AS m FROM article_entities")
-    floor = rows[0]["m"] if rows else None
+    args = context.args or []
+    floor = None
+    if args:
+        # Явна підлога від людини: `last` — стати на найновішу статтю (тільки
+        # свіже), число — конкретний id. Сильніше за будь-який підрахунок.
+        if args[0].lower() == "last":
+            rows = await bot_db.aquery("SELECT max(id) AS m FROM articles")
+            floor = (rows[0]["m"] or 0) + 1
+        elif args[0].isdigit():
+            floor = int(args[0])
+    if floor is None:
+        rows = await bot_db.aquery("SELECT min(article_id) AS m FROM article_entities")
+        floor = rows[0]["m"] if rows else None
     if not floor:
         # Сутностей ще немає — інкременту нічого затягувати, стає на свіже.
         rows = await bot_db.aquery("SELECT max(id) AS m FROM articles")
         floor = (rows[0]["m"] or 0) + 1
+    pending = await _pending_count(floor)
+    # Запобіжник, куплений інцидентом банку тем 03.08: там підлога поїхала на
+    # 17 років від однієї діагностичної команди, і в черзі опинилось 132 387
+    # статей — ≈$790. Тут підлога рахується надійніше (початок оплаченого
+    # бэкфілу за фактом наявних сутностей), але /entity_resync на стару ноду
+    # зсунув би її так само. Тому число і ціна — ПЕРЕД очима, а не постфактум.
+    if pending > INCR_SANITY_MAX:
+        await update.message.reply_text(
+            f"⛔ Не вмикаю: у черзі <b>{pending}</b> статей від id={floor} — "
+            f"це ≈${pending * 0.006:.0f}. Це вже не добір свіжого, а бэкфіл "
+            f"за гроші.\n\nЯкщо треба саме свіже: "
+            f"<code>/entity_increment_on last</code> (стати на найновішу "
+            f"статтю). Якщо потрібна глибина — <code>/entity_increment_on "
+            f"&lt;id&gt;</code>.", parse_mode="HTML")
+        return
     await asyncio.to_thread(bot_db.set_state, INCR_FLOOR_KEY, floor)
     await asyncio.to_thread(bot_db.set_state, INCR_CURSOR_KEY, floor)
-    pending = await _pending_count(floor)
     await update.message.reply_text(
         f"🦊 Авто-інкремент сутностей увімкнено (підлога id={floor}).\n"
         f"У черзі зараз {pending} статей — щогодини о :55 бере до "
-        f"{INCR_MAX_PER_RUN} (~$0.006/стаття, видно в /aicost).\n"
+        f"{INCR_MAX_PER_RUN} (~$0.006/стаття, ≈${pending * 0.006:.2f} на всю "
+        f"чергу, видно в /aicost).\n"
         f"Вимкнути: /entity_increment_off")
 
 

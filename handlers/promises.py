@@ -2120,7 +2120,10 @@ async def promise_increment_on_handler(update, context):
             f"добір свіжого, а бекфіл за гроші.\n\n"
             f"Якщо треба саме свіже: <code>/promise_increment_on "
             f"{datetime.now().strftime('%Y-%m-%d')}</code>\n"
-            f"Якщо справді потрібна глибина — назви дату явно, і я ввімкну.",
+            f"Якщо справді потрібна глибина — назви дату явно, і я ввімкну.\n\n"
+            f"<i>Свіже при цьому не чекало б у кінці черги — добір іде від "
+            f"найновішого. Але платити за архів помісячно дешевше батчами "
+            f"(/promise_scan), ніж поштучно.</i>",
             parse_mode="HTML")
         return
     await asyncio.to_thread(bot_db.set_state, INCR_KEY, int(time.time()))
