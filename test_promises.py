@@ -1874,6 +1874,72 @@ def test_judge_memory():
         conn.close()
 
 
+def test_resplit_ingest():
+    """Перечит статті: старе знімається РІВНО перед записом нового.
+
+    Тут же закріплено баг, на якому впав перший живий прогін: `drop_article`
+    повертає СЛОВНИК {touched, removed}, а лічильник додавав його до числа —
+    «unsupported operand type(s) for +=: 'int' and 'dict'». Батчі вже були
+    оплачені й готові, тобто помилка в один рядок ледь не з'їла прогін.
+    """
+    from handlers import promises as ph
+
+    conn = ep.connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            cur.execute("DELETE FROM topics")
+            # Стара помилка витягу: одна ухвала — чотири записи по кіосках
+            for i, addr in enumerate(["Металургів, 32", "Олега Кравця, 170",
+                                      "Костянтинівська", "Соборна, 5-В"]):
+                item = case_item(320276, title=f"Демонтувати кіоск на {addr}",
+                                 quote="У Корабельному мають прибрати кіоски",
+                                 subject=f"кіоск на {addr}", objects=[],
+                                 promiser="міськрада", deadline="2026-12-31")
+                pp.record(cur, {"id": 710401, "published": 1780000000,
+                                "title_ua": "Ухвала про демонтаж"},
+                          pp.prepare(cur, item))
+            cur.execute("SELECT count(*) FROM commitments")
+            before = cur.fetchone()[0]
+            check("стара помилка відтворена: одна ухвала — чотири записи",
+                  before == 4, str(before))
+    finally:
+        conn.close()
+
+    # Новий промпт дав ОДИН запис на всю ухвалу
+    results = [{"article": {"id": 710401, "published": 1780000000,
+                            "title_ua": "Ухвала про демонтаж"},
+                "commitments": [case_item(
+                    320276, title="Демонтувати самовільні торгові об'єкти",
+                    quote="У Корабельному мають прибрати кіоски",
+                    subject="самовільні торгові об'єкти",
+                    objects=["Металургів, 32", "Олега Кравця, 170"],
+                    promiser="міськрада", deadline="2026-12-31")]}]
+    stats = ph.ingest(results, judge=False, drop_first=True)
+    check("лічильник знятого — ЧИСЛО, а не словник",
+          isinstance(stats["dropped"], int), str(type(stats["dropped"])))
+    check("старі записи статті знято", stats["dropped"] == 4, str(stats["dropped"]))
+
+    conn = ep.connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM commitments")
+            after = cur.fetchone()[0]
+            check("чотири записи стали одним", after == 1, str(after))
+            cur.execute("SELECT title FROM commitments")
+            # `commitment_objects` тримає лише ті об'єкти, що резолвнулись у
+            # КАРТКИ сутнісного шару; адреси-рядки туди не потрапляють, і це
+            # правильно. Тому перевіряємо те, що справді видно людині: у банку
+            # лишився один запис із назвою нового витягу.
+            check("лишився запис нового витягу, а не котрийсь зі старих",
+                  cur.fetchone()[0] == "Демонтувати самовільні торгові об'єкти")
+    finally:
+        conn.close()
+
+
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
     формулювання розійдуться з чатом за три тижні."""
@@ -1934,6 +2000,7 @@ def main():
     test_topic_grouping()
     test_topic_stitching()
     test_judge_memory()
+    test_resplit_ingest()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")

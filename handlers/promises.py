@@ -1776,7 +1776,13 @@ def ingest(results, judge=True, mark=True, drop_first=False):
                     # Перечит статті: старе знімаємо РІВНО перед записом
                     # нового, а не при відправці батча. Інакше при збої батча
                     # банк лишався б без цих обіцянок на години.
-                    stats["dropped"] += pp.drop_article(cur, art["id"])
+                    #
+                    # `drop_article` повертає СЛОВНИК {touched, removed}, а не
+                    # число — на цьому перший же прогін і впав. Рахуємо
+                    # видалені картки: саме їх людина побачить як «менше
+                    # записів у банку».
+                    gone = pp.drop_article(cur, art["id"])
+                    stats["dropped"] += len(gone["removed"])
                 found = glitches = 0
                 for item in res["commitments"]:
                     prepared = pp.prepare(cur, item)
