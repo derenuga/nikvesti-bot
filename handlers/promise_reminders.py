@@ -115,14 +115,10 @@ REASON_WORD = {
     "stale": "Без строку, давно не питали",
 }
 
-# «Як перевірити» — цілим рядком, а не обірваним хвостом після крапки.
-# Окремо від pp.METHOD_WORD: там короткі мітки для черги й апки, тут речення.
-CHECK_HOW = {
-    "field_check": "доїхати на місце й подивитись",
-    "document_request": "надіслати запит до органу",
-    "official_statement": "спитати посадовця",
-    "data": "подивитись у реєстрі",
-}
+# Спосіб перевірки в повідомленні НЕ пишемо (Олег, 03.08: «зайва інфа»).
+# Він лишається в черзі й в апці, де сортує теми за дешевизною перевірки, —
+# але журналісту, який щойно прочитав обіцянку з цитатою, не треба пояснювати,
+# що на місце можна доїхати.
 
 
 def ensure_schema(conn=None):
@@ -317,6 +313,27 @@ def status_line(row, now, mark=True):
     return "Строку не називали."
 
 
+def _author_html(name):
+    """Автор матеріалу з TG-хендлом, щоб його тегнуло автоматом.
+
+    Резолвер один на бота — `fb_missing._team_tg` (він знає і `@username`, і
+    форму `<a href="tg://user?id=…">` для тих, у кого хендла немає). Друга
+    копія тут розійшлася б із першою, щойно хтось зміниться в TEAM.
+    """
+    if not name:
+        return None
+    try:
+        from handlers.fb_missing import _team_tg
+        tg = _team_tg(name)
+    except Exception:
+        tg = None
+    # У TEAM трапляється буквальне «(тег за id)» — це нотатка для людини, а не
+    # розмітка, і в повідомленні воно виглядало б як помилка.
+    if tg and (tg.startswith("@") or tg.startswith("<a ")):
+        return f"{escape_html(name)} — {tg}"
+    return escape_html(name)
+
+
 def _who(row, rev):
     """Підпис під цитатою: ім'я і посада на момент заяви. Посада важлива —
     «Віталій Луков» без неї нічого не каже читачеві поза редакцією."""
@@ -341,8 +358,10 @@ def render_one(item, data):
         parts.append(f'<figure><img src="{_attr(image)}"/></figure>')
 
     parts.append("<p>🦊 Обіцянка, яку можна перевірити</p>")
-    parts.append(f"<h3>{escape_html(item.get('title') or '—')}</h3>")
-    parts.append(f"<p>{status_line(item, now)}</p>")
+    # <b> усередині <h3> свідомо: заголовок має бути видно вагою, а не лише
+    # кеглем — у стрічці каналу поміж тендерів рядок ловиться саме жирним.
+    parts.append(f"<h3><b>{escape_html(item.get('title') or '—')}</b></h3>")
+    parts.append(f"<p>📅 {status_line(item, now)}</p>")
 
     quote = (rev.get("quote") or "").strip()
     if quote:
@@ -350,16 +369,13 @@ def render_one(item, data):
         cite = f"<cite>{escape_html(who)}</cite>" if who else ""
         parts.append(f"<blockquote>{escape_html(quote)}{cite}</blockquote>")
 
-    how = CHECK_HOW.get(item.get("verification_method"))
-    if how:
-        parts.append(f"<p>Як перевірити: {how}.</p>")
-
     if link.get("url"):
-        src = (f'<a href="{_attr(link["url"])}">'
+        src = (f'Джерело: <a href="{_attr(link["url"])}">'
                f'{escape_html(link.get("title") or "матеріал")}</a>')
-        tail = [x for x in (data["authors"].get(aid), link.get("date")) if x]
+        tail = [x for x in (_author_html(data["authors"].get(aid)),
+                            escape_html(link.get("date") or "")) if x]
         if tail:
-            src += "<br>" + escape_html(" · ".join(tail))
+            src += "<br>" + " · ".join(tail)
         parts.append(f"<footer>{src}</footer>")
     return "".join(parts)
 
@@ -372,7 +388,7 @@ def render_one_plain(item, data):
     link = data["links"].get(aid) or {}
     out = ["🦊 <i>Обіцянка, яку можна перевірити</i>", "",
            f"<b>{escape_html(item.get('title') or '—')}</b>",
-           status_line(item, now, mark=False)]
+           "📅 " + status_line(item, now, mark=False)]
     quote = (rev.get("quote") or "").strip()
     if quote:
         who = _who(item, rev)
@@ -380,16 +396,13 @@ def render_one_plain(item, data):
         out.append(f"<blockquote>{escape_html(quote)}</blockquote>")
         if who:
             out.append(f"<i>{escape_html(who)}</i>")
-    how = CHECK_HOW.get(item.get("verification_method"))
-    if how:
-        out.append("")
-        out.append(f"Як перевірити: {how}.")
     if link.get("url"):
-        tail = [x for x in (data["authors"].get(aid), link.get("date")) if x]
+        tail = [x for x in (_author_html(data["authors"].get(aid)),
+                            escape_html(link.get("date") or "")) if x]
         out.append("")
-        out.append(f'<a href="{_attr(link["url"])}">'
+        out.append(f'Джерело: <a href="{_attr(link["url"])}">'
                    f'{escape_html(link.get("title") or "матеріал")}</a>'
-                   + (" · " + escape_html(" · ".join(tail)) if tail else ""))
+                   + ("\n" + " · ".join(tail) if tail else ""))
     return "\n".join(out)
 
 

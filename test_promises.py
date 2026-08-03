@@ -1488,8 +1488,11 @@ def test_reminders():
           "<a href=" in msg, msg[:70])
     check("дослівна цитата йде окремим блоком з підписом",
           "<blockquote>" in msg and "<cite>" in msg)
-    check("заголовок — сама обіцянка, а не її стан",
-          f"<h3>{item['title']}</h3>" in msg, msg[:120])
+    check("заголовок — сама обіцянка, а не її стан, і жирним",
+          f"<h3><b>{item['title']}</b></h3>" in msg, msg[:120])
+    check("перед лінком написано, що це джерело", "Джерело:" in msg, msg[-160:])
+    check("способу перевірки в повідомленні немає — зайва інфа",
+          "Як перевірити" not in msg and "Як перевірити" not in plain)
     check("фолбек несе ту саму фактуру, лише без rich-тегів",
           "<a href=" in plain and "<h3>" not in plain and "<mark>" not in plain)
     check("повідомлення лізе в ліміт 32768 символів", len(msg) < 32768, str(len(msg)))
