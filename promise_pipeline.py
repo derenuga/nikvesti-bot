@@ -34,6 +34,7 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 import entity_pipeline as ep   # connect(), norm(), loose_key() — спільні
@@ -167,6 +168,10 @@ CREATE TABLE IF NOT EXISTS commitment_revisions (
     dedup                 TEXT UNIQUE,
     created               BIGINT
 );
+-- Чи знайшлась цитата в тексті статті ДОСЛІВНО. Порожнє = не звіряли (стара
+-- ревізія або відкат зі знімка). §3 казав «немає дослівної цитати — немає
+-- запису», але перевірялось лише «поле непорожнє»; тепер видно й фантазію.
+ALTER TABLE commitment_revisions ADD COLUMN IF NOT EXISTS quote_verified BOOLEAN;
 CREATE INDEX IF NOT EXISTS idx_revisions_commitment ON commitment_revisions (commitment_id);
 CREATE INDEX IF NOT EXISTS idx_revisions_article ON commitment_revisions (article_id);
 
@@ -557,6 +562,146 @@ def _amount(value):
         return None
 
 
+# ---------- Витік чужої мови в генерації ----------
+#
+# Реальний випадок 03.08: у назві «підвищити енергостійкість電транспорту» і в
+# цитатах «Зараз續є інвентаризація», «в лікарнях області続встановлення». Це не
+# мохібейк у норі й не биті дані сайту — 電 це «електрика», 續/続 це «триває».
+# Модель (Haiku) підставляє ІЄРОГЛІФ замість українського слова: класичний
+# витік мови в багатомовних моделях на low-resource мовах. Замір: 4 записи з
+# 473, тобто ~1%.
+#
+# Лікується асиметрично, і саме тому двома різними шляхами:
+#   • ЦИТАТА мусить бути дослівна, а текст статті лежить у норі — отже
+#     полагодити можна БЕЗ моделі й без грошей, просто знайшовши справжній
+#     фрагмент. Заразом це робить справжньою вимогу §3, яка досі перевіряла
+#     лише «цитата непорожня», а не «цитата справді є в тексті»;
+#   • НАЗВА написана моделлю, звіряти її нема з чим. Такий запис не пишемо
+#     зовсім: стаття лишається в черзі й наступна спроба майже напевно дасть
+#     чистий текст (це шум семплінгу, а не стала помилка).
+
+def _suspicious_char(ch):
+    """Символ, якого в українському тексті бути не може."""
+    o = ord(ch)
+    if o < 0x0250 or 0x0400 <= o <= 0x04FF:      # латиниця, кирилиця
+        return False
+    if 0x2000 <= o <= 0x206F or 0x20A0 <= o <= 0x20BF:
+        return False                              # типографіка, валюти
+    if o in (0x2116, 0x00B0, 0x00A0):             # №, °, нерозривний
+        return False
+    return unicodedata.category(ch) not in ("So", "Sk")
+
+
+def has_glitch(text):
+    return any(_suspicious_char(ch) for ch in (text or ""))
+
+
+# Наголоси — і ТІЛЬКИ вони. Знімати всі комбіновані знаки (категорію Mn) не
+# можна: у NFD українські «й» і «ї» самі складені з букви й такого знаку, і
+# «Зеленський» перетворювався б на «Зеленськии». Тест це й зловив.
+_STRESS = {"́", "̀"}
+
+
+def clean_text(text):
+    """Прибрати наголоси, які модель зрідка ставить у власних назвах
+    («Миколаї́в»): у нашому корпусі їх не буває, а пошук вони ламають."""
+    if not text:
+        return text
+    return unicodedata.normalize(
+        "NFC", "".join(c for c in unicodedata.normalize("NFD", text)
+                       if c not in _STRESS))
+
+
+_MATCH_MAP = str.maketrans({"’": "'", "ʼ": "'", "‘": "'",
+                            "«": '"', "»": '"', "“": '"', "”": '"',
+                            "–": "-", "—": "-", "‑": "-",
+                            " ": " "})
+
+
+def _match_key(s):
+    """Форма для зіставлення: цитата й текст можуть різнитись типографікою
+    (апостроф, лапки, тире), і це не привід вважати цитату вигаданою."""
+    return " ".join(clean_text(s or "").translate(_MATCH_MAP).lower().split())
+
+
+def find_verbatim(quote, *texts):
+    """Чи є цитата в тексті статті дослівно. Повертає фрагмент ОРИГІНАЛЬНИМ
+    написанням (з тексту, не з відповіді моделі) або None."""
+    key = _match_key(quote)
+    if not key:
+        return None
+    for text in texts:
+        if not text:
+            continue
+        # Індекс «позиція в ключі → позиція в оригіналі»: без нього повернути
+        # оригінальне написання неможливо, а повертати нормалізоване не можна
+        # — цитата має виглядати так, як у статті.
+        norm, index = [], []
+        prev_space = True
+        for i, ch in enumerate(clean_text(text)):
+            c = ch.translate(_MATCH_MAP).lower()
+            if c.isspace():
+                if prev_space:
+                    continue
+                norm.append(" ")
+                index.append(i)
+                prev_space = True
+            else:
+                norm.append(c)
+                index.append(i)
+                prev_space = False
+        flat = "".join(norm)
+        pos = flat.find(key)
+        if pos < 0:
+            continue
+        start = index[pos]
+        end = index[min(pos + len(key) - 1, len(index) - 1)] + 1
+        return clean_text(text)[start:end].strip()
+    return None
+
+
+def repair_quote(quote, *texts, min_anchor=18):
+    """Полагодити цитату з ієрогліфом, знайшовши справжній фрагмент у тексті.
+
+    Беремо найдовший ЧИСТИЙ шматок цитати як якір, знаходимо його в статті й
+    повертаємо оригінальний фрагмент тієї ж приблизно довжини. Якір має бути
+    досить довгим, інакше «в місті» знайдеться будь-де.
+    """
+    if not quote:
+        return None
+    chunks, cur_chunk = [], []
+    for ch in quote:
+        if _suspicious_char(ch):
+            chunks.append("".join(cur_chunk))
+            cur_chunk = []
+        else:
+            cur_chunk.append(ch)
+    chunks.append("".join(cur_chunk))
+    anchor = max(chunks, key=len).strip()
+    if len(anchor) < min_anchor:
+        return None
+    found = find_verbatim(anchor, *texts)
+    if not found:
+        return None
+    for text in texts:
+        if not text:
+            continue
+        clean = clean_text(text)
+        at = clean.find(found)
+        if at < 0:
+            continue
+        # Розгортаємо від якоря вліво до початку речення й вправо до кінця
+        # приблизно тієї довжини, що була в цитаті.
+        left = at
+        while left > 0 and clean[left - 1] not in ".!?\n":
+            left -= 1
+        right = min(len(clean), max(at + len(found), left + len(quote) + 40))
+        while right < len(clean) and clean[right] not in ".!?\n":
+            right += 1
+        return clean[left:right].strip()
+    return found
+
+
 def prepare(cur, item):
     """Сирий запис витягу → резолвлені id + похідні поля.
 
@@ -564,6 +709,13 @@ def prepare(cur, item):
     вставки, і для показу в /promise_test (де в базу не йде взагалі нічого).
     """
     out = dict(item)
+    # Наголоси в іменах («Миколаї́в») модель ставить зрідка, але вони ламають
+    # і пошук, і зіставлення з картками сутностей — знімаємо на вході.
+    for f in ("title", "subject", "promiser", "promiser_role", "owner",
+              "reported_by", "criterion", "condition", "trigger_event",
+              "based_on_document"):
+        if isinstance(out.get(f), str):
+            out[f] = clean_text(out[f])
     out["modality"] = _enum(item.get("modality"), MODALITY)
     out["source_type"] = _enum(item.get("source_type"), SOURCE_TYPE)
     out["verification_method"] = _enum(item.get("verification_method"),
@@ -795,6 +947,28 @@ def record(cur, article, prepared, commitment_id=None, link_confidence=None):
         # §3: немає дослівного фрагмента — обіцянку не записуємо. Найдешевший
         # спосіб не отримати реєстр галюцинацій.
         return None, "noquote"
+
+    # Звірка цитати з ТЕКСТОМ СТАТТІ. Досі §3 перевіряв лише «поле непорожнє»,
+    # тобто ловив мовчання моделі, але не її фантазію. Тексти лежать поруч —
+    # у payload статті, — тож перевірка копійчана.
+    texts = (article.get("text_ua"), article.get("text_ru"))
+    verified = None
+    if any(texts):
+        exact = find_verbatim(quote, *texts)
+        if exact:
+            quote, verified = exact, True      # беремо написання СТАТТІ
+        else:
+            fixed = repair_quote(quote, *texts) if has_glitch(quote) else None
+            if fixed:
+                quote, verified = fixed, True
+            else:
+                verified = False
+    if has_glitch(quote) or has_glitch(prepared.get("title") or ""):
+        # Полагодити не вдалось. Пишемо — означає лишити в банку видимо биту
+        # картку; краще лишити статтю в черзі: це шум семплінгу, і наступна
+        # спроба майже напевно дасть чистий текст.
+        return None, "glitch"
+    prepared = dict(prepared, quote=quote)
     dup = existing_revision(cur, article["id"], prepared)
     if dup:
         return dup["commitment_id"], "dup"
@@ -828,8 +1002,8 @@ def record(cur, article, prepared, commitment_id=None, link_confidence=None):
         "(commitment_id, article_id, stated_deadline, deadline_precision, modality, "
         " source_type, promiser_entity_id, promiser_text, promiser_role, "
         " reported_by_entity_id, reported_by_text, condition, trigger_event, quote, "
-        " link_confidence, dedup, created) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+        " link_confidence, quote_verified, dedup, created) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
         "ON CONFLICT (dedup) DO NOTHING",
         (commitment_id, article["id"], prepared.get("deadline"),
          prepared.get("deadline_precision"), prepared.get("modality"),
@@ -837,7 +1011,7 @@ def record(cur, article, prepared, commitment_id=None, link_confidence=None):
          prepared.get("promiser"), prepared.get("promiser_role"),
          prepared.get("reported_by_entity_id"), prepared.get("reported_by"),
          prepared.get("condition"), prepared.get("trigger_event"), quote[:1000],
-         link_confidence,
+         link_confidence, verified,
          _dedup_key(article["id"], quote, prepared.get("title"),
                     prepared.get("deadline"), prepared.get("polarity")), now))
 
@@ -1309,6 +1483,103 @@ def unreject_pair(cur, a, b):
     a, b = sorted((int(a), int(b)))
     cur.execute("DELETE FROM promise_pairs WHERE a = %s AND b = %s", (a, b))
     return cur.rowcount > 0
+
+
+# ---------- Назва, за якою обіцянку не впізнати ----------
+#
+# Друга за частотою вада витягу після ієрогліфа, і значно шкідливіша:
+# «Винести проєкт рішення про виділення землі на розгляд депутатів повторно» —
+# а йшлося про землю ПІД МОДУЛЬНІ БУДИНКИ ДЛЯ ПЕРЕСЕЛЕНЦІВ, і саме заради
+# цього слова новина існувала. Місто виділяє землю щотижня, тож десяток таких
+# назв в одному реєстрі не розрізнити ніяк.
+#
+# Заразом це годує детектор дублів фальшивими парами: «…для земельної
+# ділянки» (ритуальна служба) і «…для розміщення модульних будинків» (КП «Свій
+# дім») схожі рівно тому, що з обох викинули предмет.
+#
+# Ознака конкретності рахується механічно: цифра, назва в лапках або власна
+# назва (слово з великої не на початку — топонім, установа, прізвище). Це
+# ПІДКАЗКА, а не вирок: правильна назва без жодного з трьох сигналів теж
+# буває, тому команда лише показує список.
+
+_VAGUE_HINT = ("проєкт рішення", "питання", "документаці", "заходи",
+               "земельн", "земл", "об'єкт", "територі", "приміщенн",
+               "робіт", "послуг", "інфраструктур", "мереж", "громад")
+
+
+def _title_is_specific(title):
+    t = (title or "").strip()
+    if not t:
+        return True
+    if any(ch.isdigit() for ch in t):
+        return True
+    if "«" in t or '"' in t:
+        return True
+    return any(w[:1].isupper() for w in t.split()[1:])
+
+
+def vague_titles(cur, limit=120):
+    """Назви, за якими обіцянку не впізнати. Read-only."""
+    cur.execute(
+        "SELECT c.id, c.title, c.subject, "
+        "  (SELECT r.quote FROM commitment_revisions r "
+        "    WHERE r.commitment_id = c.id ORDER BY r.id LIMIT 1), "
+        "  (SELECT r.article_id FROM commitment_revisions r "
+        "    WHERE r.commitment_id = c.id ORDER BY r.id LIMIT 1) "
+        "FROM commitments c WHERE c.status = 'expected' ORDER BY c.id")
+    out = []
+    for cid, title, subject, quote, aid in cur.fetchall():
+        if _title_is_specific(title):
+            continue
+        low = (title or "").lower()
+        if not any(w in low for w in _VAGUE_HINT):
+            continue
+        out.append({"id": cid, "title": title, "subject": subject,
+                    "quote": quote, "article_id": aid})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def glitched(cur, limit=200):
+    """Записи з ієрогліфом — разова прибиральня накопиченого.
+
+    Повертає і саму статтю, бо цитату лікуємо ЇЇ текстом, а не моделлю.
+    """
+    cur.execute(
+        "SELECT c.id, c.title, r.id, r.quote, r.article_id, a.text_ua, a.text_ru "
+        "FROM commitments c JOIN commitment_revisions r ON r.commitment_id = c.id "
+        "LEFT JOIN articles a ON a.id = r.article_id ORDER BY c.id LIMIT %s",
+        (limit * 20,))
+    out = []
+    for cid, title, rid, quote, aid, tua, tru in cur.fetchall():
+        if not (has_glitch(title) or has_glitch(quote)):
+            continue
+        fixed_q = None
+        if has_glitch(quote):
+            fixed_q = repair_quote(quote, tua, tru) or find_verbatim(quote, tua, tru)
+        out.append({"commitment_id": cid, "revision_id": rid, "article_id": aid,
+                    "title": title, "quote": quote, "fixed_quote": fixed_q,
+                    "title_broken": has_glitch(title)})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def apply_glitch_fix(cur, revision_id=None, quote=None,
+                     commitment_id=None, title=None):
+    """Записати полагоджений текст. Дві різні речі свідомо в одній функції:
+    цитата лікується автоматично з тексту статті, назва — тільки людиною."""
+    done = []
+    if revision_id and quote:
+        cur.execute("UPDATE commitment_revisions SET quote = %s, quote_verified = true "
+                    "WHERE id = %s", (quote, revision_id))
+        done.append("quote")
+    if commitment_id and title:
+        cur.execute("UPDATE commitments SET title = %s WHERE id = %s",
+                    (title[:300], commitment_id))
+        done.append("title")
+    return done
 
 
 def export_all(cur):

@@ -918,6 +918,12 @@ def parse_fix(text):
                                 " ".join(parts[2:]) or None))
             elif verb in ("check", "checked") and len(parts) >= 2:
                 actions.append(("check", int(parts[1]), None, None))
+            elif verb == "title" and len(parts) >= 3:
+                # Переписати назву. Потрібне для битих назв (ієрогліф замість
+                # слова) і для кривих формулювань: назва написана моделлю,
+                # звіряти її нема з чим, тож правка людиною — єдиний шлях.
+                actions.append(("title", int(parts[1]), None,
+                                " ".join(parts[2:]).strip()))
             else:
                 errors.append(raw.strip()[:80])
         except ValueError:
@@ -939,7 +945,8 @@ def describe_fixes(actions):
             names = dict(cur.fetchall())
     finally:
         conn.close()
-    lines, counts, missing = [], {"merge": 0, "keep": 0, "drop": 0, "check": 0}, 0
+    lines, counts, missing = [], {"merge": 0, "keep": 0, "drop": 0,
+                                  "check": 0, "title": 0}, 0
     for verb, a, b, note in actions:
         na, nb = names.get(a), names.get(b)
         if na is None or (b is not None and nb is None):
@@ -951,6 +958,8 @@ def describe_fixes(actions):
         elif verb == "keep":
             lines.append(f"✂️ РІЗНІ (обидві лишаються): {escape_html(na)}\n"
                          f"   ↔ {escape_html(nb)}")
+        elif verb == "title":
+            lines.append(f"✏️ {escape_html(na)}\n   → {escape_html(note or '')}")
         elif verb == "drop":
             lines.append(f"🗑 {escape_html(na)}"
                          + (f" — {escape_html(note)}" if note else ""))
@@ -979,7 +988,7 @@ async def promises_fix_document(msg, text, who=None):
         return
     head = (f"🦊 <b>Пакет рішень</b>: склеїти {counts['merge']} · "
             f"розвести {counts['keep']} · прибрати {counts['drop']} · "
-            f"позначити {counts['check']}")
+            f"переназвати {counts['title']} · позначити {counts['check']}")
     if missing:
         head += f"\n<i>{missing} рядків пропущено — таких id у банку немає.</i>"
     body = "\n".join(lines[:40])
@@ -1022,7 +1031,7 @@ async def promises_fix_callback(update, context):
         conn = ep.connect()
         try:
             pp.ensure_schema(conn)
-            done = {"merge": 0, "keep": 0, "drop": 0, "check": 0}
+            done = {"merge": 0, "keep": 0, "drop": 0, "check": 0, "title": 0}
             skipped = []
             with conn.cursor() as cur:
                 run_id = pp.next_run(cur)
@@ -1032,6 +1041,9 @@ async def promises_fix_callback(update, context):
                             ok = pp.merge_commitments(cur, a, b, who=who, run=run_id)
                         elif verb == "keep":
                             ok = pp.reject_pair(cur, a, b, who)
+                        elif verb == "title":
+                            ok = bool(pp.apply_glitch_fix(
+                                cur, commitment_id=a, title=note))
                         elif verb == "drop":
                             ok = pp.forget(cur, a, reason=note or "пакет рішень",
                                            who=who, run=run_id)
@@ -1056,7 +1068,8 @@ async def promises_fix_callback(update, context):
         await query.edit_message_text(f"❌ Не виконалось: {e}")
         return
     text = (f"🦊 Готово: склеїв {done['merge']} · розвів {done['keep']} · "
-            f"прибрав {done['drop']} · позначив {done['check']}.\n"
+            f"прибрав {done['drop']} · переназвав {done['title']} · "
+            f"позначив {done['check']}.\n"
             f"Відкат усього пакета: /promise_prune_undo {run_id}")
     if skipped:
         text += f"\n\n⚠️ пропущено {len(skipped)}: " + ", ".join(skipped[:5])
@@ -1109,6 +1122,161 @@ async def promise_dupes_handler(update, context):
                  "на дублі». Там видно цитати обох.</i>")
     await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML",
                         disable_web_page_preview=True)
+
+
+async def promise_vague_handler(update, context):
+    """/promise_vague — назви, за якими обіцянку не впізнати.
+
+    Віддає ФАЙЛОМ із готовими рядками `title <id> <нова назва>`: правити
+    десятки назв по одній команді неможливо, а в файлі це п'ять хвилин. Назад
+    той самий пакет `# promises-fix`.
+    """
+    if not _allowed(update):
+        return
+    msg = await update.message.reply_text("🦊 Дивлюсь назви…")
+
+    def scan():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                rows = pp.vague_titles(cur)
+                links = _links_for(cur, {r["article_id"] for r in rows})
+            return rows, links
+        finally:
+            conn.close()
+
+    try:
+        rows, links = await asyncio.to_thread(scan)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не порахувалось: {e}")
+        return
+    if not rows:
+        await msg.edit_text("🦊 Загальних назв не видно.")
+        return
+    out = ["# promises-fix",
+           "# Назви, за якими обіцянку не впізнати: у них немає ні цифри, ні",
+           "# власної назви, ні назви в лапках — саме те слово, заради якого",
+           "# новина існувала, витяг і викинув.",
+           "#",
+           "# Перепиши рядок після id і надішли файл назад. Рядки, які не",
+           "# чіпав, можна лишити або видалити — назва не зміниться, якщо",
+           "# вона збігається з нинішньою.", ""]
+    for r in rows:
+        link = links.get(r["article_id"]) or {}
+        out += [f"# предмет: {r['subject'] or '—'}",
+                f"# цитата: {(r['quote'] or '')[:180]}",
+                f"# стаття: {link.get('title') or r['article_id']}",
+                f"#          {link.get('url') or ''}",
+                f"title {r['id']} {r['title']}", ""]
+    payload = "\n".join(out).encode("utf-8")
+    await msg.delete()
+    await update.message.reply_document(
+        document=BytesIO(payload), filename="promise-titles.txt",
+        caption=(f"🦊 Назв без жодної конкретики: <b>{len(rows)}</b>\n\n"
+                 f"Приклад того, що ловиться: «Винести проєкт рішення про "
+                 f"виділення землі на розгляд депутатів повторно» — а йшлося "
+                 f"про землю під модульні будинки для переселенців.\n\n"
+                 f"Правиш рядки <code>title …</code> і кидаєш файл назад. "
+                 f"Правило вже підтягнуто в промпт, тож нові такі назви мають "
+                 f"з'являтись рідше."),
+        parse_mode="HTML")
+
+
+async def promise_glitches_handler(update, context):
+    """/promise_glitches — записи з ієрогліфом замість українського слова.
+
+    Не мохібейк і не биті дані сайту: 電 це «електрика», 續/続 — «триває».
+    Модель підставляє ієрогліф замість слова, це витік мови в багатомовних
+    моделях. Замір на червні: 4 записи з 473.
+
+    ЦИТАТУ лікуємо самі — вона мусить бути дослівна, а текст статті лежить у
+    норі, отже справжній фрагмент можна просто знайти. НАЗВУ звіряти нема з
+    чим (її написала модель), тому такі записи показуємо окремо: там або
+    правка людиною, або /promise_retest на статтю.
+    """
+    if not _allowed(update):
+        return
+    msg = await update.message.reply_text("🦊 Шукаю…")
+
+    def scan():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                return pp.glitched(cur)
+        finally:
+            conn.close()
+
+    try:
+        rows = await asyncio.to_thread(scan)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не порахувалось: {e}")
+        return
+    if not rows:
+        await msg.edit_text("🦊 Ієрогліфів у банку немає.")
+        return
+    fixable = [r for r in rows if r["fixed_quote"]]
+    manual = [r for r in rows if r["title_broken"]]
+    lines = [f"🦊 <b>Ієрогліф замість слова: {len(rows)}</b>",
+             "<i>續/続 = «триває», 電 = «електро». Це витік мови в моделі, "
+             "а не биті дані сайту.</i>", ""]
+    for r in rows[:10]:
+        lines.append(f"<b>{r['commitment_id']}</b> · ст.{r['article_id']}")
+        if r["title_broken"]:
+            lines.append(f"  назва: {escape_html(r['title'])}")
+        if r["fixed_quote"]:
+            lines.append(f"  було: <i>{escape_html(r['quote'][:110])}</i>")
+            lines.append(f"  стане: <b>{escape_html(r['fixed_quote'][:110])}</b>")
+        elif pp.has_glitch(r["quote"]):
+            lines.append(f"  цитата не лагодиться: <i>{escape_html(r['quote'][:110])}</i>")
+        lines.append("")
+    lines.append(f"Цитат лагодиться автоматично: <b>{len(fixable)}</b>")
+    if manual:
+        lines.append(f"Назв доведеться правити руками або /promise_retest: "
+                     f"<b>{len(manual)}</b>")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        f"Полагодити {len(fixable)} цитат", callback_data="pgl:go")]]) if fixable else None
+    await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML", reply_markup=kb)
+
+
+async def promise_glitches_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not _allowed(update):
+        return
+    await query.edit_message_text("🦊 Лагоджу…")
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                rows = pp.glitched(cur)
+                n = 0
+                for r in rows:
+                    if r["fixed_quote"]:
+                        pp.apply_glitch_fix(cur, revision_id=r["revision_id"],
+                                            quote=r["fixed_quote"])
+                        n += 1
+            conn.commit()
+            return n, sum(1 for r in rows if r["title_broken"])
+        finally:
+            conn.close()
+
+    try:
+        fixed, manual = await asyncio.to_thread(run)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Не полагодилось: {e}")
+        return
+    text = f"🦊 Полагодив {fixed} цитат — текстом самих статей, без моделі."
+    if manual:
+        text += (f"\nЛишилось {manual} з битою НАЗВОЮ: її звіряти нема з чим, "
+                 f"тому або /promise_retest <id статті>, або правка руками "
+                 f"пакетом (<code>title &lt;id&gt; &lt;текст&gt;</code>).")
+    await query.edit_message_text(text, parse_mode="HTML")
 
 
 async def promise_notdupe_handler(update, context):
@@ -1518,6 +1686,7 @@ def ingest(results, judge=True, mark=True):
             # обіцянками: це видно і лікується руками, на відміну від тиші.
             print(f"promises: суддя ланцюга недоступний ({e}) — пишу без зшивання")
     stats = {"articles": 0, "new": 0, "revisions": 0, "dup": 0, "noquote": 0,
+             "glitch": 0, "unverified": 0,
              "judged": 0, "judge_usage": {"input": 0, "output": 0}}
     conn = ep.connect()
     try:
@@ -1529,7 +1698,7 @@ def ingest(results, judge=True, mark=True):
             for res in ordered:
                 art = res["article"]
                 stats["articles"] += 1
-                found = 0
+                found = glitches = 0
                 for item in res["commitments"]:
                     prepared = pp.prepare(cur, item)
                     if not (prepared.get("quote") or "").strip():
@@ -1560,9 +1729,19 @@ def ingest(results, judge=True, mark=True):
                         found += 1
                     elif outcome == "dup":
                         stats["dup"] += 1
+                    elif outcome == "glitch":
+                        # Ієрогліф замість українського слова (витік мови в
+                        # моделі), який не вдалось полагодити з тексту статті.
+                        # Не пишемо і НЕ закриваємо статтю: це шум семплінгу,
+                        # наступна спроба майже напевно дасть чистий текст.
+                        stats["glitch"] += 1
+                        glitches += 1
                 if mark:
-                    pp.mark_attempt(cur, art["id"], marked=art["id"] in marked,
-                                    done=True, found=found)
+                    glitched = bool(glitches) and not found
+                    pp.mark_attempt(
+                        cur, art["id"], marked=art["id"] in marked,
+                        error="витік чужої мови в генерації" if glitched else None,
+                        done=not glitched, found=found)
                 conn.commit()
     finally:
         conn.close()

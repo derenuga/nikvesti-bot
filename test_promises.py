@@ -1109,6 +1109,94 @@ def test_retest_id_reading():
           str(resolve(999999)))
 
 
+def test_glitch_and_quote_verification():
+    """Витік чужої мови в генерації + справжня перевірка §3.
+
+    Реальні випадки 03.08: «підвищити енергостійкість電транспорту» (電 =
+    «електрика»), «Зараз續є інвентаризація» (續 = «триває»). Це не мохібейк у
+    норі, а підстановка ієрогліфа замість українського слова.
+    """
+    text = ("Зараз триває інвентаризація цих мереж. Після цього необхідно "
+            "буде розробити проєктні рішення та кошторис.")
+    check("ієрогліф ловиться як чужий символ", pp.has_glitch("Зараз續є робота"))
+    check("звичайний український текст чужим не вважається",
+          not pp.has_glitch(text) and not pp.has_glitch("КП «Миколаївводоканал»"))
+    check("наголос знімається («Миколаї́в» ламав пошук)",
+          pp.clean_text("Миколаї́в") == "Миколаїв")
+
+    check("дослівна цитата знаходиться в тексті статті",
+          pp.find_verbatim("Зараз триває інвентаризація цих мереж", text)
+          == "Зараз триває інвентаризація цих мереж")
+    check("типографіка не робить цитату вигаданою",
+          pp.find_verbatim("КП «Водоканал» — почне", 'КП "Водоканал" - почне') is not None)
+    check("вигадана цитата НЕ знаходиться (це і є справжня перевірка §3)",
+          pp.find_verbatim("Мер пообіцяв золоті гори", text) is None)
+
+    fixed = pp.repair_quote("Зараз續є інвентаризація цих мереж", text)
+    check("цитата з ієрогліфом лагодиться ТЕКСТОМ СТАТТІ, без моделі",
+          fixed and "триває інвентаризація" in fixed and not pp.has_glitch(fixed),
+          str(fixed))
+
+    conn = ep.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            art = {"id": 720001, "published": 1780000000,
+                   "title_ua": "Стаття", "text_ua": text, "text_ru": None}
+            p = pp.prepare(cur, case_item(
+                320276, quote="Зараз續є інвентаризація цих мереж"))
+            cid, outcome = pp.record(cur, art, p)
+            check("запис із битою цитатою НЕ відкидається, а лікується",
+                  outcome == "new", outcome)
+            cur.execute("SELECT quote, quote_verified FROM commitment_revisions "
+                        "WHERE commitment_id = %s", (cid,))
+            q, ver = cur.fetchone()
+            check("у банк лягла ЧИСТА цитата", not pp.has_glitch(q), q)
+            check("і позначена як звірена з текстом", ver is True, str(ver))
+
+            # Бита НАЗВА — звіряти нема з чим, запис не пишемо взагалі
+            p2 = pp.prepare(cur, case_item(
+                320276, title="Підвищити енергостійкість電транспорту",
+                quote="Після цього необхідно буде розробити проєктні рішення"))
+            _, out2 = pp.record(cur, art, p2)
+            check("бита НАЗВА не пишеться — стаття лишається в черзі на перечит",
+                  out2 == "glitch", out2)
+
+            # Цитата, якої в тексті немає
+            p3 = pp.prepare(cur, case_item(
+                320276, quote="Мер пообіцяв золоті гори всім миколаївцям"))
+            cid3, out3 = pp.record(cur, art, p3)
+            cur.execute("SELECT quote_verified FROM commitment_revisions "
+                        "WHERE commitment_id = %s", (cid3,))
+            check("цитата поза текстом позначається, але запис не втрачаємо",
+                  out3 == "new" and cur.fetchone()[0] is False, out3)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_vague_titles():
+    """Назва без жодної конкретики — те, за що зачепився Олег: «Винести
+    проєкт рішення про виділення землі на розгляд депутатів повторно», а
+    йшлося про землю ПІД МОДУЛЬНІ БУДИНКИ ДЛЯ ПЕРЕСЕЛЕНЦІВ."""
+    spec = pp._title_is_specific
+    check("назва з цифрою вважається конкретною", spec("Відремонтувати ліцей №2"))
+    check("назва з топонімом теж", spec("Модернізувати водовідведення в Коблевому"))
+    check("назва в лапках теж", spec("Прибрати на майданчику «Казка»"))
+    check("бюрократичне узагальнення — НІ",
+          not spec("Винести проєкт рішення про виділення землі на розгляд депутатів"))
+    check("…і друге таке ж", not spec("Надати дозвіл на розробку проєкту землеустрою"))
+
+    conn = ep.connect()
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        rows = pp.vague_titles(cur)
+    conn.close()
+    check("детектор віддає список, а не падає", isinstance(rows, list),
+          f"{len(rows)} шт")
+
+
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
     формулювання розійдуться з чатом за три тижні."""
@@ -1159,6 +1247,8 @@ def main():
     test_dupes_and_merge()
     test_export_and_fix_packet()
     test_retest_id_reading()
+    test_glitch_and_quote_verification()
+    test_vague_titles()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")

@@ -17,6 +17,9 @@ const STATE = {
   assignees: [],
   managers: [],
   view: "home",
+  // Історія переходів: «назад» має вести туди, звідки прийшли, а не до
+  // статично призначеного «батька» екрана.
+  stack: [],
   projView: "list",
   projQuery: "",
   currentProject: null,
@@ -418,6 +421,9 @@ function projectColorIdx(id) {
    нативна і намальована ніколи не розійдуться. Зі стеком розійшлися б —
    nav("project") після збереження тематики клав би туди зайвий запис. */
 function backTarget() {
+  // Спершу — справжня історія: куди людина реально йшла. Статична мапа нижче
+  // лишається запасним варіантом, коли історії немає (екран відкрито першим).
+  if (STATE.stack.length) return STATE.stack[STATE.stack.length - 1];
   // У перегляді чужими очима підекрани повертають у САМ перегляд, а не на
   // головну менеджера — інакше «Назад» із її публікацій викидало б із
   // перегляду зовсім
@@ -469,10 +475,46 @@ function syncBackButton() {
 function goBack() {
   if (sheetOpen()) { closeSheet(); return; }
   const target = backTarget();
-  if (target) nav(target[0], target[1]);
+  if (!target) return;
+  if (STATE.stack.length) STATE.stack.pop();   // йдемо НАЗАД, а не вглиб
+  nav(target[0], target[1], true);
 }
 
-function nav(view, arg) {
+/* Аргумент, з яким відкрито поточний екран. Потрібен, щоб «назад» повертало
+   не просто екран, а ТОЙ САМИЙ його стан: список дублів, конкретний проєкт,
+   профіль конкретної людини. */
+function currentArg() {
+  switch (STATE.view) {
+    case "project": return STATE.currentProject;
+    case "kpinorm": return STATE.currentNorm;
+    case "person":
+    case "personhist": return STATE.currentPerson;
+    case "preview": return STATE.previewPerson;
+    case "promise": return STATE.currentPromise;
+    case "impact": return STATE.currentImpact;
+    case "bulk": return STATE.bulk;
+    default: return undefined;
+  }
+}
+
+/* Пункти нижнього меню — КОРЕНІ. Захід у корінь обнуляє історію: інакше
+   стек ріс би нескінченно і «назад» водило б по колу вчорашніх переходів. */
+const NAV_ROOTS = new Set(["home", "projects", "people", "reports", "alerts",
+                           "mypubs", "todo", "contacts", "myfeed", "away"]);
+const STACK_MAX = 12;
+
+function nav(view, arg, back) {
+  // Історія переходів. Доти «назад» рахувалось за статичною мапою «екран →
+  // батько», тому третій рівень губився ЗАВЖДИ: банк → дублі → картка і назад
+  // викидало в банк, а не в дублі. Мапа лишається запасним варіантом — для
+  // випадку, коли екран відкрито першим (глибокий лінк, startapp).
+  if (!back && STATE.view && STATE.view !== view) {
+    if (NAV_ROOTS.has(view)) STATE.stack = [];
+    else {
+      STATE.stack.push([STATE.view, currentArg()]);
+      if (STATE.stack.length > STACK_MAX) STATE.stack.shift();
+    }
+  }
   STATE.view = view;
   if (view === "project") STATE.currentProject = arg;
   if (view === "kpinorm") STATE.currentNorm = arg;
@@ -3101,8 +3143,6 @@ function wirePromises() {
   });
   body.querySelectorAll("[data-promise]").forEach((el) => el.onclick = () =>
     nav("promise", +el.dataset.promise));
-  body.querySelectorAll("[data-nav]").forEach((el) => el.onclick = () =>
-    nav(el.dataset.nav));
   const clear = $("pr-clear");
   if (clear) clear.onclick = () => {
     STATE.promiseQuery = "";
@@ -3133,13 +3173,13 @@ function wirePromises() {
 async function renderPromise() {
   const id = STATE.currentPromise;
   $("content").innerHTML = `
-    <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
+    <button class="back" data-back>${icon("chevron-left")} Назад</button>
     ${skeleton("rows", 4)}`;
   let d;
   try {
     d = await api(`/api/promises/${id}`);
   } catch (e) {
-    $("content").innerHTML = `<button class="back" data-back>${icon("chevron-left")} Банк тем</button>
+    $("content").innerHTML = `<button class="back" data-back>${icon("chevron-left")} Назад</button>
       <div class="empty-hint">${esc(e.message)}</div>`;
     return;
   }
