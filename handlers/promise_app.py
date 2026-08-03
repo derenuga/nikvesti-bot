@@ -51,6 +51,9 @@ FACETS = [
     ("stale", "Давно не питали"),
     ("noproof", "Перевірити нічим"),
     ("populism", "Популізм"),
+    # Ознаки виконання, у яких бот не був упевнений: він знайшов пізнішу
+    # новину про той самий об'єкт, але закрити сам не наважився.
+    ("mayclose", "Схоже, виконано"),
     # Перевірене з банку не зникає — це і є продукт. Окремий кошик, а не
     # видалення: на «зірвано» посилаються в наступному тексті.
     ("closed", "Перевірені"),
@@ -297,6 +300,8 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
                     cur, limit=None, now=now, author_id=author_id)))
             counts["closed"] = len(pp.group_by_topic(
                 pp.list_queue(cur, cls="closed", limit=None, now=now)))
+            may = pp.closure_ids(cur)
+            counts["mayclose"] = sum(1 for r in rows if r["id"] in may)
             fresh_since = now - FRESH_DAYS * 86400
             counts["fresh"] = sum(1 for r in rows
                                   if (r.get("first_seen") or 0) >= fresh_since)
@@ -308,6 +313,8 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
                 rows = sorted((r for r in rows
                                if (r.get("first_seen") or 0) >= fresh_since),
                               key=lambda r: -(r.get("first_seen") or 0))
+            elif cls == "mayclose":
+                rows = [r for r in rows if r["id"] in may]
             elif cls == "mine" and author_id:
                 rows = pp.group_by_topic(
                     pp.list_queue(cur, limit=None, now=now, author_id=author_id))

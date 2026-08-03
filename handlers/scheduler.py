@@ -22,6 +22,7 @@ from handlers.budget_snapshots import run_snapshot_check
 from handlers.entity_layer import sync_entities_incremental
 from handlers.promises import sync_promises_incremental
 from handlers.promise_reminders import daily as promise_daily_reminders
+from handlers.promise_fulfil import hourly as promise_fulfil_hourly
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
 from handlers.usage_report import send_daily_usage_report
@@ -309,6 +310,10 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # «давно не питали»: недатовані обіцянки нікуди не біжать, а щоденне їх
     # повторення привчає гортати не читаючи.
     scheduler.add_job(promise_daily_reminders, "cron", hour=9, minute=10, args=[bot])
+    # Детектор виконання — щогодини о :40, після витягу обіцянок (:25) і
+    # сутностей попередньої години (:55): збіг шукається по КАРТЦІ сутності,
+    # тож свіжа стаття має бути вже розібрана сутнісним шаром.
+    scheduler.add_job(promise_fulfil_hourly, "cron", minute=40, args=[bot])
     # Місячні снапшоти бюджету зі сторінки міськради — щодня об 11:20
     # (публікують на початку місяця нерегулярно; перевірка дешева, тиха,
     # коли нового немає; тихо пропускається без BOT_DATABASE_URL)

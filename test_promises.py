@@ -1940,6 +1940,88 @@ def test_resplit_ingest():
         conn.close()
 
 
+def test_fulfil_detector():
+    """Детектор виконання: пре-фільтр, два рівні впевненості, відкат.
+
+    Виклик моделі тут не робиться (ключа немає), перевіряється конвеєр:
+    кого взагалі беремо в кандидати, що робить `high` і що `medium`, і чи
+    можна повернути обіцянку в чергу після автоматичного закриття.
+    """
+    conn = ep.connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM promise_closures")
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            cur.execute("DELETE FROM article_entities")
+            cur.execute("DELETE FROM entities")
+
+            cur.execute(
+                "INSERT INTO entities (kind, name_ua, mentions) "
+                "VALUES ('place', 'зоопарк', 1) RETURNING id")
+            eid = cur.fetchone()[0]
+            for aid, published in ((730001, 1780000000), (730002, 1781000000)):
+                cur.execute(
+                    "INSERT INTO articles (id, published, status, title_ua, slug,"
+                    " category, kind, region, text_ua) VALUES "
+                    "(%s,%s,1,%s,%s,'municipal','news',1,%s) "
+                    "ON CONFLICT (id) DO UPDATE SET published = EXCLUDED.published",
+                    (aid, published, f"Стаття {aid}", f"ful{aid}",
+                     "Боларди біля зоопарку встановили."))
+            p = pp.prepare(cur, case_item(
+                320276, title="Встановити боларди біля зоопарку",
+                quote="Боларди таки встановлять", subject="зоопарк",
+                objects=[], promiser="Віталій Луков", deadline="2026-06-04"))
+            p["subject_entity_id"] = eid
+            cid, _ = pp.record(cur, {"id": 730001, "published": 1780000000,
+                                     "title_ua": "Стаття"}, p)
+            cur.execute("UPDATE commitments SET subject_entity_id = %s WHERE id = %s",
+                        (eid, cid))
+            # Обидві статті згадують ту саму картку
+            for aid in (730001, 730002):
+                cur.execute("INSERT INTO article_entities (article_id, entity_id) "
+                            "VALUES (%s, %s) ON CONFLICT DO NOTHING", (aid, eid))
+
+            cands = pp.fulfil_candidates(cur, 0)
+            arts = {c["article_id"] for c in cands}
+            check("кандидат — ПІЗНІША стаття про той самий об'єкт",
+                  730002 in arts, str(arts))
+            check("стаття, з якої обіцянку й записали, доказом не є",
+                  730001 not in arts, str(arts))
+
+            # medium — у чергу людині, статус не чіпаємо
+            pp.record_closure(cur, cid, 730002,
+                              {"state": "done", "confidence": "medium",
+                               "why": "пишуть, що встановили"}, applied=False)
+            check("невпевнена ознака лишає обіцянку відкритою",
+                  pp.get(cur, cid)["status"] == "expected")
+            check("вона ж дає фасет «схоже, виконано»",
+                  cid in pp.closure_ids(cur))
+            check("та сама стаття не судить обіцянку двічі",
+                  not pp.record_closure(cur, cid, 730002,
+                                        {"state": "done", "confidence": "high"}))
+            check("і в кандидати ця пара більше не повертається",
+                  730002 not in {c["article_id"] for c in pp.fulfil_candidates(cur, 0)})
+
+            # Рішення людини
+            got = pp.decide_closure(cur, pp.open_closures(cur)[0]["id"],
+                                    True, "Олег")
+            check("підтвердження людини закриває обіцянку",
+                  got and pp.get(cur, cid)["status"] == "done")
+            check("закрита виходить із фасета «схоже, виконано»",
+                  cid not in pp.closure_ids(cur))
+
+            # Відкат — головний запобіжник автоматичного рішення
+            pp.reopen(cur, cid, "Олег")
+            row = pp.get(cur, cid)
+            check("відкат повертає обіцянку в чергу",
+                  row["status"] == "expected" and not row.get("checked_at"),
+                  str(row["status"]))
+    finally:
+        conn.close()
+
+
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
     формулювання розійдуться з чатом за три тижні."""
@@ -1949,7 +2031,7 @@ def test_app_payload():
     keys = {f["key"] for f in q["facets"]}
     check("фасети з числами приїжджають усі", keys == {"all", "fresh", "mine",
           "overdue", "soon", "waiting", "stale", "noproof", "populism",
-          "closed"}, str(keys))
+          "mayclose", "closed"}, str(keys))
     check("лічильник «усе» збігається з довжиною черги",
           dict((f["key"], f["n"]) for f in q["facets"])["all"] >= q["total"],
           str(q["total"]))
@@ -2001,6 +2083,7 @@ def main():
     test_topic_stitching()
     test_judge_memory()
     test_resplit_ingest()
+    test_fulfil_detector()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")

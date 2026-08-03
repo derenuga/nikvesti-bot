@@ -120,6 +120,107 @@ _RULES_TOPIC = """Ти — редактор міського медіа. Пер�
 Кажи ТІЛЬКИ, чому дві назви про одне (або про різне)."""
 
 
+_FULFIL_TOOL = {
+    "name": "verdict",
+    "description": "Чи ця новина каже, що обіцянку виконали або зірвали.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "state": {
+                "type": "string",
+                "enum": ["done", "failed", "none"],
+                "description": "done — з тексту видно, що зроблено; failed — "
+                               "видно, що НЕ зроблено або скасовано; none — "
+                               "текст про це не каже",
+            },
+            "confidence": {
+                "type": "string",
+                "enum": ["high", "medium", "low"],
+                "description": "high — сказано прямо й однозначно; medium — "
+                               "випливає, але не сказано; low — здогад",
+            },
+            "why": {
+                "type": "string",
+                "description": "ОДНЕ коротке речення українською, до 100 "
+                               "символів, ЗІ СЛІВ НОВИНИ: що саме сталось.",
+            },
+        },
+        "required": ["state", "confidence", "why"],
+    },
+}
+
+_RULES_FULFIL = """Ти — редактор, що звіряє обіцянку влади з тим, що вийшло
+потім. Дам ОБІЦЯНКУ і пізнішу НОВИНУ про той самий об'єкт. Скажи, чи новина
+свідчить, що обіцянку виконано або зірвано.
+
+`done` — лише коли з тексту видно ЗРОБЛЕНЕ: «боларди встановили», «дорогу
+відкрили», «садок запрацював». Минулий час і доконаний вид.
+
+`failed` — коли видно, що не зроблено або більше не буде: «рішення скасували»,
+«з проєкту вийшли», «підрядник розірвав договір», «роботи не почались і
+фінансування зняли».
+
+`none` — усе інше, і його буде БІЛЬШІСТЬ:
+• новина просто ще раз обіцяє те саме («планують завершити до жовтня») — це
+  нова обіцянка, а не виконання;
+• почали, але не завершили («стартували роботи», «оголосили тендер»,
+  «виділили гроші») — обіцянка ще жива;
+• новина про сусідній об'єкт того самого типу;
+• про виконання каже той, хто обіцяв, без жодної перевірки — це заява, і
+  вона теж лише `medium`, ніколи не `high`.
+
+Головне: краще `none`, ніж помилкове `done`. Хибно закрита обіцянка зникає
+з черги редакції — тобто ми перестанемо перевіряти те, що, можливо, не
+зробили. Пропущене виконання коштує лише зайвого рядка в черзі.
+
+Пиши чистою українською, без росіянізмів, і НЕ додавай фактів, яких немає в
+тексті новини."""
+
+
+def _fulfil_block(promise, article):
+    out = ["ОБІЦЯНКА:", f"  {promise['title']}"]
+    if promise.get("owner_text"):
+        out.append(f"  обіцяв: {promise['owner_text']}")
+    if promise.get("deadline"):
+        out.append(f"  строк: {pp.fmt_date(promise['deadline'])}")
+    if promise.get("quote"):
+        out.append(f"  цитата: «{promise['quote']}»")
+    out += ["", "ПІЗНІША НОВИНА:", f"  заголовок: {article['title']}",
+            f"  текст: {article['text']}"]
+    return "\n".join(out)
+
+
+async def judge_fulfil(promise, article):
+    """Чи ця новина закриває обіцянку. None при збої — мовчання не рішення."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    prompt = (f"{_RULES_FULFIL}\n\n{_fulfil_block(promise, article)}\n\n"
+              f"Виклич інструмент verdict.")
+    try:
+        msg = await async_client.messages.create(
+            model=JUDGE_MODEL,
+            max_tokens=300,
+            thinking={"type": "disabled"},
+            tools=[_FULFIL_TOOL],
+            tool_choice={"type": "tool", "name": "verdict"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as e:
+        print(f"promise_judge (виконання): {type(e).__name__}: {e}")
+        return None
+    try:
+        _record_usage(JUDGE_MODEL, msg.usage)
+    except Exception:
+        pass
+    v = next((b_.input for b_ in msg.content if b_.type == "tool_use"), None)
+    if v and v.get("why"):
+        why = " ".join(str(v["why"]).split())
+        if len(why) > 140:
+            why = (why[:140].rsplit(" ", 1)[0] or why[:139]).rstrip(" ,.;:—-") + "…"
+        v["why"] = why
+    return v
+
+
 def _pair_block(mode, a, b):
     if mode == "topic":
         return (f"ТЕМА 1: {a['title']}\n"

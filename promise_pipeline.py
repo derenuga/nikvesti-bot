@@ -121,6 +121,26 @@ CREATE INDEX IF NOT EXISTS idx_topic_merges_run ON topic_merges (run);
 -- Те саме для пар ТЕМ. Окрема таблиця, а не спільна з `promise_pair_verdicts`:
 -- там ключ — id зобовʼязань, тут id тем, і послідовності в них різні, тож в
 -- одній таблиці числа тихо накладались би одне на одне.
+-- Знайдені ознаки ВИКОНАННЯ (або зриву). Окрема таблиця, а не поле в
+-- commitments, з двох причин: обіцянку могли «виконати» за двома різними
+-- новинами (і тоді доказів два, а не один), і рішення бота має бути
+-- відкатним — статус можна повернути, а знімок «чим доводив» лишається.
+CREATE TABLE IF NOT EXISTS promise_closures (
+    id            BIGSERIAL PRIMARY KEY,
+    commitment_id BIGINT NOT NULL,
+    article_id    BIGINT NOT NULL,
+    state         TEXT,          -- done | failed
+    confidence    TEXT,
+    why           TEXT,
+    applied       BOOLEAN DEFAULT FALSE,   -- статус уже поставлено ботом
+    decided_by    TEXT,          -- хто підтвердив/відхилив (людина)
+    decided       BIGINT,
+    created       BIGINT,
+    UNIQUE (commitment_id, article_id)
+);
+CREATE INDEX IF NOT EXISTS idx_promise_closures_open
+    ON promise_closures (decided) WHERE decided IS NULL;
+
 CREATE TABLE IF NOT EXISTS topic_pair_verdicts (
     a          BIGINT NOT NULL,
     b          BIGINT NOT NULL,
@@ -2511,3 +2531,117 @@ def topic_merge_runs(cur, limit=10):
                 "WHERE run IS NOT NULL GROUP BY run ORDER BY run DESC LIMIT %s",
                 (limit,))
     return [{"run": r[0], "n": r[1], "at": r[2]} for r in cur.fetchall()]
+
+
+# ---------- Ознаки виконання ----------
+#
+# Досі банк умів лише накопичуватись: із черги нічого не виходило само.
+# Обіцянку могли виконати, а вона й далі стояла простроченою — бо витяг ловить
+# заяви про МАЙБУТНЄ, а «боларди встановили» це констатація минулого, і в банк
+# вона не потрапляла взагалі.
+#
+# Пре-фільтр безкоштовний: беремо відкриті обіцянки, чий ПРЕДМЕТ (або об'єкт)
+# є карткою сутнісного шару, яка згадується у свіжій статті. Модель кличеться
+# лише там, де такий збіг уже є.
+
+def fulfil_candidates(cur, since, limit=200):
+    """Пари «свіжа стаття × відкрита обіцянка про той самий об'єкт».
+
+    Збіг рахується по КАРТЦІ сутності, а не по тексту: «боларди біля
+    зоопарку» і «обмежувальні стовпчики на Богоявленському» — різні рядки й
+    та сама картка. Пари, про які вже є запис у promise_closures, не
+    повертаються: одна стаття судить обіцянку раз.
+    """
+    cur.execute(
+        """
+        SELECT DISTINCT c.id, a.id, a.published
+        FROM commitments c
+        JOIN (
+            SELECT id AS eid FROM entities
+        ) e ON e.eid = c.subject_entity_id
+             OR e.eid IN (SELECT entity_id FROM commitment_objects o
+                          WHERE o.commitment_id = c.id)
+        JOIN article_entities ae ON ae.entity_id = e.eid
+        JOIN articles a ON a.id = ae.article_id
+        WHERE c.status = 'expected'
+          AND a.published >= %s
+          AND a.region = 1
+          -- Стаття, з якої обіцянку й записали, доказом виконання бути не може
+          AND NOT EXISTS (SELECT 1 FROM commitment_revisions r
+                          WHERE r.commitment_id = c.id AND r.article_id = a.id)
+          AND NOT EXISTS (SELECT 1 FROM promise_closures pc
+                          WHERE pc.commitment_id = c.id AND pc.article_id = a.id)
+        ORDER BY a.published DESC
+        LIMIT %s
+        """,
+        (int(since), int(limit)))
+    return [{"commitment_id": r[0], "article_id": r[1], "published": r[2]}
+            for r in cur.fetchall()]
+
+
+def record_closure(cur, commitment_id, article_id, verdict, applied=False):
+    cur.execute(
+        "INSERT INTO promise_closures (commitment_id, article_id, state, "
+        "  confidence, why, applied, created) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (commitment_id, article_id) DO NOTHING RETURNING id",
+        (int(commitment_id), int(article_id), verdict.get("state"),
+         verdict.get("confidence"), (verdict.get("why") or "")[:300],
+         bool(applied), int(time.time())))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def open_closures(cur, limit=100):
+    """Ознаки, які чекають рішення людини (не застосовані й не вирішені)."""
+    cur.execute(
+        "SELECT pc.id, pc.commitment_id, pc.article_id, pc.state, pc.why, "
+        "       c.title, c.deadline "
+        "FROM promise_closures pc JOIN commitments c ON c.id = pc.commitment_id "
+        "WHERE pc.decided IS NULL AND pc.applied IS FALSE "
+        "  AND c.status = 'expected' "
+        "ORDER BY pc.created DESC LIMIT %s", (limit,))
+    keys = ("id", "commitment_id", "article_id", "state", "why", "title",
+            "deadline")
+    return [dict(zip(keys, r)) for r in cur.fetchall()]
+
+
+def closure_ids(cur):
+    """id обіцянок, у яких є непідтверджена ознака виконання — для фасета."""
+    cur.execute("SELECT DISTINCT commitment_id FROM promise_closures "
+                "WHERE decided IS NULL AND applied IS FALSE")
+    return {r[0] for r in cur.fetchall()}
+
+
+def decide_closure(cur, closure_id, accept, who):
+    """Рішення людини по ознаці. Приймаємо — ставимо статус, ні — ховаємо."""
+    cur.execute("SELECT commitment_id, article_id, state FROM promise_closures "
+                "WHERE id = %s AND decided IS NULL", (int(closure_id),))
+    row = cur.fetchone()
+    if not row:
+        return None
+    cid, aid, state = row
+    cur.execute("UPDATE promise_closures SET decided = %s, decided_by = %s, "
+                "applied = %s WHERE id = %s",
+                (int(time.time()), who, bool(accept), int(closure_id)))
+    if accept:
+        mark_checked(cur, cid, who, outcome=state or "done",
+                     note=f"за матеріалом {aid}")
+    return {"commitment_id": cid, "article_id": aid, "state": state}
+
+
+def reopen(cur, commitment_id, who=None):
+    """Повернути обіцянку в чергу: статус назад у «чекаємо», ознаки знімаються.
+
+    Потрібне тому, що бот закриває САМ (рішення Олега 04.08), а будь-яке
+    автоматичне рішення мусить мати одну кнопку відкату — інакше помилка
+    ховає живу тему назавжди й мовчки.
+    """
+    cur.execute("UPDATE commitments SET status = 'expected', checked_at = NULL, "
+                "checked_by = NULL, check_note = NULL WHERE id = %s",
+                (int(commitment_id),))
+    ok = cur.rowcount > 0
+    cur.execute("UPDATE promise_closures SET decided = %s, decided_by = %s, "
+                "applied = FALSE WHERE commitment_id = %s AND decided IS NULL",
+                (int(time.time()), who or "відкат", int(commitment_id)))
+    return ok
