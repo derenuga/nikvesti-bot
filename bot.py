@@ -675,7 +675,16 @@ def main():
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.
-    app.run_polling(allowed_updates=["message", "channel_post", "message_reaction", "callback_query"])
+    #
+    # bootstrap_retries задаємо ЯВНО: у PTB 21.9 дефолт був -1 (нескінченні
+    # спроби), у 22.x став 0 — тобто мережевий чих на старті контейнера
+    # (Railway піднімає нас щодеплою) клав би процес одразу. Нескінченно
+    # ретраїти теж не варто: битий токен має падати голосно, а не висіти. Пʼять
+    # спроб переживають блимання мережі й не ховають справжню поломку.
+    app.run_polling(
+        allowed_updates=["message", "channel_post", "message_reaction", "callback_query"],
+        bootstrap_retries=5,
+    )
 
 if __name__ == "__main__":
     main()

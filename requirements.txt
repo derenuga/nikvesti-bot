@@ -1,4 +1,4 @@
-python-telegram-bot==21.9
+python-telegram-bot==22.8
 google-analytics-data==0.18.0
 APScheduler==3.10.4
 anthropic>=0.57,<1

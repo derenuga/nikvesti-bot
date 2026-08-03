@@ -5,7 +5,7 @@
 
 **Репозиторій:** github.com/derenuga/nikvesti-bot  
 **Хостинг:** Railway (проект `remarkable-stillness`)  
-**Стек:** Python, python-telegram-bot 21.9, APScheduler, BeautifulSoup, Google Analytics Data API, Google Search Console API, Anthropic Claude (tool use), matplotlib  
+**Стек:** Python, python-telegram-bot 22.8, APScheduler, BeautifulSoup, Google Analytics Data API, Google Search Console API, Anthropic Claude (tool use), matplotlib  
 **Бот:** @mykvisti_bot  
 **Чат редакції:** -1001857099475  
 **Канал "🦊 Микита винюхав":** -1004322862192 (тендери + документи влади + правоохоронці)
@@ -437,7 +437,7 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
 | [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) | залишкові деталі, яким немає модульного дока (навмисна поведінка ранкового повідомлення, TG-id Сергія). Копію довідки й нумерований беклог звідси прибрано 02.08 — вони застаріли й брехали |
 | [`docs/LONG_TERM_VISION.md`](docs/LONG_TERM_VISION.md) | стратегічні напрямки: підписки, власний сервер, AI-доступ до архіву. Нічого звідси не кодити без явного «кодь» |
 | [`docs/MINI_APP_REDESIGN_PLAN.md`](docs/MINI_APP_REDESIGN_PLAN.md) | хвилі робіт і беклог Mini App «Команда» |
-| [`docs/PTB_UPGRADE_PLAN.md`](docs/PTB_UPGRADE_PLAN.md) | оновлення python-telegram-bot 21.9 → 22.8 і Rich Messages (структуровані пости Telegram): заміряна поверхня використання PTB, звірка ламальних змін 22.x із нашим кодом, готовий промт для окремої сесії. Головне звідти — оновлення САМЕ ПО СОБІ Rich Messages не дає: PTB 22.8 зупинився на Bot API 10.0, а Rich Messages це 10.1/10.2 |
+| [`docs/PTB_UPGRADE_PLAN.md`](docs/PTB_UPGRADE_PLAN.md) | оновлення python-telegram-bot 21.9 → **22.8 (зроблено 03.08)** і Rich Messages (структуровані пости Telegram): заміряна поверхня використання PTB, звірка ламальних змін 22.x із нашим кодом, звіт про саме оновлення (що зачепило нас — тихий дефолт `bootstrap_retries`) і що лишається на майбутнє (`PTB_TIMEDELTA`). Головне звідти — оновлення САМЕ ПО СОБІ Rich Messages не дає: PTB 22.8 зупинився на Bot API 10.0, а Rich Messages це 10.1/10.2 |
 | [`docs/COMPENSATION_ADVISOR.md`](docs/COMPENSATION_ADVISOR.md) | порадник щодо зарплат і премій — задум із дослідженням, НЕ в розробці |
 | [`docs/ARCHIVE_INTELLIGENCE.md`](docs/ARCHIVE_INTELLIGENCE.md), [`docs/ENTITY_LAYER_PLAN.md`](docs/ENTITY_LAYER_PLAN.md) | дорожня карта інституційної памʼяті й сутнісного шару |
 | [`docs/ENTITY_MERGE_PLAN.md`](docs/ENTITY_MERGE_PLAN.md) | злиття дублів сутностей і зведення ролей до канону: кроки 1–2 (замір `/entity_scale` + дедуп ролей з кнопками) зроблені 02.08, детектор карток/черга/суддя чекають рішення Олега за числами заміру |
