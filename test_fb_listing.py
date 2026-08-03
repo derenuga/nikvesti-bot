@@ -24,7 +24,8 @@ Facebook мовчки викидає елемент зі списку, коли 
 import os
 
 from handlers.stat import (
-    POST_LIST_FIELDS, _clean_url, _post_matches_article, get_fb_stats,
+    POST_LIST_FIELDS, _clean_url, _parse_post_insights, _post_matches_article,
+    get_fb_stats,
 )
 from handlers.helpers import extract_article_id
 
@@ -57,6 +58,17 @@ REAL_POST = {
 
 HEAVY = ("reactions", "comments.summary", "shares")
 
+# Відповідь /insights того самого поста (Graph API, 03.08.2026). Поля об'єкта
+# на ньому віддають (#100) «Object does not exist, cannot be loaded due to
+# missing permission…» — тому метрики беруться звідси; в інтерфейсі під постом
+# видно 15 реакцій, 1 коментар, 1 поширення
+REAL_INSIGHTS = {"data": [
+    {"name": "post_reactions_by_type_total", "period": "lifetime",
+     "values": [{"value": {"like": 5, "sorry": 10}}]},
+    {"name": "post_activity_by_action_type", "period": "lifetime",
+     "values": [{"value": {"share": 1, "like": 15, "comment": 1}}]},
+]}
+
 
 def main():
     failed = 0
@@ -73,6 +85,15 @@ def main():
     ok = _post_matches_article(REAL_POST, clean, article_id)
     failed += 0 if ok else 1
     print(f"{'✅' if ok else '❌'} реальний пост 1710649447730196 збігається зі статтею {article_id}")
+
+    # 3. Метрики з insights розбираються в ті самі числа, що видно під постом
+    metrics = _parse_post_insights(REAL_INSIGHTS)
+    for name, key, expected in (("реакції", "reactions", 15),
+                                ("коментарі", "comments", 1),
+                                ("шери", "shares", 1)):
+        ok = metrics[key] == expected
+        failed += 0 if ok else 1
+        print(f"{'✅' if ok else '❌'} {name} з insights: {metrics[key]} (мало бути {expected})")
 
     if os.environ.get("FACEBOOK_PAGE_TOKEN"):
         print("\n=== живий прогін get_fb_stats ===")
