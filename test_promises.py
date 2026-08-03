@@ -1337,6 +1337,16 @@ def test_author_filter():
     finally:
         conn.close()
 
+    # Число на двері журналістки: без нього фасет «З моїх новин» існує, але
+    # ніхто його не відкриває — двері без числа не відкривають.
+    from handlers import promise_app as pa
+    mine = pa.mine_count(777)
+    check("двері журналістки отримують ЧИСЛО її обіцянок",
+          mine["total"] == 1, str(mine))
+    check("і окремо скільки з них прострочені", "overdue" in mine, str(mine))
+    check("без резолву автора двері мовчать, а не падають",
+          pa.mine_count(None) == {"total": 0, "overdue": 0})
+
 
 def test_fresh_facet():
     """«Нові» — сортування за ДАТОЮ ВИЯВЛЕННЯ, а не за терміновістю.
