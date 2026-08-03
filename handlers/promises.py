@@ -2979,3 +2979,164 @@ def _scan_report(month):
             f"<i>Саме це число вирішує, чи вмикати фільтр на роках.</i>")
     lines.append("\nДивитись: /promises")
     return "\n".join(lines)
+
+
+# ---------- /promise_topics ----------
+#
+# Замір 03.08 (Олег прогнав /nora_sql): 919 зобов'язань дали 833 теми. Те, що
+# згорнулось, згорнулось правильно, але охоплення мізерне — `_attach_topic`
+# вимагає ТОЧНОГО збігу рядка предмета, а модель формулює його щоразу інакше.
+# У тому ж вимірі це видно прямо: «проєкт „Безпечне місто"» і «система
+# відеоспостереження „Безпечне місто"» — дві теми на одну справу.
+#
+# Чому тут можна нечітко, хоча зі злиттям обіцянок було не можна: об'єднання
+# тем нічого не руйнує. Зобов'язання лишаються собою з усіма цитатами, зміна
+# лише в тому, під яким рядком черги вони стоять. Помилка видима й відкатна
+# (журнал topic_merges, /promise_topics_undo).
+
+async def promise_topics_handler(update, context):
+    """/promise_topics — теми, які схоже на одну справу.
+
+    Число в чат, ПОВНИЙ список файлом (десять пар на екран означало б десять
+    заходів), об'єднання — по кнопці. Той самий шлях, що /roles_audit і
+    /entity_junk: бот рахує, людина дивиться очима, і аж тоді кнопка.
+    """
+    if not _allowed(update):
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Нора не налаштована.")
+        return
+    msg = await update.message.reply_text("🦊 Дивлюсь теми…")
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(DISTINCT topic_id) FROM commitments "
+                            "WHERE status = 'expected' AND topic_id IS NOT NULL")
+                topics = cur.fetchone()[0]
+                cur.execute("SELECT count(*) FROM commitments WHERE status = 'expected'")
+                total = cur.fetchone()[0]
+                return topics, total, pp.topic_candidates(cur)
+        finally:
+            conn.close()
+
+    try:
+        topics, total, pairs = await asyncio.to_thread(run)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не порахувалось: {type(e).__name__}: {e}")
+        return
+    if not pairs:
+        await msg.edit_text(
+            f"🦊 Тем {topics} на {total} зобов'язань. Пар, які схоже на одну "
+            f"справу, не видно.")
+        return
+
+    lines = ["# Кандидати на об'єднання тем. Кожен рядок — дві теми, які схоже",
+             "# на одну справу. Підстава — спільна назва в лапках, спільна пара",
+             "# сусідніх слів або два спільні значущі слова.",
+             "#",
+             "# Зобов'язання при цьому НЕ зливаються: у них лишаються свої",
+             "# цитати й лінки, міняється лише рядок черги, під яким вони стоять.",
+             ""]
+    for p in pairs:
+        lines += [f"[{p['reason']}]",
+                  f"  лишиться: {p['keep_title']}  ({p['keep_n']})",
+                  f"  приєднаю: {p['drop_title']}  ({p['drop_n']})", ""]
+    payload = "\n".join(lines).encode("utf-8")
+    await msg.delete()
+    await update.message.reply_document(
+        document=BytesIO(payload), filename="promise_topics.txt",
+        caption=(f"🦊 Тем <b>{topics}</b> на {total} зобов'язань.\n"
+                 f"Схоже на одну справу: <b>{len(pairs)}</b> "
+                 f"{pp.plural(len(pairs), 'пара', 'пари', 'пар')} — після "
+                 f"об'єднання тем стане ~{topics - len(pairs)}.\n\n"
+                 f"Подивись файл. Об'єднання нічого не видаляє й відкатне."),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+            f"Об'єднати {len(pairs)}", callback_data="ptp:go")]]))
+
+
+async def promise_topics_callback(update, context):
+    q = update.callback_query
+    if not _allowed(update):
+        await q.answer("Не для цього чату", show_alert=True)
+        return
+    await q.answer()
+    await q.edit_message_caption("🦊 Об'єдную…")
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                run_id = pp.next_run(cur)
+                pairs = pp.topic_candidates(cur)
+                moved = 0
+                for p in pairs:
+                    moved += pp.merge_topics(cur, p["keep"], p["drop"], run=run_id)
+            conn.commit()
+            return len(pairs), moved, run_id
+        finally:
+            conn.close()
+
+    try:
+        n, moved, run_id = await asyncio.to_thread(run)
+    except Exception as e:
+        await q.edit_message_caption(f"❌ Не вийшло: {type(e).__name__}: {e}")
+        return
+    await q.edit_message_caption(
+        f"🤝 Об'єднав {n} {pp.plural(n, 'пару', 'пари', 'пар')} тем, "
+        f"переїхало {moved} {pp.plural(moved, 'зобовʼязання', 'зобовʼязання', 'зобовʼязань')}.\n"
+        f"Черга стала коротшою на {n} {pp.plural(n, 'рядок', 'рядки', 'рядків')}.\n\n"
+        f"Відкат усього прогону: <code>/promise_topics_undo {run_id}</code>",
+        parse_mode="HTML")
+
+
+async def promise_topics_undo_handler(update, context):
+    """/promise_topics_undo [прогін] — розчепити об'єднані теми."""
+    if not _allowed(update):
+        return
+    args = context.args or []
+
+    def runs():
+        conn = ep.connect()
+        try:
+            conn.autocommit = True
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                return pp.topic_merge_runs(cur)
+        finally:
+            conn.close()
+
+    if not args or not args[0].isdigit():
+        got = await asyncio.to_thread(runs)
+        if not got:
+            await update.message.reply_text("🦊 Об'єднань тем не було.")
+            return
+        lines = ["🦊 <b>Прогони об'єднання тем</b>", ""]
+        for r in got:
+            lines.append(f"• <code>{r['run']}</code> — {r['n']} "
+                         f"{pp.plural(r['n'], 'зобовʼязання', 'зобовʼязання', 'зобовʼязань')}"
+                         f", {pp.fmt_date(r['at'])}")
+        lines.append("\n<i>Відкат: /promise_topics_undo &lt;прогін&gt;</i>")
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        return
+
+    def undo():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                n = pp.topic_merge_undo(cur, int(args[0]))
+            conn.commit()
+            return n
+        finally:
+            conn.close()
+
+    n = await asyncio.to_thread(undo)
+    await update.message.reply_text(
+        f"↩️ Повернув {n} {pp.plural(n, 'зобовʼязання', 'зобовʼязання', 'зобовʼязань')} "
+        f"під свої теми." if n else "🦊 Такого прогону немає.")

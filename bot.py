@@ -76,6 +76,8 @@ from handlers.promises import (
     promise_export_handler, promises_fix_callback,
     promise_notdupe_handler, promise_glitches_handler,
     promise_glitches_callback, promise_vague_handler,
+    promise_topics_handler, promise_topics_callback,
+    promise_topics_undo_handler,
 )
 from handlers.promise_reminders import (promise_remind_handler,
                                         promise_remind_callback)
@@ -550,6 +552,8 @@ def main():
     app.add_handler(CommandHandler("promise_resume", promise_resume_handler))
     app.add_handler(CommandHandler("promise_status", promise_status_handler))
     app.add_handler(CommandHandler("promise_remind", promise_remind_handler))
+    app.add_handler(CommandHandler("promise_topics", promise_topics_handler))
+    app.add_handler(CommandHandler("promise_topics_undo", promise_topics_undo_handler))
     app.add_handler(CommandHandler("promise_increment_on", promise_increment_on_handler))
     app.add_handler(CommandHandler("promise_increment_off", promise_increment_off_handler))
     app.add_handler(CommandHandler("promise_checked", promise_checked_handler))
@@ -669,6 +673,7 @@ def main():
     app.add_handler(CallbackQueryHandler(entity_org_forms_callback, pattern="^ejf:"))
     app.add_handler(CallbackQueryHandler(cards_fix_callback, pattern="^cfx:"))
     app.add_handler(CallbackQueryHandler(promise_remind_callback, pattern="^prm:"))
+    app.add_handler(CallbackQueryHandler(promise_topics_callback, pattern="^ptp:"))
     app.add_handler(CallbackQueryHandler(promise_scan_callback, pattern="^psc:"))
     app.add_handler(CallbackQueryHandler(promise_prune_callback, pattern="^ppr:"))
     app.add_handler(CallbackQueryHandler(promise_prune_who_callback, pattern="^ppw:"))

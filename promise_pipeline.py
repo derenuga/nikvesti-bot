@@ -100,6 +100,20 @@ CREATE TABLE IF NOT EXISTS topics (
 );
 CREATE INDEX IF NOT EXISTS idx_topics_entities ON topics USING gin (entity_ids);
 
+-- Журнал об'єднання ТЕМ. Саме об'єднання нічого не руйнує (зобов'язання
+-- лишаються собою з усіма цитатами, міняється лише рядок черги, під яким
+-- вони стоять), але без знімка «під якою темою це було» розчепити помилкове
+-- об'єднання довелося б руками по одному запису.
+CREATE TABLE IF NOT EXISTS topic_merges (
+    id            BIGSERIAL PRIMARY KEY,
+    run           BIGINT,
+    commitment_id BIGINT,
+    from_topic    BIGINT,
+    to_topic      BIGINT,
+    created       BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_topic_merges_run ON topic_merges (run);
+
 CREATE TABLE IF NOT EXISTS commitments (
     id                    BIGSERIAL PRIMARY KEY,
     topic_id              BIGINT REFERENCES topics (id) ON DELETE SET NULL,
@@ -967,6 +981,28 @@ def _attach_topic(cur, prepared, commitment_id=None, existing_topic=None):
                     "  last_event = %s WHERE id = %s", (eid, now, row[0]))
             return row[0]
     title = (prepared.get("subject") or prepared.get("title") or "").strip()
+    # НЕЧІТКО, перш ніж заводити нову. Точний збіг ключа дав охоплення 86 із
+    # 919 (замір 03.08): модель формулює предмет щоразу трохи інакше, і
+    # «проєкт „Безпечне місто"» не зустрічається з «системою відеоспостереження
+    # „Безпечне місто"» ніколи. Підстава та сама, що в /promise_topics —
+    # спільна назва в лапках, спільна пара сусідніх слів або два спільні
+    # значущі слова, — тож ремонт накопиченого і профілактика нового це ОДИН
+    # код і розійтись вони не можуть.
+    if title:
+        cur.execute(
+            "SELECT id, title FROM topics WHERE title IS NOT NULL "
+            "ORDER BY last_event DESC NULLS LAST LIMIT 400")
+        for tid, other in cur.fetchall():
+            if topic_pair_reason(title, other):
+                cur.execute(
+                    "UPDATE topics SET last_event = %s"
+                    + (", entity_ids = (SELECT coalesce(array_agg(DISTINCT x), '{}') "
+                       "   FROM unnest(entity_ids || %s::bigint) x)" if eid else "")
+                    + (", subject_keys = (SELECT coalesce(array_agg(DISTINCT y), '{}') "
+                       "   FROM unnest(subject_keys || %s::text) y)" if key else "")
+                    + " WHERE id = %s",
+                    tuple([now] + ([eid] if eid else []) + ([key] if key else []) + [tid]))
+                return tid
     cur.execute(
         "INSERT INTO topics (title, entity_ids, subject_keys, status, opened, last_event) "
         "VALUES (%s, %s, %s, 'open', %s, %s) RETURNING id",
@@ -2095,3 +2131,190 @@ def drop_article(cur, article_id):
             refresh(cur, cid)
     cur.execute("DELETE FROM promise_attempts WHERE article_id = %s", (article_id,))
     return {"touched": touched, "removed": orphans}
+
+
+# ---------- Об'єднання ТЕМ ----------
+#
+# Замір 03.08: 919 зобов'язань дали 833 теми, тобто згорнулось 86. Те, що
+# згорнулось, згорнулось правильно («Вектор Гідності» 8, «гімназія №2» 3) —
+# у механізму просто мізерне охоплення, бо `_attach_topic` вимагає ТОЧНОГО
+# збігу рядка предмета. У тому ж замірі це видно прямо:
+#
+#   проєкт «Безпечне місто»                       n=3
+#   система відеоспостереження «Безпечне місто»   n=3
+#
+# Одна справа, дві теми, і черга показує її двома рядками.
+#
+# Чому тут можна нечітко, хоча зі злиттям обіцянок було не можна: об'єднання
+# тем НІЧОГО НЕ РУЙНУЄ. Зобов'язання лишаються собою з усіма цитатами й
+# лінками, міняється лише рядок черги, під яким вони стоять. Помилка видима
+# (у темі опиниться чуже) і відкатна (журнал `topic_merges`), тоді як
+# помилкове злиття карток губить запис.
+
+# Слова, які трапляються в кожній другій назві предмета й не можуть бути
+# підставою для зшивання: за ними «ремонт дороги» злипнеться з «ремонтом
+# ліфта».
+_TOPIC_STOP = {
+    "миколаїв", "миколаєва", "миколаєві", "миколаївський", "миколаївська",
+    "миколаївської", "миколаївщини", "область", "області", "обласний",
+    "обласна", "місто", "міста", "місті", "міський", "міська", "міської",
+    "міськради", "міськрада", "рада", "ради", "громада", "громади", "район",
+    "району", "районі", "вулиця", "вулиці", "проєкт", "проект", "проєкту",
+    "система", "системи", "робота", "роботи", "робіт", "питання", "справа",
+    "будинок", "будинки", "будинків", "заклад", "закладу", "установа",
+    "комунальний", "комунальна", "комунальне", "департамент", "управління",
+    "виділення", "надання", "проведення", "створення", "утримання",
+}
+
+
+def _topic_words(title):
+    t = (title or "").lower().replace("’", "'")
+    t = re.sub(r"№\s*(\d)", r"№\1", t)
+    # Однозначні числа теж слова: «вулиця 6 Слобідська» і «вулиця 8
+    # Слобідська» — різні вулиці, і без цифри вони злипаються.
+    return re.findall(r"[\w'\-№]+", re.sub(r"[«»\"„“]", " ", t), flags=re.UNICODE)
+
+
+def _topic_tokens(title):
+    """Значущі слова назви теми: без стоп-слів і без коротких хвостів."""
+    quoted = re.findall(r"[«\"„]([^»\"“]{3,60})[»\"“]", (title or "").lower())
+    words = _topic_words(title)
+    out = {w for w in words if len(w) >= 4 and w not in _TOPIC_STOP}
+    out |= {w for w in words if w.startswith("№")}
+    out |= {q.strip() for q in quoted}
+    return out
+
+
+def _topic_bigrams(title):
+    """Пари сусідніх слів. Потрібні тому, що ОДНЕ спільне слово нічого не
+    доводить («ремонт» є всюди), а «модульні будинки» — уже справа. При цьому
+    пара, зібрана з двох стоп-слів («міська рада»), підставою бути не може."""
+    def ok(x):
+        # Номер і число несуть найбільше сенсу («гімназія №2»), тому короткість
+        # їх не дискваліфікує — на відміну від прийменників.
+        return len(x) >= 3 or x.startswith("№") or x.isdigit()
+
+    w = _topic_words(title)
+    return {f"{a} {b}" for a, b in zip(w, w[1:])
+            if ok(a) and ok(b)
+            and not (a in _TOPIC_STOP and b in _TOPIC_STOP)}
+
+
+def topic_pair_reason(ta, tb):
+    """Чому дві теми — одна справа. None, якщо підстави немає.
+
+    Підставою є або спільна НАЗВА В ЛАПКАХ («Безпечне місто» не трапляється
+    двічі випадково), або спільна пара сусідніх слів («модульні будинки»),
+    або два спільні значущі слова.
+
+    Чого підставою НЕ Є — самого номера: «гімназія №2» і «ліцей №2» це два
+    різні заклади, і на цьому правило схибило на першому ж прогоні.
+
+    ВІДОМА МЕЖА: відмінків правило не знає, тож «дорога на Намиві» і «ремонт
+    дороги на Намиві» лишаються двома темами. Це свідомо: стемінг української
+    коротким префіксом злипає «водопостачання» з «водопроводом», а пропущена
+    пара коштує зайвого рядка черги, тоді як хибна — ховає чужу справу під
+    чужою назвою. Недобране добирає людина очима у файлі /promise_topics.
+    """
+    a, b = _topic_tokens(ta), _topic_tokens(tb)
+    if not a or not b:
+        return None
+    quoted_a = {c for c in a if " " in c}
+    quoted_common = quoted_a & b
+    if quoted_common:
+        return " · ".join(sorted(quoted_common)[:3])
+    bigrams = _topic_bigrams(ta) & _topic_bigrams(tb)
+    if bigrams:
+        return " · ".join(sorted(bigrams)[:3])
+    common = {c for c in (a & b) if not c.startswith("№")}
+    if len(common) >= 2:
+        return " · ".join(sorted(common)[:3])
+    return None
+
+
+def topic_candidates(cur, limit=400):
+    """Пари тем, які схоже на одну справу. Read-only, нічого не міняє."""
+    cur.execute(
+        "SELECT t.id, t.title, count(c.id) AS n "
+        "FROM topics t JOIN commitments c ON c.topic_id = t.id "
+        "WHERE c.status = 'expected' "
+        "GROUP BY t.id, t.title HAVING coalesce(t.title, '') <> '' "
+        "ORDER BY count(c.id) DESC, t.id")
+    rows = [{"id": r[0], "title": r[1], "n": r[2]} for r in cur.fetchall()]
+    out, taken = [], set()
+    for i, a in enumerate(rows):
+        if a["id"] in taken:
+            continue
+        for b in rows[i + 1:]:
+            if b["id"] in taken:
+                continue
+            reason = topic_pair_reason(a["title"], b["title"])
+            if not reason:
+                continue
+            out.append({"keep": a["id"], "drop": b["id"],
+                        "keep_title": a["title"], "drop_title": b["title"],
+                        "keep_n": a["n"], "drop_n": b["n"], "reason": reason})
+            taken.add(b["id"])
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def merge_topics(cur, keep_id, drop_id, run=None):
+    """Перевести зобов'язання другої теми в першу. Зі знімком у журнал."""
+    keep_id, drop_id = int(keep_id), int(drop_id)
+    if keep_id == drop_id:
+        return 0
+    now = int(time.time())
+    cur.execute("SELECT id FROM commitments WHERE topic_id = %s", (drop_id,))
+    ids = [r[0] for r in cur.fetchall()]
+    for cid in ids:
+        cur.execute(
+            "INSERT INTO topic_merges (run, commitment_id, from_topic, to_topic, "
+            "created) VALUES (%s, %s, %s, %s, %s)",
+            (run, cid, drop_id, keep_id, now))
+    cur.execute("UPDATE commitments SET topic_id = %s WHERE topic_id = %s",
+                (keep_id, drop_id))
+    # Ключі й картки переїжджають, щоб НАСТУПНЕ зобов'язання чіплялось до
+    # об'єднаної теми, а не відроджувало прибрану.
+    cur.execute(
+        "UPDATE topics SET "
+        "  entity_ids = (SELECT coalesce(array_agg(DISTINCT x), '{}') FROM unnest("
+        "     entity_ids || (SELECT entity_ids FROM topics WHERE id = %s)) x), "
+        "  subject_keys = (SELECT coalesce(array_agg(DISTINCT y), '{}') FROM unnest("
+        "     subject_keys || (SELECT subject_keys FROM topics WHERE id = %s)) y), "
+        "  last_event = %s "
+        "WHERE id = %s", (drop_id, drop_id, now, keep_id))
+    cur.execute("DELETE FROM topics WHERE id = %s", (drop_id,))
+    return len(ids)
+
+
+def topic_merge_undo(cur, run):
+    """Розчепити прогін: кожне зобов'язання повертається під свою тему."""
+    cur.execute("SELECT commitment_id, from_topic FROM topic_merges "
+                "WHERE run = %s ORDER BY id DESC", (int(run),))
+    rows = cur.fetchall()
+    now = int(time.time())
+    back = 0
+    for cid, from_topic in rows:
+        cur.execute("SELECT 1 FROM topics WHERE id = %s", (from_topic,))
+        if not cur.fetchone():
+            # Тему видалили при об'єднанні — відновлюємо з назвою зобов'язання
+            cur.execute("SELECT subject, title FROM commitments WHERE id = %s", (cid,))
+            row = cur.fetchone() or ("", "")
+            cur.execute(
+                "INSERT INTO topics (id, title, status, opened, last_event) "
+                "VALUES (%s, %s, 'open', %s, %s) ON CONFLICT (id) DO NOTHING",
+                (from_topic, (row[0] or row[1] or "")[:200], now, now))
+        cur.execute("UPDATE commitments SET topic_id = %s WHERE id = %s",
+                    (from_topic, cid))
+        back += 1
+    cur.execute("DELETE FROM topic_merges WHERE run = %s", (int(run),))
+    return back
+
+
+def topic_merge_runs(cur, limit=10):
+    cur.execute("SELECT run, count(*), min(created) FROM topic_merges "
+                "WHERE run IS NOT NULL GROUP BY run ORDER BY run DESC LIMIT %s",
+                (limit,))
+    return [{"run": r[0], "n": r[1], "at": r[2]} for r in cur.fetchall()]

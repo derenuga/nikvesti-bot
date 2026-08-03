@@ -1669,6 +1669,98 @@ def test_topic_grouping():
         conn.close()
 
 
+def test_topic_stitching():
+    """Зшивання тем НЕЧІТКЕ — і саме там, де точний збіг мовчав.
+
+    Замір Олега 03.08 (/nora_sql): 919 зобов'язань дали 833 теми. Те, що
+    згорнулось, згорнулось правильно, але охоплення мізерне — `_attach_topic`
+    вимагав ТОЧНОГО збігу рядка предмета. У тому ж вимірі видно й приклад:
+    «проєкт „Безпечне місто"» і «система відеоспостереження „Безпечне місто"».
+
+    Правило перевіряється на РЕАЛЬНИХ назвах тем із того заміру, а не на
+    вигаданих: воно вже схибило двічі (злипало «гімназія №2» з «ліцей №2» і
+    не бачило «модульні будинки»), і кожен випадок тут закріплений.
+    """
+    yes = [
+        ("проєкт «Безпечне місто»", "система відеоспостереження «Безпечне місто»"),
+        ("виділення землі під модульні будинки на пр. Богоявленському",
+         "модульні будинки для внутрішньо переміщених осіб"),
+        ("система водопостачання Вознесенська", "водопостачання Вознесенська"),
+        ("комунальна установа «Вектор Гідності»", "КУ «Вектор Гідності»"),
+        ("гімназія №2", "гімназія №2 у Миколаєві"),
+        ("вулиця 6 Слобідська", "6 Слобідська"),
+    ]
+    no = [
+        # Той самий номер у різних закладів — не підстава. На цьому правило
+        # схибило першою ж версією.
+        ("гімназія №2", "ліцей №2"),
+        ("вулиця 6 Слобідська", "вулиця 8 Слобідська"),
+        ("ремонт дороги на Намиві", "ремонт ліфта у лікарні"),
+        ("Південноукраїнська міська багатопрофільна лікарня",
+         "Миколаївська обласна лікарня"),
+        ("незаконна огорожа за зупинкою на Соборній", "незаконні тимчасові споруди"),
+        ("укриття у Миколаєві", "укриття в школах Миколаєва"),
+    ]
+    bad = [(a, b) for a, b in yes if not pp.topic_pair_reason(a, b)]
+    check("одна справа під двома назвами зшивається", not bad, str(bad))
+    wrong = [(a, b, pp.topic_pair_reason(a, b)) for a, b in no
+             if pp.topic_pair_reason(a, b)]
+    check("різні справи НЕ зшиваються", not wrong, str(wrong))
+
+    # Наскрізь: два записи з різними формулюваннями предмета мусять лягти в
+    # ОДНУ тему ще на вставці, без ремонту заднім числом.
+    conn = ep.connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            cur.execute("DELETE FROM topics")
+
+            def put(aid, title, quote, subject):
+                p = pp.prepare(cur, case_item(
+                    320276, title=title, quote=quote, subject=subject,
+                    objects=[], promiser="міськрада", deadline="2026-10-01"))
+                return pp.record(cur, {"id": aid, "published": 1780000000,
+                                       "title_ua": f"Стаття {aid}"}, p)[0]
+
+            a = put(710201, "Встановити камери", "Камери встановлять до жовтня",
+                    "проєкт «Безпечне місто»")
+            b = put(710202, "Підключити сервер", "Сервер підключать до жовтня",
+                    "система відеоспостереження «Безпечне місто»")
+            c = put(710203, "Полагодити дах", "Дах полагодять до жовтня",
+                    "школа №19")
+            cur.execute("SELECT topic_id FROM commitments WHERE id IN (%s,%s)", (a, b))
+            tids = {r[0] for r in cur.fetchall()}
+            check("різні формулювання предмета лягають в одну тему НА ВСТАВЦІ",
+                  len(tids) == 1, str(tids))
+            cur.execute("SELECT topic_id FROM commitments WHERE id = %s", (c,))
+            check("чужа справа лишається своєю темою",
+                  cur.fetchone()[0] not in tids)
+
+            # Ремонт накопиченого + відкат
+            # Друга тема з окремим зобов'язанням — так виглядає накопичене:
+            # обидві живі, обидві про одну справу, назви різні.
+            d = put(710204, "Замінити вікна", "Вікна замінять до жовтня",
+                    "дитсадок «Ромашка»")
+            cur.execute("UPDATE topics SET title = 'школа №19' "
+                        "WHERE id = (SELECT topic_id FROM commitments WHERE id = %s)",
+                        (c,))
+            cur.execute("UPDATE topics SET title = 'школа №19 у Корабельному' "
+                        "WHERE id = (SELECT topic_id FROM commitments WHERE id = %s)",
+                        (d,))
+            cands = pp.topic_candidates(cur)
+            check("ремонт накопиченого бачить ту саму пару", bool(cands), str(cands))
+            run = pp.next_run(cur)
+            moved = sum(pp.merge_topics(cur, p["keep"], p["drop"], run=run)
+                        for p in cands)
+            check("об'єднання переносить зобов'язання", moved >= 1, str(moved))
+            back = pp.topic_merge_undo(cur, run)
+            check("відкат повертає їх під свої теми", back == moved, f"{back}/{moved}")
+    finally:
+        conn.close()
+
+
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
     формулювання розійдуться з чатом за три тижні."""
@@ -1727,6 +1819,7 @@ def main():
     test_fresh_facet()
     test_reminders()
     test_topic_grouping()
+    test_topic_stitching()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")
