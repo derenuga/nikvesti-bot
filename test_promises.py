@@ -704,6 +704,63 @@ def test_scan_report_and_bounds():
           "Ціна пре-фільтра" in report, report[-200:])
 
 
+# ---------- 11. Авто-інкремент: банк росте сам ----------
+#
+# Ті самі пастки, що коштували сутнісному шару 403 статті (інцидент
+# 11.07–01.08): стаття, чий витяг упав, мусить лишатись у черзі, але не
+# крутитись вічно; підлога не пускає добір у територію ручного скану.
+
+def test_increment_queue():
+    from handlers import promises as ph
+
+    conn = ep.connect()
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM promise_attempts")
+        cur.execute("DELETE FROM sync_state WHERE key LIKE 'promise_incr%'")
+        # 700001 — нижче підлоги (територія ручного /promise_scan)
+        for aid, published in ((700001, 1690000000), (700002, 1790000000),
+                               (700003, 1790100000), (700004, 1790200000),
+                               (700005, 1790300000)):
+            cur.execute(
+                "INSERT INTO articles (id, published, status, title_ua, slug, "
+                "category, kind, text_ua) VALUES (%s,%s,1,%s,%s,'municipal','news',%s) "
+                "ON CONFLICT (id) DO UPDATE SET published = EXCLUDED.published",
+                (aid, published, f"Стаття {aid}", f"st-{aid}", "текст"))
+        # 700002 розібрано, 700003 упав один раз, 700004 вичерпав спроби
+        pp.mark_attempt(cur, 700002, marked=True, done=True, found=1)
+        pp.mark_attempt(cur, 700003, error="RateLimit", done=False)
+        for _ in range(pp.MAX_ATTEMPTS):
+            pp.mark_attempt(cur, 700004, error="битий JSON", done=False)
+    conn.close()
+
+    floor = 1790000000
+    ids = [r["id"] for r in ph._pending(floor, 10)]
+    check("стаття, чий витяг УПАВ, лишається в черзі", 700003 in ids, str(ids))
+    check("розібрана стаття в чергу не потрапляє", 700002 not in ids, str(ids))
+    check(f"стаття, що вичерпала {pp.MAX_ATTEMPTS} спроби, випадає з черги",
+          700004 not in ids, str(ids))
+    check("нижче підлоги інкремент не заглядає", 700001 not in ids, str(ids))
+    check("свіже береться першим", ids and ids[0] == 700005, str(ids))
+    check("лічильник черги збігається зі списком",
+          ph._pending(floor) == len(ids), f"{ph._pending(floor)} vs {len(ids)}")
+
+    # Підлога рахується з РОЗІБРАНОГО і закріплюється: повторний виклик не
+    # перераховує (інакше вона повзла б за кожним новим скану вглиб).
+    conn = ep.connect(); conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM sync_state WHERE key LIKE 'promise_incr%'")
+    conn.close()
+    first = ph._incr_floor()
+    check("підлога стає на початок уже розібраного", first == 1790000000, str(first))
+    conn = ep.connect(); conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("UPDATE articles SET published = 1600000000 WHERE id = 700002")
+    conn.close()
+    check("…і закріплюється, а не перераховується щоразу",
+          ph._incr_floor() == first, str(ph._incr_floor()))
+
+
 def main():
     setup()
     test_verifiability()
@@ -719,6 +776,7 @@ def main():
     test_dates()
     test_render()
     test_scan_report_and_bounds()
+    test_increment_queue()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")
     sys.exit(0 if ok == len(RESULTS) else 1)

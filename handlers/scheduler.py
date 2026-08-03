@@ -20,6 +20,7 @@ from handlers.fb_missing import check_fb_missing
 from handlers.archive_mirror import run_archive_sync
 from handlers.budget_snapshots import run_snapshot_check
 from handlers.entity_layer import sync_entities_incremental
+from handlers.promises import sync_promises_incremental
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
 from handlers.usage_report import send_daily_usage_report
@@ -298,6 +299,10 @@ def setup_scheduler(bot, last_channel_post_time=None):
     scheduler.add_job(run_archive_sync, "cron", minute=50, args=[bot])
     # Інкремент сутнісного шару — :55, після синку дзеркала (опт-ін /entity_increment_on)
     scheduler.add_job(sync_entities_incremental, "cron", minute=55, args=[bot])
+    # Інкремент банку тем — :25, тобто через 30 хв після сутностей попередньої
+    # години: витяг обіцянок резолвить предмет і обіцяльника в картки, і без
+    # них ланцюг із темою зшиваються гірше (опт-ін /promise_increment_on)
+    scheduler.add_job(sync_promises_incremental, "cron", minute=25, args=[bot])
     # Місячні снапшоти бюджету зі сторінки міськради — щодня об 11:20
     # (публікують на початку місяця нерегулярно; перевірка дешева, тиха,
     # коли нового немає; тихо пропускається без BOT_DATABASE_URL)

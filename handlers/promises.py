@@ -1037,6 +1037,249 @@ async def promise_test_handler(update, context):
                         parse_mode="HTML", disable_web_page_preview=True)
 
 
+# ---------- Авто-інкремент: банк росте сам ----------
+#
+# Рішення Олега 03.08: ретроспектива на роки не потрібна. Досить прогнати
+# місяць-другий назад, а далі банк має наповнюватись сам зі свіжого потоку
+# нори — так само, як це робить сутнісний шар.
+#
+# Три речі взяті звідти без змін, бо кожна вже оплачена інцидентом:
+#   • відбір за ФАКТОМ відсутності розбору, а не курсором — стаття, чий витяг
+#     упав, повертається наступної години (курсорна схема втратила 403 статті
+#     і мовчала три тижні);
+#   • стеля спроб, щоб одна бита нода не крутилась вічно (pp.MAX_ATTEMPTS);
+#   • підлога, нижче якої не заглядаємо: там територія ручного /promise_scan.
+#
+# А ось пре-фільтр за маркерами тут СВІДОМО ВИМКНЕНО. Замір 03.08 показав, що
+# він пропускає 67% статей, тобто на денному потоці (~40 матеріалів) економить
+# близько двох центів — і за ці два центи може назавжди втратити обіцянку без
+# слова «обіцяв» (§2.5). Побічний виграш: `promise_attempts.marked` усе одно
+# заповнюється, тож ціна фільтра тепер міряється САМА на живому потоці, без
+# окремого платного прогону.
+
+INCR_KEY = "promise_incr_on"        # наявність ключа = інкремент увімкнено
+INCR_FLOOR_KEY = "promise_incr_floor"   # unix: глибше не заглядаємо
+INCR_MAX_PER_RUN = 60               # ~40 нових матеріалів на добу, запас удвічі
+
+PENDING_SQL = """
+SELECT a.id, a.published, a.title_ua, a.title_ru, a.text_ua, a.text_ru
+FROM articles a
+LEFT JOIN promise_attempts t ON t.article_id = a.id
+WHERE a.published >= %s
+  AND coalesce(t.done, false) = false
+  AND coalesce(t.attempts, 0) < %s
+ORDER BY a.published DESC
+LIMIT %s
+"""
+
+PENDING_COUNT_SQL = """
+SELECT count(*) AS n
+FROM articles a
+LEFT JOIN promise_attempts t ON t.article_id = a.id
+WHERE a.published >= %s
+  AND coalesce(t.done, false) = false
+  AND coalesce(t.attempts, 0) < %s
+"""
+
+
+def _incr_floor():
+    """Підлога добору. Береться раз: початок уже розібраного діапазону — усе,
+    що давніше, лишається територією ручного /promise_scan. Банк порожній —
+    стаємо на «відсьогодні», щоб інкремент не поліз у весь архів."""
+    raw = bot_db.get_state(INCR_FLOOR_KEY)
+    if raw is not None:
+        return int(raw)
+    rows = bot_db.query(
+        "SELECT min(a.published) AS m FROM promise_attempts t "
+        "JOIN articles a ON a.id = t.article_id")
+    floor = (rows[0]["m"] if rows else None) or int(time.time())
+    bot_db.set_state(INCR_FLOOR_KEY, floor)
+    return floor
+
+
+def _pending(floor, limit=None):
+    if limit is None:
+        rows = bot_db.query(PENDING_COUNT_SQL, (floor, pp.MAX_ATTEMPTS))
+        return rows[0]["n"] if rows else 0
+    return bot_db.query(PENDING_SQL, (floor, pp.MAX_ATTEMPTS, limit))
+
+
+async def sync_promises_incremental(bot):
+    """Щогодини :25 — свіжі статті нори через витяг зобов'язань.
+
+    Тихий і опт-ін (/promise_increment_on). Час обрано після сутнісного шару
+    (:55 попередньої години): витяг обіцянок резолвить предмет і обіцяльника в
+    картки сутностей, і якщо карток ще немає, ланцюг і тема зшиваються гірше.
+    """
+    if await asyncio.to_thread(bot_db.get_state, INCR_KEY) is None:
+        return
+    if not os.environ.get("ANTHROPIC_API_KEY") or not bot_db.is_configured():
+        return
+    if await asyncio.to_thread(_load_state):
+        return          # іде ручний скан — не конкуруємо, доженемо за годину
+    try:
+        await asyncio.to_thread(pp.ensure_schema)
+        floor = await asyncio.to_thread(_incr_floor)
+        rows = await asyncio.to_thread(_pending, floor, INCR_MAX_PER_RUN)
+        if not rows:
+            return
+        arts = [api.article_payload(
+            (r["id"], r["published"], r["title_ua"], r["title_ru"],
+             r["text_ua"], r["text_ru"])) for r in rows]
+        results, errors, usage = await asyncio.to_thread(_extract_sync, arts)
+        if results:
+            await asyncio.to_thread(ingest, results)
+        if usage["input"]:
+            record_ai_usage(api.MODEL, input_tokens=usage["input"],
+                            output_tokens=usage["output"],
+                            cache_read=usage["cache_read"],
+                            cache_creation=usage["cache_creation"])
+
+        def mark_failures():
+            conn = ep.connect()
+            try:
+                with conn.cursor() as cur:
+                    for err in errors:
+                        aid = err.split(":")[0].strip()
+                        if aid.isdigit():
+                            pp.mark_attempt(cur, int(aid), error=err[:200], done=False)
+                conn.commit()
+            finally:
+                conn.close()
+
+        if errors:
+            await asyncio.to_thread(mark_failures)
+        # Сторож масового збою — той самий поріг, що в сутнісному шарі: якщо
+        # впала третина пачки, це не «погана стаття», це щось зламалось.
+        if errors and len(errors) * 3 >= len(arts):
+            raise RuntimeError(
+                f"інкремент банку тем: {len(errors)}/{len(arts)} збоїв; "
+                f"перший — {errors[0][:200]}")
+    except Exception as e:
+        await notify_error(bot, "інкремент банку тем", e)
+
+
+async def promise_increment_on_handler(update, context):
+    """/promise_increment_on — увімкнути щогодинний добір свіжих статей."""
+    if not _allowed(update):
+        return
+    if await asyncio.to_thread(bot_db.get_state, INCR_KEY) is not None:
+        floor = await asyncio.to_thread(_incr_floor)
+        await update.message.reply_text(
+            f"Інкремент уже увімкнено (від {pp.fmt_date(floor)}). "
+            f"Стан — /promise_status, вимкнути — /promise_increment_off")
+        return
+    await asyncio.to_thread(pp.ensure_schema)
+    floor = await asyncio.to_thread(_incr_floor)
+    await asyncio.to_thread(bot_db.set_state, INCR_KEY, int(time.time()))
+    pending = await asyncio.to_thread(_pending, floor)
+    await update.message.reply_text(
+        f"🦊 Авто-інкремент банку тем увімкнено (від {pp.fmt_date(floor)}).\n"
+        f"У черзі {pending} статей — щогодини о :25 бере до {INCR_MAX_PER_RUN}.\n"
+        f"Пре-фільтр тут вимкнено свідомо: на денному потоці він економив би "
+        f"центи, а втратити обіцянку може назавжди.\n"
+        f"Вартість видно в /aicost, стан — /promise_status.")
+
+
+async def promise_increment_off_handler(update, context):
+    if not _allowed(update):
+        return
+    if await asyncio.to_thread(bot_db.get_state, INCR_KEY) is None:
+        await update.message.reply_text("Інкремент і так вимкнено.")
+        return
+    await asyncio.to_thread(
+        bot_db.execute, "DELETE FROM sync_state WHERE key = %s", (INCR_KEY,))
+    await update.message.reply_text(
+        "Авто-інкремент банку тем вимкнено. Банк лишається, але сам більше не "
+        "росте — тільки через /promise_scan.")
+
+
+# ---------- /promise_status ----------
+
+def _status_payload():
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            bounds = pp.data_bounds(cur)
+            cur.execute("SELECT count(*) FROM commitments")
+            n_com = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM topics")
+            n_top = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM commitment_revisions")
+            n_rev = cur.fetchone()[0]
+            rows = pp.list_queue(cur, limit=None)
+            cur.execute(
+                "SELECT coalesce(marked, true), count(*), sum(found) "
+                "FROM promise_attempts GROUP BY 1")
+            prefilter = {bool(k): (n, f or 0) for k, n, f in cur.fetchall()}
+            cur.execute(
+                "SELECT count(*) FROM promise_attempts "
+                "WHERE NOT done AND attempts >= %s", (pp.MAX_ATTEMPTS,))
+            giveup = cur.fetchone()[0]
+    finally:
+        conn.close()
+    on = bot_db.get_state(INCR_KEY) is not None
+    floor = _incr_floor() if on else None
+    return {"bounds": bounds, "commitments": n_com, "topics": n_top,
+            "revisions": n_rev, "counts": pp.facet_counts(rows),
+            "prefilter": prefilter, "giveup": giveup,
+            "incr_on": on, "floor": floor,
+            "pending": _pending(floor) if on else 0}
+
+
+async def promise_status_handler(update, context):
+    """/promise_status — стан банку тем і його добору."""
+    if not _allowed(update):
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Нора не налаштована.")
+        return
+    msg = await update.message.reply_text("🦊 Дивлюсь стан банку тем…")
+    try:
+        d = await asyncio.to_thread(_status_payload)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вдалось: {e}")
+        return
+    lines = ["🦊 <b>Банк тем — стан</b>", "",
+             f"Обіцянок: <b>{d['commitments']}</b> · тем: {d['topics']} · "
+             f"ревізій: {d['revisions']}",
+             _bounds_line(d["bounds"], shown=d["commitments"])]
+    facets = " · ".join(f"{pp.CLASS_WORD[c]} {d['counts'][c]}"
+                        for c in pp.CLASS_ORDER if d["counts"].get(c))
+    if facets:
+        lines.append(facets)
+
+    lines.append("")
+    if d["incr_on"]:
+        lines.append(f"✅ Авто-інкремент увімкнено, від {pp.fmt_date(d['floor'])}"
+                     f" · щогодини о :25 до {INCR_MAX_PER_RUN} статей")
+        if d["pending"]:
+            hours = -(-d["pending"] // INCR_MAX_PER_RUN)
+            lines.append(f"   у черзі {d['pending']} статей (~{hours} год добору)")
+        else:
+            lines.append("   черга порожня — усе свіже розібрано")
+    else:
+        lines.append("⏸ Авто-інкремент вимкнено — банк росте лише через "
+                     "/promise_scan. Увімкнути: /promise_increment_on")
+    if d["giveup"]:
+        lines.append(f"⚠️ {d['giveup']} статей вичерпали {pp.MAX_ATTEMPTS} спроби")
+
+    # Ціна пре-фільтра — рахується сама, з накопиченого (§7 крок 7)
+    if False in d["prefilter"]:
+        n_un, found_un = d["prefilter"][False]
+        n_m, found_m = d["prefilter"].get(True, (0, 0))
+        total = found_m + found_un
+        share = (100 * found_un / total) if total else 0
+        lines.append("")
+        lines.append(f"<b>Ціна пре-фільтра</b> (міряється сама): у {n_un} статтях "
+                     f"без маркерів знайшлось {found_un} зобов'язань — "
+                     f"{share:.0f}% усього знайденого.")
+    await msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+
 # ---------- /promise_eval ----------
 
 def _eval_payload(ids):
