@@ -127,6 +127,19 @@ def _resolve_and_remember(tg_id, username):
     return person
 
 
+def _viewed(request, person):
+    """Чиїми очима дивимось. Параметр `person` поважається лише в менеджера —
+    журналістці чужий id нічого не дає, вона завжди бачить свій рядок."""
+    who = request.query.get("person")
+    if not who or who == person:
+        return person
+    info = team_roster.ROSTER.get(person) or {}
+    from handlers import team_roster as _tr
+    if info.get("manager") and who in _tr.ROSTER:
+        return who
+    return person
+
+
 async def _authenticate(request):
     """Розбирає Authorization: tma <initData>, резолвить людину з ростера.
     Повертає (person, info, tg_user) або кидає web.HTTPException."""
@@ -1332,9 +1345,14 @@ async def api_promises(request):
         offset = 0
     # users.id людини — щоб порахувати «з моїх новин». Резолв кешований
     # (10 хв), а без БД сайту просто немає фасета, і решта екрана живе.
+    #
+    # У менеджерському перегляді чужими очима рахуємо ТОГО, на кого дивимось:
+    # інакше фасет мовчки показував свої новини під чужим іменем — тобто
+    # екран виглядав робочим і брехав («з моїх тем: 0», хоч там не нуль).
     author_id = None
     try:
-        author_id = await asyncio.to_thread(team_kpi.resolve_site_user_id, person)
+        author_id = await asyncio.to_thread(
+            team_kpi.resolve_site_user_id, _viewed(request, person))
     except Exception as e:
         print(f"webapp: не резолвнув автора «{person}» — {e}")
     return web.json_response(
@@ -1349,7 +1367,8 @@ async def api_promises_mine_count(request):
     from handlers import promise_app, team_kpi
 
     try:
-        author_id = await asyncio.to_thread(team_kpi.resolve_site_user_id, person)
+        author_id = await asyncio.to_thread(
+            team_kpi.resolve_site_user_id, _viewed(request, person))
     except Exception as e:
         print(f"webapp: не резолвнув автора «{person}» — {e}")
         return web.json_response({"total": 0, "overdue": 0})

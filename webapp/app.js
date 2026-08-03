@@ -3031,6 +3031,7 @@ async function renderPromises() {
     wirePromiseSearch();
     try {
       STATE.promises = await api("/api/promises?cls=" + encodeURIComponent(facet)
+        + previewParam()
         + (STATE.promiseQuery ? "&q=" + encodeURIComponent(STATE.promiseQuery) : ""));
     } catch (e) {
       const b = $("pr-body");
@@ -3176,6 +3177,7 @@ function wirePromises() {
       const next = await api("/api/promises?cls="
         + encodeURIComponent(STATE.promiseFacet || "all")
         + "&offset=" + (STATE.promises.offset + STATE.promises.items.length)
+        + previewParam()
         + (STATE.promiseQuery ? "&q=" + encodeURIComponent(STATE.promiseQuery) : ""));
       STATE.promises.items = STATE.promises.items.concat(next.items);
       paintPromises();
@@ -5404,6 +5406,13 @@ function doorHtml(view, iconName, tone, title, meta, n, off) {
    мовчки перемикав його на власні дані. */
 const J_SUBVIEWS = new Set(["preview", "mypubs", "myhist", "mydone", "myfeed", "myimpacts", "impact"]);
 
+/* Менеджерський перегляд чужими очима: запити банку мусять рахувати ТОГО,
+   на кого дивимось. Без цього фасет «З моїх новин» мовчки показував свої
+   новини під чужим іменем — екран виглядав робочим і брехав. */
+function previewParam() {
+  return inPreview() ? "&person=" + encodeURIComponent(STATE.previewPerson) : "";
+}
+
 function inPreview() {
   return !!STATE.previewPerson && J_SUBVIEWS.has(STATE.view);
 }
@@ -6274,7 +6283,7 @@ async function paintPromiseDoor() {
   if (!door || door.querySelector(".door-n")) return;
   let d;
   try {
-    d = await api("/api/promises/mine/count");
+    d = await api("/api/promises/mine/count?x=1" + previewParam());
   } catch (e) { return; }
   if (!d || !d.total) return;
   const meta = door.querySelector(".door-m");
