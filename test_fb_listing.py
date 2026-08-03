@@ -134,6 +134,44 @@ def main():
     failed += 0 if ok else 1
     print(f"{'✅' if ok else '❌'} знімок підписаний часом: {note}")
 
+    # 6. Тижневий звіт: топ рахується по легкому листингу + поштучних метриках
+    from handlers import facebook as fb
+
+    saved_posts, saved_metrics = fb.get_page_posts, fb.get_post_metrics
+    try:
+        fb.get_page_posts = lambda since, until=None, max_pages=5: [
+            {"id": "p1", "message": "Новина А https://nikvesti.com/news/1-a",
+             "permalink_url": "https://www.facebook.com/1/posts/1"},
+            {"id": "p2", "message": "Новина Б https://nikvesti.com/news/2-b",
+             "permalink_url": "https://www.facebook.com/1/posts/2"},
+            {"id": "p3", "message": "Без лінка на сайт",
+             "permalink_url": "https://www.facebook.com/1/posts/3"},
+        ]
+        by_id = {
+            "p1": {"views": 10, "reactions": 3, "comments": 1, "shares": 0, "note": None},
+            "p2": {"views": 20, "reactions": 30, "comments": 2, "shares": 5, "note": None},
+        }
+        fb.get_post_metrics = lambda pid: by_id[pid]
+        top, total = fb.get_top_posts(since_ts=0)
+
+        ok = total == 2
+        failed += 0 if ok else 1
+        print(f"{'✅' if ok else '❌'} пост без лінка на сайт у звіт не рахується: {total}")
+
+        ok = [p["id"] for p in top] == ["p2", "p1"]
+        failed += 0 if ok else 1
+        print(f"{'✅' if ok else '❌'} топ за залученістю: {[p['id'] for p in top]}")
+
+        # метрики не зійшлись — звіт має вижити, а не впасти на None
+        by_id["p2"] = {"views": None, "reactions": None, "comments": None,
+                       "shares": None, "note": "(#100) Object does not exist"}
+        top, _ = fb.get_top_posts(since_ts=0)
+        ok = top and top[0]["id"] == "p1" and top[1]["reactions"] is None
+        failed += 0 if ok else 1
+        print(f"{'✅' if ok else '❌'} пост без метрик не валить звіт і не вдає нулі")
+    finally:
+        fb.get_page_posts, fb.get_post_metrics = saved_posts, saved_metrics
+
     if os.environ.get("FACEBOOK_PAGE_TOKEN"):
         print("\n=== живий прогін get_fb_stats ===")
         items, scanned, error = get_fb_stats(ARTICLE_URL, article_id)
