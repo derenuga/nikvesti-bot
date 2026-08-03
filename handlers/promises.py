@@ -1130,14 +1130,24 @@ async def promise_dupes_handler(update, context):
     if not _allowed(update):
         return
 
-    # Спершу прибираємо те, де питати нема про що: однакова цитата = один
-    # мовленнєвий акт, записаний двічі. Людині лишається тільки справді
-    # спірне.
-    merged, _run = await asyncio.to_thread(auto_merge_dupes)
-    # Далі суддя проходить нових кандидатів і прибирає з екрана те, що
-    # впевнено назвав різним. Схожість назви цього не вміє: замір 03.08 дав
-    # 0.56 у справжнього дубля і 0.53 у різних обіцянок.
-    seen = await judge_new_dupes()
+    # Відповідаємо ДО важкої роботи. Автозлиття по всьому банку плюс суддя на
+    # сотні пар — це хвилина-дві, і перша версія робила їх МОВЧКИ, до першого
+    # повідомлення: людина бачила, що команда не відповідає взагалі, а збій
+    # усередині не показувався ніде.
+    msg = await update.message.reply_text("🦊 Зводжу очевидне…")
+    try:
+        # Спершу прибираємо те, де питати нема про що: однакова цитата = один
+        # мовленнєвий акт, записаний двічі. Людині лишається тільки справді
+        # спірне.
+        merged, _run = await asyncio.to_thread(auto_merge_dupes)
+        await msg.edit_text("🧑‍⚖️ Питаю суддю про нові пари…")
+        # Суддя прибирає з екрана те, що впевнено назвав різним. Схожість
+        # назви цього не вміє: замір 03.08 дав 0.56 у справжнього дубля і
+        # 0.53 у різних обіцянок.
+        seen = await judge_new_dupes()
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вийшло: {type(e).__name__}: {e}")
+        return
 
     def run():
         conn = ep.connect()
@@ -1149,7 +1159,6 @@ async def promise_dupes_handler(update, context):
         finally:
             conn.close()
 
-    msg = await update.message.reply_text("🦊 Шукаю…")
     try:
         total, pairs = await asyncio.to_thread(run)
     except Exception as e:
