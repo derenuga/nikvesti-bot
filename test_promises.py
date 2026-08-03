@@ -1551,6 +1551,14 @@ def test_reminders():
           len(left["items"]) == kept, str(len(left["items"])))
     check("щоденний прогін спить без опт-іну", pr.is_on() is False)
 
+    # Автора тегаємо розміткою з TEAM і вставляємо БЕЗ обробки, тож нотатка
+    # для людини на кшталт «(тег за id)» надрукувалась би в канал як є.
+    from handlers.ai_messages import TEAM
+    bad = [n for n, i in TEAM.items()
+           if not (i.get("tg", "").startswith("@")
+                   or i.get("tg", "").startswith("<a "))]
+    check("у TEAM немає нотаток замість тегів", not bad, str(bad))
+
 
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
