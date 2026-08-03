@@ -917,6 +917,97 @@ def test_region_prune():
         conn.close()
 
 
+# ---------- Дублі й екран апки ----------
+#
+# 473 обіцянки за перший місяць — число завищене: суддя ланцюга спрацював 63
+# рази на 762 статті, і та сама обіцянка з двох статей лягла двома записами
+# («…прибирання та покос трави на майданчику „Казка"» і «…прибирання на
+# майданчику „Казка" у Корабельному районі», один строк, один обіцяльник).
+
+def test_dupes_and_merge():
+    conn = ep.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitment_objects")
+            cur.execute("DELETE FROM commitments")
+            cur.execute("DELETE FROM topics")
+            cur.execute("DELETE FROM promise_purges")
+
+            def put(aid, title, quote, **over):
+                p = pp.prepare(cur, case_item(
+                    320276, title=title, quote=quote, subject="майданчик «Казка»",
+                    objects=[], promiser="адміністрація Корабельного району",
+                    deadline="2026-06-10", **over))
+                return pp.record(cur, {"id": aid, "published": 1780000000,
+                                       "title_ua": f"Стаття {aid}"}, p)[0]
+
+            a = put(710001, "Організувати прибирання та покос трави на майданчику «Казка»",
+                    "До 10 червня адміністрація мала організувати там прибирання та покос трави")
+            b = put(710002, "Організувати прибирання на майданчику «Казка» у Корабельному районі",
+                    "До 10 червня там має організувати прибирання адміністрація Корабельного району")
+            # Різна дія щодо ТОГО САМОГО об'єкта — не дубль (§2.6)
+            other = put(710001, "Встановити освітлення на майданчику «Казка»",
+                        "Освітлення на майданчику обіцяють встановити до 10 червня")
+
+            pairs = pp.dupe_pairs(cur)
+            found = {(p["a"], p["b"]) for p in pairs}
+            check("детектор бачить пару, яку не зшив суддя ланцюга",
+                  (min(a, b), max(a, b)) in found, str(found))
+            check("різна дія щодо того самого об'єкта дублем НЕ вважається",
+                  not any(other in (p["a"], p["b"]) for p in pairs), str(found))
+
+            res = pp.merge_commitments(cur, a, b, who="тест")
+            check("злиття переносить ревізії, а не видаляє докази",
+                  res and res["revisions"] == 1, str(res))
+            cur.execute("SELECT count(*) FROM commitment_revisions WHERE commitment_id = %s", (a,))
+            check("в переможця тепер обидві цитати", cur.fetchone()[0] == 2)
+            cur.execute("SELECT count(*) FROM commitments WHERE id = %s", (b,))
+            check("другий запис зник із черги", cur.fetchone()[0] == 0)
+            cur.execute("SELECT revisions FROM commitments WHERE id = %s", (a,))
+            check("лічильник ревізій перерахувався", cur.fetchone()[0] == 2)
+
+            back = pp.restore(cur, res["purge_id"])
+            check("відкат злиття повертає ДРУГУ картку", back["commitment_id"] == b, str(back))
+            cur.execute("SELECT count(*) FROM commitment_revisions WHERE commitment_id = %s", (b,))
+            check("…разом із її ревізією, а не порожньою", cur.fetchone()[0] == 1,
+                  "порожня картка — саме те, чим ламався б відкат злиття")
+            cur.execute("SELECT count(*) FROM commitment_revisions WHERE commitment_id = %s", (a,))
+            check("у переможця знову одна", cur.fetchone()[0] == 1)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_app_payload():
+    """Екран апки: те, що малює JS, має приїжджати готовим — інакше
+    формулювання розійдуться з чатом за три тижні."""
+    from handlers import promise_app as pa
+
+    q = pa.queue()
+    keys = {f["key"] for f in q["facets"]}
+    check("фасети з числами приїжджають усі", keys == {"all", "overdue", "soon",
+          "waiting", "stale", "noproof", "populism"}, str(keys))
+    check("лічильник «усе» збігається з довжиною черги",
+          dict((f["key"], f["n"]) for f in q["facets"])["all"] >= q["total"],
+          str(q["total"]))
+    check("межі даних їдуть у кожному виводі", "bounds" in q)
+    item = q["items"][0] if q["items"] else {}
+    check("картка несе стан словами, а не кодом класу",
+          bool(item.get("state")) and not item["state"].startswith(item.get("cls", "")),
+          str(item.get("state")))
+    check("дешева перевірка позначена окремим прапорцем",
+          "cheap" in item, str(item.keys()))
+    check("цитата в картці є завжди — без неї запис у банк не пишеться",
+          bool(item.get("quote")), str(item.get("quote"))[:40])
+    card = pa.card(item["id"])
+    check("картка віддає ланцюг", bool(card and card["chain"]), str(bool(card)))
+    check("у ланцюгу кожен крок має дату", all(s["when"] for s in card["chain"]))
+    pops = [i for i in q["items"] if i.get("populism")]
+    check("мітка популізму приїжджає РАЗОМ із підставою",
+          all(len(p["populism"]) > 10 for p in pops), f"{len(pops)} шт")
+
+
 def main():
     setup()
     test_verifiability()
@@ -935,6 +1026,8 @@ def main():
     test_increment_queue()
     test_region_scope()
     test_region_prune()
+    test_dupes_and_merge()
+    test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")
     sys.exit(0 if ok == len(RESULTS) else 1)

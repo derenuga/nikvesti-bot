@@ -443,7 +443,10 @@ function backTarget() {
     case "todo":
     case "away":
     case "impacts":
+    case "promises":
     case "contacts": return ["home"];
+    case "promise":
+    case "dupes": return ["promises"];
     case "preview": return ["personhist", STATE.previewPerson];
     default: return null;      // корінь табів — назад нікуди
   }
@@ -482,6 +485,11 @@ function nav(view, arg) {
     STATE.bulk = { ...arg, y: now.getFullYear(), m: now.getMonth(), qty: {} };
   }
   if (view === "impacts" || view === "myimpacts") STATE.impactFrom = view;
+  if (view === "promise") STATE.currentPromise = arg;
+  // Черга банку перечитується при кожному вході: колега міг щось зарахувати
+  // чи злити дублі, а показувати вчорашній список немає сенсу
+  if (view === "promises") { STATE.promises = null; STATE.promiseFacet = STATE.promiseFacet || "all"; }
+  if (view === "dupes") STATE.dupes = null;
   if (view === "mypubs") STATE.pubsOffset = 0;   // входимо завжди в поточний місяць
   // Блокнот перечитуємо при кожному вході: запис міг прилетіти з /todo у чаті
   if (view === "todo") STATE.todos = null;
@@ -490,10 +498,18 @@ function nav(view, arg) {
   if (view === "alerts") {
     STATE.pending = null; STATE.notifs = null; STATE.absenceRequests = null;
   }
-  if (view === "form") STATE.form = {
-    person: arg, project: undefined, type: null, platform: "telegram",
-    theme_id: null, qty: 1, note: "", deadline: "",
-  };
+  if (view === "form") {
+    // Тема, принесена з банку, приїжджає в нотатку — далі це звичайне
+    // завдання: банк тем не окремий світ, а ще один вхід у постановку.
+    const seed = STATE.promiseSeed;
+    STATE.form = {
+      person: arg, project: undefined, type: null, platform: "telegram",
+      theme_id: null, qty: 1, deadline: "",
+      note: seed ? `Банк тем: ${seed.title}` : "",
+      promise_id: seed ? seed.id : null,
+    };
+    STATE.promiseSeed = null;
+  }
   paintNav();
   // KPI і його підекрани більше не пункт нижнього меню — заходять із
   // Головної, тож і підсвічуємо Головну
@@ -523,6 +539,9 @@ function render() {
   else if (v === "todo") renderTodos();
   else if (v === "contacts") renderContacts();
   else if (v === "away") renderAway();
+  else if (v === "promises") renderPromises();
+  else if (v === "promise") renderPromise();
+  else if (v === "dupes") renderDupes();
   else if (v === "impacts") renderImpacts();
   else if (v === "myimpacts") renderMyImpacts();
   else if (v === "impact") renderImpact();
@@ -591,6 +610,13 @@ function toolsSheet() {
       <span class="pk-txt">
         <span class="pk-name">Імпакт-архів</span>
         <span class="pk-meta">що змінилось завдяки текстам — для заявок і донорів</span>
+      </span>
+    </button>
+    <button class="pick-row" data-tool="promises">
+      <span class="door-ic c-blue-ic">${icon("bell")}</span>
+      <span class="pk-txt">
+        <span class="pk-name">Банк тем</span>
+        <span class="pk-meta">що влада обіцяла і кому пора нагадати</span>
       </span>
     </button>
     <button class="pick-row" data-tool="away">
@@ -2912,6 +2938,395 @@ function contactSheet(c) {
 
    Донор ключового тексту підсвічений окремо: якщо текст, що все змінив,
    вийшов у межах проєкту — донора можна порадувати кейсом. */
+/* ---------- Банк тем ----------
+
+   Черга того, що влада наобіцяла. Три речі, яких немає в чаті і заради яких
+   екран узагалі знадобився (перший місяць дав 473 обіцянки — списком по
+   вісім штук це не переглянути):
+
+   • фасети з ЧИСЛАМИ: одразу видно, скільки чого, а не «показано 8 з 473»;
+   • смуга кольору кодує КЛАС ПЕРЕВІРКИ, а не важливість. «Перевірити нічим»
+     сіре і ніколи не дзвонить, «піти й подивитись» зелене — дешева перевірка
+     підіймає тему, а не відсіює її;
+   • дублі окремим входом: та сама обіцянка з двох статей лягла двома
+     записами, і скорочувати банк починають звідси, а не з видалення тем.
+
+   Цитата в кожній картці не декор: обіцянка без дослівного фрагмента в банк
+   не пишеться взагалі, і саме цитата відрізняє факт від переказу. */
+
+const PROMISE_EMPTY = {
+  all: "У банку порожньо.",
+  overdue: "Прострочених немає — рідкісний день.",
+  soon: "Найближчим часом нічого не горить.",
+  waiting: "Обіцянок, що чекають події, немає.",
+  stale: "Забутих тем немає.",
+  noproof: "Обіцянок без способу перевірки немає.",
+  populism: "Заяв без дати й критерію не знайшлось.",
+};
+
+async function renderPromises() {
+  const facet = STATE.promiseFacet || "all";
+  const head = `
+    <button class="back" data-back>${icon("chevron-left")} Назад</button>
+    <div class="head-row">
+      <div class="h-big">Банк тем</div>
+      <button class="icon-btn" id="pr-search" aria-label="Пошук">${icon("search")}</button>
+    </div>`;
+  if (!STATE.promises) {
+    $("content").innerHTML = head + `<div id="pr-body">${skeleton("rows", 4)}</div>`;
+    wirePromiseSearch();
+    try {
+      STATE.promises = await api("/api/promises?cls=" + encodeURIComponent(facet)
+        + (STATE.promiseQuery ? "&q=" + encodeURIComponent(STATE.promiseQuery) : ""));
+    } catch (e) {
+      const b = $("pr-body");
+      if (b) b.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+      return;
+    }
+    if (STATE.view !== "promises") return;
+  } else {
+    $("content").innerHTML = head + `<div id="pr-body"></div>`;
+    wirePromiseSearch();
+  }
+  paintPromises();
+}
+
+/* Межі даних — у кожному виводі. Порожній екран без цього рядка читається як
+   зламаний, а не як «сюди ще не дійшли руки». */
+function promiseBounds(d) {
+  const b = d.bounds || {};
+  if (!b.from) return d.total ? "" : "Банк ще порожній — обіцянки збирає бот.";
+  const dt = new Date(b.from * 1000);
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  return `з ${mm}.${dt.getFullYear()} · переглянуто ${b.articles} матеріалів`;
+}
+
+function paintPromises() {
+  const d = STATE.promises;
+  const body = $("pr-body");
+  if (!body || !d) return;
+  const facet = STATE.promiseFacet || "all";
+  const bounds = promiseBounds(d);
+  body.innerHTML = `
+    ${STATE.promiseQuery ? `<div class="pr-q">
+        Пошук: <b>${esc(STATE.promiseQuery)}</b>
+        ${(d.matched || []).length ? `<span class="pr-q-m">знайшлись картки:
+          ${d.matched.map((m) => esc(m.name)).join(" · ")}</span>` : ""}
+        <button class="pr-q-x" id="pr-clear">${icon("x")}</button>
+      </div>` : ""}
+    <div class="chips" id="pr-facets">
+      ${(d.facets || []).map((f) => `
+        <button class="chip${f.key === facet ? " on" : ""}" data-facet="${f.key}">
+          ${esc(f.label)} <b>${f.n}</b></button>`).join("")}
+    </div>
+    ${d.dupes ? `<button class="pr-dupes" data-nav="dupes">
+        ${icon("link")} <span>Схоже на дублі — <b>${d.dupes}</b></span>
+        <span class="pr-dupes-m">та сама обіцянка з двох статей</span>
+        ${icon("chevron-right", "ic chev")}</button>` : ""}
+    ${d.items.length ? d.items.map(promiseCard).join("")
+      : `<div class="empty-hint">${esc(PROMISE_EMPTY[facet] || PROMISE_EMPTY.all)}</div>`}
+    ${d.total > d.items.length + d.offset ? `<button class="pr-more" id="pr-more">
+        Ще ${d.total - d.items.length - d.offset}</button>` : ""}
+    ${bounds ? `<div class="pr-bounds">${esc(bounds)}</div>` : ""}`;
+  wirePromises();
+}
+
+function promiseWho(w) {
+  if (!w) return "";
+  const parts = [];
+  if (w.promiser) {
+    parts.push(`Хто обіцяв: <b>${esc(w.promiser)}</b>`
+      + (w.role ? `, ${esc(w.role)}` : ""));
+  } else if (w.hidden) {
+    parts.push("Хто саме — не названо");
+  }
+  if (w.reported) parts.push(`переказує <b>${esc(w.reported)}</b>`);
+  if (w.owner) parts.push(`відповідає ${esc(w.owner)}`);
+  return parts.join(" · ");
+}
+
+function promiseCard(p) {
+  const who = promiseWho(p.who);
+  return `
+    <article class="pr-item ${p.cls}" data-promise="${p.id}">
+      <div class="pr-row1">
+        <span class="pr-state">${esc(p.state)}</span>
+        ${p.how ? `<span class="pr-how${p.cheap ? " cheap" : ""}">${esc(p.how)}</span>` : ""}
+      </div>
+      <div class="pr-title">${esc(p.title)}</div>
+      ${who ? `<div class="pr-who">${who}</div>` : ""}
+      ${p.quote ? `<div class="pr-quote">«${esc(p.quote)}»</div>` : ""}
+      ${p.populism ? `<div class="pr-pop">
+          <span class="pr-pop-tag">Схоже на популізм</span>
+          <span class="pr-pop-why">${esc(p.populism)}</span>
+        </div>` : ""}
+      ${p.meta.length ? `<div class="pr-meta">${p.meta.map(esc).join(" · ")}</div>` : ""}
+    </article>`;
+}
+
+function wirePromiseSearch() {
+  const btn = $("pr-search");
+  if (!btn) return;
+  btn.onclick = () => {
+    openSheet(`
+      <h2>Пошук у банку</h2>
+      <p class="sheet-note">За обіцяльником або об'єктом: «Сєнкевич», «гімназія».
+      По назві органу підтягуються й обіцянки його посадовців.</p>
+      <form id="pr-sform">
+        <input id="pr-sq" maxlength="80" autocomplete="off" placeholder="Кого шукаємо?"
+          value="${esc(STATE.promiseQuery || "")}">
+        <button class="cta" type="submit">Шукати</button>
+      </form>`);
+    const inp = $("pr-sq");
+    if (inp) inp.focus();
+    $("pr-sform").onsubmit = (e) => {
+      e.preventDefault();
+      const v = $("pr-sq").value.trim();
+      closeSheet();
+      STATE.promiseQuery = v.length > 3 ? v : "";
+      if (v && v.length <= 3) { toast("Треба хоча б чотири літери"); return; }
+      STATE.promises = null;
+      renderPromises();
+    };
+  };
+}
+
+function wirePromises() {
+  const body = $("pr-body");
+  if (!body) return;
+  body.querySelectorAll("[data-facet]").forEach((b) => b.onclick = () => {
+    STATE.promiseFacet = b.dataset.facet;
+    STATE.promises = null;
+    renderPromises();
+  });
+  body.querySelectorAll("[data-promise]").forEach((el) => el.onclick = () =>
+    nav("promise", +el.dataset.promise));
+  body.querySelectorAll("[data-nav]").forEach((el) => el.onclick = () =>
+    nav(el.dataset.nav));
+  const clear = $("pr-clear");
+  if (clear) clear.onclick = () => {
+    STATE.promiseQuery = "";
+    STATE.promises = null;
+    renderPromises();
+  };
+  const more = $("pr-more");
+  if (more) more.onclick = async () => {
+    more.disabled = true;
+    try {
+      const next = await api("/api/promises?cls="
+        + encodeURIComponent(STATE.promiseFacet || "all")
+        + "&offset=" + (STATE.promises.offset + STATE.promises.items.length)
+        + (STATE.promiseQuery ? "&q=" + encodeURIComponent(STATE.promiseQuery) : ""));
+      STATE.promises.items = STATE.promises.items.concat(next.items);
+      paintPromises();
+    } catch (e) { toast(e.message); more.disabled = false; }
+  };
+}
+
+/* ---------- Картка обіцянки: історія питання ----------
+
+   Головне тут — ланцюг із лінком на КОЖЕН факт. Обіцянку переносять тихо, і
+   довести це можна лише двома датами поруч із двома цитатами. Точка кроку
+   червона там, де строк у ревізії пізніший за попередній: перенос
+   вираховується з дат, а не зі слів. */
+
+async function renderPromise() {
+  const id = STATE.currentPromise;
+  $("content").innerHTML = `
+    <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
+    ${skeleton("rows", 4)}`;
+  let d;
+  try {
+    d = await api(`/api/promises/${id}`);
+  } catch (e) {
+    $("content").innerHTML = `<button class="back" data-back>${icon("chevron-left")} Банк тем</button>
+      <div class="empty-hint">${esc(e.message)}</div>`;
+    return;
+  }
+  if (STATE.view !== "promise") return;
+  const p = d.commitment;
+  const mgr = STATE.me.manager;
+  $("content").innerHTML = `
+    <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
+    <div class="pr-detail ${p.cls}">
+      <div class="pr-dtitle">${esc(p.title)}</div>
+      <div class="pr-tags">${(p.tags || []).map((t) =>
+        `<span class="pr-tag${t.danger ? " danger" : ""}">${esc(t.text)}</span>`).join("")}</div>
+      ${promiseWho(p.who) ? `<div class="pr-who">${promiseWho(p.who)}</div>` : ""}
+      ${p.populism ? `<div class="pr-pop">
+          <span class="pr-pop-tag">Схоже на популізм</span>
+          <span class="pr-pop-why">${esc(p.populism)}</span>
+          <span class="pr-pop-note">Це підказка, а не вирок: мітка стоїть на
+            заяві, а не на людині — брати тему в роботу вирішуєш ти.</span>
+        </div>` : ""}
+      ${p.criterion ? `<div class="pr-field"><b>Критерій:</b> ${esc(p.criterion)}</div>` : ""}
+      ${p.based_on ? `<div class="pr-field"><b>Підстава:</b> ${esc(p.based_on)}</div>` : ""}
+      ${p.condition ? `<div class="pr-field"><b>Умова:</b> ${esc(p.condition)}
+        <span class="pr-dim">— умовна обіцянка не прострочується</span></div>` : ""}
+      <div class="pr-chain">${d.chain.map(chainStep).join("")}</div>
+      ${d.siblings.length ? `<div class="pr-sib">
+        <div class="pr-sib-h">Та сама тема</div>
+        ${d.siblings.map((s) => `<button class="pr-sib-r" data-sib="${s.id}">
+          ${esc(s.title)}${icon("chevron-right", "ic chev")}</button>`).join("")}
+      </div>` : ""}
+      <div class="pr-act">
+        <button class="sbtn primary" id="pr-work">${mgr ? "Дати в роботу" : "Взяти в роботу"}</button>
+        <button class="sbtn" id="pr-check">Перевірили</button>
+      </div>
+      <div class="pr-note">${mgr
+        ? "<b>Дати в роботу</b> відкриє звичайну форму завдання — людина, тип, проєкт, тематика, дедлайн."
+        : "<b>Взяти в роботу</b> бере тему на себе і йде редактору на погодження: донора, проєкт і формат проставляє він."}</div>
+      ${mgr ? `<button class="pr-drop" id="pr-drop">Не наша тема — прибрати з банку</button>` : ""}
+    </div>`;
+  wirePromiseCard(d);
+}
+
+function chainStep(s) {
+  return `
+    <div class="pr-step ${s.kind}">
+      <div class="pr-when">${esc(s.when)}</div>
+      <div class="pr-sbody">
+        ${s.modality ? `<span class="pr-mod">${esc(s.modality)}</span>` : ""}
+        ${s.quote ? `<p>«${esc(s.quote)}»</p>` : ""}
+        <div class="pr-src">
+          ${s.deadline ? `строк ${esc(s.deadline)} · ` : ""}
+          ${s.source ? esc(s.source) + " · " : ""}
+          ${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${
+            esc(s.article_title || "матеріал")}</a>` : "джерела немає"}
+        </div>
+      </div>
+    </div>`;
+}
+
+function wirePromiseCard(d) {
+  const id = d.commitment.id;
+  document.querySelectorAll("[data-sib]").forEach((b) => b.onclick = () =>
+    nav("promise", +b.dataset.sib));
+  const check = $("pr-check");
+  if (check) check.onclick = async () => {
+    check.disabled = true;
+    try {
+      await api(`/api/promises/${id}/check`, { method: "POST" });
+      haptic("success");
+      toast("Позначив перевіреною — тема пішла вниз черги");
+      STATE.promises = null;
+      nav("promises");
+    } catch (e) { toast(e.message); check.disabled = false; }
+  };
+  const work = $("pr-work");
+  if (work) work.onclick = async () => {
+    if (STATE.me.manager) {
+      // Банк тем — ще один вхід у постановку завдань, а не окремий світ:
+      // ведемо в ту саму форму, лише з підказаною нотаткою.
+      STATE.promiseSeed = { id, title: d.commitment.title };
+      nav("people");
+      return;
+    }
+    work.disabled = true;
+    try {
+      await api(`/api/promises/${id}/take`, { method: "POST" });
+      haptic("success");
+      toast("Редактор побачить у «Сповіщеннях»");
+    } catch (e) { toast(e.message); work.disabled = false; }
+  };
+  const drop = $("pr-drop");
+  if (drop) drop.onclick = async () => {
+    if (!(await confirmAction("Прибрати обіцянку з банку? Знімок лишиться в журналі."))) return;
+    try {
+      await api(`/api/promises/${id}/drop`, { method: "POST",
+        body: JSON.stringify({ reason: "не наша тема" }) });
+      toast("Прибрав");
+      STATE.promises = null;
+      nav("promises");
+    } catch (e) { toast(e.message); }
+  };
+}
+
+/* ---------- Дублі ----------
+
+   473 обіцянки за місяць — число завищене: суддя ланцюга спрацював 63 рази
+   на 762 статті, і та сама обіцянка з двох статей лягла двома записами.
+   Тут вони стоять парами з цитатами: злиття не видаляє нічого, а СКЛЕЮЄ
+   ланцюг — обидві цитати лишаються доказами в одній картці.
+
+   Вирішує людина: однакові назва і строк бувають і в двох сусідніх
+   дитсадків, і відрізняє їх саме текст. */
+
+async function renderDupes() {
+  $("content").innerHTML = `
+    <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
+    <div class="h-big">Схоже на дублі</div>
+    ${skeleton("rows", 3)}`;
+  let d;
+  try {
+    d = await api("/api/promises/dupes");
+  } catch (e) {
+    $("content").innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+    return;
+  }
+  if (STATE.view !== "dupes") return;
+  STATE.dupes = d;
+  paintDupes();
+}
+
+function paintDupes() {
+  const d = STATE.dupes;
+  const mgr = STATE.me.manager;
+  $("content").innerHTML = `
+    <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
+    <div class="h-big">Схоже на дублі</div>
+    <div class="h-sub">одна обіцянка, записана з двох статей: однаковий строк
+      і спільний предмет або обіцяльник. Злиття не видаляє — обидві цитати
+      лишаються в одній картці${mgr ? "" : ". Зливає редактор"}</div>
+    ${d.pairs.length ? d.pairs.map((p) => dupePair(p, mgr)).join("")
+      : `<div class="empty-hint">Дублів не видно.</div>`}`;
+  wireDupes();
+}
+
+function dupeSide(p) {
+  return `
+    <div class="dp-side ${p.cls}">
+      <div class="dp-state">${esc(p.state)}</div>
+      <div class="dp-title">${esc(p.title)}</div>
+      ${p.quote ? `<div class="pr-quote">«${esc(p.quote)}»</div>` : ""}
+      <div class="pr-meta">${p.meta.map(esc).join(" · ")}</div>
+      <button class="dp-open" data-promise="${p.id}">Відкрити картку</button>
+    </div>`;
+}
+
+function dupePair(pair, mgr) {
+  return `
+    <div class="dp-pair">
+      ${dupeSide(pair.a)}
+      <div class="dp-mid">схожість ${String(pair.sim).replace(".", ",")}</div>
+      ${dupeSide(pair.b)}
+      ${mgr ? `<div class="dp-act">
+        <button class="sbtn" data-merge="${pair.a.id}:${pair.b.id}">
+          Лишити перший</button>
+        <button class="sbtn" data-merge="${pair.b.id}:${pair.a.id}">
+          Лишити другий</button>
+      </div>` : ""}
+    </div>`;
+}
+
+function wireDupes() {
+  document.querySelectorAll("[data-promise]").forEach((b) => b.onclick = () =>
+    nav("promise", +b.dataset.promise));
+  document.querySelectorAll("[data-merge]").forEach((b) => b.onclick = async () => {
+    const [keep, dup] = b.dataset.merge.split(":").map(Number);
+    if (!(await confirmAction("Звести в один запис? Ревізії другого перейдуть у перший."))) return;
+    b.disabled = true;
+    try {
+      await api(`/api/promises/${keep}/merge`, { method: "POST",
+        body: JSON.stringify({ dup_id: dup }) });
+      haptic("success");
+      STATE.dupes = null;
+      STATE.promises = null;
+      renderDupes();
+    } catch (e) { toast(e.message); b.disabled = false; }
+  });
+}
+
 async function renderImpacts() {
   const head = `
     <button class="back" data-back>${icon("chevron-left")} Назад</button>
@@ -5000,6 +5415,8 @@ function renderJournalist() {
         "завдання, які вже закрито", closed.length) : ""}
       ${doorHtml("myhist", "bar-chart", "c-sky", "KPI по місяцях",
         "як іде місяць до місяця", "")}
+      ${doorHtml("promises", "bell", "c-sky", "Банк тем",
+        "що влада обіцяла і кому пора нагадати", "")}
       ${myImpactsFresh(me).length
         ? doorHtml("myimpacts", "award", "c-good", "Мої імпакти",
             "що змінилось завдяки твоїм текстам", myImpactsFresh(me).length)

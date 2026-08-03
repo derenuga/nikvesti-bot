@@ -1044,17 +1044,11 @@ def data_bounds(cur):
 
 # ---------- Забути / повернути ----------
 
-def forget(cur, commitment_id, reason=None, who=None, run=None):
-    """Прибрати помилковий запис — зі знімком у журнал (§8).
-
-    Без знімка помилку витягу не відкотиш: правити реєстр доведеться парами
-    «лінк на реальну ситуацію + правило», і кожна така правка має бути
-    зворотною.
-
-    `run` — номер прогону для масового прибирання: за ним відкочується весь
-    прогін одразу (/promise_prune_undo), бо сотні знімків по одному не
-    повернути.
-    """
+def _snapshot(cur, commitment_id):
+    """Повний знімок обіцянки для журналу: сама картка, ревізії, об'єкти й
+    ТЕМА. Тема тут не зайва: поодинці вона переживає видалення обіцянки, але
+    масова чистка вимітає й теми, що лишились порожніми, — і тоді відкат
+    вставляв би обіцянку з посиланням на неіснуючу тему."""
     cur.execute(f"SELECT {COMMITMENT_COLS} FROM commitments c WHERE c.id = %s",
                 (commitment_id,))
     rows = _rows(cur)
@@ -1068,9 +1062,6 @@ def forget(cur, commitment_id, reason=None, who=None, run=None):
     cur.execute("SELECT entity_id FROM commitment_objects WHERE commitment_id = %s",
                 (commitment_id,))
     objects = [r[0] for r in cur.fetchall()]
-    # Тема кладеться в той самий знімок. Поодинці вона переживає видалення
-    # обіцянки, але масова чистка вимітає й теми, що лишились порожніми, —
-    # і тоді відкат вставляв би обіцянку з посиланням на неіснуючу тему.
     topic = None
     if snapshot.get("topic_id"):
         cur.execute("SELECT id, title, entity_ids, subject_keys, status, opened, "
@@ -1079,8 +1070,25 @@ def forget(cur, commitment_id, reason=None, who=None, run=None):
         if row:
             topic = dict(zip(("id", "title", "entity_ids", "subject_keys",
                               "status", "opened", "last_event"), row))
-    payload = {"commitment": snapshot, "revisions": revs, "objects": objects,
-               "topic": topic}
+    return {"commitment": snapshot, "revisions": revs, "objects": objects,
+            "topic": topic}
+
+
+def forget(cur, commitment_id, reason=None, who=None, run=None):
+    """Прибрати помилковий запис — зі знімком у журнал (§8).
+
+    Без знімка помилку витягу не відкотиш: правити реєстр доведеться парами
+    «лінк на реальну ситуацію + правило», і кожна така правка має бути
+    зворотною.
+
+    `run` — номер прогону для масового прибирання: за ним відкочується весь
+    прогін одразу (/promise_prune_undo), бо сотні знімків по одному не
+    повернути.
+    """
+    payload = _snapshot(cur, commitment_id)
+    if not payload:
+        return None
+    snapshot, revs = payload["commitment"], payload["revisions"]
     cur.execute(
         "INSERT INTO promise_purges (payload, reason, decided_by, created, run) "
         "VALUES (%s, %s, %s, %s, %s) RETURNING id",
@@ -1127,6 +1135,19 @@ def restore(cur, purge_id):
             [r["id"]] + [r[k] for k in rcols]
             + [_dedup_key(r["article_id"], r["quote"], c.get("title"),
                           r.get("stated_deadline"), c.get("polarity"))])
+    # Відкат злиття — це НЕ вставка рядків: ревізії нікуди не зникали, вони
+    # висять на переможцеві. Вставка вище тихо нічого не зробила (id зайнятий),
+    # і без цього рядка картка повернулась би порожньою, а черга далі
+    # показувала б один запис замість двох.
+    merged_into = payload.get("merged_into")
+    if merged_into:
+        ids = [r["id"] for r in payload["revisions"]]
+        if ids:
+            cur.execute("UPDATE commitment_revisions SET commitment_id = %s "
+                        "WHERE id = ANY(%s)", (c["id"], ids))
+        cur.execute("DELETE FROM commitment_objects WHERE commitment_id = %s "
+                    "AND entity_id = ANY(%s)",
+                    (merged_into, payload.get("objects") or []))
     for eid in payload.get("objects") or []:
         cur.execute("INSERT INTO commitment_objects (commitment_id, entity_id) "
                     "VALUES (%s, %s) ON CONFLICT DO NOTHING", (c["id"], eid))
@@ -1137,9 +1158,116 @@ def restore(cur, purge_id):
         "SELECT setval(pg_get_serial_sequence('commitment_revisions', 'id'), "
         "  greatest((SELECT max(id) FROM commitment_revisions), 1))")
     refresh(cur, c["id"])
+    if merged_into:
+        refresh(cur, merged_into)   # у переможця поменшало ревізій
     cur.execute("UPDATE promise_purges SET restored = %s WHERE id = %s",
                 (int(time.time()), purge_id))
-    return {"commitment_id": c["id"], "revisions": len(payload["revisions"])}
+    return {"commitment_id": c["id"], "revisions": len(payload["revisions"]),
+            "unmerged_from": merged_into}
+
+
+# ---------- Дублі: та сама обіцянка, записана двічі ----------
+#
+# Знайдено на першому ж місяці: «Організувати прибирання та покос трави на
+# майданчику „Казка"» і «Організувати прибирання на майданчику „Казка" у
+# Корабельному районі» — одна обіцянка адміністрації Корабельного району з
+# одним строком, записана з двох статей. Суддя ланцюга їх не зшив, бо
+# спрацював лише 63 рази на 762 статті: пре-фільтр кандидатів шукає спільну
+# КАРТКУ предмета, а «майданчик „Казка"» у сутнісному шарі не завжди є.
+#
+# Тому другий, дешевий детектор — уже поверх записаного. Три сигнали разом, і
+# кожен поодинці бреше:
+#   • схожа назва (trgm) — сама по собі ловить різні обіцянки про той самий
+#     об'єкт («відремонтувати» ~ «освітити» ту саму вулицю);
+#   • ОДНАКОВИЙ строк — різні дії щодо одного об'єкта майже ніколи не мають
+#     той самий день;
+#   • спільний предмет або той самий обіцяльник.
+# Зливає ЛЮДИНА: однакові назва+строк бувають і в двох сусідніх дитсадків.
+
+DUPE_SIM = 0.4
+
+
+def dupe_pairs(cur, limit=40, sim=DUPE_SIM):
+    """Пари «схоже на один запис двічі». Read-only, нічого не зливає."""
+    cur.execute(
+        """
+        SELECT a.id, b.id, similarity(a.title, b.title) AS sim,
+               a.title, b.title, a.revisions, b.revisions,
+               coalesce(a.owner_text, ''), a.deadline
+        FROM commitments a
+        JOIN commitments b ON b.id > a.id
+        WHERE a.status = 'expected' AND b.status = 'expected'
+          AND similarity(a.title, b.title) >= %s
+          AND coalesce(a.deadline, 0) = coalesce(b.deadline, 0)
+          AND (a.subject_entity_id IS NOT DISTINCT FROM b.subject_entity_id
+                   AND a.subject_entity_id IS NOT NULL
+               OR coalesce(a.subject_key, '') = coalesce(b.subject_key, '')
+                   AND coalesce(a.subject_key, '') <> ''
+               OR lower(coalesce(a.owner_text, '')) = lower(coalesce(b.owner_text, ''))
+                   AND coalesce(a.owner_text, '') <> '')
+        ORDER BY sim DESC, a.id
+        LIMIT %s
+        """, (sim, limit))
+    return [{"a": a, "b": b, "sim": round(float(s), 2),
+             "title_a": ta, "title_b": tb, "rev_a": ra, "rev_b": rb,
+             "owner": owner, "deadline": dl}
+            for a, b, s, ta, tb, ra, rb, owner, dl in cur.fetchall()]
+
+
+def dupe_count(cur, sim=DUPE_SIM):
+    cur.execute(
+        """
+        SELECT count(*) FROM commitments a JOIN commitments b ON b.id > a.id
+        WHERE a.status = 'expected' AND b.status = 'expected'
+          AND similarity(a.title, b.title) >= %s
+          AND coalesce(a.deadline, 0) = coalesce(b.deadline, 0)
+          AND (a.subject_entity_id IS NOT DISTINCT FROM b.subject_entity_id
+                   AND a.subject_entity_id IS NOT NULL
+               OR coalesce(a.subject_key, '') = coalesce(b.subject_key, '')
+                   AND coalesce(a.subject_key, '') <> ''
+               OR lower(coalesce(a.owner_text, '')) = lower(coalesce(b.owner_text, ''))
+                   AND coalesce(a.owner_text, '') <> '')
+        """, (sim,))
+    return cur.fetchone()[0]
+
+
+def merge_commitments(cur, keep_id, dup_id, who=None, run=None):
+    """Звести два записи в один: ревізії другого стають ревізіями першого.
+
+    Це не видалення дубля, а СКЛЕЮВАННЯ ланцюга — рівно те, чого не зробив
+    суддя. Обидві цитати лишаються доказами, просто тепер вони в одній
+    картці, і в черзі стоїть один рядок замість двох.
+
+    Знімок лягає в той самий журнал, але з міткою `merged_into`: відкат тут
+    не «вставити рядки назад» (вони нікуди не зникали), а «перевісити ревізії
+    на попередню картку», і restore розрізняє ці два випадки.
+    """
+    keep_id, dup_id = int(keep_id), int(dup_id)
+    if keep_id == dup_id:
+        return None
+    payload = _snapshot(cur, dup_id)
+    if not payload or not _snapshot(cur, keep_id):
+        return None
+    payload["merged_into"] = keep_id
+    cur.execute(
+        "INSERT INTO promise_purges (payload, reason, decided_by, created, run) "
+        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (json.dumps(payload, ensure_ascii=False, default=str),
+         f"дубль → {keep_id}", who, int(time.time()), run or next_run(cur)))
+    purge_id = cur.fetchone()[0]
+    cur.execute("UPDATE commitment_revisions SET commitment_id = %s "
+                "WHERE commitment_id = %s", (keep_id, dup_id))
+    cur.execute("INSERT INTO commitment_objects (commitment_id, entity_id) "
+                "SELECT %s, entity_id FROM commitment_objects "
+                "WHERE commitment_id = %s ON CONFLICT DO NOTHING",
+                (keep_id, dup_id))
+    topic_id = payload["commitment"].get("topic_id")
+    cur.execute("DELETE FROM commitments WHERE id = %s", (dup_id,))
+    if topic_id:
+        prune_orphan_topics(cur, [topic_id])
+    refresh(cur, keep_id)
+    return {"purge_id": purge_id, "keep": keep_id, "dropped": dup_id,
+            "revisions": len(payload["revisions"])}
 
 
 # ---------- Чистка банку від немиколаївських обіцянок ----------

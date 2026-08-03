@@ -805,6 +805,88 @@ async def promise_prune_callback(update, context):
         + f".\nВідкат усього прогону: /promise_prune_undo {result['run']}")
 
 
+async def promise_dupes_handler(update, context):
+    """/promise_dupes — та сама обіцянка, записана двічі.
+
+    Число, яке пояснює, чому в банку 473 записи за місяць: суддя ланцюга
+    спрацював 63 рази на 762 статті (пре-фільтр кандидатів шукає спільну
+    КАРТКУ предмета, а «майданчик „Казка"» у сутнісному шарі не завжди є), і
+    та сама обіцянка з двох статей лягла двома рядками.
+
+    Зливати зручніше в апці — там обидві цитати поруч. Тут лише перелік і
+    готові рядки: рішення однаково людське.
+    """
+    if not _allowed(update):
+        return
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                return pp.dupe_count(cur), pp.dupe_pairs(cur, limit=12)
+        finally:
+            conn.close()
+
+    msg = await update.message.reply_text("🦊 Шукаю…")
+    try:
+        total, pairs = await asyncio.to_thread(run)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не порахувалось: {e}")
+        return
+    if not total:
+        await msg.edit_text("🦊 Схожих пар не видно — банк не роздутий дублями.")
+        return
+    lines = [f"🦊 <b>Схоже на дублі: {total}</b>",
+             "<i>однаковий строк + спільний предмет або обіцяльник. "
+             "Злиття не видаляє: ревізії другого переходять у перший, "
+             "обидві цитати лишаються доказами.</i>", ""]
+    for p in pairs:
+        lines += [f"• {escape_html(p['title_a'])}",
+                  f"  {escape_html(p['title_b'])}",
+                  f"  <i>схожість {p['sim']} · строк {pp.fmt_date(p['deadline'])}"
+                  f"</i> — <code>/promise_merge {p['a']} {p['b']}</code>", ""]
+    lines.append("<i>Зручніше — в апці: /team → Утиліти → Банк тем → «Схоже "
+                 "на дублі». Там видно цитати обох.</i>")
+    await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML",
+                        disable_web_page_preview=True)
+
+
+async def promise_merge_handler(update, context):
+    """/promise_merge <що лишається> <дубль> — склеїти ланцюг."""
+    if not _allowed(update):
+        return
+    args = context.args or []
+    if len(args) < 2 or not all(a.isdigit() for a in args[:2]):
+        await update.message.reply_text(
+            "Використання: /promise_merge &lt;id що лишається&gt; &lt;id дубля&gt;\n"
+            "Кандидатів показує /promise_dupes", parse_mode="HTML")
+        return
+    keep, dup = int(args[0]), int(args[1])
+    who = update.effective_user.full_name if update.effective_user else None
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                result = pp.merge_commitments(cur, keep, dup, who=who)
+            conn.commit()
+            return result
+        finally:
+            conn.close()
+
+    result = await asyncio.to_thread(run)
+    if not result:
+        await update.message.reply_text("Однієї з обіцянок немає (або id однакові).")
+        return
+    await update.message.reply_text(
+        f"🦊 Склеїв: {result['revisions']} ревізій з {dup} перейшли в {keep}.\n"
+        f"Дивитись: /promise_show {keep}\n"
+        f"Відкат: /promise_restore {result['purge_id']}")
+
+
 # ---------- /promise_prune_who — чистка за обіцяльником ----------
 #
 # Друга вісь. Регіон ловить рубрику, а не зміст: «Зеленський пообіцяв виплати

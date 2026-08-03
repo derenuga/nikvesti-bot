@@ -1309,6 +1309,99 @@ async def api_todo_delete(request):
     return web.json_response({"ok": True})
 
 
+# ---------- Банк тем ----------
+#
+# Читає ВЖЕ зібране: черга, картка з ланцюгом і окремо дублі. Нора тут єдина
+# БД (сайтова не потрібна), тож блок деградує сам по собі — без нори екран
+# скаже «банк порожній», а не завалить решту апки.
+#
+# Дії розкладені за роллю рівно так, як у §6: «Перевірили» доступне обом,
+# злиття дублів і «не наша тема» — менеджерські (обидві незворотні на вигляд,
+# хоч і лежать у журналі), «Взяти в роботу» — журналістський шлях через
+# погодження.
+
+async def api_promises(request):
+    await _authenticate(request)
+    from handlers import promise_app
+
+    cls = request.query.get("cls") or None
+    q = (request.query.get("q") or "").strip() or None
+    try:
+        offset = max(0, int(request.query.get("offset", "0")))
+    except ValueError:
+        offset = 0
+    return web.json_response(
+        await asyncio.to_thread(promise_app.queue, cls, q, offset))
+
+
+async def api_promise_card(request):
+    await _authenticate(request)
+    from handlers import promise_app
+
+    data = await asyncio.to_thread(promise_app.card, int(request.match_info["cid"]))
+    if not data:
+        raise web.HTTPNotFound(text="Обіцянки немає")
+    return web.json_response(data)
+
+
+async def api_promise_check(request):
+    person, _, _ = await _authenticate(request)
+    from handlers import promise_app
+
+    ok = await asyncio.to_thread(
+        promise_app.check, int(request.match_info["cid"]), person)
+    if not ok:
+        raise web.HTTPNotFound(text="Обіцянки немає")
+    return web.json_response({"ok": True})
+
+
+async def api_promise_take(request):
+    person, _, _ = await _authenticate(request)
+    from handlers import promise_app
+
+    data = await asyncio.to_thread(
+        promise_app.take, int(request.match_info["cid"]), person)
+    if not data:
+        raise web.HTTPNotFound(text="Обіцянки немає")
+    return web.json_response(data)
+
+
+async def api_promise_drop(request):
+    person, _, _ = await _require_manager(request)
+    from handlers import promise_app
+
+    payload = await _json(request)
+    data = await asyncio.to_thread(
+        promise_app.drop, int(request.match_info["cid"]), person,
+        (payload.get("reason") or "").strip() or None)
+    if not data:
+        raise web.HTTPNotFound(text="Обіцянки немає")
+    return web.json_response({"ok": True, "purge_id": data["purge_id"]})
+
+
+async def api_promise_dupes(request):
+    await _authenticate(request)
+    from handlers import promise_app
+
+    return web.json_response(await asyncio.to_thread(promise_app.dupes))
+
+
+async def api_promise_merge(request):
+    person, _, _ = await _require_manager(request)
+    from handlers import promise_app
+
+    payload = await _json(request)
+    try:
+        dup_id = int(payload.get("dup_id"))
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="Немає dup_id")
+    data = await asyncio.to_thread(
+        promise_app.merge, int(request.match_info["cid"]), dup_id, person)
+    if not data:
+        raise web.HTTPNotFound(text="Однієї з обіцянок немає")
+    return web.json_response({"ok": True, **data})
+
+
 # ---------- Імпакт-архів ----------
 #
 # Журнал впливу редакції для донорських звітів (Олег, 29.07: «мені постійно
@@ -1698,6 +1791,13 @@ async def start_webapp(application):
         web.patch("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_patch),
         web.delete("/api/kpi/norms/{norm_id:\\d+}", api_kpi_norm_delete),
         web.put("/api/kpi/override", api_kpi_override),
+        web.get("/api/promises", api_promises),
+        web.get("/api/promises/dupes", api_promise_dupes),
+        web.get("/api/promises/{cid:\\d+}", api_promise_card),
+        web.post("/api/promises/{cid:\\d+}/check", api_promise_check),
+        web.post("/api/promises/{cid:\\d+}/take", api_promise_take),
+        web.post("/api/promises/{cid:\\d+}/drop", api_promise_drop),
+        web.post("/api/promises/{cid:\\d+}/merge", api_promise_merge),
         web.static("/static", _STATIC_DIR),
     ])
     runner = web.AppRunner(app)

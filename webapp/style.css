@@ -1703,3 +1703,213 @@ body.dark .aw-chip.k-trip { background: #199e70; }
 }
 .tl-mark.static.late { background: var(--red); }
 .tl-mark.static .ic { width: 12px; height: 12px; }
+
+/* ---------- Банк тем ---------- */
+/* Два нових токени поверх системи: --stale (давно не питали) і --ghost
+   (обіцянка, яку перевірити нічим — вона рахується, але не дзвонить). Решта
+   кольорів уже є, бо клас перевірки лягає на ту саму шкалу, що дедлайни. */
+:root { --stale: #7a6ab8; --stale-soft: rgba(122, 106, 184, .13);
+        --ghost: #6a7f96; --ghost-soft: rgba(106, 127, 150, .12); }
+body.dark { --stale: #a596e0; --stale-soft: rgba(165, 150, 224, .18);
+            --ghost: #93a8bd; --ghost-soft: rgba(147, 168, 189, .16); }
+
+.pr-q {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: var(--sky); border-radius: 14px; padding: 10px 12px;
+  font-size: 13.5px; color: var(--muted); margin-bottom: 12px;
+}
+.pr-q b { color: var(--ink); }
+.pr-q-m { flex-basis: 100%; font-size: 12.5px; }
+.pr-q-x { margin-left: auto; color: var(--muted); display: flex; }
+
+#pr-facets { margin-bottom: 14px; }
+#pr-facets .chip b { font-variant-numeric: tabular-nums; }
+
+/* Вхід у дублі стоїть НАД чергою: 473 обіцянки за місяць — число завищене,
+   і перше, що треба зробити зі списком, це склеїти те, що розʼїхалось. */
+.pr-dupes {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: var(--card); border-radius: 15px; box-shadow: var(--shadow);
+  padding: 12px 14px; margin-bottom: 14px; font-size: 14px; color: var(--ink);
+}
+.pr-dupes .ic { width: 18px; height: 18px; color: var(--blue); flex: none; }
+.pr-dupes .chev { margin-left: auto; color: var(--muted); }
+.pr-dupes-m { font-size: 12.5px; color: var(--muted); flex-basis: 100%; }
+
+/* Смуга кольору кодує СПОСІБ перевірки, а не важливість. Тому «перевірити
+   нічим» сіре (воно ніколи не дзвонить), а не червоне. */
+.pr-item {
+  position: relative; overflow: hidden; background: var(--card);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 13px 14px 12px 16px; margin-bottom: 12px;
+  display: flex; flex-direction: column; gap: 7px; text-align: left; width: 100%;
+}
+.pr-item::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 4px;
+  background: var(--sev, var(--line));
+}
+.overdue { --sev: var(--red); }
+.soon    { --sev: var(--warn); }
+.waiting { --sev: var(--blue); }
+.stale   { --sev: var(--stale); }
+.noproof { --sev: var(--ghost); }
+
+.pr-row1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pr-state {
+  font-size: 11.5px; font-weight: 700; letter-spacing: .02em;
+  padding: 3px 8px; border-radius: 7px; white-space: nowrap;
+  color: var(--muted); background: var(--fill);
+}
+.overdue .pr-state { color: var(--red); background: var(--red-soft); }
+.soon .pr-state    { color: var(--warn); background: rgba(207, 122, 28, .13); }
+.waiting .pr-state { color: var(--blue); background: var(--blue-soft); }
+.stale .pr-state   { color: var(--stale); background: var(--stale-soft); }
+.noproof .pr-state { color: var(--ghost); background: var(--ghost-soft); }
+
+/* Зелене — не «добре», а ДЕШЕВО перевірити: огорожа за десять хвилин пішки
+   цінніша для швидкого фоллоу-апу за мільйонну обіцянку. */
+.pr-how {
+  font-size: 11.5px; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 7px; padding: 2px 7px; white-space: nowrap;
+}
+.pr-how.cheap { color: var(--good); border-color: var(--good); background: var(--good-soft); }
+
+.pr-title { font-size: 15.5px; font-weight: 600; line-height: 1.3; }
+.pr-who { font-size: 13px; color: var(--muted); }
+.pr-who b { color: var(--ink); font-weight: 600; }
+.pr-quote {
+  font-size: 13.5px; line-height: 1.4;
+  border-left: 2px solid var(--line); padding: 1px 0 1px 10px;
+}
+.pr-meta {
+  font-size: 12px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pr-bounds { font-size: 12.5px; color: var(--muted); text-align: center; padding: 18px 0 4px; }
+.pr-more {
+  display: block; width: 100%; padding: 13px; border-radius: 15px;
+  background: var(--card); box-shadow: var(--shadow);
+  font-size: 14.5px; font-weight: 700; color: var(--blue);
+}
+
+/* Мітка популізму ЗАВЖДИ разом із підставою: без переліку порожніх полів це
+   ярлик на людині, а не факт про текст. */
+.pr-pop { display: flex; flex-direction: column; gap: 3px; }
+.pr-pop-tag {
+  align-self: flex-start; font-size: 11.5px; font-weight: 700;
+  padding: 3px 9px; border-radius: 7px;
+  color: var(--stale); background: var(--stale-soft);
+}
+.pr-pop-why { font-size: 12.5px; color: var(--muted); }
+.pr-pop-note { font-size: 12px; color: var(--muted); font-style: italic; }
+
+/* ---------- картка обіцянки ---------- */
+
+.pr-detail {
+  position: relative; overflow: hidden; background: var(--card);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 16px 16px 16px 18px; margin-top: 8px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.pr-detail::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 4px;
+  background: var(--sev, var(--line));
+}
+.pr-dtitle { font-size: 19px; font-weight: 700; line-height: 1.25; }
+.pr-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.pr-tag {
+  font-size: 11.5px; padding: 3px 8px; border-radius: 7px;
+  background: var(--fill); color: var(--muted);
+}
+.pr-tag.danger { background: var(--red-soft); color: var(--red); font-weight: 700; }
+.pr-field { font-size: 13.5px; }
+.pr-field b { font-weight: 600; }
+.pr-dim { color: var(--muted); }
+
+/* Ланцюг — головне в картці: обіцянку переносять тихо, і довести це можна
+   лише двома датами поруч із двома цитатами. */
+.pr-chain { display: flex; flex-direction: column; margin-top: 2px; }
+.pr-step {
+  display: grid; grid-template-columns: 68px 1fr; gap: 10px;
+  position: relative; padding-bottom: 16px;
+}
+.pr-step:last-child { padding-bottom: 0; }
+.pr-step::before {
+  content: ""; position: absolute; left: 73px; top: 18px; bottom: 0;
+  width: 2px; background: var(--line);
+}
+.pr-step:last-child::before { display: none; }
+.pr-when {
+  font-size: 12px; color: var(--muted); text-align: right; padding-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.pr-sbody { position: relative; padding-left: 16px; }
+.pr-sbody::before {
+  content: ""; position: absolute; left: -5px; top: 5px; width: 11px; height: 11px;
+  border-radius: 50%; background: var(--card); border: 2px solid var(--line);
+}
+.pr-step.firm .pr-sbody::before { border-color: var(--blue); background: var(--blue); }
+.pr-step.broken .pr-sbody::before { border-color: var(--red); background: var(--red); }
+.pr-sbody p { font-size: 13.5px; }
+.pr-src { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.pr-src a { color: var(--blue); }
+.pr-mod {
+  font-size: 11px; font-weight: 700; letter-spacing: .03em;
+  text-transform: uppercase; color: var(--muted);
+}
+.pr-step.firm .pr-mod { color: var(--blue); }
+.pr-step.broken .pr-mod { color: var(--red); }
+
+.pr-sib-h { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.pr-sib-r {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  font-size: 13.5px; color: var(--ink); padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.pr-sib-r .chev { margin-left: auto; color: var(--muted); }
+
+.pr-act { display: flex; gap: 8px; }
+.pr-act .sbtn {
+  flex: 1; text-align: center; border-radius: 15px; padding: 13px;
+  font-weight: 700; font-size: 15px; background: var(--fill); color: var(--ink);
+}
+.pr-act .sbtn.primary { background: var(--blue); color: var(--blue-fg); }
+.pr-act .sbtn:disabled { opacity: .5; }
+.pr-note {
+  font-size: 12.5px; color: var(--muted); background: var(--sky);
+  border-radius: 12px; padding: 10px 12px;
+}
+.pr-note b { color: var(--ink); }
+.pr-drop {
+  width: 100%; padding: 11px; border-radius: 14px; font-size: 13.5px;
+  font-weight: 700; color: var(--red); background: var(--red-soft);
+}
+
+/* ---------- дублі ---------- */
+
+.dp-pair {
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 14px; margin-bottom: 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.dp-side {
+  position: relative; padding-left: 12px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.dp-side::before {
+  content: ""; position: absolute; inset: 2px auto 2px 0; width: 3px;
+  border-radius: 2px; background: var(--sev, var(--line));
+}
+.dp-state { font-size: 11.5px; font-weight: 700; color: var(--muted); }
+.dp-title { font-size: 14.5px; font-weight: 600; line-height: 1.3; }
+.dp-open { align-self: flex-start; font-size: 12.5px; font-weight: 700; color: var(--blue); }
+.dp-mid {
+  font-size: 11.5px; color: var(--muted); text-align: center;
+  border-top: 1px dashed var(--line); padding-top: 8px;
+}
+.dp-act { display: flex; gap: 8px; }
+.dp-act .sbtn {
+  flex: 1; text-align: center; border-radius: 14px; padding: 11px;
+  font-weight: 700; font-size: 13.5px; background: var(--fill); color: var(--ink);
+}
+.dp-act .sbtn:disabled { opacity: .5; }
