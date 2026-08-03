@@ -99,13 +99,18 @@ def _load(since, limit):
 
 
 async def scan(days=DEFAULT_DAYS, limit=MAX_PAIRS, on_progress=None):
-    """Прогін детектора. Повертає (закрито ботом, у чергу Каті, переглянуто)."""
+    """Прогін детектора.
+
+    Повертає (закрито, у чергу, переглянуто, розклад вердиктів). Розклад —
+    не прикраса: без нього «0 з 60» однаково читається і як чесна робота
+    скупого судді, і як шістдесят мовчазних збоїв моделі.
+    """
     if not bot_db.is_configured() or not os.environ.get("ANTHROPIC_API_KEY"):
-        return 0, 0, 0
+        return 0, 0, 0, {}
     since = int(time.time()) - int(days) * 86400
     pairs = await asyncio.to_thread(_load, since, limit)
     if not pairs:
-        return 0, 0, 0
+        return 0, 0, 0, {}
 
     sem = asyncio.Semaphore(pj.CONCURRENCY)
     done_n = 0
@@ -159,7 +164,12 @@ async def scan(days=DEFAULT_DAYS, limit=MAX_PAIRS, on_progress=None):
     closed, queued = await asyncio.to_thread(apply)
     if queued:
         await asyncio.to_thread(_notify, queued)
-    return len(closed), len(queued), len(judged)
+    breakdown = {}
+    for p in judged:
+        v = p.get("verdict")
+        key = "збій" if not v else f"{v.get('state')}/{v.get('confidence')}"
+        breakdown[key] = breakdown.get(key, 0) + 1
+    return len(closed), len(queued), len(judged), breakdown
 
 
 def _notify(queued):
@@ -199,7 +209,7 @@ async def hourly(bot):
     нічого не розсилає в канал, а помилка відкатна.
     """
     try:
-        closed, queued, _seen = await scan()
+        closed, queued, _seen, _by = await scan()
         if closed:
             print(f"банк тем: закрито за фактом виконання — {closed}, "
                   f"у чергу Каті — {queued}")
@@ -225,7 +235,7 @@ async def promise_fulfil_handler(update, context):
         await msg.edit_text(f"🦊 Дивлюсь: {done} з {total}…")
 
     try:
-        closed, queued, seen = await scan(days, on_progress=progress)
+        closed, queued, seen, by = await scan(days, on_progress=progress)
     except Exception as e:
         await msg.edit_text(f"❌ Не вийшло: {type(e).__name__}: {e}")
         return
@@ -235,13 +245,22 @@ async def promise_fulfil_handler(update, context):
             f"якому щось обіцяли. Це нормально: збіг рахується по картці "
             f"сутності, а не по словах.")
         return
+    # Розклад вердиктів у звіті обов'язковий: «0 з 60» без нього однаково
+    # читається і як чесна робота скупого судді, і як шістдесят мовчазних
+    # збоїв моделі.
+    lines = " · ".join(f"{k}: {v}" for k, v in sorted(by.items()))
+    broke = by.get("збій", 0)
     await msg.edit_text(
         f"🦊 <b>Ознаки виконання</b>\n\n"
         f"Перевірено пар: {seen}\n"
         f"Закрито ботом (впевнено): <b>{closed}</b>\n"
         f"Пішло Каті на підтвердження: <b>{queued}</b>\n\n"
-        f"<i>Закрите лежить у фасеті «Перевірені» з лінком на новину, яка це "
-        f"довела. Відкат — /promise_reopen &lt;id&gt;.</i>",
+        f"<code>{escape_html(lines)}</code>\n"
+        + (f"\n⚠️ Модель не відповіла на {broke} — дивись логи Railway.\n"
+           if broke else "")
+        + f"\n<i>«none» означає, що новина про цей об'єкт є, але про виконання "
+          f"не каже — суддя навмисно скупий. Закрите лежить у «Перевірені» з "
+          f"лінком на новину-доказ, відкат — /promise_reopen &lt;id&gt;.</i>",
         parse_mode="HTML")
 
 
