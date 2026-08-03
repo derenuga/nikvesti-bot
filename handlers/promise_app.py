@@ -283,15 +283,20 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
                 rows = pp.list_queue(cur, cls="closed", limit=None, now=now)
             else:
                 rows = pp.list_queue(cur, limit=None, now=now)
+            # Згортаємо в ТЕМИ до підрахунку фасетів: числа мусять означати
+            # те саме, що показує список, інакше фасет каже «52», а на екрані
+            # 30 рядків, і довіри до чисел більше немає.
+            rows = pp.group_by_topic(rows)
             counts = pp.facet_counts(rows)
             counts["populism"] = sum(1 for r in rows if r.get("populism"))
             counts["all"] = len(rows)
             # «З моїх новин» і «Перевірені» рахуються окремими запитами: перше
             # звужує вибірку іншою умовою, друге бере зовсім інший статус.
             if author_id:
-                counts["mine"] = len(pp.list_queue(
-                    cur, limit=None, now=now, author_id=author_id))
-            counts["closed"] = len(pp.list_queue(cur, cls="closed", limit=None, now=now))
+                counts["mine"] = len(pp.group_by_topic(pp.list_queue(
+                    cur, limit=None, now=now, author_id=author_id)))
+            counts["closed"] = len(pp.group_by_topic(
+                pp.list_queue(cur, cls="closed", limit=None, now=now)))
             fresh_since = now - FRESH_DAYS * 86400
             counts["fresh"] = sum(1 for r in rows
                                   if (r.get("first_seen") or 0) >= fresh_since)
@@ -304,7 +309,8 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
                                if (r.get("first_seen") or 0) >= fresh_since),
                               key=lambda r: -(r.get("first_seen") or 0))
             elif cls == "mine" and author_id:
-                rows = pp.list_queue(cur, limit=None, now=now, author_id=author_id)
+                rows = pp.group_by_topic(
+                    pp.list_queue(cur, limit=None, now=now, author_id=author_id))
             elif cls and cls not in ("all", "closed"):
                 rows = [r for r in rows if r["class"] == cls]
             total = len(rows)
@@ -320,6 +326,10 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
                 it = _item(r, rev, now)
                 it["author"] = authors.get(aid)
                 it["image"] = images.get(aid)
+                # Скільки ще зобов'язань у цій темі — щоб рядок чесно казав,
+                # що за ним стоїть історія, а не одна заява.
+                if (r.get("topic_size") or 1) > 1:
+                    it["more"] = r["topic_size"] - 1
                 items.append(it)
             bounds = pp.data_bounds(cur)
             dupes = pp.dupe_count(cur)

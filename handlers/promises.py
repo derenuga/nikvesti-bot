@@ -197,6 +197,13 @@ def format_item(row, rev=None, n=None, now=None):
         head += f" · {how}"
     lines = [f"<b>{n}.</b> {head}" if n else head,
              f"<b>{escape_html(row['title'] or '—')}</b>"]
+    # Рядок черги — це ПИТАННЯ, а не заява: два кроки однієї справи стоять
+    # одним рядком, і він має чесно казати, що за ним стоїть історія.
+    more = (row.get("topic_size") or 1) - 1
+    if more > 0:
+        lines.append(f"<i>ще {more} "
+                     f"{pp.plural(more, 'зобовʼязання', 'зобовʼязання', 'зобовʼязань')}"
+                     f" у цій темі</i>")
     who = _who_text(row, rev)
     if who:
         lines.append(who)
@@ -317,6 +324,10 @@ def _queue_payload(arg):
             else:
                 all_rows = pp.list_queue(cur, limit=None)
                 rows = all_rows
+            # У ТЕМИ — так само, як в апці: черга це список питань, а не
+            # заяв, і два екрани не мають рахувати по-різному.
+            all_rows = pp.group_by_topic(all_rows)
+            rows = pp.group_by_topic(rows)
             counts = pp.facet_counts(all_rows)
             head = rows[:QUEUE_PAGE]
             # Перша ревізія кожної обіцянки — джерело цитати для картки

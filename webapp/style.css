@@ -1910,6 +1910,10 @@ body.dark { --stale: #a596e0; --stale-soft: rgba(165, 150, 224, .18);
 .dp-open { align-self: flex-start; font-size: 12.5px; font-weight: 700; color: var(--blue); }
 /* Лінк на статтю в парі дублів: приглушений, щоб не сперечався з
    «Відкрити картку», але клікабельний без заходу в картку. */
+/* «ще N зобовʼязання в цій темі» — рядок черги це ПИТАННЯ, а не заява:
+   земельна комісія й погодження КП «Свій дім» це одна справа з двома
+   кроками, і показувати їх двома рядками означає показувати 400 замість 150. */
+.pr-more-n { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
 .dp-src { font-size: 12.5px; color: var(--muted); text-decoration: none;
           border-bottom: 1px solid var(--line); align-self: flex-start; }
 .dp-mid {

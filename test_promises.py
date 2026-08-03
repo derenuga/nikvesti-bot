@@ -1606,6 +1606,69 @@ def test_reminders():
     check("у TEAM немає нотаток замість тегів", not bad, str(bad))
 
 
+def test_topic_grouping():
+    """Черга — це список ПИТАНЬ, а не заяв.
+
+    Олег, 03.08: «мені не потрібно 400 обіцянок на місяць, це спам», і про
+    пару «розглянути на земельній комісії» / «надати погодження КП "Свій дім"»
+    — «це історія одного питання, а не різних». Обидва зобов'язання
+    справжні й різні (різні дії, різні виконавці), тож зливати їх не можна —
+    але в черзі вони мусять стояти ОДНИМ рядком.
+    """
+    from handlers import promise_app as pa
+
+    conn = ep.connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            cur.execute("DELETE FROM topics")
+
+            def put(aid, title, quote, subject, deadline="2026-09-01"):
+                p = pp.prepare(cur, case_item(
+                    320276, title=title, quote=quote, subject=subject,
+                    objects=[], promiser="міськрада Миколаєва",
+                    deadline=deadline))
+                return pp.record(cur, {"id": aid, "published": 1780000000,
+                                       "title_ua": f"Стаття {aid}"}, p)[0]
+
+            # Дві РІЗНІ дії щодо одного предмета — один предмет, одна тема
+            a = put(710101, "Розглянути на земельній комісії питання про землю "
+                            "під модульні будинки на пр. Богоявленському",
+                    "Але питання знов мають розглянути на земельній комісії",
+                    "земля під модульні будинки на пр. Богоявленському")
+            b = put(710102, "Надати КП «Свій дім» погодження на розробку "
+                            "документації для виділення землі",
+                    "погодження для розробки документації вже планують дати "
+                    "Департаменту житлово-комунального господарства",
+                    "земля під модульні будинки на пр. Богоявленському")
+            c = put(710103, "Відремонтувати дорогу на Намиві",
+                    "Дорогу на Намиві обіцяють відремонтувати до вересня",
+                    "дорога на Намиві")
+
+            rows = pp.list_queue(cur, limit=None)
+            check("зобов'язання лишаються РІЗНИМИ записами — зливати не можна",
+                  len({a, b, c} & {r["id"] for r in rows}) == 3, str(len(rows)))
+
+            topics = pp.group_by_topic(rows)
+            ids = {r["id"] for r in topics}
+            check("два кроки однієї справи згортаються в ОДИН рядок черги",
+                  len(topics) == 2, str([r["title"][:40] for r in topics]))
+            check("рядок теми підписаний, скільки за ним стоїть",
+                  any(r.get("topic_size") == 2 for r in topics),
+                  str([r.get("topic_size") for r in topics]))
+            check("окрема справа лишається окремим рядком", c in ids, str(ids))
+
+            head = next(r for r in topics if r.get("topic_size") == 2)
+            check("рядок теми несе найтерміновіше з її зобов'язань",
+                  head["priority"] == max(r["priority"] for r in rows
+                                          if r["id"] in (a, b)),
+                  str(head["priority"]))
+    finally:
+        conn.close()
+
+
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
     формулювання розійдуться з чатом за три тижні."""
@@ -1663,6 +1726,7 @@ def main():
     test_author_filter()
     test_fresh_facet()
     test_reminders()
+    test_topic_grouping()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")

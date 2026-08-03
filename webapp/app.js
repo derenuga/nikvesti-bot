@@ -3108,6 +3108,9 @@ function promiseCard(p) {
         ${p.how ? `<span class="pr-how${p.cheap ? " cheap" : ""}">${esc(p.how)}</span>` : ""}
       </div>
       <div class="pr-title">${esc(p.title)}</div>
+      ${p.more ? `<div class="pr-more-n">${
+        p.more === 1 ? "ще 1 зобовʼязання в цій темі"
+                     : `ще ${p.more} зобовʼязання в цій темі`}</div>` : ""}
       ${p.image ? `<img class="pr-img" src="${esc(p.image)}" alt="" loading="lazy"
         onerror="this.remove()">` : ""}
       ${who ? `<div class="pr-who">${who}</div>` : ""}
