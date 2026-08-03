@@ -58,7 +58,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from handlers import db, storage
-from handlers.stat import get_fb_stats
+from handlers.stat import get_fb_stats, known_fb_post_alive
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -123,7 +123,14 @@ def _fb_status(row):
     """'missing' | 'present' | 'unknown'. Логіка пошуку — та сама, що /stat
     (get_fb_stats). 'unknown' при помилці/ліміті Graph API — тоді НЕ алертимо
     і НЕ позначаємо баченою (перепробуємо наступної години), бо помилка API ≠
-    «поста немає»."""
+    «поста немає».
+
+    Перед тим як сказати «missing», питаємо ДРУГЕ джерело — індекс Нори
+    (known_fb_post_alive). Урок 03.08.2026: Graph API мовчки віддав список
+    БЕЗ поста, помилки не було, і редакція отримала алерт про новину, пост про
+    яку висів три години. Пошук у стрічці може обірватись знову — а тут ми вже
+    знаємо id і перевіряємо його прямо, тож застарілими даними це не стане:
+    з Нори береться лише id, живість підтверджує сам Facebook."""
     url = _article_url(row)
     article_id = str(row["id"])
     try:
@@ -137,7 +144,15 @@ def _fb_status(row):
         return "unknown"
     if error:
         return "unknown"
-    return "present" if fb_stats else "missing"
+    if fb_stats:
+        return "present"
+
+    known = known_fb_post_alive(article_id)
+    if known:
+        print(f"fb_missing: {article_id} — живий пошук порожній, але пост {known} "
+              f"з індексу Нори підтвердився; редакцію не смикаємо")
+        return "present"
+    return "missing"
 
 
 # ---------- Сторінка статті: чи настав час, чернетка ----------
