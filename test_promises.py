@@ -1103,6 +1103,18 @@ def test_export_and_fix_packet():
     check("причина drop доїжджає", actions[2][3] == "не наша тема", str(actions[2]))
     check("нерозібране НЕ ковтається мовчки", errors == ["казна-що"], str(errors))
 
+    # Повторне застосування пакета: злиття, чиєї програшної картки вже немає,
+    # це «вже зроблено», а не збій. Формулювання «⚠️ пропущено 14» одного разу
+    # відправило Олега шукати поломку там, де все відпрацювало з першого разу.
+    conn = ep.connect()
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM commitments WHERE id = 999998")
+        gone = cur.fetchone()[0] == 0
+    conn.close()
+    check("злиття з неіснуючим дублем відрізняється від збою",
+          gone, "тестова картка 999998 не має існувати")
+
     ids = [r["id"] for r in rows[:2]]
     lines, counts, missing = ph.describe_fixes(
         [("merge", ids[0], ids[1], None), ("drop", 999999, None, None)])

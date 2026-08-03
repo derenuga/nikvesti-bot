@@ -1046,13 +1046,24 @@ async def promises_fix_callback(update, context):
         try:
             pp.ensure_schema(conn)
             done = {"merge": 0, "keep": 0, "drop": 0, "check": 0, "title": 0}
-            skipped = []
+            skipped, already = [], 0
             with conn.cursor() as cur:
                 run_id = pp.next_run(cur)
                 for verb, a, b, note in actions:
                     try:
                         if verb == "merge":
                             ok = pp.merge_commitments(cur, a, b, who=who, run=run_id)
+                            if not ok:
+                                # Пакет ідемпотентний, і найчастіша причина
+                                # «не спрацювало» — його вже застосували:
+                                # програшної картки просто немає. Це не збій,
+                                # і лякати ним не можна, інакше людина почне
+                                # шукати поломку там, де все зроблено.
+                                cur.execute("SELECT 1 FROM commitments WHERE id = %s",
+                                            (b,))
+                                if not cur.fetchone():
+                                    already += 1
+                                    continue
                         elif verb == "keep":
                             ok = pp.reject_pair(cur, a, b, who)
                         elif verb == "title":
@@ -1072,12 +1083,12 @@ async def promises_fix_callback(update, context):
                     else:
                         skipped.append(f"{verb} {a}")
             conn.commit()
-            return run_id, done, skipped
+            return run_id, done, skipped, already
         finally:
             conn.close()
 
     try:
-        run_id, done, skipped = await asyncio.to_thread(run)
+        run_id, done, skipped, already = await asyncio.to_thread(run)
     except Exception as e:
         await query.edit_message_text(f"❌ Не виконалось: {e}")
         return
@@ -1085,6 +1096,9 @@ async def promises_fix_callback(update, context):
             f"прибрав {done['drop']} · переназвав {done['title']} · "
             f"позначив {done['check']}.\n"
             f"Відкат усього пакета: /promise_prune_undo {run_id}")
+    if already:
+        text += (f"\n\n✔️ {already} злиттів уже було зроблено раніше — "
+                 f"пакет ідемпотентний, повторний прогін нічого не ламає.")
     if skipped:
         text += f"\n\n⚠️ пропущено {len(skipped)}: " + ", ".join(skipped[:5])
     await query.edit_message_text(text)
