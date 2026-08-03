@@ -1235,11 +1235,29 @@ async def promise_glitches_handler(update, context):
         lines.append("")
     lines.append(f"Цитат лагодиться автоматично: <b>{len(fixable)}</b>")
     if manual:
-        lines.append(f"Назв доведеться правити руками або /promise_retest: "
-                     f"<b>{len(manual)}</b>")
+        lines.append(f"Назв доведеться правити руками: <b>{len(manual)}</b> — "
+                     f"кидаю файлом нижче.")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         f"Полагодити {len(fixable)} цитат", callback_data="pgl:go")]]) if fixable else None
     await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML", reply_markup=kb)
+    if not manual:
+        return
+    # Биту НАЗВУ автоматично не полагодити, і лишати людину з питанням «а що
+    # тепер натискати» — теж не діло. Тому одразу файл того самого формату,
+    # що /promise_vague: правиш рядок і кидаєш назад.
+    out = ["# promises-fix",
+           "# Ієрогліф стоїть замість українського слова (電 «електро»,",
+           "# 續/続 «триває»). Перепиши назву після id — цитата поруч підкаже,",
+           "# про що йшлося, — і надішли файл назад.", ""]
+    for r in manual:
+        out += [f"# цитата: {(r['quote'] or '')[:200]}",
+                f"# стаття: {r['article_id']}",
+                f"title {r['commitment_id']} {r['title']}", ""]
+    await update.message.reply_document(
+        document=BytesIO("\n".join(out).encode("utf-8")),
+        filename="promise-glitch-titles.txt",
+        caption="Правиш рядки <code>title …</code> і кидаєш назад.",
+        parse_mode="HTML")
 
 
 async def promise_glitches_callback(update, context):
