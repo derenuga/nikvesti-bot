@@ -21,6 +21,7 @@ from handlers.archive_mirror import run_archive_sync
 from handlers.budget_snapshots import run_snapshot_check
 from handlers.entity_layer import sync_entities_incremental
 from handlers.promises import sync_promises_incremental
+from handlers.promise_reminders import daily as promise_daily_reminders
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
 from handlers.usage_report import send_daily_usage_report
@@ -303,6 +304,11 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # години: витяг обіцянок резолвить предмет і обіцяльника в картки, і без
     # них ланцюг із темою зшиваються гірше (опт-ін /promise_increment_on)
     scheduler.add_job(sync_promises_incremental, "cron", minute=25, args=[bot])
+    # Нагадування банку тем у «винюхав» — 09:10, у тиші між захватом
+    # аналітики (09:00) і звітом про користування (09:25). Понеділок додає
+    # «давно не питали»: недатовані обіцянки нікуди не біжать, а щоденне їх
+    # повторення привчає гортати не читаючи.
+    scheduler.add_job(promise_daily_reminders, "cron", hour=9, minute=10, args=[bot])
     # Місячні снапшоти бюджету зі сторінки міськради — щодня об 11:20
     # (публікують на початку місяця нерегулярно; перевірка дешева, тиха,
     # коли нового немає; тихо пропускається без BOT_DATABASE_URL)
