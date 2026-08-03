@@ -180,13 +180,29 @@ def _fetch_article_context(article_url):
 
 # ---------- Facebook ----------
 
+# Поля ЛИСТИНГУ — навмисно без залученості (реакції/коменти/шери).
+# Перевірено на живому API 03.08.2026, те саме вікно й той самий токен:
+#   id,message,created_time                          → 18 постів
+#   + attachments{...}                               → 18 постів
+#   + reactions.summary,comments.summary,shares      → 17 постів
+# Зайвим був пост 1710649447730196 (16:21 Київ, матеріал 321935): Facebook
+# МОВЧКИ викидає елемент зі списку, коли на нього просять важку залученість —
+# без помилки, без будь-якої ознаки. Для бота це виглядало як «поста немає»,
+# і редакція отримала фальшивий алерт fb_missing про пост, що висів 3 години.
+# Тому залученість тягнемо окремо і лише для ЗНАЙДЕНОГО поста (_get_post_engagement).
+POST_LIST_FIELDS = (
+    "id,message,story,permalink_url,created_time,"
+    "attachments{media_type,target,url,unshimmed_url}"
+)
+
+
 def _get_fb_posts(since_ts, until_ts, max_pages=15):
     """Усі пости у вікні [since, until] з пагінацією. FB віддає по 100 і
     найновіші перші — без гортання старий край вікна (де і лежить пост
     про давню статтю) не потрапляє у вибірку."""
     url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/posts"
     params = {
-        "fields": "id,message,story,permalink_url,created_time,reactions.summary(true),comments.summary(true),shares,attachments{media_type,target,url,unshimmed_url}",
+        "fields": POST_LIST_FIELDS,
         "since": since_ts,
         "until": until_ts,
         "limit": 100,
@@ -216,6 +232,31 @@ def _get_fb_posts(since_ts, until_ts, max_pages=15):
             break
         url, params = next_url, None  # next_url уже містить усі параметри
     return all_posts
+
+def _get_post_engagement(post_id):
+    """Реакції/коментарі/шери ОДНОГО поста окремим запитом за id.
+    Повертає (реакції, коменти, шери); None замість числа, якщо API не
+    відповів — метрика не зійшлась, але сам пост від цього не зникає
+    (у листингу ці ж поля коштували нам пропущеного поста)."""
+    try:
+        data = requests.get(
+            f"https://graph.facebook.com/v25.0/{post_id}",
+            params={"fields": "reactions.summary(true),comments.summary(true),shares",
+                    "access_token": FACEBOOK_PAGE_TOKEN},
+            timeout=15,
+        ).json()
+    except Exception as e:
+        print(f"stat: не вдалось зчитати залученість {post_id} — {e}")
+        return None, None, None
+    if "error" in data:
+        print(f"stat: залученість {post_id} — {data['error'].get('message')}")
+        return None, None, None
+    return (
+        data.get("reactions", {}).get("summary", {}).get("total_count", 0),
+        data.get("comments", {}).get("summary", {}).get("total_count", 0),
+        data.get("shares", {}).get("count", 0),
+    )
+
 
 def _get_post_views(post_id):
     url = f"https://graph.facebook.com/v25.0/{post_id}/insights"
@@ -430,15 +471,18 @@ def get_fb_stats(article_url, article_id, pub_date=None):
         if reel_key_union and (_post_keys(post) & reel_key_union):
             continue
         post_id_short = post["id"].split("_")[1]
+        # Залученість — окремим запитом за id (у листингу її просити не можна,
+        # див. коментар до POST_LIST_FIELDS). Запит рівно один: на знайдений пост
+        reactions, comments, shares = _get_post_engagement(post["id"])
         posts_out.append({
             "type": "post",
             "id": str(post["id"]),  # ключ швидкого шляху /stat (article_stats)
             "permalink": f"https://www.facebook.com/nikvesti/posts/{post_id_short}",
             "date": _fb_date(post.get("created_time")),
             "views": _get_post_views(post["id"]),
-            "reactions": post.get("reactions", {}).get("summary", {}).get("total_count", 0),
-            "comments": post.get("comments", {}).get("summary", {}).get("total_count", 0),
-            "shares": post.get("shares", {}).get("count", 0),
+            "reactions": reactions,
+            "comments": comments,
+            "shares": shares,
         })
 
     return posts_out + reels_out, len(posts), error
@@ -546,6 +590,11 @@ def _short_fb_error(error):
     return f"помилка Facebook API: {error[:150]}"
 
 
+def _num(value):
+    """Число для виводу; '—' якщо метрики немає (API не віддав)."""
+    return "—" if value is None else value
+
+
 def _nora_note(items):
     """Рядок-помітка фолбека: items узяті зі снімка Нори (живе джерело впало)."""
     if items and isinstance(items[0], dict) and items[0].get("nora"):
@@ -609,9 +658,10 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
             lines.append(f'{num}<a href="{item["permalink"]}">{label} від {item["date"]}</a>')
             if item["views"] is not None:
                 lines.append(f'👁 Перегляди: {item["views"]:,}'.replace(",", " "))
-            lines.append(f'❤️ Реакції: {item["reactions"]}')
-            lines.append(f'💬 Коментарі: {item["comments"]}')
-            lines.append(f'🔄 Шери: {item["shares"]}')
+            # None = метрику не віддав API; сам пост при цьому знайдений
+            lines.append(f'❤️ Реакції: {_num(item["reactions"])}')
+            lines.append(f'💬 Коментарі: {_num(item["comments"])}')
+            lines.append(f'🔄 Шери: {_num(item["shares"])}')
         views_known = [it["views"] for it in fb_stats if it["views"] is not None]
         if views_known:
             fb_views_total = sum(views_known)
