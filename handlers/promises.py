@@ -111,8 +111,14 @@ FILTER_WORDS = {
     "подія": "waiting", "події": "waiting", "чекає": "waiting",
     "давно": "stale", "мовчання": "stale",
     "популізм": "noproof", "нічим": "noproof",
+    # «Нові» — не клас черги, а СОРТУВАННЯ за датою виявлення. Решта черги
+    # шикується за терміновістю, і свіжознайдене в ній тоне: обіцянка, знайдена
+    # сьогодні зі строком у грудні, стоїть нижче за прострочену торішню. Це
+    # правильно для роботи й непридатно для «що бот приніс, поки я не дивився».
+    "нові": "__fresh__", "нове": "__fresh__", "свіжі": "__fresh__",
     "усе": None, "все": None,
 }
+FRESH_DAYS = 7
 
 
 def _state_text(row, now):
@@ -295,8 +301,16 @@ def _queue_payload(arg):
             cls = None
             if arg and arg.lower() in FILTER_WORDS:
                 cls = FILTER_WORDS[arg.lower()]
-                rows = pp.list_queue(cur, cls=cls, limit=None)
-                all_rows = rows if cls is None else pp.list_queue(cur, limit=None)
+                if cls == "__fresh__":
+                    cls = None
+                    all_rows = pp.list_queue(cur, limit=None)
+                    since = int(time.time()) - FRESH_DAYS * 86400
+                    rows = sorted(
+                        (r for r in all_rows if (r.get("first_seen") or 0) >= since),
+                        key=lambda r: -(r.get("first_seen") or 0))
+                else:
+                    rows = pp.list_queue(cur, cls=cls, limit=None)
+                    all_rows = rows if cls is None else pp.list_queue(cur, limit=None)
             elif arg:
                 rows, matched = pp.search(cur, arg)
                 all_rows = pp.list_queue(cur, limit=None)
@@ -365,7 +379,7 @@ async def promises_handler(update, context):
     tail = []
     if data["total"] > len(data["rows"]):
         tail.append(f"<i>Показано {len(data['rows'])} з {data['total']}.</i>")
-    tail.append("<i>Фільтри: /promises минув · скоро · подія · давно · популізм\n"
+    tail.append("<i>Фільтри: /promises нові · минув · скоро · подія · давно · популізм\n"
                 "Пошук: /promises Сєнкевич · /promises гімназія</i>")
     await msg.edit_text(_clip("\n\n".join(header + body + tail)),
                         parse_mode="HTML", disable_web_page_preview=True)

@@ -1944,3 +1944,6 @@ body.dark { --stale: #a596e0; --stale-soft: rgba(165, 150, 224, .18);
   border: 1.5px solid var(--line); background: var(--card); color: var(--ink);
   font: inherit; font-size: 14.5px;
 }
+/* Коли обіцянку знайшли. У черзі — лише у фасеті «Нові» (там це головна
+   колонка сортування), у картці — завжди: реєстр без дати запису неповний. */
+.pr-found { font-size: 12px; color: var(--muted); }

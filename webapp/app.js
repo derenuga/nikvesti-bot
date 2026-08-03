@@ -3004,6 +3004,9 @@ const PROMISE_EMPTY = {
   stale: "Забутих тем немає.",
   noproof: "Обіцянок без способу перевірки немає.",
   populism: "Заяв без дати й критерію не знайшлось.",
+  fresh: "За тиждень нових обіцянок не з'явилось.",
+  mine: "З твоїх матеріалів обіцянок поки немає.",
+  closed: "Перевірених ще немає — після походу натисни «Перевірили».",
 };
 
 async function renderPromises() {
@@ -3104,8 +3107,9 @@ function promiseCard(p) {
           <span class="pr-pop-tag">Схоже на популізм</span>
           <span class="pr-pop-why">${esc(p.populism)}</span>
         </div>` : ""}
-      ${p.meta.length || p.author ? `<div class="pr-meta">${
-        [...p.meta, p.author ? "автор: " + p.author : ""]
+      ${p.meta.length || p.author || p.found ? `<div class="pr-meta">${
+        [STATE.promiseFacet === "fresh" ? p.found : "", ...p.meta,
+         p.author ? "автор: " + p.author : ""]
           .filter(Boolean).map(esc).join(" · ")}</div>` : ""}
     </article>`;
 }
@@ -3196,6 +3200,7 @@ async function renderPromise() {
       <div class="pr-dtitle">${esc(p.title)}</div>
       ${p.image ? `<img class="pr-img" src="${esc(p.image)}" alt="" loading="lazy"
         onerror="this.remove()">` : ""}
+      ${p.found ? `<div class="pr-found">${esc(p.found)}</div>` : ""}
       <div class="pr-tags">${(p.tags || []).map((t) =>
         `<span class="pr-tag${t.danger ? " danger" : ""}">${esc(t.text)}</span>`).join("")}</div>
       ${promiseWho(p.who) ? `<div class="pr-who">${promiseWho(p.who)}</div>` : ""}

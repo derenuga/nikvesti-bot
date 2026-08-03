@@ -1316,6 +1316,54 @@ def test_author_filter():
         conn.close()
 
 
+def test_fresh_facet():
+    """«Нові» — сортування за ДАТОЮ ВИЯВЛЕННЯ, а не за терміновістю.
+
+    Питання Олега після ввімкнення щоденного інкремента: «як я побачу нові
+    теми?». У черзі вони тонуть: обіцянка, знайдена сьогодні зі строком у
+    грудні, стоїть нижче за прострочену торішню — і це правильно для роботи,
+    але непридатно для перегляду «що бот приніс».
+    """
+    from handlers import promise_app as pa
+
+    conn = ep.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            art = {"id": 710001, "published": 1780000000, "title_ua": "Стаття"}
+            # стара прострочена (важлива в черзі) і свіжознайдена без строку
+            old_id, _ = pp.record(cur, art, pp.prepare(cur, case_item(
+                320276, quote="Стара обіцянка", deadline="2020-01-01")))
+            new_id, _ = pp.record(cur, art, pp.prepare(cur, case_item(
+                320276, quote="Щойно знайдена", deadline=None,
+                subject="інший об'єкт")))
+            cur.execute("UPDATE commitments SET first_seen = %s WHERE id = %s",
+                        (NOW - 200 * DAY, old_id))
+            cur.execute("UPDATE commitments SET first_seen = %s WHERE id = %s",
+                        (NOW - 3600, new_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    q = pa.queue()
+    facets = dict((f["key"], f["n"]) for f in q["facets"])
+    check("фасет «Нові» рахує лише знайдене за тиждень", facets["fresh"] == 1,
+          str(facets["fresh"]))
+    check("у звичайній черзі першою стоїть ТЕРМІНОВА, а не свіжа",
+          q["items"][0]["id"] == old_id, str(q["items"][0]["id"]))
+
+    fresh = pa.queue(cls="fresh")
+    check("у «Нових» першою стоїть свіжознайдена",
+          fresh["items"] and fresh["items"][0]["id"] == new_id,
+          str([i["id"] for i in fresh["items"]]))
+    check("стара в «Нові» не потрапляє", len(fresh["items"]) == 1,
+          str(len(fresh["items"])))
+    check("дата виявлення підписана словами, а не числом",
+          fresh["items"][0]["found"] == "Знайдено сьогодні",
+          str(fresh["items"][0]["found"]))
+
+
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
     формулювання розійдуться з чатом за три тижні."""
@@ -1323,8 +1371,9 @@ def test_app_payload():
 
     q = pa.queue()
     keys = {f["key"] for f in q["facets"]}
-    check("фасети з числами приїжджають усі", keys == {"all", "mine", "overdue",
-          "soon", "waiting", "stale", "noproof", "populism", "closed"}, str(keys))
+    check("фасети з числами приїжджають усі", keys == {"all", "fresh", "mine",
+          "overdue", "soon", "waiting", "stale", "noproof", "populism",
+          "closed"}, str(keys))
     check("лічильник «усе» збігається з довжиною черги",
           dict((f["key"], f["n"]) for f in q["facets"])["all"] >= q["total"],
           str(q["total"]))
@@ -1370,6 +1419,7 @@ def main():
     test_vague_titles()
     test_check_outcome()
     test_author_filter()
+    test_fresh_facet()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")

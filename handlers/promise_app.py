@@ -32,9 +32,18 @@ from handlers import team_notifications
 # порція має малюватись миттєво — на телефоні 30 карток це вже довгий екран.
 PAGE = 30
 QUOTE_CAP = 260
+# Скільки днів обіцянка вважається «щойно знайденою». Тиждень, бо саме таким
+# кроком редакція переглядає зроблене, і бо щоденний інкремент дає десятки
+# записів — за день їх мало, за місяць уже не переглянеш.
+FRESH_DAYS = 7
 
 FACETS = [
     ("all", "Усе"),
+    # «Нові» окремим входом, бо решта черги сортована за ТЕРМІНОВІСТЮ, і
+    # свіжознайдене в ній тоне: обіцянка, знайдена сьогодні, зі строком у
+    # грудні стоїть нижче за прострочену торішню. Це правильно для роботи й
+    # непридатно для перегляду «що бот приніс».
+    ("fresh", "Нові"),
     ("mine", "З моїх новин"),
     ("overdue", "Строк минув"),
     ("soon", "Скоро"),
@@ -128,6 +137,20 @@ def _who(row, rev=None):
     }
 
 
+def _found_ago(row, now):
+    """«Знайдено сьогодні / вчора / N днів тому» — підпис, без якого фасет
+    «Нові» сортує за невидимим полем."""
+    seen = row.get("first_seen") or 0
+    if not seen:
+        return None
+    days = max(0, (now - int(seen)) // 86400)
+    if days == 0:
+        return "Знайдено сьогодні"
+    if days == 1:
+        return "Знайдено вчора"
+    return f"Знайдено {days} {pp.plural(days, 'день', 'дні', 'днів')} тому"
+
+
 def _item(row, rev, now):
     quote = (rev or {}).get("quote") or ""
     return {
@@ -144,6 +167,8 @@ def _item(row, rev, now):
         "quote": quote if len(quote) <= QUOTE_CAP else quote[:QUOTE_CAP] + "…",
         "populism": row.get("populism"),
         "meta": _meta(row),
+        "found": _found_ago(row, now),
+        "fresh": (now - (row.get("first_seen") or 0)) < FRESH_DAYS * 86400,
         "topic_id": row.get("topic_id"),
     }
 
@@ -267,8 +292,17 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
                 counts["mine"] = len(pp.list_queue(
                     cur, limit=None, now=now, author_id=author_id))
             counts["closed"] = len(pp.list_queue(cur, cls="closed", limit=None, now=now))
+            fresh_since = now - FRESH_DAYS * 86400
+            counts["fresh"] = sum(1 for r in rows
+                                  if (r.get("first_seen") or 0) >= fresh_since)
             if cls == "populism":
                 rows = [r for r in rows if r.get("populism")]
+            elif cls == "fresh":
+                # За ДАТОЮ ВИЯВЛЕННЯ, а не за терміновістю: тут питання не
+                # «що робити», а «що бот приніс, поки я не дивився».
+                rows = sorted((r for r in rows
+                               if (r.get("first_seen") or 0) >= fresh_since),
+                              key=lambda r: -(r.get("first_seen") or 0))
             elif cls == "mine" and author_id:
                 rows = pp.list_queue(cur, limit=None, now=now, author_id=author_id)
             elif cls and cls not in ("all", "closed"):
