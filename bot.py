@@ -77,7 +77,8 @@ from handlers.promises import (
     promise_notdupe_handler, promise_glitches_handler,
     promise_glitches_callback, promise_vague_handler,
 )
-from handlers.promise_reminders import promise_remind_handler
+from handlers.promise_reminders import (promise_remind_handler,
+                                        promise_remind_callback)
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler, budget_date_handler
 from handlers.budget_snapshots import budget_execution_handler, budget_snapshot_check_handler, budget_execution_test_handler, budget_snapshot_reset_handler
@@ -667,6 +668,7 @@ def main():
     app.add_handler(CallbackQueryHandler(entity_docs_canon_callback, pattern="^ejd:"))
     app.add_handler(CallbackQueryHandler(entity_org_forms_callback, pattern="^ejf:"))
     app.add_handler(CallbackQueryHandler(cards_fix_callback, pattern="^cfx:"))
+    app.add_handler(CallbackQueryHandler(promise_remind_callback, pattern="^prm:"))
     app.add_handler(CallbackQueryHandler(promise_scan_callback, pattern="^psc:"))
     app.add_handler(CallbackQueryHandler(promise_prune_callback, pattern="^ppr:"))
     app.add_handler(CallbackQueryHandler(promise_prune_who_callback, pattern="^ppw:"))

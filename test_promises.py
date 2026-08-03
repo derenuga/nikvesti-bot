@@ -1427,6 +1427,10 @@ def test_reminders():
         cur.execute("DELETE FROM promise_reminders")
         cases = [
             ("Зрізати огорожу на Соборній", NOW - 34 * DAY, "promised", None),
+            # Ще дві прострочені — щоб у класі було з чого ПРИТРИМУВАТИ:
+            # на одному рядку ні стеля, ні baseline нічого не показують.
+            ("Полагодити ліфт у лікарні №3", NOW - 20 * DAY, "promised", None),
+            ("Освітити провулок Ремісничий", NOW - 12 * DAY, "promised", None),
             ("Відкрити апаратні наради", NOW + 5 * DAY, "promised", None),
             ("Відновити Коблеве краще ніж було", NOW - 90 * DAY, "hedged", None),
             ("Побудувати комплекс", NOW - 90 * DAY, "promised", "після війни"),
@@ -1453,7 +1457,8 @@ def test_reminders():
             ids[title] = cid
     conn.close()
 
-    groups, first, links = pr.collect(weekly=True)
+    data = pr.plan(weekly=True)
+    groups = data["groups"]
     called = {r["title"] for rows in groups.values() for r in rows}
     check("прострочена обіцянка дзвонить",
           "Зрізати огорожу на Соборній" in called, str(called))
@@ -1464,27 +1469,65 @@ def test_reminders():
           "Побудувати комплекс" not in called, str(called))
     check("далекий строк не смикає завчасно", "Далекий строк" not in called, str(called))
 
-    line = pr._line(groups["overdue"][0], first.get(groups["overdue"][0]["id"]),
-                    links, NOW)
-    check("у рядку є лінк на матеріал — нагадування без доказу це докір",
-          "<a href=" in line, line[:80])
+    rich = pr.render_rich(data)
+    plain = pr.render_plain(data)
+    check("у rich-повідомленні є лінк на матеріал — нагадування без доказу "
+          "це докір", "<a href=" in rich, rich[:80])
+    check("дослівна цитата йде в rich окремим блоком з підписом",
+          "<blockquote>" in rich and "<cite>" in rich)
+    check("фолбек несе ту саму фактуру, лише без верстки",
+          "<a href=" in plain and "<blockquote>" not in plain)
+    check("rich лізе в ліміт 32768 символів", len(rich) < 32768, str(len(rich)))
 
-    # Ідемпотентність: та сама обіцянка не смикає двічі за той самий привід
+    # ---- Запобіжник 1: позначається РІВНО те, що пішло ----
+    #
+    # Найдорожча тиха помилка модуля: у позначку летіла вся вибірка, а в
+    # повідомлення — перші N, тож решта ставала «уже дзвонили» і не дзвонила
+    # НІКОЛИ. Тому стеля ріже вибірку ДО позначки, а не після.
+    saved_limit, saved_show = pr.KIND_LIMIT, pr.SHOW_PER_KIND
+    pr.KIND_LIMIT, pr.SHOW_PER_KIND = 1, 1
+    capped = pr.plan(weekly=True)
+    check("стеля ріже те, що піде в повідомлення",
+          all(len(v) <= 1 for v in capped["groups"].values()),
+          str({k: len(v) for k, v in capped["groups"].items()}))
+    check("притримане показується числом, а не ховається мовчки",
+          any(v > 0 for v in capped["extra"].values()) or
+          all(n <= 1 for n in capped["waiting"].values()),
+          str(capped["extra"]))
+    pr._mark(capped["groups"], NOW)
+    after = pr.plan(weekly=True)
+    still = {r["title"] for rows in after["groups"].values() for r in rows}
+    check("притримане повертається наступного разу, а не гине в позначці",
+          bool(still) and not (still & {r["title"] for rows
+                                        in capped["groups"].values()
+                                        for r in rows}), str(still))
+    pr.KIND_LIMIT, pr.SHOW_PER_KIND = saved_limit, saved_show
+
+    # ---- Запобіжник 2: ідемпотентність ----
+    data2 = pr.plan(weekly=True)
+    pr._mark(data2["groups"], NOW)
+    again = pr.plan(weekly=True)
+    check("повторний прогін мовчить — позначки тримають",
+          not again["groups"], str(again["groups"]))
+    ignored = pr.plan(weekly=True, ignore_sent=True)
+    check("прев'ю формату показує все, ігноруючи позначки",
+          bool(ignored["groups"]))
+
+    # ---- Запобіжник 3: baseline глушить накопичене, лишаючи N найгарячіших ----
     conn = ep.connect()
     conn.autocommit = True
     with conn.cursor() as cur:
-        for rows in groups.values():
-            for r in rows:
-                cur.execute(
-                    "INSERT INTO promise_reminders (commitment_id, kind, sent) "
-                    "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                    (r["id"], "overdue" if r["class"] == "overdue" else "soon",
-                     NOW))
+        cur.execute("DELETE FROM promise_reminders")
     conn.close()
-    again, _, _ = pr.collect(weekly=True)
-    check("повторний прогін мовчить — позначки тримають", not again, str(again))
-    ignored, _, _ = pr.collect(weekly=True, ignore_sent=True)
-    check("прев'ю формату показує все, ігноруючи позначки", bool(ignored))
+    silenced, kept = pr.baseline(keep=1)
+    check("baseline глушить накопичене", silenced > 0, str(silenced))
+    check("baseline лишає найгарячіші дзвонити — інакше нічим перевірити "
+          "формат", kept > 0, str(kept))
+    left = pr.plan(weekly=True)
+    check("після baseline дзвонить рівно те, що лишили",
+          sum(len(v) for v in left["groups"].values()) == kept,
+          f"{left['groups'].keys()} проти {kept}")
+    check("щоденний прогін спить без опт-іну", pr.is_on() is False)
 
 
 def test_app_payload():

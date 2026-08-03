@@ -133,7 +133,63 @@ ChatType.PRIVATE, ChatType.CHANNEL, Document.ALL, Document.FileExtension`.
 
 ---
 
-## Rich Messages: що це і чому вони НЕ в цій задачі
+## Rich Messages: схема, звірена з документацією (03.08.2026)
+
+> **СТАН: перше rich-повідомлення в проді** — нагадування банку тем
+> (`handlers/promise_reminders.py`). Транспорт — `handlers/rich.py`.
+
+Схему брали не з переказу, а з самої сторінки Bot API (`core.telegram.org/bots/api`,
+завантажена й розібрана). Головне, чого не було видно з анонсів:
+
+**`InputRichMessage` приймає ГОТОВИЙ HTML-рядок.** Дерево з двадцяти класів
+`InputRichBlock` будувати не треба:
+
+> Describes a rich message to be sent. **Exactly one of the fields `html`,
+> `markdown`, or `blocks` must be used.**
+
+Це змінює вартість переверстки на порядок: повідомлення лишається рядком у
+коді, просто з ширшим набором тегів.
+
+**Метод:**
+
+```
+sendRichMessage
+  chat_id       Integer or String   Yes
+  rich_message  InputRichMessage    Yes      ← JSON-серіалізований
+  + звичні: disable_notification, protect_content, reply_markup,
+    reply_parameters, message_thread_id, business_connection_id
+```
+
+**Теги, яких немає у звичайному `sendMessage`:**
+
+```
+<h1>…<h6>   <p>   <hr/>   <ul>/<ol>/<li>   <footer>
+<blockquote>…<cite>Автор</cite></blockquote>    <aside> (пул-цитата)
+<details open><summary>Заголовок</summary>…</details>
+<figure><img src="https://…"/><figcaption>Підпис<cite>Кредит</cite></figcaption></figure>
+<table bordered striped><caption>…</caption><tr><th>…<td colspan align valign>
+<tg-collage>, <tg-slideshow>, <tg-map lat long zoom>, <tg-math>, <tg-time unix format>
+<li><input type="checkbox" checked>  (чеклісти)
+```
+
+**Ліміти:** 32768 символів (замість 4096), 500 блоків, 16 рівнів вкладеності,
+50 медіа, 20 колонок таблиці.
+
+**Пастки, які варто знати до того, як витрачати час:**
+
+- картинки — **тільки HTTP(S)-URL** і **тільки окремими медіа-блоками**;
+  `<img>` усередині `<p>` не працює;
+- іменованих HTML-сутностей підтримано рівно тринадцять (`&lt; &gt; &amp;
+  &quot; &apos; &nbsp; &hellip; &mdash; &ndash; &lsquo; &rsquo; &ldquo;
+  &rdquo;`), решту треба числами;
+- `skip_entity_detection` — коли не хочемо, щоб Telegram сам робив лінки з
+  хештегів і номерів;
+- `sendRichMessageDraft` + `<tg-thinking>` — стрімінг відповіді частинами,
+  окрема історія.
+
+---
+
+## Що з ними робити далі
 
 **Що дає Bot API 10.1/10.2** (`sendRichMessage`, `InputRichMessage` з полем
 `blocks`): заголовки секцій, таблиці, списки, цитати й пул-цитати, колажі,
@@ -148,15 +204,24 @@ ChatType.PRIVATE, ChatType.CHANNEL, Document.ALL, Document.FileExtension`.
 відсіяний. Тому редизайн повідомлень — **третя сесія**, зі своїм промтом,
 і починається вона з розмови, а не з коду.
 
-Ця розвідка потрібна їй лише одним фактом: **оновлення PTB саме по собі
-Rich Messages не відкриє**, бо бібліотека зупинилась на Bot API 10.0.
-Коли до цього дійде — виклик доведеться робити прямим HTTP-запитом до
-`sendRichMessage`, обгорнувши його однією функцією, щоб потім замінити на
-нативний метод одним рядком.
-
-Перевірено вже на встановленій 22.8, а не за датами:
-`hasattr(telegram.Bot, "send_rich_message")` → `False`,
+**Оновлення PTB саме по собі Rich Messages не відкрило** — бібліотека
+зупинилась на Bot API 10.0. Перевірено вже на встановленій 22.8, а не за
+датами: `hasattr(telegram.Bot, "send_rich_message")` → `False`,
 `telegram.constants.BOT_API_VERSION` → `10.0`.
+
+Тому виклик іде прямим HTTP-запитом, і вся домовленість зібрана в одній
+функції — `handlers/rich.py`, `send_rich(bot, chat_id, html, fallback=…)`.
+Коли PTB додасть нативний метод, замінюється тіло цієї функції, а не
+сорок місць виклику. **Фолбек обов'язковий аргументом**: rich молодші за
+два місяці, і відмова API не має з'їдати повідомлення — тому кожен виклик
+несе з собою звичайний HTML-варіант, а причина відмови пишеться в лог
+один раз (не щоразу — інакше лог заллє).
+
+Перший споживач — нагадування банку тем: заголовки класів, дослівна
+цитата в `<blockquote>` з підписом обіцяльника, ілюстрація статті і
+згортний блок «ще N». Останнє виявилось не про красу: `<details>` прибрав
+компроміс «показати все або обрізати», через який доводилось писати
+«…і ще 12».
 
 ---
 
