@@ -380,6 +380,13 @@ async def law_check(update, context):
 
 async def post_init(application):
     setup_scheduler(application.bot, last_channel_post_time)
+    # Оплачений батчевий прогін не має зависати через редеплой: полінг живе в
+    # пам'яті процесу, а стан — у норі, тож підхоплюємо самі.
+    try:
+        from handlers.promises import resume_on_start
+        await resume_on_start(application.bot)
+    except Exception as e:
+        print(f"promises: авто-resume не спрацював — {e}")
     # Mini App «Команда»: aiohttp у тому ж event loop. Збій веб-шару не має
     # класти бота — ловимо все і лишаємо тільки алерт у лог.
     try:

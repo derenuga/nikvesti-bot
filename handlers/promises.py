@@ -2660,6 +2660,32 @@ async def promise_scan_callback(update, context):
     asyncio.create_task(_poll_task(context.bot))
 
 
+async def resume_on_start(bot):
+    """Переприв'язати полінг батчів САМА, щойно бот піднявся.
+
+    Батчі живуть на боці Anthropic 29 днів, а полінг — у пам'яті процесу.
+    Будь-який редеплой його вбиває, і оплачений прогін тихо зависає: гроші
+    списані, результат лежить, у банку нічого. Саме це й сталось 03.08 —
+    липневий скан пішов о 17:14, а деплої йшли один за одним, і місяць не
+    доїхав.
+
+    Розраховувати, що людина щоразу згадає /promise_resume, — це закладати
+    в процес крок, про який вона дізнається лише постфактум. Стан і так
+    лежить у норі, тож відновлення нічого не коштує.
+    """
+    if not bot_db.is_configured() or not os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    try:
+        state = await asyncio.to_thread(_load_state)
+        if not state or not state.get("batch_ids") or _poll_running["flag"]:
+            return
+        print(f"promises: підхоплюю незавершений скан {state.get('month')} "
+              f"({len(state['batch_ids'])} батчів)")
+        asyncio.create_task(_poll_task(bot))
+    except Exception as e:
+        print(f"promises: не підхопив скан після старту — {e}")
+
+
 async def promise_resume_handler(update, context):
     """/promise_resume — переприв'язати полінг після редеплою (стан у норі)."""
     if not _allowed(update):
