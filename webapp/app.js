@@ -2720,6 +2720,15 @@ async function markNotifsRead() {
    так пінг «записав контакт» відкриває одразу базу, а не головну. */
 const START_SCREENS = ["contacts", "reports", "alerts", "todo"];
 
+/* Нагадування в «винюхав» — одне повідомлення на одну обіцянку, тож і кнопка
+   під ним має вести в ЦЮ обіцянку, а не в загальну чергу: інакше людина
+   прочитала конкретну історію, тапнула — і шукає її очима серед сотень.
+   startapp=promise_<id>; голе `promises` лишається входом у чергу. */
+function promiseDeepLink(start) {
+  const m = /^promise_(\d+)$/.exec(start || "");
+  return m ? +m[1] : null;
+}
+
 function startScreen() {
   try {
     const v = new URLSearchParams(location.search).get("screen");
@@ -6428,12 +6437,16 @@ async function boot() {
       // Куди відкривати: ?screen= від web_app-кнопки (пінг Лиса) або
       // start_param від t.me-лінка (кнопка «Дедлайни в апці» у чаті фінансів)
       const start = (tg.initDataUnsafe || {}).start_param || "";
-      nav(startScreen() || (start === "reports" ? "reports"
+      const deep = promiseDeepLink(start);
+      if (deep) nav("promise", deep);
+      else nav(startScreen() || (start === "reports" ? "reports"
         : start === "promises" ? "promises" : "home"));
     } else {
       // Журналістці лінк із «винюхав» теж має відкривати банк одразу
       const start = (tg.initDataUnsafe || {}).start_param || "";
-      nav(startScreen() || (start === "promises" ? "promises" : "home"));
+      const deep = promiseDeepLink(start);
+      if (deep) nav("promise", deep);
+      else nav(startScreen() || (start === "promises" ? "promises" : "home"));
     }
     syncBackButton();
   } catch (e) {

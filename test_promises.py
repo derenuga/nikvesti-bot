@@ -1457,76 +1457,95 @@ def test_reminders():
             ids[title] = cid
     conn.close()
 
-    data = pr.plan(weekly=True)
-    groups = data["groups"]
-    called = {r["title"] for rows in groups.values() for r in rows}
-    check("прострочена обіцянка дзвонить",
+    # Без стелі — щоб побачити ВСЕ, що має право нагадати
+    full = pr.plan(weekly=True, limit=0)
+    called = {r["title"] for r in full["items"]}
+    check("прострочена обіцянка нагадує",
           "Зрізати огорожу на Соборній" in called, str(called))
     check("строк за пʼять днів теж", "Відкрити апаратні наради" in called, str(called))
-    check("«планують» НЕ дзвонить — нема чого прострочувати",
+    check("«планують» НЕ нагадує — нема чого прострочувати",
           "Відновити Коблеве краще ніж було" not in called, str(called))
-    check("умовна НЕ дзвонить — горизонт поза контролем обіцяльника",
+    check("умовна НЕ нагадує — горизонт поза контролем обіцяльника",
           "Побудувати комплекс" not in called, str(called))
     check("далекий строк не смикає завчасно", "Далекий строк" not in called, str(called))
 
-    rich = pr.render_rich(data)
-    plain = pr.render_plain(data)
-    check("у rich-повідомленні є лінк на матеріал — нагадування без доказу "
-          "це докір", "<a href=" in rich, rich[:80])
-    check("дослівна цитата йде в rich окремим блоком з підписом",
-          "<blockquote>" in rich and "<cite>" in rich)
-    check("фолбек несе ту саму фактуру, лише без верстки",
-          "<a href=" in plain and "<blockquote>" not in plain)
-    check("rich лізе в ліміт 32768 символів", len(rich) < 32768, str(len(rich)))
-
-    # ---- Запобіжник 1: позначається РІВНО те, що пішло ----
+    # ---- Одне повідомлення — одна обіцянка ----
     #
-    # Найдорожча тиха помилка модуля: у позначку летіла вся вибірка, а в
-    # повідомлення — перші N, тож решта ставала «уже дзвонили» і не дзвонила
-    # НІКОЛИ. Тому стеля ріже вибірку ДО позначки, а не після.
-    saved_limit, saved_show = pr.KIND_LIMIT, pr.SHOW_PER_KIND
-    pr.KIND_LIMIT, pr.SHOW_PER_KIND = 1, 1
-    capped = pr.plan(weekly=True)
-    check("стеля ріже те, що піде в повідомлення",
-          all(len(v) <= 1 for v in capped["groups"].values()),
-          str({k: len(v) for k, v in capped["groups"].items()}))
+    # Перша версія складала все в ОДНЕ повідомлення зі списками. Таке
+    # неможливо переслати й неможливо обговорити: незрозуміло, про яку з
+    # десяти обіцянок ідеться. Тому стеля рахується в ПОВІДОМЛЕННЯХ.
+    data = pr.plan(weekly=True)
+    check("на день іде не більше стелі повідомлень",
+          len(data["items"]) <= pr.DAILY_MAX, str(len(data["items"])))
     check("притримане показується числом, а не ховається мовчки",
-          any(v > 0 for v in capped["extra"].values()) or
-          all(n <= 1 for n in capped["waiting"].values()),
-          str(capped["extra"]))
-    pr._mark(capped["groups"], NOW)
-    after = pr.plan(weekly=True)
-    still = {r["title"] for rows in after["groups"].values() for r in rows}
-    check("притримане повертається наступного разу, а не гине в позначці",
-          bool(still) and not (still & {r["title"] for rows
-                                        in capped["groups"].values()
-                                        for r in rows}), str(still))
-    pr.KIND_LIMIT, pr.SHOW_PER_KIND = saved_limit, saved_show
+          data["held"] == len(full["items"]) - len(data["items"]),
+          f'{data["held"]} проти {len(full["items"])}')
 
-    # ---- Запобіжник 2: ідемпотентність ----
-    data2 = pr.plan(weekly=True)
-    pr._mark(data2["groups"], NOW)
+    item = data["items"][0]
+    msg = pr.render_one(item, data)
+    plain = pr.render_one_plain(item, data)
+    check("у повідомленні є лінк на матеріал — нагадування без доказу це докір",
+          "<a href=" in msg, msg[:70])
+    check("дослівна цитата йде окремим блоком з підписом",
+          "<blockquote>" in msg and "<cite>" in msg)
+    check("заголовок — сама обіцянка, а не її стан",
+          f"<h3>{item['title']}</h3>" in msg, msg[:120])
+    check("фолбек несе ту саму фактуру, лише без rich-тегів",
+          "<a href=" in plain and "<h3>" not in plain and "<mark>" not in plain)
+    check("повідомлення лізе в ліміт 32768 символів", len(msg) < 32768, str(len(msg)))
+
+    # ---- Рівно один <mark> ----
+    #
+    # Кольору тексту Telegram не дає взагалі — з виділення є лише <mark>.
+    # Тому підсвічується РІВНО ОДИН факт: той, що відповідає на питання «чому
+    # це прийшло саме зараз». Два виділення в повідомленні = жодного.
+    for it in data["items"]:
+        n = pr.render_one(it, data).count("<mark>")
+        check(f"рівно одне виділення в повідомленні #{it['id']}", n == 1, str(n))
+
+    # ---- Стан написаний реченням і чесно ----
+    over = next(r for r in full["items"] if r["_kind"] == "overdue")
+    line = pr.status_line(over, NOW)
+    check("стан — речення з датою, а не код класу",
+          "Обіцяли до" in line and "Минуло" in line, line)
+    check("бот не стверджує, чого не знає: лише «ніхто не перевіряв»",
+          "ніхто не перевіряв" in line, line)
+    over_checked = dict(over, checked_at=NOW - 3 * DAY)
+    check("а якщо перевіряли — так і пише, а не бреше",
+          "востаннє перевіряли" in pr.status_line(over_checked, NOW),
+          pr.status_line(over_checked, NOW))
+
+    # ---- Позначається РІВНО те, що пішло ----
+    for it in data["items"]:
+        pr._mark_one(it["id"], it["_kind"], NOW)
+    after = pr.plan(weekly=True)
+    still = {r["title"] for r in after["items"]}
+    sent_titles = {r["title"] for r in data["items"]}
+    check("притримане повертається наступного разу, а не гине в позначці",
+          bool(still) and not (still & sent_titles), str(still))
+
+    for it in after["items"]:
+        pr._mark_one(it["id"], it["_kind"], NOW)
     again = pr.plan(weekly=True)
     check("повторний прогін мовчить — позначки тримають",
-          not again["groups"], str(again["groups"]))
+          not again["items"], str(again["items"]))
     ignored = pr.plan(weekly=True, ignore_sent=True)
     check("прев'ю формату показує все, ігноруючи позначки",
-          bool(ignored["groups"]))
+          bool(ignored["items"]))
 
-    # ---- Запобіжник 3: baseline глушить накопичене, лишаючи N найгарячіших ----
+    # ---- Baseline ----
     conn = ep.connect()
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("DELETE FROM promise_reminders")
     conn.close()
     silenced, kept = pr.baseline(keep=1)
-    check("baseline глушить накопичене", silenced > 0, str(silenced))
-    check("baseline лишає найгарячіші дзвонити — інакше нічим перевірити "
-          "формат", kept > 0, str(kept))
+    check("baseline притишує накопичене", silenced > 0, str(silenced))
+    check("baseline лишає найважливіші — інакше нічим перевірити формат",
+          kept == 1, str(kept))
     left = pr.plan(weekly=True)
-    check("після baseline дзвонить рівно те, що лишили",
-          sum(len(v) for v in left["groups"].values()) == kept,
-          f"{left['groups'].keys()} проти {kept}")
+    check("після baseline нагадує рівно те, що лишили",
+          len(left["items"]) == kept, str(len(left["items"])))
     check("щоденний прогін спить без опт-іну", pr.is_on() is False)
 
 
