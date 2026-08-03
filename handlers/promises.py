@@ -231,10 +231,19 @@ def _clip(text, limit=3900):
     return text[:cut if cut > 0 else limit].rstrip() + "\n\n<i>…далі обрізано.</i>"
 
 
-def _bounds_line(bounds):
+def _bounds_line(bounds, shown=None):
     """Межі даних — у КОЖНОМУ виводі (§6). Порожнеча має бути пояснена,
-    інакше екран виглядає зламаним, а не порожнім."""
+    інакше екран виглядає зламаним, а не порожнім.
+
+    `shown` — скільки обіцянок під цим рядком. Без нього рядок одного разу вже
+    збрехав: сказав «банк ще порожній» над списком із 19 обіцянок (сліди
+    прогонів були, а от статей у норі — ні). Порожній банк і невідомі межі —
+    різні речі, і плутати їх не можна.
+    """
     if not bounds or not bounds.get("from"):
+        if shown:
+            return ("<i>Межі даних невідомі — сліди прогонів не збереглись. "
+                    "Самі обіцянки на місці.</i>")
         return ("<i>Банк тем ще порожній — обіцянки збираються командою "
                 "/promise_scan &lt;YYYY-MM&gt;.</i>")
     since = datetime.fromtimestamp(int(bounds["from"])).strftime("%m.%Y")
@@ -340,7 +349,7 @@ async def promises_handler(update, context):
         f"{CLASS_ICON.get(c,'•')} {pp.CLASS_WORD[c]} <b>{counts.get(c,0)}</b>"
         for c in pp.CLASS_ORDER if counts.get(c))
     header.append(f"Усього в роботі: <b>{total}</b>" + (f"\n{facets}" if facets else ""))
-    header.append(_bounds_line(data["bounds"]))
+    header.append(_bounds_line(data["bounds"], shown=total))
 
     body = [format_item(r, data["first"].get(r["id"]), n=i, now=now)
             for i, r in enumerate(data["rows"], start=1)]
@@ -490,7 +499,7 @@ async def promise_show_handler(update, context):
                 f"🦊 З матеріалу {article_id} у банку тем нічого немає.\n"
                 f"Це або «витяг тут зобов'язань не побачив», або «стаття ще не "
                 f"проходила витяг» — перевірити: /promise_test {article_id}.\n\n"
-                + _bounds_line(data["bounds"]), parse_mode="HTML")
+                + _bounds_line(data["bounds"], shown=0), parse_mode="HTML")
             return
         parts = [f"🦊 <b>З матеріалу {article_id}</b> записано "
                  f"{len(data['rows'])} зобов'язан(ня):"]
@@ -518,7 +527,8 @@ async def promise_show_handler(update, context):
         tags.append(how)
     moved = max(0, (row.get("revisions") or 1) - 1)
     if moved:
-        tags.append(f"переформульовано {moved} раз(и)")
+        tags.append(f"переформульовано {moved} "
+                    f"{pp.plural(moved, 'раз', 'рази', 'разів')}")
     if not row.get("rings"):
         tags.append("не дзвонить")
 
@@ -552,7 +562,7 @@ async def promise_show_handler(update, context):
     labels = {}
     if data["siblings"]:
         for s in data["siblings"]:
-            labels[s["id"]] = f"інше зобов'язання теми (/promise_show {s['id']})"
+            labels[s["id"]] = f"інше зобов'язання теми → /promise_show {s['id']}"
     parts.append("<b>Історія питання:</b>")
     parts += _chain_lines(data["revisions"], data["links"], labels)
     if data["siblings"]:
@@ -561,7 +571,7 @@ async def promise_show_handler(update, context):
             for s in data["siblings"][:6]))
     parts.append(f"<i>Перевірили: /promise_checked {row['id']} · "
                  f"помилка: /promise_forget {row['id']}</i>")
-    parts.append(_bounds_line(data["bounds"]))
+    parts.append(_bounds_line(data["bounds"], shown=1))
 
     text = "\n\n".join(p for p in parts if p)
     await msg.edit_text(_clip(text), parse_mode="HTML", disable_web_page_preview=True)

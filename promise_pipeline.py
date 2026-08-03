@@ -358,7 +358,7 @@ CLASS_WORD = {
     "waiting": "чекає події",
     "stale": "давно не питали",
     "noproof": "перевірити нічим",
-    "open": "у роботі",
+    "open": "строк попереду",
     "closed": "закрито",
 }
 
@@ -424,15 +424,30 @@ def fmt_date(ts):
     return datetime.fromtimestamp(int(ts)).strftime("%d.%m.%Y") if ts else "—"
 
 
+def plural(n, one, few, many):
+    """Українське відмінювання після числа: 1 день · 2 дні · 5 днів.
+
+    Дрібниця, але рядок «строк минув 6 р тому» читається як машинний лог, а
+    банк тем має читатись як речення редактора.
+    """
+    n = abs(int(n))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
 def human_gap(seconds):
-    """«2 дні», «7 місяців», «рік» — без хвостів на кшталт «213 днів»."""
+    """«2 дні», «7 місяців», «6 років» — без хвостів на кшталт «2134 днів»."""
     days = max(0, int(seconds) // 86400)
     if days < 45:
-        return f"{days} дн" if days != 1 else "1 день"
+        return f"{days} {plural(days, 'день', 'дні', 'днів')}"
     months = days // 30
     if months < 18:
-        return f"{months} міс"
-    return f"{days // 365} р"
+        return f"{months} {plural(months, 'місяць', 'місяці', 'місяців')}"
+    years = days // 365
+    return f"{years} {plural(years, 'рік', 'роки', 'років')}"
 
 
 # ---------- Резолв сутностей ----------
@@ -893,7 +908,12 @@ def revisions(cur, commitment_ids):
         f"SELECT {REVISION_COLS}, coalesce(a.published, r.created) AS published "
         "FROM commitment_revisions r LEFT JOIN articles a ON a.id = r.article_id "
         "WHERE r.commitment_id = ANY(%s) "
-        "ORDER BY coalesce(a.published, r.created), r.id",
+        # Усередині ОДНІЄЇ статті кроки шикуються за горизонтом, а не за
+        # порядком вставки: добре написана стаття несе кілька точок ланцюга
+        # одразу (обіцянка 2021-го в беку, тендерний строк, свіжий перенос), і
+        # без цього таймлайн читається як випадковий список.
+        "ORDER BY coalesce(a.published, r.created), "
+        "         coalesce(r.stated_deadline, 0), r.id",
         (list(commitment_ids),))
     keys = _REVISION_KEYS + ["published"]
     return [dict(zip(keys, r)) for r in cur.fetchall()]
@@ -990,8 +1010,11 @@ def data_bounds(cur):
     виглядає зламаним, а не порожнім.
     """
     cur.execute(
-        "SELECT min(a.published), max(a.published), count(*) "
-        "FROM promise_attempts t JOIN articles a ON a.id = t.article_id")
+        "SELECT min(published), max(published), count(*) FROM ("
+        "  SELECT a.published FROM promise_attempts t JOIN articles a ON a.id = t.article_id"
+        "  UNION"
+        "  SELECT a.published FROM commitment_revisions r JOIN articles a ON a.id = r.article_id"
+        ") s")
     row = cur.fetchone() or (None, None, 0)
     return {"from": row[0], "to": row[1], "articles": row[2] or 0}
 
