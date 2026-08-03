@@ -484,6 +484,17 @@ def drop(commitment_id, who, reason=None):
         conn.close()
 
 
+def _dupe_side(row, revs, links, now):
+    """Половина пари: звична картка + лінк на статтю, з якої її взято."""
+    rev = revs.get(row["id"])
+    item = _item(row, rev, now)
+    link = links.get((rev or {}).get("article_id")) or {}
+    if link.get("url"):
+        item["link"] = {"url": link["url"], "title": link.get("title"),
+                        "date": link.get("date")}
+    return item
+
+
 def dupes(limit=40):
     """Список пар-кандидатів + повні картки обох, щоб екран показував ЦИТАТИ.
     Без цитат злиття вслiпу: дві схожі назви бувають у двох сусідніх
@@ -501,16 +512,27 @@ def dupes(limit=40):
                 "WHERE c.id = ANY(%s)", (list(ids),))
             rows = {r["id"]: r for r in pp._decorate(pp._rows(cur))}
             revs = _first_revisions(cur, ids)
+            # Лінк на статтю прямо в парі: Олег, 03.08 — «виводь мені
+            # посилання, щоб я міг без переходу в картку перевірити». Рішення
+            # «одне це чи двоє» часто впирається саме в текст статті, і зайвий
+            # захід у картку на кожну пару — це і є та вартість, через яку
+            # черга дублів не розбирається ніколи.
+            from handlers.promises import _links_for
+            links = _links_for(cur, {r.get("article_id") for r in revs.values()})
             now = int(time.time())
             out = []
             for p in pairs:
                 a, b = rows.get(p["a"]), rows.get(p["b"])
                 if not a or not b:
                     continue
+                # Кого лишаємо — рахуємо ТУТ, а не питаємо. Людське питання
+                # рівно одне: це одне й те саме чи ні.
+                keep, _drop = pp.merge_winner(a, b)
                 out.append({
                     "sim": p["sim"],
-                    "a": _item(a, revs.get(a["id"]), now),
-                    "b": _item(b, revs.get(b["id"]), now),
+                    "keep": keep["id"],
+                    "a": _dupe_side(a, revs, links, now),
+                    "b": _dupe_side(b, revs, links, now),
                 })
             return {"pairs": out, "total": pp.dupe_count(cur)}
     finally:

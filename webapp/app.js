@@ -3381,12 +3381,21 @@ function paintDupes() {
 }
 
 function dupeSide(p) {
+  /* Лінк на статтю прямо тут: рішення «одне це чи двоє» часто впирається в
+     текст новини, і зайвий захід у картку на кожну пару — це та вартість,
+     через яку черга дублів не розбирається взагалі. */
+  const src = p.link
+    ? `<a class="dp-src" href="${esc(p.link.url)}" target="_blank"
+         rel="noopener">${esc(p.link.title || "матеріал")}${
+         p.link.date ? ` · ${esc(p.link.date)}` : ""}</a>`
+    : "";
   return `
     <div class="dp-side ${p.cls}">
       <div class="dp-state">${esc(p.state)}</div>
       <div class="dp-title">${esc(p.title)}</div>
       ${p.quote ? `<div class="pr-quote">«${esc(p.quote)}»</div>` : ""}
       <div class="pr-meta">${p.meta.map(esc).join(" · ")}</div>
+      ${src}
       <button class="dp-open" data-promise="${p.id}">Відкрити картку</button>
     </div>`;
 }
@@ -3398,13 +3407,12 @@ function dupePair(pair, mgr) {
       <div class="dp-mid">схожість ${String(pair.sim).replace(".", ",")}</div>
       ${dupeSide(pair.b)}
       ${mgr ? `<div class="dp-act">
-        <button class="sbtn" data-merge="${pair.a.id}:${pair.b.id}">
-          Лишити перший</button>
-        <button class="sbtn" data-merge="${pair.b.id}:${pair.a.id}">
-          Лишити другий</button>
-      </div>
-      <button class="dp-keep" data-keep="${pair.a.id}:${pair.b.id}">
-        Це різні — лишити обидві</button>` : ""}
+        <button class="sbtn prim" data-merge="${pair.keep}:${
+          pair.keep === pair.a.id ? pair.b.id : pair.a.id}">
+          Об\u2019єднати в одну</button>
+        <button class="sbtn" data-keep="${pair.a.id}:${pair.b.id}">
+          Це різні</button>
+      </div>` : ""}
     </div>`;
 }
 
@@ -3413,7 +3421,7 @@ function wireDupes() {
     nav("promise", +b.dataset.promise));
   document.querySelectorAll("[data-merge]").forEach((b) => b.onclick = async () => {
     const [keep, dup] = b.dataset.merge.split(":").map(Number);
-    if (!(await confirmAction("Звести в один запис? Ревізії другого перейдуть у перший."))) return;
+    if (!(await confirmAction("Об\u2019єднати? Обидві цитати лишаться доказами в одній картці."))) return;
     b.disabled = true;
     try {
       await api(`/api/promises/${keep}/merge`, { method: "POST",

@@ -1118,6 +1118,11 @@ async def promise_dupes_handler(update, context):
     if not _allowed(update):
         return
 
+    # Спершу прибираємо те, де питати нема про що: однакова цитата = один
+    # мовленнєвий акт, записаний двічі. Людині лишається тільки справді
+    # спірне.
+    merged, _run = await asyncio.to_thread(auto_merge_dupes)
+
     def run():
         conn = ep.connect()
         try:
@@ -1134,10 +1139,15 @@ async def promise_dupes_handler(update, context):
     except Exception as e:
         await msg.edit_text(f"❌ Не порахувалось: {e}")
         return
+    auto = (f"🤝 Сам звів {len(merged)} "
+            f"{pp.plural(len(merged), 'пару', 'пари', 'пар')} — там обидва "
+            f"записи цитували одне речення, питати не було про що "
+            f"(відкат: /promise_prune_undo).\n\n") if merged else ""
     if not total:
-        await msg.edit_text("🦊 Схожих пар не видно — банк не роздутий дублями.")
+        await msg.edit_text(
+            auto + "🦊 Спірних пар не лишилось.", parse_mode="HTML")
         return
-    lines = [f"🦊 <b>Схоже на дублі: {total}</b>",
+    lines = [auto + f"🦊 <b>Схоже на дублі: {total}</b>",
              "<i>однаковий строк + спільний предмет або обіцяльник. "
              "Злиття не видаляє: ревізії другого переходять у перший, "
              "обидві цитати лишаються доказами.</i>", ""]
@@ -2053,6 +2063,22 @@ def _pending(floor, limit=None):
                         (floor, api.REGION_MYKOLAIV, pp.MAX_ATTEMPTS, limit))
 
 
+def auto_merge_dupes(who="Лис"):
+    """Злити пари з однаковою цитатою. Синхронно, для інкремента й команди."""
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        with conn.cursor() as cur:
+            run = pp.next_run(cur)
+            done = pp.auto_merge_pairs(cur, who=who, run=run)
+        conn.commit()
+        if done:
+            print(f"банк тем: автозлиття {len(done)} пар (прогін {run})")
+        return done, run
+    finally:
+        conn.close()
+
+
 async def sync_promises_incremental(bot):
     """Щогодини :25 — свіжі статті нори через витяг зобов'язань.
 
@@ -2098,6 +2124,12 @@ async def sync_promises_incremental(bot):
 
         if errors:
             await asyncio.to_thread(mark_failures)
+        # Одразу за витягом — злити те, де рішення людині не потрібне: два
+        # записи, що цитують ОДНЕ речення. Це не «схожі обіцянки», а один
+        # мовленнєвий акт, записаний двічі, і тримати його в черзі питань
+        # означає щогодини нарощувати ту чергу вдвічі швидше, ніж її можна
+        # розібрати. Кожне злиття — у журнал, відкат /promise_restore.
+        await asyncio.to_thread(auto_merge_dupes)
         # Сторож масового збою — той самий поріг, що в сутнісному шарі: якщо
         # впала третина пачки, це не «погана стаття», це щось зламалось.
         if errors and len(errors) * 3 >= len(arts):
