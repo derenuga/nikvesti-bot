@@ -95,6 +95,45 @@ def main():
         failed += 0 if ok else 1
         print(f"{'✅' if ok else '❌'} {name} з insights: {metrics[key]} (мало бути {expected})")
 
+    # 4. Друга лінія: відомий пост з індексу Нори підтверджується прямим
+    #    запитом (з Нори береться ЛИШЕ id, живість каже сам Facebook)
+    import handlers.stat as stat
+    from handlers import stat_store
+
+    saved_graph, saved_index = stat._graph, stat_store.load_index
+    POST_ID = "301719373180657_1710649447730196"
+    try:
+        stat_store.load_index = lambda aid: {
+            "facebook": {"items": [{"id": POST_ID, "type": "post"}],
+                         "captured_at": None}}
+
+        stat._graph = lambda path, params, timeout=15: ({"id": POST_ID}, None)
+        got = stat.known_fb_post_alive(article_id)
+        ok = got == POST_ID
+        failed += 0 if ok else 1
+        print(f"{'✅' if ok else '❌'} відомий пост підтверджується: {got}")
+
+        stat._graph = lambda path, params, timeout=15: (None, "(#100) Object does not exist")
+        got = stat.known_fb_post_alive(article_id)
+        ok = got is None
+        failed += 0 if ok else 1
+        print(f"{'✅' if ok else '❌'} видалений пост не рятує від алерту: {got}")
+
+        stat_store.load_index = lambda aid: {}
+        stat._graph = lambda path, params, timeout=15: ({"id": POST_ID}, None)
+        got = stat.known_fb_post_alive(article_id)
+        ok = got is None
+        failed += 0 if ok else 1
+        print(f"{'✅' if ok else '❌'} порожній індекс — нічого не вигадуємо: {got}")
+    finally:
+        stat._graph, stat_store.load_index = saved_graph, saved_index
+
+    # 5. Знімок із Нори завжди підписаний часом — за свіжі дані не видається
+    note = stat._nora_note([{"nora": "03.08 20:24", "id": POST_ID}])
+    ok = note is not None and "03.08 20:24" in note
+    failed += 0 if ok else 1
+    print(f"{'✅' if ok else '❌'} знімок підписаний часом: {note}")
+
     if os.environ.get("FACEBOOK_PAGE_TOKEN"):
         print("\n=== живий прогін get_fb_stats ===")
         items, scanned, error = get_fb_stats(ARTICLE_URL, article_id)

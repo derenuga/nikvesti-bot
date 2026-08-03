@@ -293,6 +293,34 @@ def _parse_post_insights(data):
     return out
 
 
+def known_fb_post_alive(article_id):
+    """Друга лінія перед тим, як казати «поста немає»: чи лежить в індексі Нори
+    збережений пост про цей матеріал і чи він ЖИВИЙ зараз.
+
+    Нора тут — ПІДКАЗКА, а не джерело: жодне збережене число не береться, лише
+    id, який одразу перевіряється прямим запитом. Тому застаріти цей шлях не
+    може — пост видалили, і відповідь буде «немає», як і має бути.
+
+    Повертає id живого поста або None (Нора не налаштована / запису немає /
+    пост не читається)."""
+    try:
+        index = stat_store.load_index(article_id)
+    except Exception as e:
+        print(f"stat: індекс Нори для {article_id} не прочитався — {e}")
+        return None
+    for item in (index.get("facebook") or {}).get("items", []):
+        post_id = item.get("id")
+        if not post_id:
+            continue
+        data, err = _graph(post_id, {"fields": "id,created_time"})
+        if err:
+            print(f"stat: відомий пост {post_id} не підтвердився — {err}")
+            continue
+        if data.get("id"):
+            return str(data["id"])
+    return None
+
+
 def _get_post_metrics(post_id):
     """Перегляди + залученість ОДНОГО поста: {'views','reactions','comments',
     'shares','note'}. Один запит до insights замість двох (перегляди окремо +
@@ -653,9 +681,13 @@ def _num(value):
 
 
 def _nora_note(items):
-    """Рядок-помітка фолбека: items узяті зі снімка Нори (живе джерело впало)."""
+    """Рядок-помітка фолбека: items узяті зі снімка Нори. Дві причини потрапити
+    сюди — живе джерело впало АБО живий пошук нічого не знайшов, тож формулювання
+    покриває обидві; головне, що число підписане часом знімка й за свіже не
+    видається."""
     if items and isinstance(items[0], dict) and items[0].get("nora"):
-        return f'🗄 <i>живе джерело не відповіло — знімок з Нори від {items[0]["nora"]}</i>'
+        return (f'🗄 <i>живий пошук зараз не дав результату — знімок з Нори '
+                f'від {items[0]["nora"]}</i>')
     return None
 
 
@@ -991,6 +1023,21 @@ async def stat_handler(update, context):
         yt_stats = stat_store.mark_nora(index["youtube"]) if index.get("youtube") else None
     else:
         yt_stats = yt_res
+
+    # Живий пошук нічого не знайшов, а в Норі знімок ЛЕЖИТЬ — показуємо його з
+    # позначкою дати замість голого «не знайдено». Досі знімок підставлявся лише
+    # на ПОМИЛКУ API, а мовчазний обрив видачі (03.08.2026: Facebook віддав
+    # список без поста, помилки не було) виглядав як чесна відсутність. Тепер
+    # суперечність видно: «живий пошук не бачить, але ось що ми знали».
+    # Число завжди підписане часом знімка, тож за свіже воно не видається
+    if not fb_stats and not fb_error and index.get("facebook"):
+        fb_stats = stat_store.mark_nora(index["facebook"])
+    if not ig_stats and index.get("instagram"):
+        ig_stats = stat_store.mark_nora(index["instagram"])
+    if not tt_stats and tt_stats is not None and index.get("tiktok"):
+        tt_stats = stat_store.mark_nora(index["tiktok"])
+    if not yt_stats and yt_stats is not None and index.get("youtube"):
+        yt_stats = stat_store.mark_nora(index["youtube"])
 
     text = format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date,
                                fb_scanned, fb_error, ig_stats, tt_stats, yt_stats)
