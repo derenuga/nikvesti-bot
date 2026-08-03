@@ -2936,9 +2936,12 @@ async def _finish(bot, state, client):
                         output_tokens=usage["output"],
                         cache_read=usage["cache_read"],
                         cache_creation=usage["cache_creation"])
-        report = await asyncio.to_thread(_scan_report, state["month"])
-        await asyncio.to_thread(_clear_state)
+        # Перечит звітує СВОЇМИ числами і місячного звіту не має: у стані
+        # замість місяця стоїть слово, і `_scan_report` розбирав його як рік
+        # («invalid literal for int(): 'пере'»). Тому гілка перечиту йде ДО
+        # звіту, а не після.
         if state.get("drop_first"):
+            await asyncio.to_thread(_clear_state)
             head = (f"🦊 <b>Перечит {stats['articles']} статей завершено</b>\n\n"
                     f"Знято старих записів: {stats['dropped']}\n"
                     f"Записано нових: <b>{stats['new'] + stats['revisions']}</b>"
@@ -2950,6 +2953,8 @@ async def _finish(bot, state, client):
             await bot.send_message(chat_id, _clip(head), parse_mode="HTML",
                                    disable_web_page_preview=True)
             return
+        report = await asyncio.to_thread(_scan_report, state["month"])
+        await asyncio.to_thread(_clear_state)
         cost = (usage["input"] * api.PRICE_IN_BATCH
                 + usage["output"] * api.PRICE_OUT_BATCH)
         head = (f"🦊 <b>Скан {state['month']} завершено</b>"
@@ -2977,6 +2982,12 @@ async def _finish(bot, state, client):
 # ---------- Звіт по темах (а не списком) ----------
 
 def _scan_report(month):
+    # Запобіжник: сюди прилітав не лише «2026-07», а й слово (перечит), і
+    # розбір року валив УЖЕ ЗАПИСАНИЙ прогін на етапі звіту. Дані при цьому
+    # були в банку, але людина бачила червоне.
+    if not (len(month or "") == 7 and month[:4].isdigit()):
+        return ""
+
     """Звіт після прогону — ПО ТЕМАХ: що взагалі лежить у банку і чи варто
     рити глибше. Списком тут не допоможеш: сто рядків нічого не пояснюють."""
     from_date, to_date = api.month_bounds(month)
