@@ -314,6 +314,14 @@ def test_schema_shape():
                  and spec.get("description")]
     check("поля без enum отримали словник у description", len(described) == 3,
           str(described))
+    # Дисципліна цих трьох живе в описі САМОГО поля, а не в загальному тексті
+    # промпту: три прогони приймання показали, що звідти вона програє —
+    # модель заповнювала criterion переказом обіцянки, і мітка «популізм»
+    # (§2.1) не спрацьовувала. Прибрати опис = мовчки повернути ту регресію.
+    field_rules = [f for f in ("criterion", "condition", "condition_self_judged")
+                   if api.COMMITMENT_ITEM["properties"][f].get("description")]
+    check("поля-пастки несуть інструкцію в самому полі",
+          len(field_rules) == 3, str(field_rules))
 
 
 def test_eval_verdict():

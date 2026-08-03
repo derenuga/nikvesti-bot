@@ -125,13 +125,36 @@ COMMITMENT_ITEM = {
         "deadline_precision": {
             "type": ["string", "null"],
             "description": "day | month | quarter | year | vague, або null"},
-        "criterion": {"type": ["string", "null"]},
+        # Дисципліна ЦИХ трьох полів живе тут, а не тільки в промпті: модель
+        # приймає рішення про поле, читаючи його опис, і тут воно не конкурує
+        # з рештою тексту. Три прогони приймання показали, що загальне правило
+        # у промпті тут програє — модель заповнювала criterion переказом самої
+        # обіцянки, і мітка «популізм» (§2.1) не спрацьовувала взагалі.
+        "criterion": {
+            "type": ["string", "null"],
+            "description": "Перевірювана ознака: що саме треба побачити, щоб "
+                           "сказати «виконано». Пиши, лише якщо можеш назвати, "
+                           "хто і як перевірить це за один день. Переказ самої "
+                           "обіцянки («відновлено краще, ніж було», «стало "
+                           "комфортніше») — НЕ критерій, тоді null. Порожнє "
+                           "поле тут нормальне й очікуване.",
+        },
         "verification_method": {
             "type": ["string", "null"],
             "description": "field_check | document_request | official_statement "
                            "| data, або null"},
-        "condition": {"type": ["string", "null"]},
-        "condition_self_judged": {"type": "boolean"},
+        "condition": {
+            "type": ["string", "null"],
+            "description": "Умова, від якої залежить виконання, дослівно. Якщо "
+                           "обіцянка звучить як «якщо…, то ми…» — усе, що після "
+                           "«якщо», і є умовою; не пропускай її.",
+        },
+        "condition_self_judged": {
+            "type": "boolean",
+            "description": "true, коли настання умови оцінює САМ обіцяльник "
+                           "(«якщо є нормальний заклад, хороший садочок»), а не "
+                           "перевіряє хтось ззовні.",
+        },
         "trigger_event": {"type": ["string", "null"]},
         "actor_hidden": {"type": "boolean"},
         "framed_as_promise": {"type": "boolean"},
