@@ -103,16 +103,33 @@ COMMITMENT_ITEM = {
         "promiser_role": {"type": ["string", "null"]},
         "owner": {"type": ["string", "null"]},
         "reported_by": {"type": ["string", "null"]},
-        "audience": {"type": ["string", "null"], "enum": list(pp.AUDIENCE) + [None]},
+        # УВАГА: `enum` стоїть лише на полях, які НЕ можуть бути null.
+        #
+        # Пара «"type": ["string","null"] + enum з null у списку» виглядає
+        # природно і є валідним JSON Schema, але структурований вивід Anthropic
+        # її відкидає: 400 invalid_request_error, «Enum value 'media' does not
+        # match declared type». Прод-схема витягу сутностей (entity_backfill_api)
+        # тримається того самого правила — там `subtype` теж має словник, і теж
+        # без enum.
+        #
+        # Словник для таких полів живе у промпті й у `description` нижче, а в
+        # базу його стереже pp._enum(): значення поза таксономією стає NULL, а
+        # не потрапляє в реєстр мовчки.
+        "audience": {"type": ["string", "null"],
+                     "description": "media | community | group, або null"},
         "polarity": {"type": "string", "enum": list(pp.POLARITY)},
         "modality": {"type": "string", "enum": list(pp.MODALITY)},
         "source_type": {"type": "string", "enum": list(pp.SOURCE_TYPE)},
-        "deadline": {"type": ["string", "null"]},
-        "deadline_precision": {"type": ["string", "null"],
-                               "enum": list(pp.PRECISION) + [None]},
+        "deadline": {"type": ["string", "null"],
+                     "description": "YYYY-MM-DD — остання дата періоду, або null"},
+        "deadline_precision": {
+            "type": ["string", "null"],
+            "description": "day | month | quarter | year | vague, або null"},
         "criterion": {"type": ["string", "null"]},
-        "verification_method": {"type": ["string", "null"],
-                                "enum": list(pp.VERIFICATION_METHOD) + [None]},
+        "verification_method": {
+            "type": ["string", "null"],
+            "description": "field_check | document_request | official_statement "
+                           "| data, або null"},
         "condition": {"type": ["string", "null"]},
         "condition_self_judged": {"type": "boolean"},
         "trigger_event": {"type": ["string", "null"]},

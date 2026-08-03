@@ -32,6 +32,7 @@ os.environ.setdefault(
 from handlers import bot_db, entity_roles as er   # noqa: E402
 import entity_pipeline as ep                      # noqa: E402
 import promise_eval as pev                        # noqa: E402
+import promise_extract_api as api                 # noqa: E402
 import promise_pipeline as pp                     # noqa: E402
 
 RESULTS = []
@@ -285,12 +286,58 @@ def test_render():
     check("звіт місяця будується", "Зобов'язань:" in report, report[:80])
 
 
+# ---------- 4. Регресії, які вилізли в проді ----------
+
+def test_schema_shape():
+    """Схема структурованого виводу: `enum` — лише на полях без null.
+
+    Перший прогін /promise_eval у проді впав на ВСІХ семи статтях з 400
+    invalid_request_error: «Enum value 'media' does not match declared type».
+    Пара «"type": ["string","null"] + enum» є валідним JSON Schema, але
+    структурований вивід Anthropic її не приймає. Прод-схема витягу сутностей
+    тримається того самого правила — перевіряємо тепер обидві, щоб наступне
+    поле зі словником не поклало прогін знову.
+    """
+    import entity_backfill_api as eapi
+
+    for name, schema in (("банк тем", api.COMMITMENT_ITEM),
+                         ("сутності", eapi.ENTITY_ITEM)):
+        bad = [f for f, spec in schema["properties"].items()
+               if isinstance(spec.get("type"), list) and "enum" in spec]
+        check(f"{name}: жодне nullable-поле не несе enum", not bad, str(bad))
+    with_enum = [f for f, spec in api.COMMITMENT_ITEM["properties"].items()
+                 if "enum" in spec]
+    check("словники обов'язкових полів не загублені разом із фіксом",
+          set(with_enum) == {"polarity", "modality", "source_type"}, str(with_enum))
+    described = [f for f, spec in api.COMMITMENT_ITEM["properties"].items()
+                 if f in ("audience", "deadline_precision", "verification_method")
+                 and spec.get("description")]
+    check("поля без enum отримали словник у description", len(described) == 3,
+          str(described))
+
+
+def test_eval_verdict():
+    """Зелений вердикт над нульовим прогоном — найгірша брехня приймання."""
+    from handlers import promises as ph
+
+    check("витяг упав на всіх — це НЕ «пройдено»",
+          "не відбулось" in ph.eval_verdict(0, 7, 0, 0))
+    check("витяг упав на частині — теж не вердикт",
+          "не відбулось" in ph.eval_verdict(5, 7, 20, 20))
+    check("усі відпрацювали і все зелене — пройдено",
+          "пройдено" in ph.eval_verdict(7, 7, 32, 32))
+    check("усі відпрацювали, але є червоне — не пройдено",
+          "НЕ пройдено" in ph.eval_verdict(7, 7, 30, 32))
+
+
 def main():
     setup()
     test_acceptance()
     test_ingest()
     test_idempotent()
     test_render()
+    test_schema_shape()
+    test_eval_verdict()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")
     sys.exit(0 if ok == len(RESULTS) else 1)

@@ -707,7 +707,14 @@ def _extract_sync(articles):
             usage["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
             usage["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0) or 0
         except Exception as e:
-            errors.append(f"{art['id']}: {type(e).__name__}: {e}"[:200])
+            errors.append(f"{art['id']}: {type(e).__name__}: {e}")
+            # Помилка в самому ЗАПИТІ (несхвалена схема, немає ключа, немає
+            # моделі) валить усі статті однаково — ганяти решту означає лише
+            # відкласти діагноз і обрізати його довгим списком копій.
+            if len(errors) >= 2 and not results:
+                errors.append(f"…решту {len(articles) - len(errors) + 1} статей "
+                              f"пропущено: помилка не в тексті, а в запиті")
+                break
     return results, errors, usage
 
 
@@ -1044,6 +1051,27 @@ def _eval_payload(ids):
     return {"cases": out, "errors": errors, "usage": usage, "missing": missing}
 
 
+def eval_verdict(ran, expected, passed, total):
+    """Вердикт приймання одним рядком.
+
+    Окремою функцією рівно тому, що перший же прогін у проді збрехав: витяг
+    упав на ВСІХ семи статтях (несхвалена схема), перевірок не було жодної —
+    і «passed == total» дало 0 == 0, тобто зелене «умову приймання пройдено».
+    Зелений вердикт над нульовим прогоном — найгірша можлива брехня цього
+    інструменту: він існує саме для того, щоб не пускати далі зламане.
+    """
+    if ran < expected:
+        return (f"❌ <b>Приймання не відбулось</b>: витяг відпрацював на "
+                f"{ran} з {expected} статей. Причина — у рядку ⚠️ вище; "
+                f"поки вона не полагоджена, вердикту немає.")
+    if total and passed == total:
+        return ("✅ <b>Умову приймання пройдено — можна гнати місяць "
+                "(/promise_scan).</b>")
+    return ("❌ <b>Приймання НЕ пройдено.</b> Кожен червоний рядок — конкретне "
+            "правило промпту, яке не спрацювало; деталі по кейсу — "
+            "/promise_test &lt;id&gt;.")
+
+
 async def promise_eval_handler(update, context):
     """/promise_eval [id] — умова приймання §6.1 однією командою.
 
@@ -1101,17 +1129,18 @@ async def promise_eval_handler(update, context):
                                f"   <i>{escape_html(why)}</i>")
     if data["missing"]:
         lines.append(f"⚠️ немає в норі: {data['missing']} — спершу /nora_resync")
-    if data["errors"]:
-        lines.append("⚠️ " + escape_html("; ".join(data["errors"])[:300]))
+    for err in data["errors"][:2]:
+        # Повністю, а не обрізком: у 400-й відповіді API вся діагностика і є
+        # текстом помилки, і саме він потрібен, щоб зрозуміти, що лагодити.
+        lines.append("⚠️ " + escape_html(err[:600]))
+    if len(data["errors"]) > 2:
+        lines.append(f"⚠️ …і ще {len(data['errors']) - 2} таких самих")
 
-    verdict = ("<b>Умову приймання пройдено — можна гнати місяць "
-               "(/promise_scan).</b>" if passed == total else
-               "<b>Приймання НЕ пройдено.</b> Кожен червоний рядок — конкретне "
-               "правило промпту, яке не спрацювало; деталі по кейсу — "
-               "/promise_test &lt;id&gt;.")
+    ran = len(data["cases"])
     cost = usage["input"] * api.PRICE_IN + usage["output"] * api.PRICE_OUT
-    tail = [f"\nРазом: <b>{passed}/{total}</b> перевірок", verdict,
-            f"<i>У банк не записано нічого. ≈ ${cost:.3f}</i>"]
+    verdict = eval_verdict(ran, len(ids), passed, total)
+    tail = [f"\nРазом: <b>{passed}/{total}</b> перевірок на {ran} статтях",
+            verdict, f"<i>У банк не записано нічого. ≈ ${cost:.3f}</i>"]
     await msg.edit_text(_clip("\n".join(lines + [""] + details + tail)),
                         parse_mode="HTML", disable_web_page_preview=True)
 
