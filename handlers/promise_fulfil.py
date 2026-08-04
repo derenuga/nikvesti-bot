@@ -157,12 +157,19 @@ async def scan(days=DEFAULT_DAYS, limit=MAX_PAIRS, on_progress=None):
             with conn.cursor() as cur:
                 for p in judged:
                     v = p.get("verdict")
-                    # Збій моделі — не рішення: пари немає в журналі, отже
-                    # наступний прогін спитає знову.
-                    if not v or v.get("state") not in ("done", "failed"):
+                    # Збій моделі — НЕ рішення: пари немає в журналі, отже
+                    # наступний прогін спитає знову. А ось відповідь «ні»
+                    # рішенням Є, і її треба записати, інакше ці ж пари
+                    # суддя судитиме щогодини вічно.
+                    if not v:
                         continue
                     conf = v.get("confidence")
-                    if conf not in ("high", "medium"):
+                    settled = (v.get("state") not in ("done", "failed")
+                               or conf not in ("high", "medium"))
+                    if settled:
+                        pp.record_closure(cur, p["commitment_id"],
+                                          p["article_id"],
+                                          {**v, "state": "none"})
                         continue
                     auto = conf == "high"
                     if not pp.record_closure(cur, p["commitment_id"],

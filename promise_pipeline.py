@@ -2602,14 +2602,24 @@ def fulfil_candidates(cur, since, limit=200):
 
 
 def record_closure(cur, commitment_id, article_id, verdict, applied=False):
+    """Запам'ятати вердикт по парі — БУДЬ-ЯКИЙ, включно з «none».
+
+    «none» пишемо теж, і це не педантизм: без нього ті самі шістдесят пар
+    суддя судив би заново щогодини, вічно. Але записуємо їх ОДРАЗУ
+    вирішеними (`decided`), інакше вони засмітили б фасет «Схоже, виконано»
+    тим, про що суддя якраз сказав «ні».
+    """
+    now = int(time.time())
+    settled = verdict.get("state") not in ("done", "failed")
     cur.execute(
         "INSERT INTO promise_closures (commitment_id, article_id, state, "
-        "  confidence, why, applied, created) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+        "  confidence, why, applied, created, decided, decided_by) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
         "ON CONFLICT (commitment_id, article_id) DO NOTHING RETURNING id",
         (int(commitment_id), int(article_id), verdict.get("state"),
          verdict.get("confidence"), (verdict.get("why") or "")[:300],
-         bool(applied), int(time.time())))
+         bool(applied), now, now if settled else None,
+         "Лис" if settled else None))
     row = cur.fetchone()
     return row[0] if row else None
 

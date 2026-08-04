@@ -2011,6 +2011,20 @@ def test_fulfil_detector():
             check("і першоджерело все одно лишається поза кандидатами",
                   730001 not in arts2, str(arts2))
 
+            # «none» теж записується — інакше ті самі пари суддя судив би
+            # заново щогодини. Але ОДРАЗУ вирішеним, щоб не смітити у фасеті
+            # тим, про що він якраз сказав «ні».
+            pp.record_closure(cur, cid, 730003,
+                              {"state": "none", "confidence": "high",
+                               "why": "новина не про виконання"})
+            check("«ні» запам'ятовується — за пару не платимо двічі",
+                  730003 not in {c["article_id"]
+                                 for c in pp.fulfil_candidates(cur, 0)})
+            check("але у фасет «схоже, виконано» воно не потрапляє",
+                  cid not in pp.closure_ids(cur))
+            check("і людині на підтвердження теж не йде",
+                  not any(c["article_id"] == 730003 for c in pp.open_closures(cur)))
+
             # medium — у чергу людині, статус не чіпаємо
             pp.record_closure(cur, cid, 730002,
                               {"state": "done", "confidence": "medium",
