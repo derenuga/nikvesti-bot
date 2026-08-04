@@ -79,7 +79,7 @@ from handlers.promises import (
     promise_topics_handler, promise_topics_callback,
     promise_topics_undo_handler,
     promise_resplit_handler, promise_resplit_callback,
-    promise_mine_handler,
+    promise_mine_handler, promise_same_handler,
 )
 from handlers.promise_reminders import (promise_remind_handler,
                                         promise_remind_callback)
@@ -561,6 +561,7 @@ def main():
     app.add_handler(CommandHandler("promise_resplit", promise_resplit_handler))
     app.add_handler(CommandHandler("promise_fulfil", promise_fulfil_handler))
     app.add_handler(CommandHandler("promise_mine", promise_mine_handler))
+    app.add_handler(CommandHandler("promise_same", promise_same_handler))
     app.add_handler(CommandHandler("promise_reopen", promise_reopen_handler))
     app.add_handler(CommandHandler("promise_fulfil_test", promise_fulfil_test_handler))
     app.add_handler(CommandHandler("promise_topics_undo", promise_topics_undo_handler))

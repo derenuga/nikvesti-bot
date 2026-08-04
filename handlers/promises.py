@@ -3541,3 +3541,77 @@ async def promise_mine_handler(update, context):
                   ", ".join(f"{oid}→{n}" for oid, n in unknown)]
     lines.append("\n<i>Якщо id не резолвиться — /kpi_link &lt;прізвище&gt; &lt;users.id&gt;.</i>")
     await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML")
+
+
+# ---------- /promise_same ----------
+#
+# Ручний відповідник /promise_topics: сказати «це одна справа» про дві
+# конкретні обіцянки. Потрібен тому, що автодетектор працює на НАЗВАХ тем, а
+# людина бачить справу цілком. Живий приклад 04.08: про дорогу до Матвіївки
+# у банку чотири записи в трьох темах, і те, що ремонт зрештою робить ДП,
+# з'ясувалось лише по ходу — з назв це не виводиться ніяк.
+#
+# Зливаються ТЕМИ, а не записи. Зобов'язання лишаються різними (у них різні
+# обіцяльники й різні цитати), просто в черзі стоять одним рядком, а картка
+# показує спільну історію питання.
+
+async def promise_same_handler(update, context):
+    """/promise_same <id> <id> [id…] — це одна справа."""
+    if not _allowed(update):
+        return
+    ids = [int(a) for a in (context.args or []) if a.isdigit()]
+    if len(ids) < 2:
+        await update.message.reply_text(
+            "Використання: /promise_same <id> <id> [id…]\n"
+            "Зводить ТЕМИ названих обіцянок в одну. Самі обіцянки лишаються "
+            "різними — міняється лише рядок черги й спільна історія в картці.")
+        return
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, topic_id, title FROM commitments "
+                            "WHERE id = ANY(%s)", (ids,))
+                rows = {r[0]: {"topic": r[1], "title": r[2]} for r in cur.fetchall()}
+                missing = [i for i in ids if i not in rows]
+                if missing:
+                    return None, missing, 0, None
+                # Лишається тема ПЕРШОЇ названої: людина назвала її першою
+                # свідомо, і вгадувати «правильнішу» тут нема з чого.
+                keep = rows[ids[0]]["topic"]
+                if not keep:
+                    return None, [], 0, None
+                run_id = pp.next_run(cur)
+                moved = 0
+                for i in ids[1:]:
+                    t = rows[i]["topic"]
+                    if t and t != keep:
+                        moved += pp.merge_topics(cur, keep, t, run=run_id)
+            conn.commit()
+            return rows, [], moved, run_id
+        finally:
+            conn.close()
+
+    rows, missing, moved, run_id = await asyncio.to_thread(run)
+    if missing:
+        await update.message.reply_text(
+            f"🦊 Не знайшов: {', '.join(str(m) for m in missing)}")
+        return
+    if not rows:
+        await update.message.reply_text("🦊 У першої обіцянки немає теми.")
+        return
+    if not moved:
+        await update.message.reply_text("🦊 Вони й так в одній темі.")
+        return
+    lines = ["🤝 <b>Звів в одну справу</b>", ""]
+    for i in ids:
+        lines.append(f"• {escape_html(rows[i]['title'] or i)} — "
+                     f"/promise_show {i}")
+    n = moved
+    lines += ["", f"Переїхало {n} "
+              f"{pp.plural(n, 'зобовʼязання', 'зобовʼязання', 'зобовʼязань')}. "
+              f"У черзі це тепер один рядок, у картці — спільна історія.",
+              f"<i>Відкат: /promise_topics_undo {run_id}</i>"]
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
