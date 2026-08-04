@@ -84,7 +84,8 @@ from handlers.promises import (
 from handlers.promise_reminders import (promise_remind_handler,
                                         promise_remind_callback)
 from handlers.promise_fulfil import (promise_fulfil_handler,
-                                     promise_reopen_handler)
+                                     promise_reopen_handler,
+                                     promise_fulfil_test_handler)
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler, budget_date_handler
 from handlers.budget_snapshots import budget_execution_handler, budget_snapshot_check_handler, budget_execution_test_handler, budget_snapshot_reset_handler
@@ -561,6 +562,7 @@ def main():
     app.add_handler(CommandHandler("promise_fulfil", promise_fulfil_handler))
     app.add_handler(CommandHandler("promise_mine", promise_mine_handler))
     app.add_handler(CommandHandler("promise_reopen", promise_reopen_handler))
+    app.add_handler(CommandHandler("promise_fulfil_test", promise_fulfil_test_handler))
     app.add_handler(CommandHandler("promise_topics_undo", promise_topics_undo_handler))
     app.add_handler(CommandHandler("promise_increment_on", promise_increment_on_handler))
     app.add_handler(CommandHandler("promise_increment_off", promise_increment_off_handler))

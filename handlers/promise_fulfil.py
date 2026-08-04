@@ -296,3 +296,138 @@ async def promise_reopen_handler(update, context):
     await update.message.reply_text(
         f"↩️ Повернув у чергу: <b>{escape_html((row or {}).get('title') or cid)}</b>",
         parse_mode="HTML")
+
+
+# ---------- /promise_fulfil_test ----------
+#
+# Питання Олега 04.08 на реальній парі: обіцянка про дорогу до Матвіївки
+# (319402) і пізніша новина «начался ремонт дороги» (321200) — «чому бот не
+# зарахував?». Причин рівно три (стаття поза вікном · не збіглася картка
+# сутності · суддя сказав «ні»), і мовчазний нуль у звіті їх не розрізняє.
+# Ця команда проганяє ОДНУ пару і показує кожен крок.
+
+async def promise_fulfil_test_handler(update, context):
+    """/promise_fulfil_test <id обіцянки> <id|URL новини> — чому не зарахувало."""
+    from handlers.promises import _allowed
+    from handlers.helpers import extract_article_id
+
+    if not _allowed(update):
+        return
+    args = context.args or []
+    if len(args) < 2 or not args[0].isdigit():
+        await update.message.reply_text(
+            "Використання: /promise_fulfil_test <id обіцянки> <id або URL новини>")
+        return
+    cid = int(args[0])
+    raw = args[1]
+    aid = extract_article_id(raw) if "/" in raw else (raw if raw.isdigit() else None)
+    if not aid:
+        await update.message.reply_text("Не видно id новини.")
+        return
+    aid = int(aid)
+    msg = await update.message.reply_text("🦊 Розбираю пару…")
+
+    def load():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                row = pp.get(cur, cid)
+                cur.execute(
+                    "SELECT published, coalesce(title_ua, title_ru), "
+                    "       coalesce(text_ua, text_ru), region "
+                    "FROM articles WHERE id = %s", (aid,))
+                art = cur.fetchone()
+                quote = ""
+                for rev in pp.revisions(cur, [cid]):
+                    quote = rev.get("quote") or ""
+                    break
+                # Чи бачить їх ПРЕ-ФІЛЬТР: спільна картка сутності
+                cur.execute(
+                    "SELECT e.id, coalesce(e.name_ua, e.name_ru) FROM entities e "
+                    "JOIN article_entities ae ON ae.entity_id = e.id "
+                    "WHERE ae.article_id = %s AND (e.id = %s OR e.id IN "
+                    "  (SELECT entity_id FROM commitment_objects WHERE commitment_id = %s))",
+                    (aid, (row or {}).get("subject_entity_id") or 0, cid))
+                shared = cur.fetchall()
+                cur.execute("SELECT count(*) FROM article_entities WHERE article_id = %s",
+                            (aid,))
+                art_entities = cur.fetchone()[0]
+                cur.execute("SELECT 1 FROM commitment_revisions "
+                            "WHERE commitment_id = %s AND article_id = %s", (cid, aid))
+                is_source = bool(cur.fetchone())
+                cur.execute("SELECT state, confidence, why, applied FROM promise_closures "
+                            "WHERE commitment_id = %s AND article_id = %s", (cid, aid))
+                already = cur.fetchone()
+        finally:
+            conn.close()
+        return row, art, quote, shared, art_entities, is_source, already
+
+    try:
+        row, art, quote, shared, art_entities, is_source, already = \
+            await asyncio.to_thread(load)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не вийшло: {type(e).__name__}: {e}")
+        return
+    if not row:
+        await msg.edit_text(f"🦊 Обіцянки {cid} немає.")
+        return
+    if not art:
+        await msg.edit_text(f"🦊 Статті {aid} немає в норі — інкремент дзеркала "
+                            f"її ще не забрав.")
+        return
+
+    published, title, text, region = art
+    days = (int(time.time()) - int(published or 0)) // 86400
+    lines = [f"🦊 <b>{escape_html(row.get('title') or cid)}</b>",
+             f"проти: {escape_html(title or aid)}", ""]
+    lines.append(f"{'✅' if days <= DEFAULT_DAYS else '⚠️'} Новині {days} дн. "
+                 f"— щогодинний прогін дивиться {DEFAULT_DAYS}"
+                 + ("" if days <= DEFAULT_DAYS else f"; тут потрібен "
+                    f"/promise_fulfil {days + 1}"))
+    lines.append(f"{'✅' if region == 1 else '❌'} Регіон: {region} (беремо лише 1)")
+    lines.append(f"{'❌' if is_source else '✅'} "
+                 + ("це стаття, з якої обіцянку й записали — доказом бути не може"
+                    if is_source else "стаття не є джерелом самої обіцянки"))
+    if shared:
+        lines.append("✅ Спільна картка: "
+                     + ", ".join(escape_html(n or "—") for _i, n in shared[:5]))
+    else:
+        lines.append(f"❌ <b>Спільної картки немає</b> — пре-фільтр цю пару не "
+                     f"побачить. Сутностей у статті: {art_entities}"
+                     + ("" if art_entities else " (стаття ще не розібрана "
+                        "сутнісним шаром)"))
+    if already:
+        lines.append(f"ℹ️ Пару вже судили: {already[0]}/{already[1]} — "
+                     f"{escape_html(already[2] or '')}")
+
+    if not text:
+        lines.append("\n❌ У статті немає тексту в норі — судити нема що.")
+        await msg.edit_text("\n".join(lines), parse_mode="HTML")
+        return
+
+    lines.append("\n<i>Питаю суддю (нічого не записую)…</i>")
+    await msg.edit_text("\n".join(lines), parse_mode="HTML")
+    v = await pj.judge_fulfil(
+        {"title": row.get("title"), "owner_text": row.get("owner_text"),
+         "deadline": row.get("deadline"), "quote": quote[:400]},
+        {"title": title or "", "text": (text or "")[:TEXT_CAP]})
+    lines.pop()
+    if not v:
+        lines.append("\n❌ <b>Суддя не відповів</b> — дивись логи Railway.")
+    else:
+        mark = {"done": "✅", "failed": "🚫", "none": "➖"}.get(v.get("state"), "•")
+        lines.append(f"\n{mark} <b>{v.get('state')}/{v.get('confidence')}</b>: "
+                     f"{escape_html(v.get('why') or '')}")
+        if v.get("state") == "done" and v.get("confidence") == "high":
+            lines.append("<i>Такий вердикт закрив би обіцянку сам.</i>")
+        elif v.get("state") in ("done", "failed"):
+            lines.append("<i>Такий вердикт пішов би Каті на підтвердження.</i>")
+        else:
+            lines.append("<i>«none» — обіцянка лишається в черзі.</i>")
+    await msg.edit_text(_clip_local("\n".join(lines)), parse_mode="HTML")
+
+
+def _clip_local(text, limit=4000):
+    return text if len(text) <= limit else text[:limit - 1] + "…"
