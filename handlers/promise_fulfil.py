@@ -191,6 +191,13 @@ async def scan(days=DEFAULT_DAYS, limit=MAX_PAIRS, on_progress=None):
     closed, queued = await asyncio.to_thread(apply)
     if queued:
         await asyncio.to_thread(_notify, queued)
+    if closed:
+        await asyncio.to_thread(_notify, closed, True)
+    # Що саме закрито — у звіт. «Закрито 1» без назви це рядок, який нічого
+    # не дає: людина не може ні перевірити рішення, ні відкотити його, бо не
+    # знає, про яку обіцянку йдеться.
+    scan.last_closed = closed
+    scan.last_queued = queued
     breakdown = {}
     for p in judged:
         v = p.get("verdict")
@@ -199,8 +206,16 @@ async def scan(days=DEFAULT_DAYS, limit=MAX_PAIRS, on_progress=None):
     return len(closed), len(queued), len(judged), breakdown
 
 
-def _notify(queued):
-    """Сповіщення Каті по кожній ознаці, яку бот не наважився застосувати."""
+def _notify(queued, closed_by_bot=False):
+    """Сповіщення Каті. Два приводи, і другий не менш важливий за перший:
+
+    - `closed_by_bot=False` — ознака, якої бот не наважився застосувати:
+      «Схоже, виконано», підтвердь або відхили;
+    - `closed_by_bot=True` — бот УЖЕ закрив обіцянку сам. Про це теж треба
+      сказати: рішення автоматичне, і людина мусить мати змогу його
+      побачити й відкотити. Інакше банк тихо порожніє, а редакція не знає,
+      чому теми зникають (Олег, 04.08: «а що він закрив, я навіть не бачу»).
+    """
     from handlers.promises import _links_for
 
     conn = ep.connect()
@@ -214,17 +229,19 @@ def _notify(queued):
         v = p.get("verdict") or {}
         link = links.get(p["article_id"]) or {}
         word = "виконано" if v.get("state") == "done" else "зірвано"
+        head = (f"Лис закрив як {word}" if closed_by_bot else f"Схоже, {word}")
         try:
             team_notifications.notify_safe(
-                "promise_closure",
-                f"Схоже, {word}: {p['promise']['title']}",
+                "promise_closed" if closed_by_bot else "promise_closure",
+                f"{head}: {p['promise']['title']}",
                 body=(v.get("why") or "")
                      + (f" · {link.get('title')}" if link.get("title") else ""),
                 url=link.get("url"),
                 object_type="promise",
                 object_id=p["commitment_id"],
                 # Одна стаття про одну обіцянку смикає раз.
-                dedup_key=f"promise_closure:{p['commitment_id']}:{p['article_id']}")
+                dedup_key=(f"promise_{'closed' if closed_by_bot else 'closure'}:"
+                           f"{p['commitment_id']}:{p['article_id']}"))
         except Exception as e:
             print(f"promise_fulfil: сповіщення не пішло — {e}")
 
@@ -237,7 +254,7 @@ async def hourly(bot):
     """
     try:
         closed, queued, _seen, _by = await scan()
-        if closed:
+        if closed or queued:
             print(f"банк тем: закрито за фактом виконання — {closed}, "
                   f"у чергу Каті — {queued}")
     except Exception as e:
@@ -277,18 +294,40 @@ async def promise_fulfil_handler(update, context):
     # збоїв моделі.
     lines = " · ".join(f"{k}: {v}" for k, v in sorted(by.items()))
     broke = by.get("збій", 0)
+    named = _named(getattr(scan, "last_closed", []), "Закрив",
+                   getattr(scan, "last_queued", []))
     await msg.edit_text(
         f"🦊 <b>Ознаки виконання</b>\n\n"
         f"Перевірено пар: {seen}\n"
         f"Закрито ботом (впевнено): <b>{closed}</b>\n"
         f"Пішло Каті на підтвердження: <b>{queued}</b>\n\n"
         f"<code>{escape_html(lines)}</code>\n"
+        + named
         + (f"\n⚠️ Модель не відповіла на {broke} — дивись логи Railway.\n"
            if broke else "")
         + f"\n<i>«none» означає, що новина про цей об'єкт є, але про виконання "
           f"не каже — суддя навмисно скупий. Закрите лежить у «Перевірені» з "
           f"лінком на новину-доказ, відкат — /promise_reopen &lt;id&gt;.</i>",
         parse_mode="HTML")
+
+
+def _named(closed, word, queued=()):
+    """Назвати обіцянки поіменно, з id для відкату. Без цього «закрито 1» —
+    рядок, за яким людина нічого не може ні перевірити, ні відкотити."""
+    out = []
+    if closed:
+        out.append(f"\n<b>{word}:</b>")
+        for p in closed[:8]:
+            out.append(f"• {escape_html(p['promise']['title'] or '?')}\n"
+                       f"  <i>{escape_html((p.get('verdict') or {}).get('why') or '')}</i>\n"
+                       f"  /promise_show {p['commitment_id']} · відкат "
+                       f"/promise_reopen {p['commitment_id']}")
+    if queued:
+        out.append("\n<b>Каті на підтвердження:</b>")
+        for p in queued[:8]:
+            out.append(f"• {escape_html(p['promise']['title'] or '?')}\n"
+                       f"  /promise_show {p['commitment_id']}")
+    return "\n".join(out) + ("\n" if out else "")
 
 
 async def promise_reopen_handler(update, context):
