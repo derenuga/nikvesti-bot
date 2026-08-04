@@ -402,7 +402,13 @@ def card(commitment_id):
             if not row:
                 return None
             siblings = pp.topic_commitments(cur, row["topic_id"], exclude=row["id"])
-            revs = pp.revisions(cur, [row["id"]])
+            # Ланцюг — по ВСІЙ ТЕМІ, а не по одному запису. Олег, 04.08:
+            # «бачу купу посилань [у чаті], чому їх не видно на фронті?» —
+            # у чаті картка давно збирає історію питання цілком, а апка
+            # показувала ревізії лише цієї обіцянки. У 2084 своя ревізія одна,
+            # тож із трьох лінків історії лишався один.
+            sib_titles = {s["id"]: s.get("title") for s in siblings}
+            revs = pp.revisions(cur, [row["id"]] + list(sib_titles))
             from handlers.promises import _links_for
             links = _links_for(cur, {r["article_id"] for r in revs})
             authors = _authors_for(cur, {r["article_id"] for r in revs})
@@ -425,15 +431,23 @@ def card(commitment_id):
                     # перевіряти саме йому — він уже в темі й знає, кому
                     # дзвонити.
                     "author": authors.get(r["article_id"]),
+                    # Крок сусіда по темі підписаний і клікабельний: історія
+                    # спільна, але видно, чиє саме це зобов'язання.
+                    "other": (None if r["commitment_id"] == row["id"]
+                              else {"id": r["commitment_id"],
+                                    "title": sib_titles.get(r["commitment_id"])}),
                 })
                 prev = r
-            first_art = revs[0]["article_id"] if revs else None
+            # Ілюстрація й автор — із ПЕРШОЇ ревізії САМОЇ обіцянки, а не
+            # теми: картка про неї, і чуже фото збивало б з пантелику.
+            own = [r for r in revs if r["commitment_id"] == row["id"]]
+            first_art = own[0]["article_id"] if own else None
             images = _images_for(cur, [first_art])
             image = images.get(first_art)
             if not image and first_art:
                 image = _fetch_image(cur, first_art,
                                      (links.get(first_art) or {}).get("url"))
-            head = _item(row, revs[0] if revs else None, now)
+            head = _item(row, own[0] if own else None, now)
             head["image"] = image
             head["author"] = authors.get(first_art)
             head["tags"] = _tags(row, now)

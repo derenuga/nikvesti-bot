@@ -3247,11 +3247,17 @@ async function renderPromise() {
 }
 
 function chainStep(s) {
+  /* Історія питання йде по ВСІЙ ТЕМІ, тож крок може належати сусідньому
+     зобовʼязанню. Підписуємо це прямо: інакше в ланцюгу «Провести ямковий
+     ремонт» опинялась би цитата про звернення до Служби відновлення без
+     жодної позначки, чия вона. */
   return `
-    <div class="pr-step ${s.kind}">
+    <div class="pr-step ${s.kind}${s.other ? " other" : ""}">
       <div class="pr-when">${esc(s.when)}</div>
       <div class="pr-sbody">
         ${s.modality ? `<span class="pr-mod">${esc(s.modality)}</span>` : ""}
+        ${s.other ? `<button class="pr-other" data-sib="${s.other.id}">
+          ${esc(s.other.title || "інше зобовʼязання теми")}</button>` : ""}
         ${s.quote ? `<p>«${esc(s.quote)}»</p>` : ""}
         <div class="pr-src">
           ${s.deadline ? `строк ${esc(s.deadline)} · ` : ""}
