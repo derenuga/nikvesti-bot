@@ -257,8 +257,55 @@ async def hourly(bot):
         if closed or queued:
             print(f"банк тем: закрито за фактом виконання — {closed}, "
                   f"у чергу Каті — {queued}")
+        # Авто-закриття — важливий сигнал (Олег, 04.08), тож іде ДВОМА
+        # шляхами: у стрічку сповіщень апки (її бачать обидва менеджери) і
+        # окремо в приват Олегу. Причина не в дублюванні: бот тут ухвалив
+        # рішення САМ і прибрав тему з черги редакції, а таке не має
+        # ставатись у місці, куди можна не зайти.
+        got = getattr(scan, "last_closed", [])
+        if got:
+            await _tell_admin(bot, got)
     except Exception as e:
         await notify_error(bot, "детектор виконання обіцянок", e)
+
+
+async def _tell_admin(bot, closed):
+    from handlers.notifier import ADMIN_CHAT_ID
+    from handlers.promises import _links_for
+
+    def links():
+        conn = ep.connect()
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                return _links_for(cur, {p["article_id"] for p in closed})
+        finally:
+            conn.close()
+
+    try:
+        by_article = await asyncio.to_thread(links)
+    except Exception:
+        by_article = {}
+    n = len(closed)
+    lines = [f"✅ <b>Лис закрив {n} "
+             f"{pp.plural(n, 'обіцянку', 'обіцянки', 'обіцянок')} "
+             f"за фактом виконання</b>", ""]
+    for p in closed[:8]:
+        v = p.get("verdict") or {}
+        link = by_article.get(p["article_id"]) or {}
+        lines.append(f"• <b>{escape_html(p['promise']['title'] or '?')}</b>")
+        if v.get("why"):
+            lines.append(f"  <i>{escape_html(v['why'])}</i>")
+        if link.get("url"):
+            lines.append(f"  <a href=\"{link['url']}\">"
+                         f"{escape_html(link.get('title') or 'доказ')}</a>")
+        lines.append(f"  Не згоден — /promise_reopen {p['commitment_id']}")
+    try:
+        await bot.send_message(ADMIN_CHAT_ID, "\n".join(lines)[:4000],
+                               parse_mode="HTML",
+                               disable_web_page_preview=True)
+    except Exception as e:
+        print(f"promise_fulfil: не сказав адміну — {e}")
 
 
 # ---------- Команди ----------
