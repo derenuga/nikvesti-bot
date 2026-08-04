@@ -2545,36 +2545,58 @@ def topic_merge_runs(cur, limit=10):
 # лише там, де такий збіг уже є.
 
 def fulfil_candidates(cur, since, limit=200):
-    """Пари «свіжа стаття × відкрита обіцянка про той самий об'єкт».
+    """Пари «пізніша стаття × відкрита обіцянка», з ДВОХ джерел.
 
-    Збіг рахується по КАРТЦІ сутності, а не по тексту: «боларди біля
-    зоопарку» і «обмежувальні стовпчики на Богоявленському» — різні рядки й
-    та сама картка. Пари, про які вже є запис у promise_closures, не
-    повертаються: одна стаття судить обіцянку раз.
+    **1. Спільна КАРТКА сутності.** Збіг рахується по картці, а не по тексту:
+    «боларди біля зоопарку» і «обмежувальні стовпчики на Богоявленському» —
+    різні рядки й одна картка.
+
+    **2. Стаття, яку суддя ланцюга вже прив'язав до цієї обіцянки** пізнішою
+    ревізією. Це джерело з'явилось після живого кейсу 04.08 (дорога до
+    Матвіївки): у статті «дорогу відремонтували» було дев'ять сутностей і
+    ЖОДНА не збіглася з предметом обіцянки, тобто перше джерело пари не
+    бачило. А зв'язок при цьому вже існував — його зробив суддя ланцюга.
+
+    Не є доказом рівно одна стаття — ПЕРШОДЖЕРЕЛО обіцянки (найраніша
+    ревізія). Спершу тут відсікались усі статті з ревізіями, і це вбивало
+    саме той випадок, заради якого детектор писався: пізніший матеріал
+    цілком може і переказувати обіцянку, і повідомляти про її виконання.
     """
     cur.execute(
         """
-        SELECT DISTINCT c.id, a.id, a.published
-        FROM commitments c
-        JOIN (
-            SELECT id AS eid FROM entities
-        ) e ON e.eid = c.subject_entity_id
-             OR e.eid IN (SELECT entity_id FROM commitment_objects o
-                          WHERE o.commitment_id = c.id)
-        JOIN article_entities ae ON ae.entity_id = e.eid
-        JOIN articles a ON a.id = ae.article_id
-        WHERE c.status = 'expected'
-          AND a.published >= %s
-          AND a.region = 1
-          -- Стаття, з якої обіцянку й записали, доказом виконання бути не може
-          AND NOT EXISTS (SELECT 1 FROM commitment_revisions r
-                          WHERE r.commitment_id = c.id AND r.article_id = a.id)
+        WITH origin AS (
+            SELECT r.commitment_id,
+                   (array_agg(r.article_id ORDER BY a.published, r.id))[1] AS article_id
+            FROM commitment_revisions r JOIN articles a ON a.id = r.article_id
+            GROUP BY r.commitment_id
+        ),
+        pairs AS (
+            SELECT c.id AS commitment_id, a.id AS article_id, a.published
+            FROM commitments c
+            JOIN article_entities ae
+              ON ae.entity_id = c.subject_entity_id
+              OR ae.entity_id IN (SELECT entity_id FROM commitment_objects o
+                                  WHERE o.commitment_id = c.id)
+            JOIN articles a ON a.id = ae.article_id
+            WHERE c.status = 'expected' AND a.published >= %s AND a.region = 1
+            UNION
+            SELECT c.id, a.id, a.published
+            FROM commitments c
+            JOIN commitment_revisions r ON r.commitment_id = c.id
+            JOIN articles a ON a.id = r.article_id
+            WHERE c.status = 'expected' AND a.published >= %s AND a.region = 1
+        )
+        SELECT p.commitment_id, p.article_id, p.published
+        FROM pairs p
+        LEFT JOIN origin o ON o.commitment_id = p.commitment_id
+        WHERE p.article_id IS DISTINCT FROM o.article_id
           AND NOT EXISTS (SELECT 1 FROM promise_closures pc
-                          WHERE pc.commitment_id = c.id AND pc.article_id = a.id)
-        ORDER BY a.published DESC
+                          WHERE pc.commitment_id = p.commitment_id
+                            AND pc.article_id = p.article_id)
+        ORDER BY p.published DESC
         LIMIT %s
         """,
-        (int(since), int(limit)))
+        (int(since), int(since), int(limit)))
     return [{"commitment_id": r[0], "article_id": r[1], "published": r[2]}
             for r in cur.fetchall()]
 

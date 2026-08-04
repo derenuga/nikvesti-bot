@@ -1987,8 +1987,29 @@ def test_fulfil_detector():
             arts = {c["article_id"] for c in cands}
             check("кандидат — ПІЗНІША стаття про той самий об'єкт",
                   730002 in arts, str(arts))
-            check("стаття, з якої обіцянку й записали, доказом не є",
+            check("першоджерело обіцянки доказом не є",
                   730001 not in arts, str(arts))
+
+            # Друге джерело кандидатів — стаття, яку суддя ланцюга вже
+            # прив'язав ревізією. Живий кейс 04.08 (дорога до Матвіївки): у
+            # статті «дорогу відремонтували» дев'ять сутностей і ЖОДНА не
+            # збіглася з предметом, тобто по картках пара не знаходилась —
+            # а зв'язок уже існував.
+            cur.execute(
+                "INSERT INTO articles (id, published, status, title_ua, slug,"
+                " category, kind, region, text_ua) VALUES "
+                "(730003,1782000000,1,'Дорогу відремонтували','ful3',"
+                "'public','news',1,'Роботи виконали.') "
+                "ON CONFLICT (id) DO NOTHING")
+            cur.execute(
+                "INSERT INTO commitment_revisions (commitment_id, article_id, "
+                "  quote, created) VALUES (%s, 730003, %s, %s)",
+                (cid, "дорогу мали відремонтувати", 1782000000))
+            arts2 = {c["article_id"] for c in pp.fulfil_candidates(cur, 0)}
+            check("стаття, зв'язана ревізією, стає кандидатом БЕЗ спільної картки",
+                  730003 in arts2, str(arts2))
+            check("і першоджерело все одно лишається поза кандидатами",
+                  730001 not in arts2, str(arts2))
 
             # medium — у чергу людині, статус не чіпаємо
             pp.record_closure(cur, cid, 730002,
