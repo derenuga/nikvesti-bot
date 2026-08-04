@@ -3276,6 +3276,11 @@ function wirePromiseCard(d) {
   document.querySelectorAll("[data-sib]").forEach((b) => b.onclick = () =>
     nav("promise", +b.dataset.sib));
   const check = $("pr-check");
+  // Скільки ще ВІДКРИТИХ зобов'язань у цій справі. Черга шикується темами, і
+  // «виконано» на одному записі повертало тему назад із новим головним
+  // рядком: людина закрила справу, а бот питає її знову. Тому питаємо ще й
+  // обсяг — і за замовчуванням закриваємо ВСЮ тему, бо в черзі стояла вона.
+  const openSibs = (d.siblings || []).filter((s) => s.open).length;
   // «Перевірили» ПИТАЄ результат, а не просто відсуває тему вниз. Висновок і
   // є продукт банку: обіцянка, перевірена й зірвана, — факт, на який
   // посилаються в наступному тексті, а не «менш терміновий рядок черги».
@@ -3283,6 +3288,11 @@ function wirePromiseCard(d) {
     <h2>Що з обіцянкою?</h2>
     <p class="sheet-note">Відповідь лишиться в банку назавжди — саме з неї
       потім видно, хто скільки разів зривав.</p>
+    ${openSibs ? `<div id="pr-scope">${segment("data-scope", [
+      ["topic", `Уся тема · ${openSibs + 1}`], ["one", "Тільки ця"]], "topic")}</div>
+      <p class="sheet-note" id="pr-scope-note">У цій справі ще
+        ${openSibs} ${plural(openSibs, "зобов'язання", "зобов'язання", "зобов'язань")}
+        — відповідь ляже на всі. Уже перевірені раніше не чіпаються.</p>` : ""}
     <button class="pick-row" data-outcome="done">
       <span class="door-ic c-good-ic">${icon("check")}</span>
       <span class="pk-txt"><span class="pk-name">Виконано</span>
@@ -3304,17 +3314,28 @@ function wirePromiseCard(d) {
   if (check) check.addEventListener("click", () => {
     // Кнопки шторки вішаємо ПІСЛЯ її відкриття, як усюди в апці: openSheet
     // щоразу підміняє вузол, тож делегат на document накопичувався б.
+    let scope = openSibs ? "topic" : "one";
+    $("sheet").querySelectorAll("[data-scope]").forEach((b) => b.onclick = () => {
+      scope = b.dataset.scope;
+      $("sheet").querySelectorAll("[data-scope]").forEach((x) => {
+        x.classList.toggle("on", x === b);
+        x.setAttribute("aria-selected", x === b);
+      });
+      const note = $("pr-scope-note");
+      if (note) note.hidden = scope === "one";
+    });
     $("sheet").querySelectorAll("[data-outcome]").forEach((b) => b.onclick = async () => {
       const outcome = b.dataset.outcome;
       const note = ($("pr-note") || {}).value || "";
       b.disabled = true;
       try {
-        await api(`/api/promises/${id}/check`, { method: "POST",
-          body: JSON.stringify({ outcome, note }) });
+        const r = await api(`/api/promises/${id}/check`, { method: "POST",
+          body: JSON.stringify({ outcome, note, scope }) });
         haptic("success");
         closeSheet();
-        toast(outcome === "failed" ? "Записав: обіцянку зірвано"
-          : outcome === "done" ? "Записав: виконано"
+        const many = (r && r.count > 1) ? ` (${r.count})` : "";
+        toast(outcome === "failed" ? `Записав: обіцянку зірвано${many}`
+          : outcome === "done" ? `Записав: виконано${many}`
           : "Позначив перевіреною — лишається в черзі");
         STATE.promises = null;
         nav("promises");

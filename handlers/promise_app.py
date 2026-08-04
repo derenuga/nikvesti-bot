@@ -459,7 +459,10 @@ def card(commitment_id):
             head["status"] = row.get("status")
             return {
                 "commitment": head, "chain": steps,
-                "siblings": [{"id": s["id"], "title": s["title"]}
+                # `open` потрібен фронту, щоб «Перевірили» могло чесно
+                # написати, скільки зобов'язань закриє відповідь на всю тему.
+                "siblings": [{"id": s["id"], "title": s["title"],
+                              "open": s.get("status") == "expected"}
                              for s in siblings],
                 "bounds": pp.data_bounds(cur),
             }
@@ -483,21 +486,25 @@ def _tags(row, now):
 
 # ---------- Дії ----------
 
-def check(commitment_id, who, outcome=None, note=None):
+def check(commitment_id, who, outcome=None, note=None, scope="one"):
     """«Перевірили» — і ЧИМ це скінчилось.
 
     Перша версія лише відсувала тему вниз, і висновок людини нікуди не
     записувався. А він і є продукт: обіцянка, перевірена й зірвана, — не
     «менш терміновий рядок черги», а факт, на який посилаються в наступному
     тексті. `outcome=None` лишає стару поведінку («подивився, ще в процесі»).
+
+    `scope="topic"` закриває всю справу разом (див. pp.mark_checked):
+    черга шикується темами, тож і відповідь мусить уміти лягати на тему.
     """
     conn = ep.connect()
     try:
         pp.ensure_schema(conn)
         with conn.cursor() as cur:
-            ok = pp.mark_checked(cur, int(commitment_id), who, outcome, note)
+            n = pp.mark_checked(cur, int(commitment_id), who, outcome, note,
+                                scope=scope)
         conn.commit()
-        return ok
+        return n
     finally:
         conn.close()
 

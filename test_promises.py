@@ -1350,6 +1350,81 @@ def test_check_outcome():
         conn.close()
 
 
+def test_check_topic_scope():
+    """«Виконано» мусить уміти закрити ВСЮ справу, а не один її крок.
+
+    Олег, 04.08, на темі дороги до Матвіївки (три зобов'язання: звернутись
+    до Служби відновлення · провести ремонт · провести ямковий ремонт):
+    «Я понял, я должен нажать выполнено и все?» — і ні, бо черга шикується
+    ТЕМАМИ (group_by_topic), а закриття було поштучним. Тема поверталась у
+    чергу з новим головним рядком: людина закрила справу, а бот питає її
+    знову.
+
+    Друга половина правила не менш важлива: гуртом чіпається лише те, що ще
+    відкрите. Інакше «виконано» на темі затерло б чиєсь «не виконано» —
+    тобто рівно той висновок, заради якого банк ведеться.
+    """
+    conn = ep.connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            cur.execute("DELETE FROM topics")
+
+            def put(aid, title, quote):
+                p = pp.prepare(cur, case_item(
+                    320276, title=title, quote=quote,
+                    subject="дорога до Матвіївки", objects=[],
+                    promiser="Миколаївська міська рада", deadline="2026-09-01"))
+                return pp.record(cur, {"id": aid, "published": 1780000000,
+                                       "title_ua": f"Стаття {aid}"}, p)[0]
+
+            a = put(740101, "Звернутися до Служби відновлення з проханням "
+                            "відремонтувати дорогу у Матвіївці",
+                    "міська рада звернеться до Служби відновлення з таким проханням")
+            b = put(740102, "Провести ремонт дороги до Матвіївки",
+                    "він уже направляв офіційні звернення з вимогою провести ремонт")
+            c = put(740103, "Провести ямковий ремонт дороги до Матвіївки",
+                    "цього тижня там почали виконувати ямковий ремонт")
+
+            cur.execute("SELECT count(DISTINCT topic_id) FROM commitments "
+                        "WHERE id = ANY(%s)", ([a, b, c],))
+            check("три кроки однієї справи стоять під однією темою",
+                  cur.fetchone()[0] == 1)
+
+            # Один із кроків людина вже перевірила й визнала зірваним:
+            # Служба відновлення мерії ВІДМОВИЛА, і це факт, який не можна
+            # затерти пізнішим «виконано» на всю тему.
+            pp.mark_checked(cur, a, "Олег", "failed", "Служба відмовила")
+
+            n = pp.mark_checked(cur, b, "Олег", "done", scope="topic")
+            check("«виконано» на всю тему закриває ВСІ її відкриті кроки",
+                  n == 2, f"{n} шт")
+
+            cur.execute("SELECT id, status FROM commitments WHERE id = ANY(%s)",
+                        ([a, b, c],))
+            st = dict(cur.fetchall())
+            check("…і той, на якому стояла людина", st[b] == "done", str(st[b]))
+            check("…і сусід у темі", st[c] == "done", str(st[c]))
+            check("але висновок, зроблений раніше, НЕ переписується",
+                  st[a] == "failed", str(st[a]))
+
+            check("закрита тема зникає з черги повністю",
+                  not ({a, b, c} & {r["id"] for r in pp.list_queue(cur, limit=None)}))
+
+            # Поштучний режим лишається: різні кроки справді бувають із
+            # різною долею, і людина мусить мати змогу сказати це окремо.
+            pp.reopen(cur, b)
+            pp.reopen(cur, c)
+            one = pp.mark_checked(cur, b, "Олег", "done")
+            check("без scope закривається РІВНО один запис", one == 1, f"{one} шт")
+            cur.execute("SELECT status FROM commitments WHERE id = %s", (c,))
+            check("…сусід лишається у черзі", cur.fetchone()[0] == "expected")
+    finally:
+        conn.close()
+
+
 def test_author_filter():
     """«З моїх новин»: обіцянка з матеріалу журналістки має знаходитись за
     автором — це і є механізм «обіцянки з твоїх новин прилітають тобі»."""
@@ -2132,6 +2207,7 @@ def main():
     test_glitch_and_quote_verification()
     test_vague_titles()
     test_check_outcome()
+    test_check_topic_scope()
     test_author_filter()
     test_fresh_facet()
     test_reminders()

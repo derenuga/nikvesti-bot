@@ -1395,12 +1395,15 @@ async def api_promise_check(request):
     outcome = (payload or {}).get("outcome")
     if outcome not in pp.CHECK_OUTCOMES:
         outcome = None
-    ok = await asyncio.to_thread(
+    # Черга шикується ТЕМАМИ, тож відповідь мусить уміти лягти на тему цілком —
+    # інакше закрита людиною справа повертається в чергу наступним рядком.
+    scope = "topic" if (payload or {}).get("scope") == "topic" else "one"
+    n = await asyncio.to_thread(
         promise_app.check, int(request.match_info["cid"]), person, outcome,
-        ((payload or {}).get("note") or "").strip() or None)
-    if not ok:
+        ((payload or {}).get("note") or "").strip() or None, scope)
+    if not n:
         raise web.HTTPNotFound(text="Обіцянки немає")
-    return web.json_response({"ok": True, "outcome": outcome})
+    return web.json_response({"ok": True, "outcome": outcome, "count": n})
 
 
 async def api_promise_take(request):

@@ -1449,14 +1449,36 @@ CHECK_OUTCOMES = {
 }
 
 
-def mark_checked(cur, commitment_id, who, outcome=None, note=None):
+def mark_checked(cur, commitment_id, who, outcome=None, note=None, scope="one"):
     """Позначити перевіреною — і записати ЧИМ скінчилось.
 
     `outcome=None` лишає статус як був (стара поведінка: «подивився, воно ще
     в процесі»). Явний `done`/`failed` закриває обіцянку, і вона виходить із
     черги, але з банку не зникає — саме заради цих двох значень банк і
     ведеться.
+
+    `scope="topic"` кладе ту саму відповідь на ВСІ відкриті зобов'язання
+    теми. Потрібне тому, що черга показує теми (`group_by_topic`), а
+    закриття було поштучним, і ці два рівні розходились: у темі про дорогу
+    до Матвіївки три зобов'язання, тож після «виконано» на одному тема
+    поверталась у чергу з новим головним рядком — людина закрила справу, а
+    бот питає її знову (Олег, 04.08: «Я понял, я должен нажать выполнено и
+    все?» — ні, і саме це неправильно).
+
+    Уже перевірене людиною не переписуємо: гуртом чіпаються лише ті, що ще
+    `expected`. Інакше «виконано» на темі затерло б чиєсь «не виконано» —
+    тобто рівно той висновок, заради якого банк ведеться.
     """
+    ids = [int(commitment_id)]
+    if scope == "topic":
+        cur.execute("SELECT topic_id FROM commitments WHERE id = %s",
+                    (int(commitment_id),))
+        row = cur.fetchone()
+        if row and row[0]:
+            cur.execute(
+                "SELECT id FROM commitments WHERE topic_id = %s AND status = 'expected'",
+                (row[0],))
+            ids = sorted({int(r[0]) for r in cur.fetchall()} | {int(commitment_id)})
     fields = ["checked_at = %s", "checked_by = %s"]
     params = [int(time.time()), who]
     if outcome in CHECK_OUTCOMES:
@@ -1465,9 +1487,9 @@ def mark_checked(cur, commitment_id, who, outcome=None, note=None):
     if note:
         fields.append("check_note = %s")
         params.append(note[:500])
-    params.append(commitment_id)
-    cur.execute(f"UPDATE commitments SET {', '.join(fields)} WHERE id = %s", params)
-    return cur.rowcount > 0
+    params.append(ids)
+    cur.execute(f"UPDATE commitments SET {', '.join(fields)} WHERE id = ANY(%s)", params)
+    return cur.rowcount
 
 
 def data_bounds(cur):
