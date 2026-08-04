@@ -2011,15 +2011,35 @@ def test_fulfil_detector():
             check("і першоджерело все одно лишається поза кандидатами",
                   730001 not in arts2, str(arts2))
 
+            # Третє джерело: стаття, прив'язана до СУСІДА ПО ТЕМІ. Тема це
+            # «одна справа»: якщо новина закриває одне зобов'язання, вона
+            # цілком може закривати й друге (кейс дороги до Матвіївки —
+            # чотири записи, у трьох темах).
+            p2 = pp.prepare(cur, case_item(
+                320276, title="Полагодити узбіччя біля зоопарку",
+                quote="Узбіччя обіцяють полагодити", subject="зоопарк",
+                objects=[], promiser="міськрада", deadline="2026-06-04"))
+            sib = pp.record(cur, {"id": 730001, "published": 1780000000,
+                                  "title_ua": "Стаття"}, p2)[0]
+            cur.execute("UPDATE commitments SET topic_id = "
+                        "(SELECT topic_id FROM commitments WHERE id = %s), "
+                        "subject_entity_id = NULL WHERE id = %s", (cid, sib))
+            arts3 = {(c["commitment_id"], c["article_id"])
+                     for c in pp.fulfil_candidates(cur, 0)}
+            check("сусід по темі бачить статтю, прив'язану до першого",
+                  (sib, 730003) in arts3, str(sorted(arts3)))
+
             # «none» теж записується — інакше ті самі пари суддя судив би
             # заново щогодини. Але ОДРАЗУ вирішеним, щоб не смітити у фасеті
             # тим, про що він якраз сказав «ні».
             pp.record_closure(cur, cid, 730003,
                               {"state": "none", "confidence": "high",
                                "why": "новина не про виконання"})
+            # Перевіряємо саме ПАРУ, а не статтю: та сама стаття законно
+            # лишається кандидатом для СУСІДА по темі.
             check("«ні» запам'ятовується — за пару не платимо двічі",
-                  730003 not in {c["article_id"]
-                                 for c in pp.fulfil_candidates(cur, 0)})
+                  (cid, 730003) not in {(c["commitment_id"], c["article_id"])
+                                        for c in pp.fulfil_candidates(cur, 0)})
             check("але у фасет «схоже, виконано» воно не потрапляє",
                   cid not in pp.closure_ids(cur))
             check("і людині на підтвердження теж не йде",
@@ -2037,7 +2057,8 @@ def test_fulfil_detector():
                   not pp.record_closure(cur, cid, 730002,
                                         {"state": "done", "confidence": "high"}))
             check("і в кандидати ця пара більше не повертається",
-                  730002 not in {c["article_id"] for c in pp.fulfil_candidates(cur, 0)})
+                  (cid, 730002) not in {(c["commitment_id"], c["article_id"])
+                                        for c in pp.fulfil_candidates(cur, 0)})
 
             # Рішення людини
             got = pp.decide_closure(cur, pp.open_closures(cur)[0]["id"],

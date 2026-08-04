@@ -2585,6 +2585,18 @@ def fulfil_candidates(cur, since, limit=200):
             JOIN commitment_revisions r ON r.commitment_id = c.id
             JOIN articles a ON a.id = r.article_id
             WHERE c.status = 'expected' AND a.published >= %s AND a.region = 1
+            UNION
+            -- 3. Стаття, прив'язана до СУСІДА ПО ТЕМІ. Тема — це «одна
+            -- справа»: якщо новина закриває одне зобов'язання цієї справи,
+            -- вона цілком може закривати й друге. Рішення однаково ухвалює
+            -- суддя поштучно, тут лише розширення пошуку.
+            SELECT c.id, a.id, a.published
+            FROM commitments c
+            JOIN commitments sib ON sib.topic_id = c.topic_id AND sib.id <> c.id
+            JOIN commitment_revisions r ON r.commitment_id = sib.id
+            JOIN articles a ON a.id = r.article_id
+            WHERE c.status = 'expected' AND c.topic_id IS NOT NULL
+              AND a.published >= %s AND a.region = 1
         )
         SELECT p.commitment_id, p.article_id, p.published
         FROM pairs p
@@ -2596,7 +2608,7 @@ def fulfil_candidates(cur, since, limit=200):
         ORDER BY p.published DESC
         LIMIT %s
         """,
-        (int(since), int(since), int(limit)))
+        (int(since), int(since), int(since), int(limit)))
     return [{"commitment_id": r[0], "article_id": r[1], "published": r[2]}
             for r in cur.fetchall()]
 
