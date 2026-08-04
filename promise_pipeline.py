@@ -1253,11 +1253,18 @@ def list_queue(cur, cls=None, limit=20, now=None, author_id=None):
     """Черга банку тем: що горить сьогодні. Порядок — той самий, що стане
     головним екраном апки (§6): спершу те, що горить, а не алфавіт.
 
-    `author_id` — users.id автора статті (нора зберігає `articles.owner_id`).
-    Це «обіцянки з МОЇХ новин»: журналістка писала матеріал, у ньому влада
-    щось пообіцяла, і саме їй природно повернутись і спитати. Фільтр по
-    ревізіях, а не по обіцянці: ланцюг міг зшитись через двох авторів, і тоді
-    тема законно з'явиться в обох.
+    `author_id` — users.id автора статті (нора зберігає `articles.owner_id`);
+    приймає і СПИСОК id. Це «обіцянки з МОЇХ новин»: журналістка писала
+    матеріал, у ньому влада щось пообіцяла, і саме їй природно повернутись і
+    спитати. Фільтр по ревізіях, а не по обіцянці: ланцюг міг зшитись через
+    двох авторів, і тоді тема законно з'явиться в обох.
+
+    Список, а не одне число, тому що в `users` сайту в людини буває ДВА
+    акаунти (Юлія Бойченко: 38 і 44), і матеріали розкладені між ними по
+    роках. Для норми KPI такий роздвоєний рахунок неприпустимий — там пін
+    `/kpi_link` навмисно лишає рівно один id. Але тут не метрика, а ФІЛЬТР
+    «покажи моє»: показати зайве не страшно, а сховати своє — саме той нуль,
+    у який Олег уперся 04.08.
     """
     # `closed` — окремий кошик перевіреного. Без нього обіцянка, яку людина
     # сходила й позначила зірваною, ЗНИКАЛА б з екрана: статус більше не
@@ -1265,12 +1272,14 @@ def list_queue(cur, cls=None, limit=20, now=None, author_id=None):
     # продукт банку: на них посилаються в наступному тексті.
     where = ["c.status <> 'expected'" if cls == "closed" else "c.status = 'expected'"]
     params = []
-    if author_id:
+    ids = ([int(x) for x in author_id] if isinstance(author_id, (list, tuple, set))
+           else [int(author_id)] if author_id else [])
+    if ids:
         where.append(
             "EXISTS (SELECT 1 FROM commitment_revisions r "
             "        JOIN articles a ON a.id = r.article_id "
-            "       WHERE r.commitment_id = c.id AND a.owner_id = %s)")
-        params.append(int(author_id))
+            "       WHERE r.commitment_id = c.id AND a.owner_id = ANY(%s))")
+        params.append(ids)
     cur.execute(f"SELECT {COMMITMENT_COLS} FROM commitments c "
                 f"WHERE {' AND '.join(where)}", params)
     rows = _decorate(_rows(cur), now)

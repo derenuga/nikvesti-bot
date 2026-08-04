@@ -3501,12 +3501,15 @@ async def promise_mine_handler(update, context):
         for person in team_roster.ROSTER:
             if arg and arg not in person.lower():
                 continue
-            uid = None
+            uids = []
             try:
-                uid = team_kpi.resolve_site_user_id(person, links, names)
+                # ВСІ акаунти людини, як в апці: у `users` та сама людина
+                # буває двічі, і матеріали розкладені між ними по роках.
+                uids = team_kpi.resolve_site_user_ids(person)
             except Exception as e:
                 err = err or f"{type(e).__name__}: {e}"
-            people.append((person, uid, by_owner.get(int(uid)) if uid else None))
+            n = sum(by_owner.get(int(u)) or 0 for u in uids)
+            people.append((person, uids, n or None))
         return by_owner, people, err, bool(names)
 
     try:
@@ -3525,15 +3528,19 @@ async def promise_mine_handler(update, context):
     matched = sum(1 for _, uid, n in people if n)
     lines.append(f"Людей ростера, чий id збігся: <b>{matched}</b> із {len(people)}")
     lines.append("")
-    for person, uid, n in sorted(people, key=lambda x: -(x[2] or 0)):
+    for person, uids, n in sorted(people, key=lambda x: -(x[2] or 0)):
+        # Розкладка по акаунтах: саме тут видно роздвоєння («38 → 0 · 44 → 12»),
+        # через яке пін дає нуль, хоч обіцянки в банку є.
+        shown = " · ".join(f"{u}→{by_owner.get(int(u)) or 0}" for u in uids)
         if n:
-            lines.append(f"✅ {escape_html(person)} — id {uid}, обіцянок {n}")
-        elif uid:
-            lines.append(f"➖ {escape_html(person)} — id {uid}, у банку немає")
+            lines.append(f"✅ {escape_html(person)} — обіцянок {n} ({shown})")
+        elif uids:
+            lines.append(f"➖ {escape_html(person)} — id {shown}, у банку немає")
         else:
             lines.append(f"❌ {escape_html(person)} — <b>id не резолвиться</b>")
+    seen_ids = {int(u) for _, uu, _ in people for u in uu}
     unknown = sorted(((oid, n) for oid, n in by_owner.items()
-                      if oid not in {u for _, u, _ in people if u}),
+                      if oid not in seen_ids),
                      key=lambda x: -x[1])[:8]
     if unknown:
         lines += ["", "<i>Автори в норі, яких немає в ростері (звільнені або "

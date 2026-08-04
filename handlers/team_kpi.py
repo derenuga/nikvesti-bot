@@ -68,7 +68,9 @@ def norm_label(metric, target, own):
 
 FACT_CACHE_TTL = 300
 _fact_cache = {}  # (metric, period_start_iso) -> (expires, {person: count})
-_users_cache = {"at": 0.0, "map": {}}  # norm_name -> users.id
+# map — norm_name -> один users.id (для норми KPI, де роздвоєння неприпустиме);
+# all — norm_name -> ВСІ id з таким ПІБ (для фільтрів «покажи моє»).
+_users_cache = {"at": 0.0, "map": {}, "all": {}}
 
 _SCHEMA_STATEMENTS = [
     # Пін правильного users.id за людиною — перебиває пошук за ПІБ. Потрібен,
@@ -723,16 +725,41 @@ def _user_id_map():
         return _users_cache["map"]
     rows = db.query("SELECT id, first_name, last_name FROM users")
     mapping = {}
+    every = {}
     for r in rows:
         first = (r["first_name"] or "").strip()
         last = (r["last_name"] or "").strip()
         if not (first or last):
             continue
-        mapping.setdefault(_norm_name(f"{first} {last}"), r["id"])
-        mapping.setdefault(_norm_name(f"{last} {first}"), r["id"])
+        for name in (f"{first} {last}", f"{last} {first}"):
+            mapping.setdefault(_norm_name(name), r["id"])
+            every.setdefault(_norm_name(name), []).append(r["id"])
     _users_cache["at"] = time.monotonic()
     _users_cache["map"] = mapping
+    _users_cache["all"] = every
     return mapping
+
+
+def resolve_site_user_ids(person):
+    """ВСІ users.id людини: пін + усі акаунти з тим самим ПІБ.
+
+    Не заміна `resolve_site_user_id`, а друга функція для іншої задачі. У
+    `users` сайту та сама людина буває двічі (Юлія Бойченко: 38 і 44), і
+    матеріали розкладені між акаунтами по роках. Норма KPI мусить рахувати
+    РІВНО один id — інакше факт роздвоюється, і саме заради цього є пін
+    `/kpi_link`. Але «покажи моє» — фільтр, а не метрика: показати зайве не
+    страшно, а сховати своє означає порожній екран без пояснення (Олег,
+    04.08: пін вказував на 44, а обіцянки лежали під другим акаунтом).
+    """
+    links = get_user_links()
+    ids = []
+    if person in links:
+        ids.append(links[person])
+    _user_id_map()                      # наповнює _users_cache["all"]
+    for uid in (_users_cache.get("all") or {}).get(_norm_name(person), []):
+        if uid not in ids:
+            ids.append(uid)
+    return ids
 
 
 def get_user_links():

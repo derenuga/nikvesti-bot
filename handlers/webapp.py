@@ -1346,15 +1346,25 @@ async def api_promises(request):
     # У менеджерському перегляді чужими очима рахуємо ТОГО, на кого дивимось:
     # інакше фасет мовчки показував свої новини під чужим іменем — тобто
     # екран виглядав робочим і брехав («з моїх тем: 0», хоч там не нуль).
-    author_id = None
+    #
+    # Беремо ВСІ акаунти людини, а не пін: у `users` сайту та сама людина
+    # буває двічі (Юлія Бойченко: 38 і 44), і матеріали розкладені між ними
+    # по роках. Пін лікує НОРМУ, де роздвоєний рахунок неприпустимий, а тут
+    # фільтр — сховати своє гірше, ніж показати зайве.
+    viewed = _viewed(request, person)
+    author_id = []
     try:
-        author_id = await asyncio.to_thread(
-            team_kpi.resolve_site_user_id, _viewed(request, person))
+        author_id = await asyncio.to_thread(team_kpi.resolve_site_user_ids, viewed)
     except Exception as e:
-        print(f"webapp: не резолвнув автора «{person}» — {e}")
-    return web.json_response(
-        await asyncio.to_thread(promise_app.queue, cls, q, offset,
-                                promise_app.PAGE, None, author_id))
+        print(f"webapp: не резолвнув автора «{viewed}» — {e}")
+    data = await asyncio.to_thread(promise_app.queue, cls, q, offset,
+                                   promise_app.PAGE, None, author_id)
+    # Чиї новини порахував фасет — щоб нуль було чим пояснити: у перегляді
+    # чужими очима він має три різні причини, і вгадувати по одному фіксу за
+    # раунд найдорожче.
+    data["mine_of"] = {"person": viewed, "ids": author_id,
+                       "preview": viewed != person}
+    return web.json_response(data)
 
 
 async def api_promises_mine_count(request):
@@ -1365,7 +1375,7 @@ async def api_promises_mine_count(request):
 
     try:
         author_id = await asyncio.to_thread(
-            team_kpi.resolve_site_user_id, _viewed(request, person))
+            team_kpi.resolve_site_user_ids, _viewed(request, person))
     except Exception as e:
         print(f"webapp: не резолвнув автора «{person}» — {e}")
         return web.json_response({"total": 0, "overdue": 0})

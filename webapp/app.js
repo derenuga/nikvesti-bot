@@ -3018,6 +3018,32 @@ const PROMISE_EMPTY = {
   closed: "Перевірених ще немає — після походу натисни «Перевірили».",
 };
 
+/* Порожньо у «З моїх новин» має ТРИ різні причини, і мовчазний нуль не
+   розрізняє їх узагалі: обіцянок справді немає · людину не знайшли в `users`
+   сайту · у перегляді чужими очима рахувався не той. Тому кажемо, ЧИЇ новини
+   рахували (Олег, 04.08: «когда я смотрю с ее экрана, у меня 0»). */
+/* У перегляді чужими очима «З моїх новин» бреше самою назвою: моїх — це
+   чиїх? Підписуємо іменем, і тоді видно, що сервер зрозумів, на кого
+   дивляться. */
+function facetLabel(f, d) {
+  const w = d.mine_of || {};
+  if (f.key === "mine" && w.preview && w.person) {
+    return "З новин " + w.person.split(" ")[0];
+  }
+  return f.label;
+}
+
+function mineEmpty(d, facet) {
+  if (facet !== "mine") return "";
+  const w = d.mine_of || {};
+  const name = w.preview ? w.person : "";
+  if (!(w.ids || []).length) {
+    return `Не знайшов ${name ? `«${name}»` : "тебе"} серед авторів сайту — `
+      + "тому фасет порожній. Лікується піном /kpi_link.";
+  }
+  return name ? `З матеріалів ${name} обіцянок поки немає.` : "";
+}
+
 async function renderPromises() {
   const facet = STATE.promiseFacet || "all";
   const head = `
@@ -3072,14 +3098,15 @@ function paintPromises() {
     <div class="chips" id="pr-facets">
       ${(d.facets || []).map((f) => `
         <button class="chip${f.key === facet ? " on" : ""}" data-facet="${f.key}">
-          ${esc(f.label)} <b>${f.n}</b></button>`).join("")}
+          ${esc(facetLabel(f, d))} <b>${f.n}</b></button>`).join("")}
     </div>
     ${d.dupes ? `<button class="pr-dupes" data-nav="dupes">
         ${icon("link")} <span>Схоже на дублі — <b>${d.dupes}</b></span>
         <span class="pr-dupes-m">та сама обіцянка з двох статей</span>
         ${icon("chevron-right", "ic chev")}</button>` : ""}
     ${d.items.length ? d.items.map(promiseCard).join("")
-      : `<div class="empty-hint">${esc(PROMISE_EMPTY[facet] || PROMISE_EMPTY.all)}</div>`}
+      : `<div class="empty-hint">${esc(mineEmpty(d, facet)
+          || PROMISE_EMPTY[facet] || PROMISE_EMPTY.all)}</div>`}
     ${d.total > d.items.length + d.offset ? `<button class="pr-more" id="pr-more">
         Ще ${d.total - d.items.length - d.offset}</button>` : ""}
     ${bounds ? `<div class="pr-bounds">${esc(bounds)}</div>` : ""}`;

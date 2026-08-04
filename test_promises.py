@@ -1451,6 +1451,17 @@ def test_author_filter():
                   all(r["title"] for r in mine) and len(pp.list_queue(
                       cur, limit=None, author_id=888)) == 1)
             check("без автора черга повна", len(pp.list_queue(cur, limit=None)) == 2)
+
+            # У `users` сайту та сама людина буває ДВІЧІ (Юлія Бойченко: 38 і
+            # 44), і матеріали розкладені між акаунтами по роках. Пін
+            # `/kpi_link` лікує НОРМУ, де роздвоєний рахунок неприпустимий, —
+            # але тут фільтр «покажи моє», і пін під одним id ховав від
+            # людини її ж обіцянки (Олег, 04.08: «з её экрана у меня 0»).
+            both = pp.list_queue(cur, limit=None, author_id=[777, 888])
+            check("фільтр приймає ВСІ акаунти людини, а не один пін",
+                  len(both) == 2, str(len(both)))
+            check("порожній список акаунтів = фільтра немає, а не нуль рядків",
+                  len(pp.list_queue(cur, limit=None, author_id=[])) == 2)
         conn.commit()
     finally:
         conn.close()
