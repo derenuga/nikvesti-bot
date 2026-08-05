@@ -84,7 +84,12 @@
   .seg button { padding: 7px 14px; background: transparent; color: var(--ink); font-size: 13px; }
   .seg button.on { background: #fff; color: var(--brand); box-shadow: 0 1px 3px rgba(20,40,90,.15); }
   .toolrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
-  input[type="color"] { width: 40px; height: 36px; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: #fff; cursor: pointer; }
+  .swatches { display: inline-flex; gap: 8px; align-items: center; }
+  .swatch {
+    width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+    border: 1px solid var(--line); padding: 0;
+  }
+  .swatch.on { outline: 3px solid var(--brand); outline-offset: 2px; }
 
   .preview { position: sticky; top: 16px; }
   #canvas {
@@ -143,7 +148,7 @@
           <button data-align="center" class="on">По центру</button>
           <button data-align="left">Зліва</button>
         </div>
-        <input type="color" id="bgColor" value="#3478f9" title="Колір фону">
+        <div class="swatches" id="swatches"></div>
         <button class="ghost" id="resetPhoto">Скинути кадр</button>
       </div>
       <div class="sliders" style="margin-top:14px">
@@ -174,7 +179,7 @@
     W: 1600, H: 2000,
     blueH: 780,              // фіксована висота синього блока — фото кропиться під нього
     pad: 110,                // бокові поля тексту
-    bg: "#3478f9",
+    scheme: 0,               // індекс у SCHEMES
     words: [],               // [{text, hl}] або {br:true}
     images: [],              // [{url, caption}]
     photo: null,             // HTMLImageElement (через проксі)
@@ -187,6 +192,15 @@
     articleId: "",
     logo: null,
   };
+  // 4 фони, і в кожного СВОЯ плашка виділення: біла плашка на білому фоні
+  // невидима, тому на світлих фонах виділення — брендовий синій із білими
+  // буквами; на синьому й чорному — біла плашка з буквами кольору фону.
+  const SCHEMES = [
+    { name: "Синій #3478F9", bg: "#3478f9", text: "#ffffff", boxBg: "#ffffff", boxText: "#3478f9", dark: true },
+    { name: "Чорний",        bg: "#000000", text: "#ffffff", boxBg: "#ffffff", boxText: "#000000", dark: true },
+    { name: "Білий",         bg: "#ffffff", text: "#000000", boxBg: "#3478f9", boxText: "#ffffff", dark: false },
+    { name: "Лавандовий #C9CFF2", bg: "#c9cff2", text: "#000000", boxBg: "#3478f9", boxText: "#ffffff", dark: false },
+  ];
   const $ = (id) => document.getElementById(id);
   const canvas = $("canvas"), ctx = canvas.getContext("2d");
   // Двурежимність: якщо файл лежить на самому nikvesti.com — усе same-origin,
@@ -382,7 +396,18 @@
   });
   $("capOn").addEventListener("change", (e) => { S.capOn = e.target.checked; render(); });
   $("capText").addEventListener("input", (e) => { S.capText = e.target.value; render(); });
-  $("bgColor").addEventListener("input", (e) => { S.bg = e.target.value; render(); });
+  SCHEMES.forEach((sc, i) => {
+    const b = document.createElement("button");
+    b.className = "swatch" + (i === S.scheme ? " on" : "");
+    b.style.background = sc.bg;
+    b.title = sc.name;
+    b.addEventListener("click", () => {
+      S.scheme = i;
+      [...$("swatches").children].forEach((el, j) => el.classList.toggle("on", j === i));
+      render();
+    });
+    $("swatches").appendChild(b);
+  });
   $("fontSize").addEventListener("input", (e) => {
     S.fontSize = +e.target.value; $("fontOut").textContent = e.target.value; render();
   });
@@ -464,7 +489,8 @@
   function render() {
     ctx.clearRect(0, 0, S.W, S.H);
     // Фон
-    ctx.fillStyle = S.bg;
+    const sc = SCHEMES[S.scheme];
+    ctx.fillStyle = sc.bg;
     ctx.fillRect(0, 0, S.W, S.H);
 
     // Фото у слоті (кліп — фіксований слот, кадр їздить всередині)
@@ -481,7 +507,7 @@
         slot.y + slot.h / 2 - dh / 2 + S.offY, dw, dh);
       ctx.restore();
     } else {
-      ctx.fillStyle = "rgba(255,255,255,.12)";
+      ctx.fillStyle = sc.dark ? "rgba(255,255,255,.12)" : "rgba(0,0,0,.08)";
       ctx.fillRect(slot.x, slot.y, slot.w, slot.h);
     }
 
@@ -567,14 +593,15 @@
           while (j < line.length && line[j].hl) j++;
           const left = x0 + xs[i] - runPad;
           const right = x0 + xs[j - 1] + widths[j - 1] + runPad;
-          ctx.fillStyle = "#fff";
+          ctx.fillStyle = SCHEMES[S.scheme].boxBg;
           ctx.fillRect(left, y - size * 0.62, right - left, size * 1.24);
           i = j;
         } else i++;
       }
       // Текст
       line.forEach((t, k) => {
-        ctx.fillStyle = t.hl ? S.bg : "#fff";
+        const sc = SCHEMES[S.scheme];
+        ctx.fillStyle = t.hl ? sc.boxText : sc.text;
         ctx.fillText(t.text, x0 + xs[k], y + size * 0.04);
       });
       y += lh;
@@ -585,7 +612,8 @@
     if (subLines.length) {
       setFont(subSize, 300);
       const sw = ctx.measureText(" ").width * 0.9;
-      ctx.fillStyle = "rgba(255,255,255,.96)";
+      ctx.fillStyle = SCHEMES[S.scheme].text;
+      ctx.globalAlpha = 0.92;
       subLines.forEach((line, j) => {
         const widths = line.map((t) => ctx.measureText(t.text).width);
         const tw = widths.reduce((a, b) => a + b, 0) + sw * (line.length - 1);
@@ -596,6 +624,7 @@
           x += widths[k] + sw;
         });
       });
+      ctx.globalAlpha = 1;
     }
   }
 
