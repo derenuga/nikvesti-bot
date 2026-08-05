@@ -52,10 +52,14 @@
   .hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
   .error { color: #c0392b; font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
 
-  textarea#headline {
+  textarea {
     width: 100%; min-height: 92px; padding: 11px 12px; border: 1px solid var(--line);
     border-radius: 10px; font: inherit; font-size: 15px; line-height: 1.45; resize: vertical;
+    background: #fff; color: var(--ink);
   }
+  textarea::placeholder { color: #a7b2c9; }
+  #subtitle { min-height: 56px; }
+  label.caption-label { display: block; margin-top: 14px; margin-bottom: 6px; font-size: 13px; color: var(--muted); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; user-select: none; }
   .chip {
     padding: 5px 9px; border-radius: 8px; background: #eef2fb; color: var(--ink);
@@ -83,6 +87,7 @@
   .seg { display: inline-flex; background: #eef2fb; border-radius: 10px; padding: 3px; gap: 3px; }
   .seg button { padding: 7px 14px; background: transparent; color: var(--ink); font-size: 13px; }
   .seg button.on { background: #fff; color: var(--brand); box-shadow: 0 1px 3px rgba(20,40,90,.15); }
+  .seg button svg { width: 16px; height: 16px; display: block; }
   .toolrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
   .swatches { display: inline-flex; gap: 8px; align-items: center; }
   .swatch {
@@ -133,8 +138,8 @@
       <textarea id="headline" spellcheck="false"></textarea>
       <div class="hint">Тапни слово, щоб виділити його білим (ще раз — зняти). Можна провести мишкою по кількох словах. Enter у тексті — примусовий перенос рядка.</div>
       <div class="chips" id="chips"></div>
-      <label class="row" style="margin-top:14px">Підпис під заголовком (необов'язково)</label>
-      <textarea id="subtitle" rows="2" spellcheck="false" placeholder="напр.: Міністр енергетики Денис Шмигаль&#10;в інтерв'ю POLITICO" style="min-height:56px"></textarea>
+      <label class="caption-label" for="subtitle">Підпис під заголовком (необов'язково)</label>
+      <textarea id="subtitle" rows="2" spellcheck="false" placeholder="напр.: Міністр енергетики Денис Шмигаль&#10;в інтерв'ю POLITICO"></textarea>
     </div>
 
     <div class="panel" id="stylePanel" hidden>
@@ -144,9 +149,9 @@
           <button data-w="1600" data-h="2000" class="on">4:5</button>
           <button data-w="1600" data-h="1600">1:1</button>
         </div>
-        <div class="seg" id="alignSeg">
-          <button data-align="center" class="on">По центру</button>
-          <button data-align="left">Зліва</button>
+        <div class="seg" id="alignSeg" title="Вирівнювання тексту">
+          <button data-align="left" class="on" title="Зліва"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg></button>
+          <button data-align="center" title="По центру"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="10" x2="6" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="18" y1="18" x2="6" y2="18"/></svg></button>
         </div>
         <div class="swatches" id="swatches"></div>
         <button class="ghost" id="resetPhoto">Скинути кадр</button>
@@ -187,7 +192,7 @@
     zoom: 1, offX: 0, offY: 0,
     capOn: true, capText: "",
     sub: "",                 // підпис під заголовком (Commissioner Light)
-    align: "center",         // вирівнювання текстового блока: center | left
+    align: "left",           // вирівнювання текстового блока: left | center
     fontSize: 88,
     articleId: "",
     logo: null,
