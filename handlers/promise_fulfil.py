@@ -90,6 +90,26 @@ MAX_PAIRS = 60
 TEXT_CAP = 1800
 
 
+def decides_itself(verdict):
+    """Чи бот ставить статус САМ, без людини.
+
+    Тільки «виконано» і тільки при `high`. «Зірвано» бот не ставить ніколи —
+    і це не обережність, а різна природа доказу: виконання підтверджує ПОДІЯ
+    («боларди поставили», «техніка вийшла»), а зрив довелось би виводити з
+    ВІДСУТНОСТІ події, чого в тексті не буває. Суддя на цьому місці підміняє
+    доказ обстановкою: 04.08 він закрив «розширити програму ЖКГ для
+    фінансування озеленення» новиною «у бюджеті немає грошей на знесення
+    аварійних дерев» — і сам же написав «не виконано», хоч про розширення
+    програми там не сказано нічого.
+
+    Ціна помилки несиметрична. Хибне «виконано» ховає тему з черги; хибне
+    «зірвано» ще й дає редакції неправдивий факт, на який можна послатись у
+    тексті. Тож `failed` завжди йде людині — у фасет і в сповіщення.
+    """
+    v = verdict or {}
+    return v.get("state") == "done" and v.get("confidence") == "high"
+
+
 def _load(since, limit):
     conn = ep.connect()
     try:
@@ -184,7 +204,7 @@ async def scan(days=DEFAULT_DAYS, limit=MAX_PAIRS, on_progress=None):
                                           p["article_id"],
                                           {**v, "state": "none"})
                         continue
-                    auto = conf == "high"
+                    auto = decides_itself(v)
                     if not pp.record_closure(cur, p["commitment_id"],
                                              p["article_id"], v, applied=auto):
                         continue          # цю пару вже судили
@@ -300,13 +320,25 @@ async def _tell_admin(bot, closed):
     except Exception:
         by_article = {}
     n = len(closed)
+    # Заголовок мусить називати те, що СТАЛОСЬ. Суддя віддає два різні
+    # вердикти — `done` і `failed`, — і другий закриває обіцянку як ЗІРВАНУ:
+    # «закрив за фактом виконання» над висновком «не виконано» читається як
+    # збій бота (скріншот Олега 04.08), хоч рішення було саме таким.
+    kinds = {("виконано" if (p.get("verdict") or {}).get("state") == "done"
+              else "зірвано") for p in closed}
+    what = ("за фактом виконання" if kinds == {"виконано"}
+            else "як зірвані" if kinds == {"зірвано"}
+            else "за фактом перевірки")
     lines = [f"✅ <b>Лис закрив {n} "
              f"{pp.plural(n, 'обіцянку', 'обіцянки', 'обіцянок')} "
-             f"за фактом виконання</b>", ""]
+             f"{what}</b>", ""]
     for p in closed[:8]:
         v = p.get("verdict") or {}
         link = by_article.get(p["article_id"]) or {}
+        word = "виконано" if v.get("state") == "done" else "зірвано"
         lines.append(f"• <b>{escape_html(p['promise']['title'] or '?')}</b>")
+        if len(kinds) > 1:
+            lines.append(f"  <b>{word}</b>")
         if v.get("why"):
             lines.append(f"  <i>{escape_html(v['why'])}</i>")
         if link.get("url"):
@@ -316,9 +348,43 @@ async def _tell_admin(bot, closed):
     try:
         await bot.send_message(ADMIN_CHAT_ID, "\n".join(lines)[:4000],
                                parse_mode="HTML",
-                               disable_web_page_preview=True)
+                               disable_web_page_preview=True,
+                               reply_markup=await _cards_keyboard(bot, closed))
     except Exception as e:
         print(f"promise_fulfil: не сказав адміну — {e}")
+
+
+async def _cards_keyboard(bot, closed):
+    """Кнопки «відкрити картку» — по одній на закриту обіцянку.
+
+    Команда `/promise_reopen 543` у тексті лишається, але вона ВІДКОЧУЄ, а
+    перше, що треба зробити з автоматичним рішенням, — подивитись на нього:
+    ланцюг, цитати, лінк на кожен факт. Це і є картка в апці, тож шлях до неї
+    має бути в один тап (Олег, 04.08: «пусть показывает мини-апп кнопку, при
+    клике на которую я попаду в карточку обещания»).
+
+    Лінк збирається тим самим резолвером, що в нагадуваннях; без нього
+    кнопок просто немає, а повідомлення лишається корисним.
+    """
+    try:
+        from handlers.helpers import app_link_with_param, resolve_app_link
+        app_url, _ = await resolve_app_link(bot)
+    except Exception as e:
+        print(f"promise_fulfil: лінк апки не зібрався — {e}")
+        return None
+    if not app_url:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rows = []
+    for p in closed[:8]:
+        url = app_link_with_param(app_url, f"promise_{p['commitment_id']}")
+        # Одна закрита — кнопка називає дію; кілька — назву обіцянки, бо
+        # вісім однакових «Відкрити картку» не розрізнити.
+        title = (p["promise"].get("title") or "").strip()
+        label = ("Відкрити картку" if len(closed) == 1
+                 else (title[:28] + "…") if len(title) > 29 else title or "Картка")
+        rows.append([InlineKeyboardButton(label, url=url)])
+    return InlineKeyboardMarkup(rows)
 
 
 # ---------- Команди ----------

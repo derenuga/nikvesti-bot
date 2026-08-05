@@ -2131,6 +2131,23 @@ def test_fulfil_detector():
             check("і людині на підтвердження теж не йде",
                   not any(c["article_id"] == 730003 for c in pp.open_closures(cur)))
 
+            # Хто ухвалює рішення сам. «Зірвано» бот не ставить НІКОЛИ:
+            # виконання підтверджує подія, а зрив довелось би виводити з
+            # відсутності події — і суддя на цьому місці підміняє доказ
+            # обстановкою (04.08 закрив «розширити програму ЖКГ для
+            # фінансування озеленення» новиною «у бюджеті немає грошей на
+            # знесення аварійних дерев»). Ціна помилки несиметрична: хибне
+            # «зірвано» ще й дає редакції неправдивий факт у текст.
+            from handlers import promise_fulfil as pf
+            check("«виконано» з high бот ставить сам",
+                  pf.decides_itself({"state": "done", "confidence": "high"}))
+            check("«зірвано» з high — усе одно людині",
+                  not pf.decides_itself({"state": "failed", "confidence": "high"}))
+            check("невпевнене «виконано» — теж людині",
+                  not pf.decides_itself({"state": "done", "confidence": "medium"}))
+            check("порожній вердикт нічого не вирішує",
+                  not pf.decides_itself(None))
+
             # medium — у чергу людині, статус не чіпаємо
             pp.record_closure(cur, cid, 730002,
                               {"state": "done", "confidence": "medium",
