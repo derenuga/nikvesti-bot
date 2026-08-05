@@ -507,34 +507,47 @@
     let y = (S.blueH - lines.length * lh) / 2 + lh / 2;
     ctx.textBaseline = "middle";
     ctx.font = font(size);
-    const spaceW = ctx.measureText(" ").width * 0.55;
+    const spaceW = ctx.measureText(" ").width * 0.55;
+
+    // Псевдопробіл на краях плашки: перше слово рану отримує повітря зліва,
+    // останнє — справа, а слова всередині не розсуваються. Сусідні невиділені
+    // слова теж посуваються — край плашки не з'їдає міжслівний пробіл.
+    const runPad = size * 0.28;
 
     for (const line of lines) {
       const widths = line.map((t) => ctx.measureText(t.text).width);
-      const totalW = widths.reduce((a, b) => a + b, 0) + spaceW * (line.length - 1);
-      let x = (S.W - totalW) / 2;
+      const runStart = (k) => line[k].hl && (k === 0 || !line[k - 1].hl);
+      const runEnd = (k) => line[k].hl && (k === line.length - 1 || !line[k + 1].hl);
 
-      // Білі плашки — суцільні по ранах підряд виділених слів (з пробілами)
+      // Позиції слів з урахуванням країв плашок
+      const xs = [];
+      let cursor = 0;
+      line.forEach((t, k) => {
+        if (k > 0) cursor += spaceW;
+        if (runStart(k)) cursor += runPad;
+        xs.push(cursor);
+        cursor += widths[k];
+        if (runEnd(k)) cursor += runPad;
+      });
+      const x0 = (S.W - cursor) / 2;
+
+      // Білі плашки — суцільні по ранах підряд виділених слів
       let i = 0;
       while (i < line.length) {
         if (line[i].hl) {
-          let j = i, runW = 0;
-          while (j < line.length && line[j].hl) {
-            runW += widths[j] + (j > i ? spaceW : 0);
-            j++;
-          }
-          const rx = x + widths.slice(0, i).reduce((a, b) => a + b, 0) + spaceW * i;
+          let j = i;
+          while (j < line.length && line[j].hl) j++;
+          const left = x0 + xs[i] - runPad;
+          const right = x0 + xs[j - 1] + widths[j - 1] + runPad;
           ctx.fillStyle = "#fff";
-          ctx.fillRect(rx - 14, y - size * 0.62, runW + 28, size * 1.24);
+          ctx.fillRect(left, y - size * 0.62, right - left, size * 1.24);
           i = j;
         } else i++;
       }
       // Текст
-      let tx = x;
       line.forEach((t, k) => {
         ctx.fillStyle = t.hl ? S.bg : "#fff";
-        ctx.fillText(t.text, tx, y + size * 0.04);
-        tx += widths[k] + spaceW;
+        ctx.fillText(t.text, x0 + xs[k], y + size * 0.04);
       });
       y += lh;
     }
@@ -545,21 +558,31 @@
 
   function wrap(words, size, maxW) {
     ctx.font = font(size);
-    const spaceW = ctx.measureText(" ").width * 0.55;
+    const spaceW = ctx.measureText(" ").width * 0.55;
+    const runPad = size * 0.28; // те саме повітря країв плашки, що в рендері
     const lines = [];
     let cur = [], curW = 0;
-    for (const t of words) {
+    for (let n = 0; n < words.length; n++) {
+      const t = words[n];
       if (t.br) {
         if (cur.length) lines.push(cur);
         cur = []; curW = 0;
         continue;
       }
+      const next = words[n + 1];
       const w = ctx.measureText(t.text).width;
-      if (cur.length && curW + spaceW + w > maxW) {
+      // Крайні слова рану ширші на псевдопробіл — інакше плашка вилазила б за поля
+      let adv = w;
+      if (t.hl && (!cur.length || !cur[cur.length - 1].hl)) adv += runPad;
+      if (t.hl && (!next || next.br || !next.hl)) adv += runPad;
+      if (cur.length && curW + spaceW + adv > maxW) {
         lines.push(cur);
-        cur = [t]; curW = w;
+        // на новому рядку слово-продовження рану знову відкриває плашку зліва
+        adv = w + (t.hl ? runPad : 0) +
+              (t.hl && (!next || next.br || !next.hl) ? runPad : 0);
+        cur = [t]; curW = adv;
       } else {
-        curW += (cur.length ? spaceW : 0) + w;
+        curW += (cur.length ? spaceW : 0) + adv;
         cur.push(t);
       }
     }
