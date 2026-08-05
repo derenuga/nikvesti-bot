@@ -394,7 +394,24 @@ async def promises_handler(update, context):
     tail.append("<i>Фільтри: /promises нові · минув · скоро · подія · давно · популізм\n"
                 "Пошук: /promises Сєнкевич · /promises гімназія</i>")
     await msg.edit_text(_clip("\n\n".join(header + body + tail)),
-                        parse_mode="HTML", disable_web_page_preview=True)
+                        parse_mode="HTML", disable_web_page_preview=True,
+                        reply_markup=await _queue_button(context.bot))
+
+
+async def _queue_button(bot):
+    """Кнопка «Відкрити банк в апці» під чергою: у чаті вона читається, а
+    працюють із нею в апці — фасети, фото, «Перевірили» з результатом."""
+    try:
+        from handlers.helpers import app_link_with_param, resolve_app_link
+        app_url, _ = await resolve_app_link(bot)
+    except Exception as e:
+        print(f"promises: лінк апки не зібрався — {e}")
+        return None
+    if not app_url:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    return InlineKeyboardMarkup([[InlineKeyboardButton(
+        "Відкрити банк в апці", url=app_link_with_param(app_url, "promises"))]])
 
 
 # ---------- /promise_show ----------
@@ -543,7 +560,9 @@ async def promise_show_handler(update, context):
             parts.append(format_item(r, rev, n=i, now=now))
         parts.append(f"<i>Перечитати після правки промпту: /promise_retest {article_id}</i>")
         await msg.edit_text(_clip("\n\n".join(parts)), parse_mode="HTML",
-                            disable_web_page_preview=True)
+                            disable_web_page_preview=True,
+                            reply_markup=await _card_buttons(
+                                context.bot, data["rows"]))
         return
 
     row = data["row"]
@@ -609,7 +628,53 @@ async def promise_show_handler(update, context):
     parts.append(_bounds_line(data["bounds"], shown=1))
 
     text = "\n\n".join(p for p in parts if p)
-    await msg.edit_text(_clip(text), parse_mode="HTML", disable_web_page_preview=True)
+    await msg.edit_text(_clip(text), parse_mode="HTML", disable_web_page_preview=True,
+                        reply_markup=await _card_button(context.bot, row["id"]))
+
+
+async def _card_button(bot, commitment_id):
+    """Кнопка «Відкрити картку» під текстовою карткою.
+
+    Текст у чаті й картка в апці показують те саме, але діяти можна лише в
+    апці: «Перевірили» з результатом, обсяг на всю тему, дублі. Змушувати
+    людину після /promise_show шукати ту саму обіцянку руками — зайвий крок
+    рівно там, де вона вже все прочитала (Олег, 04.08: «хочу видеть сразу
+    ссылку на карточку»).
+    """
+    try:
+        from handlers.helpers import app_link_with_param, resolve_app_link
+        app_url, _ = await resolve_app_link(bot)
+    except Exception as e:
+        print(f"promises: лінк апки не зібрався — {e}")
+        return None
+    if not app_url:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    return InlineKeyboardMarkup([[InlineKeyboardButton(
+        "Відкрити картку в апці",
+        url=app_link_with_param(app_url, f"promise_{commitment_id}"))]])
+
+
+async def _card_buttons(bot, rows):
+    """По кнопці на кожну обіцянку — для виводу «що записано з цієї статті»,
+    де їх буває сім. Підпис — назва, бо сім однакових «Відкрити» не
+    розрізнити."""
+    try:
+        from handlers.helpers import app_link_with_param, resolve_app_link
+        app_url, _ = await resolve_app_link(bot)
+    except Exception as e:
+        print(f"promises: лінк апки не зібрався — {e}")
+        return None
+    if not app_url:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    out = []
+    for r in rows[:6]:
+        title = (r.get("title") or "").strip() or f"Обіцянка {r['id']}"
+        out.append([InlineKeyboardButton(
+            (title[:30] + "…") if len(title) > 31 else title,
+            url=app_link_with_param(app_url, f"promise_{r['id']}"))])
+    return InlineKeyboardMarkup(out) if out else None
 
 
 # ---------- /promise_checked, /promise_forget, /promise_restore ----------
