@@ -74,6 +74,13 @@
     border: 3px solid transparent;
   }
   .thumbs img.sel { border-color: var(--brand); }
+  .thumb-add {
+    width: 110px; height: 82px; border-radius: 10px; border: 2px dashed #b9c6e2;
+    background: #f8faff; color: var(--muted); display: flex; align-items: center;
+    justify-content: center; cursor: pointer; padding: 0;
+  }
+  .thumb-add:hover { color: var(--brand); border-color: var(--brand); }
+  .thumb-add svg { width: 24px; height: 24px; }
 
   label.row { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 14px; }
   input[type="text"] {
@@ -125,6 +132,7 @@
     <div class="panel" id="photoPanel" hidden>
       <h2>2 · Фото</h2>
       <div class="thumbs" id="thumbs"></div>
+      <input type="file" id="photoFile" accept="image/*" hidden>
       <label class="row">
         <input type="checkbox" id="capOn" checked>
         Підпис фото
@@ -306,7 +314,7 @@
     $("capText").value = S.capText;
     buildThumbs();
     if (S.images.length) selectPhoto(0);
-    $("photoPanel").hidden = !S.images.length;
+    $("photoPanel").hidden = false;
     $("textPanel").hidden = false;
     $("stylePanel").hidden = false;
     $("stageHint").textContent = "Тягни фото мишкою, зум — коліщатком";
@@ -320,15 +328,31 @@
     box.innerHTML = "";
     S.images.forEach((im, i) => {
       const img = document.createElement("img");
-      img.src = proxied(im.url);
+      img.src = im.local ? im.url : proxied(im.url);
       img.title = im.caption || "";
       img.addEventListener("click", () => selectPhoto(i));
       box.appendChild(img);
     });
+    // Плюсик — своя картинка з диска (objectURL same-origin, canvas не brudнить)
+    const add = document.createElement("button");
+    add.className = "thumb-add";
+    add.title = "Завантажити свою картинку";
+    add.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+    add.addEventListener("click", () => $("photoFile").click());
+    box.appendChild(add);
   }
 
+  $("photoFile").addEventListener("change", (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    S.images.push({ url: URL.createObjectURL(f), caption: "", local: true });
+    buildThumbs();
+    selectPhoto(S.images.length - 1);
+    e.target.value = "";
+  });
+
   function selectPhoto(i) {
-    [...$("thumbs").children].forEach((el, j) => el.classList.toggle("sel", j === i));
+    [...$("thumbs").querySelectorAll("img")].forEach((el, j) => el.classList.toggle("sel", j === i));
     const im = S.images[i];
     S.photoUrl = im.url;
     S.zoom = 1; S.offX = 0; S.offY = 0;
@@ -336,7 +360,7 @@
     const photo = new Image();
     photo.onload = () => { S.photo = photo; render(); };
     photo.onerror = () => { $("err").textContent = "Фото не завантажилось"; $("err").hidden = false; };
-    photo.src = proxied(im.url);
+    photo.src = im.local ? im.url : proxied(im.url);
   }
 
   // ---------- Заголовок і виділення ----------
