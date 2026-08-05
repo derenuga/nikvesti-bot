@@ -542,7 +542,7 @@ async def promise_auto_handler(update, context):
             conn.autocommit = True
             pp.ensure_schema(conn)
             with conn.cursor() as cur:
-                rows = pp.auto_closures(cur, state=state)
+                rows = pp.auto_closures(cur, limit=1000, state=state)
                 links = _links_for(cur, {r["article_id"] for r in rows})
                 failed = len(pp.auto_closures(cur, limit=1000, state="failed"))
             return rows, links, failed
@@ -583,6 +583,37 @@ async def promise_auto_handler(update, context):
     await update.message.reply_text(_clip("\n".join(lines)), parse_mode="HTML",
                                     disable_web_page_preview=True,
                                     reply_markup=markup)
+    # ПОВНИЙ список — файлом. У чат влазить два десятки, а рішень бота
+    # накопичується більше, і розбирають їх поза ботом: назад приїжджає .txt
+    # із рядками `reopen <id>` (той самий шлях, що /roles_audit і
+    # /entity_junk). Готовий рядок стоїть у кожному записі, тож правити файл
+    # означає лише викинути зайве.
+    if len(rows) <= 8:
+        return
+    import io
+    buf = io.StringIO()
+    buf.write("# promises-fix\n")
+    buf.write("# Лишай рядки reopen для тих, які бот закрив ДАРЕМНО;\n"
+              "# решту видали. Файл кинь Лису в приват — покаже, що зробить.\n\n")
+    for r in rows:
+        link = links.get(r["article_id"]) or {}
+        word = "виконано" if r["state"] == "done" else "ЗІРВАНО"
+        buf.write(f"# [{word}] {r['title'] or '?'}\n")
+        buf.write(f"#   строк: {pp.fmt_date(r['deadline']) if r['deadline'] else '—'}"
+                  f" · закрито: {pp.fmt_date(r['created']) if r['created'] else '—'}\n")
+        if r.get("why"):
+            buf.write(f"#   підстава: {r['why']}\n")
+        if link.get("title"):
+            buf.write(f"#   доказ: {link['title']}\n")
+        if link.get("url"):
+            buf.write(f"#   {link['url']}\n")
+        buf.write(f"reopen {r['commitment_id']}\n\n")
+    await update.message.reply_document(
+        document=io.BytesIO(buf.getvalue().encode("utf-8")),
+        filename=f"promise_auto_{len(rows)}.txt",
+        caption=(f"🦊 Усі {len(rows)}, які Лис закрив сам — із підставою й "
+                 f"лінком на доказ.\n\nВикинь рядки тих, де бот має рацію, "
+                 f"решту надішли мені файлом назад — поверну в чергу пакетом."))
 
 
 async def promise_auto_callback(update, context):

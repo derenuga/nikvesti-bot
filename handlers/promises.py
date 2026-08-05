@@ -982,7 +982,9 @@ async def promise_export_handler(update, context):
             f"<code>merge &lt;що лишається&gt; &lt;дубль&gt;</code> — склеїти "
             f"ланцюг (цитати обох лишаються)\n"
             f"<code>drop &lt;id&gt; [причина]</code> — прибрати запис\n"
-            f"<code>check &lt;id&gt;</code> — позначити перевіреним\n\n"
+            f"<code>check &lt;id&gt;</code> — позначити перевіреним\n"
+            f"<code>reopen &lt;id&gt;</code> — повернути в чергу (відкат "
+            f"автозакриття)\n\n"
             f"Покажу, що зроблю, і чекатиму кнопку. Усе зі знімками — "
             f"відкат /promise_prune_undo."),
         parse_mode="HTML")
@@ -1009,6 +1011,12 @@ def parse_fix(text):
                                 " ".join(parts[2:]) or None))
             elif verb in ("check", "checked") and len(parts) >= 2:
                 actions.append(("check", int(parts[1]), None, None))
+            elif verb == "reopen" and len(parts) >= 2:
+                # Відкат автоматичного закриття. У пакеті він потрібен рівно
+                # тому ж, чому й решта: рішень бота накопичилось десятки, і
+                # тапати /promise_reopen по одному — та сама робота, від якої
+                # пакети й рятують.
+                actions.append(("reopen", int(parts[1]), None, None))
             elif verb == "title" and len(parts) >= 3:
                 # Переписати назву. Потрібне для битих назв (ієрогліф замість
                 # слова) і для кривих формулювань: назва написана моделлю,
@@ -1037,7 +1045,7 @@ def describe_fixes(actions):
     finally:
         conn.close()
     lines, counts, missing = [], {"merge": 0, "keep": 0, "drop": 0,
-                                  "check": 0, "title": 0}, 0
+                                  "check": 0, "title": 0, "reopen": 0}, 0
     for verb, a, b, note in actions:
         na, nb = names.get(a), names.get(b)
         if na is None or (b is not None and nb is None):
@@ -1054,6 +1062,8 @@ def describe_fixes(actions):
         elif verb == "drop":
             lines.append(f"🗑 {escape_html(na)}"
                          + (f" — {escape_html(note)}" if note else ""))
+        elif verb == "reopen":
+            lines.append(f"↩️ повернути в чергу: {escape_html(na)}")
         else:
             lines.append(f"✔️ {escape_html(na)}")
     return lines, counts, missing
@@ -1122,7 +1132,8 @@ async def promises_fix_callback(update, context):
         conn = ep.connect()
         try:
             pp.ensure_schema(conn)
-            done = {"merge": 0, "keep": 0, "drop": 0, "check": 0, "title": 0}
+            done = {"merge": 0, "keep": 0, "drop": 0, "check": 0,
+                    "title": 0, "reopen": 0}
             skipped, already = [], 0
             with conn.cursor() as cur:
                 run_id = pp.next_run(cur)
@@ -1149,6 +1160,8 @@ async def promises_fix_callback(update, context):
                         elif verb == "drop":
                             ok = pp.forget(cur, a, reason=note or "пакет рішень",
                                            who=who, run=run_id)
+                        elif verb == "reopen":
+                            ok = pp.reopen(cur, a, who)
                         else:
                             pp.mark_checked(cur, a, who)
                             ok = True
@@ -1171,7 +1184,7 @@ async def promises_fix_callback(update, context):
         return
     text = (f"🦊 Готово: склеїв {done['merge']} · розвів {done['keep']} · "
             f"прибрав {done['drop']} · переназвав {done['title']} · "
-            f"позначив {done['check']}.\n"
+            f"позначив {done['check']} · повернув у чергу {done['reopen']}.\n"
             f"Відкат усього пакета: /promise_prune_undo {run_id}")
     if already:
         text += (f"\n\n✔️ {already} злиттів уже було зроблено раніше — "
