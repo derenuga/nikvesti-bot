@@ -52,10 +52,14 @@
   .hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
   .error { color: #c0392b; font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
 
-  textarea#headline {
+  textarea {
     width: 100%; min-height: 92px; padding: 11px 12px; border: 1px solid var(--line);
     border-radius: 10px; font: inherit; font-size: 15px; line-height: 1.45; resize: vertical;
+    background: #fff; color: var(--ink);
   }
+  textarea::placeholder { color: #a7b2c9; }
+  #subtitle { min-height: 56px; }
+  label.caption-label { display: block; margin-top: 14px; margin-bottom: 6px; font-size: 13px; color: var(--muted); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; user-select: none; }
   .chip {
     padding: 5px 9px; border-radius: 8px; background: #eef2fb; color: var(--ink);
@@ -83,8 +87,14 @@
   .seg { display: inline-flex; background: #eef2fb; border-radius: 10px; padding: 3px; gap: 3px; }
   .seg button { padding: 7px 14px; background: transparent; color: var(--ink); font-size: 13px; }
   .seg button.on { background: #fff; color: var(--brand); box-shadow: 0 1px 3px rgba(20,40,90,.15); }
+  .seg button svg { width: 16px; height: 16px; display: block; }
   .toolrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
-  input[type="color"] { width: 40px; height: 36px; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: #fff; cursor: pointer; }
+  .swatches { display: inline-flex; gap: 8px; align-items: center; }
+  .swatch {
+    width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+    border: 1px solid var(--line); padding: 0;
+  }
+  .swatch.on { outline: 3px solid var(--brand); outline-offset: 2px; }
 
   .preview { position: sticky; top: 16px; }
   #canvas {
@@ -128,8 +138,8 @@
       <textarea id="headline" spellcheck="false"></textarea>
       <div class="hint">Тапни слово, щоб виділити його білим (ще раз — зняти). Можна провести мишкою по кількох словах. Enter у тексті — примусовий перенос рядка.</div>
       <div class="chips" id="chips"></div>
-      <label class="row" style="margin-top:14px">Підпис під заголовком (необов'язково)</label>
-      <textarea id="subtitle" rows="2" spellcheck="false" placeholder="напр.: Міністр енергетики Денис Шмигаль&#10;в інтерв'ю POLITICO" style="min-height:56px"></textarea>
+      <label class="caption-label" for="subtitle">Підпис під заголовком (необов'язково)</label>
+      <textarea id="subtitle" rows="2" spellcheck="false" placeholder="напр.: Міністр енергетики Денис Шмигаль&#10;в інтерв'ю POLITICO"></textarea>
     </div>
 
     <div class="panel" id="stylePanel" hidden>
@@ -139,11 +149,11 @@
           <button data-w="1600" data-h="2000" class="on">4:5</button>
           <button data-w="1600" data-h="1600">1:1</button>
         </div>
-        <div class="seg" id="alignSeg">
-          <button data-align="center" class="on">По центру</button>
-          <button data-align="left">Зліва</button>
+        <div class="seg" id="alignSeg" title="Вирівнювання тексту">
+          <button data-align="left" class="on" title="Зліва"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg></button>
+          <button data-align="center" title="По центру"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="10" x2="6" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="18" y1="18" x2="6" y2="18"/></svg></button>
         </div>
-        <input type="color" id="bgColor" value="#3478f9" title="Колір фону">
+        <div class="swatches" id="swatches"></div>
         <button class="ghost" id="resetPhoto">Скинути кадр</button>
       </div>
       <div class="sliders" style="margin-top:14px">
@@ -174,7 +184,7 @@
     W: 1600, H: 2000,
     blueH: 780,              // фіксована висота синього блока — фото кропиться під нього
     pad: 110,                // бокові поля тексту
-    bg: "#3478f9",
+    scheme: 0,               // індекс у SCHEMES
     words: [],               // [{text, hl}] або {br:true}
     images: [],              // [{url, caption}]
     photo: null,             // HTMLImageElement (через проксі)
@@ -182,11 +192,20 @@
     zoom: 1, offX: 0, offY: 0,
     capOn: true, capText: "",
     sub: "",                 // підпис під заголовком (Commissioner Light)
-    align: "center",         // вирівнювання текстового блока: center | left
+    align: "left",           // вирівнювання текстового блока: left | center
     fontSize: 88,
     articleId: "",
     logo: null,
   };
+  // 4 фони, і в кожного СВОЯ плашка виділення: біла плашка на білому фоні
+  // невидима, тому на світлих фонах виділення — брендовий синій із білими
+  // буквами; на синьому й чорному — біла плашка з буквами кольору фону.
+  const SCHEMES = [
+    { name: "Синій #3478F9", bg: "#3478f9", text: "#ffffff", boxBg: "#ffffff", boxText: "#3478f9", dark: true },
+    { name: "Чорний",        bg: "#000000", text: "#ffffff", boxBg: "#ffffff", boxText: "#000000", dark: true },
+    { name: "Білий",         bg: "#ffffff", text: "#000000", boxBg: "#3478f9", boxText: "#ffffff", dark: false },
+    { name: "Лавандовий #C9CFF2", bg: "#c9cff2", text: "#000000", boxBg: "#3478f9", boxText: "#ffffff", dark: false },
+  ];
   const $ = (id) => document.getElementById(id);
   const canvas = $("canvas"), ctx = canvas.getContext("2d");
   // Двурежимність: якщо файл лежить на самому nikvesti.com — усе same-origin,
@@ -382,7 +401,18 @@
   });
   $("capOn").addEventListener("change", (e) => { S.capOn = e.target.checked; render(); });
   $("capText").addEventListener("input", (e) => { S.capText = e.target.value; render(); });
-  $("bgColor").addEventListener("input", (e) => { S.bg = e.target.value; render(); });
+  SCHEMES.forEach((sc, i) => {
+    const b = document.createElement("button");
+    b.className = "swatch" + (i === S.scheme ? " on" : "");
+    b.style.background = sc.bg;
+    b.title = sc.name;
+    b.addEventListener("click", () => {
+      S.scheme = i;
+      [...$("swatches").children].forEach((el, j) => el.classList.toggle("on", j === i));
+      render();
+    });
+    $("swatches").appendChild(b);
+  });
   $("fontSize").addEventListener("input", (e) => {
     S.fontSize = +e.target.value; $("fontOut").textContent = e.target.value; render();
   });
@@ -464,7 +494,8 @@
   function render() {
     ctx.clearRect(0, 0, S.W, S.H);
     // Фон
-    ctx.fillStyle = S.bg;
+    const sc = SCHEMES[S.scheme];
+    ctx.fillStyle = sc.bg;
     ctx.fillRect(0, 0, S.W, S.H);
 
     // Фото у слоті (кліп — фіксований слот, кадр їздить всередині)
@@ -481,7 +512,7 @@
         slot.y + slot.h / 2 - dh / 2 + S.offY, dw, dh);
       ctx.restore();
     } else {
-      ctx.fillStyle = "rgba(255,255,255,.12)";
+      ctx.fillStyle = sc.dark ? "rgba(255,255,255,.12)" : "rgba(0,0,0,.08)";
       ctx.fillRect(slot.x, slot.y, slot.w, slot.h);
     }
 
@@ -567,14 +598,15 @@
           while (j < line.length && line[j].hl) j++;
           const left = x0 + xs[i] - runPad;
           const right = x0 + xs[j - 1] + widths[j - 1] + runPad;
-          ctx.fillStyle = "#fff";
+          ctx.fillStyle = SCHEMES[S.scheme].boxBg;
           ctx.fillRect(left, y - size * 0.62, right - left, size * 1.24);
           i = j;
         } else i++;
       }
       // Текст
       line.forEach((t, k) => {
-        ctx.fillStyle = t.hl ? S.bg : "#fff";
+        const sc = SCHEMES[S.scheme];
+        ctx.fillStyle = t.hl ? sc.boxText : sc.text;
         ctx.fillText(t.text, x0 + xs[k], y + size * 0.04);
       });
       y += lh;
@@ -585,7 +617,8 @@
     if (subLines.length) {
       setFont(subSize, 300);
       const sw = ctx.measureText(" ").width * 0.9;
-      ctx.fillStyle = "rgba(255,255,255,.96)";
+      ctx.fillStyle = SCHEMES[S.scheme].text;
+      ctx.globalAlpha = 0.92;
       subLines.forEach((line, j) => {
         const widths = line.map((t) => ctx.measureText(t.text).width);
         const tw = widths.reduce((a, b) => a + b, 0) + sw * (line.length - 1);
@@ -596,6 +629,7 @@
           x += widths[k] + sw;
         });
       });
+      ctx.globalAlpha = 1;
     }
   }
 
