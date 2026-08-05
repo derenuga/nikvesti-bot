@@ -51,7 +51,7 @@ except ImportError:  # локальний dev без aiohttp — модуль п
     web = None
 
 from handlers import (
-    bot_db, impact_archive, team_analytics, team_contacts, team_kpi,
+    bot_db, card_maker, impact_archive, team_analytics, team_contacts, team_kpi,
     team_matches, team_notifications, team_publications,
     team_projects, team_roster, team_tasks, team_todos,
 )
@@ -1883,6 +1883,9 @@ async def start_webapp(application):
         web.post("/api/promises/{cid:\\d+}/drop", api_promise_drop),
         web.post("/api/promises/{cid:\\d+}/merge", api_promise_merge),
         web.post("/api/promises/{cid:\\d+}/notdupe", api_promise_not_dupe),
+        web.get("/card", card_maker.page),
+        web.post("/api/card/scrape", card_maker.api_scrape),
+        web.get("/api/card/img", card_maker.api_image),
         web.static("/static", _STATIC_DIR),
     ])
     runner = web.AppRunner(app)

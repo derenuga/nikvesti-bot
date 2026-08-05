@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Картка для соцмереж — МикВісті</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Commissioner:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --brand: #3478f9;
+    --ink: #16233f;
+    --muted: #6b7a99;
+    --line: #dde4f2;
+    --bg: #f3f6fc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: Commissioner, system-ui, sans-serif; font-size: 15px;
+  }
+  header {
+    background: #fff; border-bottom: 1px solid var(--line);
+    padding: 14px 20px; display: flex; align-items: center; gap: 10px;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 700; }
+  header .fox { font-size: 20px; }
+  .wrap {
+    max-width: 1200px; margin: 0 auto; padding: 20px;
+    display: grid; grid-template-columns: minmax(340px, 1fr) minmax(320px, 480px);
+    gap: 24px; align-items: start;
+  }
+  @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
+
+  .panel { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  .panel + .panel { margin-top: 16px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+
+  .urlrow { display: flex; gap: 8px; }
+  .urlrow input {
+    flex: 1; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px;
+    font: inherit; font-size: 14px; min-width: 0;
+  }
+  button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 10px;
+    padding: 11px 16px; cursor: pointer; background: var(--brand); color: #fff;
+  }
+  button.ghost { background: #eef2fb; color: var(--brand); }
+  button:disabled { opacity: .5; cursor: default; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .error { color: #c0392b; font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
+
+  textarea#headline {
+    width: 100%; min-height: 92px; padding: 11px 12px; border: 1px solid var(--line);
+    border-radius: 10px; font: inherit; font-size: 15px; line-height: 1.45; resize: vertical;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; user-select: none; }
+  .chip {
+    padding: 5px 9px; border-radius: 8px; background: #eef2fb; color: var(--ink);
+    font-size: 13px; font-weight: 600; cursor: pointer; touch-action: none;
+  }
+  .chip.hl { background: var(--brand); color: #fff; }
+  .chip.br { background: transparent; color: var(--muted); cursor: default; width: 100%; padding: 0; height: 2px; }
+
+  .thumbs { display: flex; flex-wrap: wrap; gap: 10px; }
+  .thumbs img {
+    width: 110px; height: 82px; object-fit: cover; border-radius: 10px; cursor: pointer;
+    border: 3px solid transparent;
+  }
+  .thumbs img.sel { border-color: var(--brand); }
+
+  label.row { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 14px; }
+  input[type="text"] {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px;
+    font: inherit; font-size: 14px;
+  }
+  .sliders { display: grid; grid-template-columns: auto 1fr auto; gap: 8px 12px; align-items: center; margin-top: 6px; }
+  .sliders label { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .sliders output { font-size: 12px; color: var(--muted); min-width: 42px; text-align: right; }
+  input[type="range"] { width: 100%; accent-color: var(--brand); }
+  .seg { display: inline-flex; background: #eef2fb; border-radius: 10px; padding: 3px; gap: 3px; }
+  .seg button { padding: 7px 14px; background: transparent; color: var(--ink); font-size: 13px; }
+  .seg button.on { background: #fff; color: var(--brand); box-shadow: 0 1px 3px rgba(20,40,90,.15); }
+  .toolrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+  input[type="color"] { width: 40px; height: 36px; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: #fff; cursor: pointer; }
+
+  .preview { position: sticky; top: 16px; }
+  #canvas {
+    width: 100%; height: auto; border-radius: 14px; display: block;
+    box-shadow: 0 8px 30px rgba(20, 40, 90, .18); cursor: grab; touch-action: none;
+  }
+  #canvas.dragging { cursor: grabbing; }
+  .dl { margin-top: 14px; display: flex; gap: 10px; }
+  .dl button { flex: 1; padding: 14px; font-size: 15px; }
+  .stage-hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; text-align: center; }
+</style>
+</head>
+<body>
+<header><span class="fox">🦊</span><h1>Картка для соцмереж</h1></header>
+
+<div class="wrap">
+  <div>
+    <div class="panel">
+      <h2>1 · Посилання на матеріал</h2>
+      <div class="urlrow">
+        <input id="url" type="url" placeholder="https://nikvesti.com/news/…" autocomplete="off">
+        <button id="scrape">Витягти</button>
+      </div>
+      <div class="hint">Кинь лінк — я заберу заголовок, фото й підпис зі сторінки.</div>
+      <div class="error" id="err" hidden></div>
+    </div>
+
+    <div class="panel" id="photoPanel" hidden>
+      <h2>2 · Фото</h2>
+      <div class="thumbs" id="thumbs"></div>
+      <label class="row">
+        <input type="checkbox" id="capOn" checked>
+        Підпис фото
+      </label>
+      <input type="text" id="capText" placeholder="Фото: …" style="margin-top:8px">
+      <div class="hint">Фото на картці можна тягнути мишкою і зумити коліщатком чи повзунком нижче — синій блок лишається на місці, кадр «кропиться» сам.</div>
+    </div>
+
+    <div class="panel" id="textPanel" hidden>
+      <h2>3 · Заголовок</h2>
+      <textarea id="headline" spellcheck="false"></textarea>
+      <div class="hint">Тапни слово, щоб виділити його білим (ще раз — зняти). Можна провести мишкою по кількох словах. Enter у тексті — примусовий перенос рядка.</div>
+      <div class="chips" id="chips"></div>
+    </div>
+
+    <div class="panel" id="stylePanel" hidden>
+      <h2>4 · Вигляд</h2>
+      <div class="toolrow">
+        <div class="seg" id="fmt">
+          <button data-w="1600" data-h="2000" class="on">4:5</button>
+          <button data-w="1600" data-h="1600">1:1</button>
+        </div>
+        <input type="color" id="bgColor" value="#3478f9" title="Колір фону">
+        <button class="ghost" id="resetPhoto">Скинути кадр</button>
+      </div>
+      <div class="sliders" style="margin-top:14px">
+        <label>Зум фото</label>
+        <input type="range" id="zoom" min="100" max="300" value="100">
+        <output id="zoomOut">100%</output>
+        <label>Шрифт</label>
+        <input type="range" id="fontSize" min="56" max="112" value="88">
+        <output id="fontOut">88</output>
+      </div>
+    </div>
+  </div>
+
+  <div class="preview">
+    <canvas id="canvas" width="1600" height="2000"></canvas>
+    <div class="stage-hint" id="stageHint">Спершу кинь посилання на матеріал ↑</div>
+    <div class="dl">
+      <button id="download" disabled>Завантажити JPG</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+(() => {
+  // ---------- Стан ----------
+  const S = {
+    W: 1600, H: 2000,
+    blueH: 780,              // фіксована висота синього блока — фото кропиться під нього
+    pad: 110,                // бокові поля тексту
+    bg: "#3478f9",
+    words: [],               // [{text, hl}] або {br:true}
+    images: [],              // [{url, caption}]
+    photo: null,             // HTMLImageElement (через проксі)
+    photoUrl: "",
+    zoom: 1, offX: 0, offY: 0,
+    capOn: true, capText: "",
+    fontSize: 88,
+    articleId: "",
+    logo: null,
+  };
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("canvas"), ctx = canvas.getContext("2d");
+  // Двурежимність: якщо файл лежить на самому nikvesti.com — усе same-origin,
+  // читаємо сторінки й фото напряму, бекенд не потрібен узагалі. З іншого
+  // домену (бот на Railway) — через /api/card/* проксі.
+  const SAME_ORIGIN = /(^|\.)nikvesti\.com$/.test(location.hostname);
+  const proxied = (u) => SAME_ORIGIN ? u : "/api/card/img?u=" + encodeURIComponent(u);
+
+  // ---------- Лого ----------
+  const logoImg = new Image();
+  logoImg.onload = () => { S.logo = logoImg; render(); };
+  logoImg.src = proxied("https://nikvesti.com/images/logos/logo-ua.svg");
+
+  // ---------- Скрапінг ----------
+  $("scrape").addEventListener("click", scrape);
+  $("url").addEventListener("keydown", (e) => { if (e.key === "Enter") scrape(); });
+
+  async function scrape() {
+    const url = $("url").value.trim();
+    $("err").hidden = true;
+    if (!url) return;
+    $("scrape").disabled = true;
+    $("scrape").textContent = "Читаю…";
+    try {
+      let data;
+      if (SAME_ORIGIN) {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error("Сторінка не читається: " + resp.status);
+        data = parseArticleClient(await resp.text());
+        if (!data.title && !data.images.length)
+          throw new Error("Схоже, це не сторінка матеріалу");
+      } else {
+        const resp = await fetch("/api/card/scrape", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url }),
+        });
+        data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || resp.statusText);
+      }
+      applyArticle(url, data);
+    } catch (e) {
+      $("err").textContent = String(e.message || e);
+      $("err").hidden = false;
+    } finally {
+      $("scrape").disabled = false;
+      $("scrape").textContent = "Витягти";
+    }
+  }
+
+  // Клієнтський аналог handlers/card_maker.parse_article — для запуску
+  // прямо з nikvesti.com без бекенда. Джерело те саме: JSON-LD NewsArticle.
+  function parseArticleClient(htmlText) {
+    const doc = new DOMParser().parseFromString(htmlText, "text/html");
+    const out = { title: "", description: "", images: [], caption_suggestion: "" };
+    for (const s of doc.querySelectorAll('script[type="application/ld+json"]')) {
+      let data;
+      try { data = JSON.parse(s.textContent); } catch { continue; }
+      if (!data || data["@type"] !== "NewsArticle") continue;
+      out.title = (data.headline || "").trim();
+      out.description = (data.description || "").trim();
+      let imgs = data.image || [];
+      if (!Array.isArray(imgs)) imgs = [imgs];
+      for (const im of imgs) {
+        const u = typeof im === "string" ? im : im.url;
+        if (u) out.images.push({ url: u, caption: (im.caption || "").trim() });
+      }
+      break;
+    }
+    if (!out.title) {
+      const og = doc.querySelector('meta[property="og:title"]');
+      out.title = (og && og.content || doc.title || "").trim();
+    }
+    if (!out.images.length) {
+      const og = doc.querySelector('meta[property="og:image"]');
+      if (og && og.content)
+        out.images.push({ url: og.content.replace(/(nikvesti\.com)\/\d+x\d+\//, "$1/"), caption: "" });
+    }
+    const cap = out.images.length ? out.images[0].caption : "";
+    if (cap) {
+      const parts = cap.split(". ").map((p) => p.trim()).filter(Boolean);
+      if (parts.length)
+        out.caption_suggestion = "Фото: " + parts[parts.length - 1].replace(/\.$/, "");
+    }
+    return out;
+  }
+
+  function applyArticle(url, data) {
+    const m = url.match(/\/(\d{4,})-/);
+    S.articleId = m ? m[1] : "card";
+    setHeadline(data.title || "");
+    S.images = data.images || [];
+    S.capText = data.caption_suggestion || "";
+    $("capText").value = S.capText;
+    buildThumbs();
+    if (S.images.length) selectPhoto(0);
+    $("photoPanel").hidden = !S.images.length;
+    $("textPanel").hidden = false;
+    $("stylePanel").hidden = false;
+    $("stageHint").textContent = "Тягни фото мишкою, зум — коліщатком";
+    $("download").disabled = false;
+    render();
+  }
+
+  // ---------- Фото ----------
+  function buildThumbs() {
+    const box = $("thumbs");
+    box.innerHTML = "";
+    S.images.forEach((im, i) => {
+      const img = document.createElement("img");
+      img.src = proxied(im.url);
+      img.title = im.caption || "";
+      img.addEventListener("click", () => selectPhoto(i));
+      box.appendChild(img);
+    });
+  }
+
+  function selectPhoto(i) {
+    [...$("thumbs").children].forEach((el, j) => el.classList.toggle("sel", j === i));
+    const im = S.images[i];
+    S.photoUrl = im.url;
+    S.zoom = 1; S.offX = 0; S.offY = 0;
+    $("zoom").value = 100; $("zoomOut").textContent = "100%";
+    const photo = new Image();
+    photo.onload = () => { S.photo = photo; render(); };
+    photo.onerror = () => { $("err").textContent = "Фото не завантажилось"; $("err").hidden = false; };
+    photo.src = proxied(im.url);
+  }
+
+  // ---------- Заголовок і виділення ----------
+  function setHeadline(text) {
+    $("headline").value = text;
+    S.words = tokenize(text, S.words);
+    buildChips();
+  }
+
+  function tokenize(text, prev) {
+    const toks = [];
+    let pi = 0; // збіг за індексом+текстом: правка одного слова не скидає решту виділень
+    text.split("\n").forEach((line, li) => {
+      if (li > 0) { toks.push({ br: true }); if (prev[pi] && prev[pi].br) pi++; }
+      line.split(/\s+/).filter(Boolean).forEach((w) => {
+        const keep = prev[pi] && !prev[pi].br && prev[pi].text === w ? prev[pi].hl : false;
+        toks.push({ text: w, hl: keep });
+        pi++;
+      });
+    });
+    return toks;
+  }
+
+  $("headline").addEventListener("input", () => {
+    S.words = tokenize($("headline").value, S.words);
+    buildChips();
+    render();
+  });
+
+  let dragHl = null; // значення, яке «розмазуємо» протяжкою по чипах
+  function buildChips() {
+    const box = $("chips");
+    box.innerHTML = "";
+    S.words.forEach((t) => {
+      const el = document.createElement("span");
+      el.className = "chip" + (t.br ? " br" : t.hl ? " hl" : "");
+      if (!t.br) {
+        el.textContent = t.text;
+        el.addEventListener("pointerdown", (e) => {
+          e.preventDefault();
+          t.hl = !t.hl; dragHl = t.hl;
+          el.classList.toggle("hl", t.hl);
+          render();
+        });
+        el.addEventListener("pointerenter", () => {
+          if (dragHl === null) return;
+          t.hl = dragHl;
+          el.classList.toggle("hl", t.hl);
+          render();
+        });
+      }
+      box.appendChild(el);
+    });
+  }
+  window.addEventListener("pointerup", () => { dragHl = null; });
+
+  // ---------- Контроли ----------
+  $("capOn").addEventListener("change", (e) => { S.capOn = e.target.checked; render(); });
+  $("capText").addEventListener("input", (e) => { S.capText = e.target.value; render(); });
+  $("bgColor").addEventListener("input", (e) => { S.bg = e.target.value; render(); });
+  $("fontSize").addEventListener("input", (e) => {
+    S.fontSize = +e.target.value; $("fontOut").textContent = e.target.value; render();
+  });
+  $("zoom").addEventListener("input", (e) => {
+    S.zoom = +e.target.value / 100; $("zoomOut").textContent = e.target.value + "%";
+    clampOffsets(); render();
+  });
+  $("resetPhoto").addEventListener("click", () => {
+    S.zoom = 1; S.offX = 0; S.offY = 0;
+    $("zoom").value = 100; $("zoomOut").textContent = "100%";
+    render();
+  });
+  $("fmt").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    [...$("fmt").children].forEach((el) => el.classList.toggle("on", el === b));
+    S.W = +b.dataset.w; S.H = +b.dataset.h;
+    canvas.width = S.W; canvas.height = S.H;
+    clampOffsets(); render();
+  });
+
+  // ---------- Пан/зум фото на самому прев'ю ----------
+  let drag = null;
+  const toCanvas = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (canvas.width / r.width),
+             y: (e.clientY - r.top) * (canvas.height / r.height) };
+  };
+  canvas.addEventListener("pointerdown", (e) => {
+    if (!S.photo) return;
+    const p = toCanvas(e);
+    if (p.y < S.blueH) return; // тягнеться лише фото, не синій блок
+    drag = { x: p.x, y: p.y, offX: S.offX, offY: S.offY };
+    canvas.classList.add("dragging");
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const p = toCanvas(e);
+    S.offX = drag.offX + (p.x - drag.x);
+    S.offY = drag.offY + (p.y - drag.y);
+    clampOffsets(); render();
+  });
+  canvas.addEventListener("pointerup", () => { drag = null; canvas.classList.remove("dragging"); });
+  canvas.addEventListener("wheel", (e) => {
+    if (!S.photo) return;
+    const p = toCanvas(e);
+    if (p.y < S.blueH) return;
+    e.preventDefault();
+    const z = Math.min(3, Math.max(1, S.zoom * (e.deltaY < 0 ? 1.06 : 0.94)));
+    S.zoom = z;
+    $("zoom").value = Math.round(z * 100);
+    $("zoomOut").textContent = Math.round(z * 100) + "%";
+    clampOffsets(); render();
+  }, { passive: false });
+
+  function photoRect() {
+    // Слот фото — усе під синім блоком
+    return { x: 0, y: S.blueH, w: S.W, h: S.H - S.blueH };
+  }
+
+  function clampOffsets() {
+    if (!S.photo) return;
+    const slot = photoRect();
+    const s = Math.max(slot.w / S.photo.naturalWidth, slot.h / S.photo.naturalHeight) * S.zoom;
+    const dw = S.photo.naturalWidth * s, dh = S.photo.naturalHeight * s;
+    const maxX = (dw - slot.w) / 2, maxY = (dh - slot.h) / 2;
+    S.offX = Math.min(maxX, Math.max(-maxX, S.offX));
+    S.offY = Math.min(maxY, Math.max(-maxY, S.offY));
+  }
+
+  // ---------- Рендер ----------
+  let fontsReady = false;
+  document.fonts.load('700 78px Commissioner').then(() => { fontsReady = true; render(); });
+
+  function render() {
+    ctx.clearRect(0, 0, S.W, S.H);
+    // Фон
+    ctx.fillStyle = S.bg;
+    ctx.fillRect(0, 0, S.W, S.H);
+
+    // Фото у слоті (кліп — фіксований слот, кадр їздить всередині)
+    const slot = photoRect();
+    if (S.photo) {
+      const s = Math.max(slot.w / S.photo.naturalWidth, slot.h / S.photo.naturalHeight) * S.zoom;
+      const dw = S.photo.naturalWidth * s, dh = S.photo.naturalHeight * s;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(slot.x, slot.y, slot.w, slot.h);
+      ctx.clip();
+      ctx.drawImage(S.photo,
+        slot.x + slot.w / 2 - dw / 2 + S.offX,
+        slot.y + slot.h / 2 - dh / 2 + S.offY, dw, dh);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = "rgba(255,255,255,.12)";
+      ctx.fillRect(slot.x, slot.y, slot.w, slot.h);
+    }
+
+    drawHeadline();
+
+    // Підпис фото — низ-ліворуч
+    if (S.capOn && S.capText.trim()) {
+      ctx.save();
+      ctx.font = "500 34px Commissioner, sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,.92)";
+      ctx.textBaseline = "alphabetic";
+      ctx.shadowColor = "rgba(0,0,0,.55)";
+      ctx.shadowBlur = 10;
+      ctx.fillText(S.capText.trim(), 48, S.H - 44);
+      ctx.restore();
+    }
+
+    // Лого — низ-праворуч
+    if (S.logo) {
+      const lw = 250, lh = lw * (S.logo.naturalHeight / S.logo.naturalWidth || 0.454);
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,.45)";
+      ctx.shadowBlur = 12;
+      ctx.drawImage(S.logo, S.W - lw - 52, S.H - lh - 40, lw, lh);
+      ctx.restore();
+    }
+  }
+
+  function drawHeadline() {
+    const words = S.words;
+    if (!words.length) return;
+    const maxW = S.W - S.pad * 2;
+    let size = S.fontSize;
+    let lines;
+    // Автопідбір: як не влазить у синій блок — зменшуємо шрифт
+    for (;;) {
+      lines = wrap(words, size, maxW);
+      const total = lines.length * lineH(size);
+      if (total <= S.blueH - 120 || size <= 40) break;
+      size -= 2;
+    }
+    const lh = lineH(size);
+    let y = (S.blueH - lines.length * lh) / 2 + lh / 2;
+    ctx.textBaseline = "middle";
+    ctx.font = font(size);
+    const spaceW = ctx.measureText(" ").width * 0.55;
+
+    for (const line of lines) {
+      const widths = line.map((t) => ctx.measureText(t.text).width);
+      const totalW = widths.reduce((a, b) => a + b, 0) + spaceW * (line.length - 1);
+      let x = (S.W - totalW) / 2;
+
+      // Білі плашки — суцільні по ранах підряд виділених слів (з пробілами)
+      let i = 0;
+      while (i < line.length) {
+        if (line[i].hl) {
+          let j = i, runW = 0;
+          while (j < line.length && line[j].hl) {
+            runW += widths[j] + (j > i ? spaceW : 0);
+            j++;
+          }
+          const rx = x + widths.slice(0, i).reduce((a, b) => a + b, 0) + spaceW * i;
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(rx - 14, y - size * 0.62, runW + 28, size * 1.24);
+          i = j;
+        } else i++;
+      }
+      // Текст
+      let tx = x;
+      line.forEach((t, k) => {
+        ctx.fillStyle = t.hl ? S.bg : "#fff";
+        ctx.fillText(t.text, tx, y + size * 0.04);
+        tx += widths[k] + spaceW;
+      });
+      y += lh;
+    }
+  }
+
+  const font = (size) => `700 ${size}px Commissioner, sans-serif`;
+  const lineH = (size) => size * 1.34;
+
+  function wrap(words, size, maxW) {
+    ctx.font = font(size);
+    const spaceW = ctx.measureText(" ").width * 0.55;
+    const lines = [];
+    let cur = [], curW = 0;
+    for (const t of words) {
+      if (t.br) {
+        if (cur.length) lines.push(cur);
+        cur = []; curW = 0;
+        continue;
+      }
+      const w = ctx.measureText(t.text).width;
+      if (cur.length && curW + spaceW + w > maxW) {
+        lines.push(cur);
+        cur = [t]; curW = w;
+      } else {
+        curW += (cur.length ? spaceW : 0) + w;
+        cur.push(t);
+      }
+    }
+    if (cur.length) lines.push(cur);
+    return lines;
+  }
+
+  // ---------- Завантаження ----------
+  $("download").addEventListener("click", () => {
+    render();
+    canvas.toBlob((blob) => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `mykvisti_${S.articleId}.jpg`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }, "image/jpeg", 0.92);
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
