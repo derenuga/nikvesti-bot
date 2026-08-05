@@ -109,13 +109,16 @@ def parse_article(html_text):
 def suggest_photo_caption(caption):
     """З повного підпису JSON-LD («<переказ заголовка>. Скриншот з відео …»)
     лишає останнє речення — джерело фото, як на брендових картках
-    («Фото: Скриншот з відео Миколаївської міської ради»)."""
+    («Фото: Скриншот з відео Миколаївської міської ради»). Якщо джерело вже
+    підписане «Фото: ОП» — префікс не дублюється (стаття 322032)."""
     if not caption:
         return ""
     parts = [p.strip() for p in caption.split(". ") if p.strip()]
     if not parts:
         return ""
     tail = parts[-1].rstrip(".")
+    if re.match(r"фото\s*:", tail, re.IGNORECASE):
+        return "Фото: " + re.sub(r"^фото\s*:\s*", "", tail, flags=re.IGNORECASE)
     return f"Фото: {tail}"
 
 

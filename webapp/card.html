@@ -287,8 +287,11 @@
     const cap = out.images.length ? out.images[0].caption : "";
     if (cap) {
       const parts = cap.split(". ").map((p) => p.trim()).filter(Boolean);
-      if (parts.length)
-        out.caption_suggestion = "Фото: " + parts[parts.length - 1].replace(/\.$/, "");
+      if (parts.length) {
+        // «Фото: ОП» у хвості підпису не дублює префікс (стаття 322032)
+        const tail = parts[parts.length - 1].replace(/\.$/, "").replace(/^фото\s*:\s*/i, "");
+        out.caption_suggestion = "Фото: " + tail;
+      }
     }
     return out;
   }
@@ -551,7 +554,7 @@
     let lines, subLines, subSize;
     // Автопідбір: як заголовок + підпис не влазять у синій блок — зменшуємо шрифт
     for (;;) {
-      lines = wrap(words, size, maxW, 700, 0.55);
+      lines = wrap(words, size, maxW, 700, 0.75);
       subSize = Math.round(size * 0.55); // підпис — Light, трохи більше половини кегля
       subLines = subWords.length ? wrap(subWords, subSize, maxW, 300, 0.9) : [];
       const total = lines.length * lineH(size) +
@@ -566,7 +569,7 @@
     let y = yTop + lh / 2;
     ctx.textBaseline = "middle";
     setFont(size, 700);
-    const spaceW = ctx.measureText(" ").width * 0.55;
+    const spaceW = ctx.measureText(" ").width * 0.75;
 
     // Псевдопробіл на краях плашки: перше слово рану отримує повітря зліва,
     // останнє — справа, а слова всередині не розсуваються. Сусідні невиділені
@@ -651,7 +654,7 @@
     return toks;
   }
 
-  function wrap(words, size, maxW, weight = 700, spaceMul = 0.55) {
+  function wrap(words, size, maxW, weight = 700, spaceMul = 0.75) {
     setFont(size, weight);
     const spaceW = ctx.measureText(" ").width * spaceMul;
     const runPad = size * 0.28; // те саме повітря країв плашки, що в рендері
