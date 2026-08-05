@@ -90,6 +90,24 @@ MAX_PAIRS = 60
 TEXT_CAP = 1800
 
 
+def unfalsifiable(promise):
+    """Обіцянка, у якої нема чим підтвердити ВИКОНАННЯ — отже, і закривати її
+    автоматично нема чим.
+
+    «Просувати інтереси Миколаївської області у державному бюджеті»,
+    «продовжити підтримувати область», «забезпечити реалізацію розпочатих
+    проєктів» — заяви без предмета, дати й критерію. Вони не просто
+    неперевірні: вони МАГНІТ для хибних закриттів, бо будь-яка добра новина
+    про область виглядає їх підтвердженням. У прогоні 04.08 одна така
+    обіцянка (956) закрилась ТРИЧІ трьома різними новинами — про субвенцію на
+    освіту, зарплати військових адміністрацій і харчування школярів.
+
+    У черзі це клас `noproof` («перевірити нічим»), і він там саме тому, що
+    рішення про такі заяви ухвалює людина.
+    """
+    return (promise or {}).get("verifiability") == "unfalsifiable"
+
+
 def too_early(verdict, promise, now=None):
     """«Зірвано» до того, як строк минув, — не помилка судді, а помилка типу.
 
@@ -166,6 +184,7 @@ def _load(since, limit):
                         "owner_text": row.get("owner_text"),
                         "deadline": row.get("deadline"),
                         "polarity": row.get("polarity"),
+                        "verifiability": row.get("verifiability"),
                         "quote": (quotes.get(p["commitment_id"]) or "")[:400]},
             "article": art,
         })
@@ -220,7 +239,8 @@ async def scan(days=DEFAULT_DAYS, limit=MAX_PAIRS, on_progress=None):
                     conf = v.get("confidence")
                     settled = (v.get("state") not in ("done", "failed")
                                or conf not in ("high", "medium")
-                               or too_early(v, p["promise"]))
+                               or too_early(v, p["promise"])
+                               or unfalsifiable(p["promise"]))
                     if settled:
                         pp.record_closure(cur, p["commitment_id"],
                                           p["article_id"],
