@@ -7,7 +7,7 @@
 <title>Картка для соцмереж — МикВісті</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Commissioner:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Commissioner:wght@300;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
     --brand: #3478f9;
@@ -128,6 +128,8 @@
       <textarea id="headline" spellcheck="false"></textarea>
       <div class="hint">Тапни слово, щоб виділити його білим (ще раз — зняти). Можна провести мишкою по кількох словах. Enter у тексті — примусовий перенос рядка.</div>
       <div class="chips" id="chips"></div>
+      <label class="row" style="margin-top:14px">Підпис під заголовком (необов'язково)</label>
+      <textarea id="subtitle" rows="2" spellcheck="false" placeholder="напр.: Міністр енергетики Денис Шмигаль&#10;в інтерв'ю POLITICO" style="min-height:56px"></textarea>
     </div>
 
     <div class="panel" id="stylePanel" hidden>
@@ -136,6 +138,10 @@
         <div class="seg" id="fmt">
           <button data-w="1600" data-h="2000" class="on">4:5</button>
           <button data-w="1600" data-h="1600">1:1</button>
+        </div>
+        <div class="seg" id="alignSeg">
+          <button data-align="center" class="on">По центру</button>
+          <button data-align="left">Зліва</button>
         </div>
         <input type="color" id="bgColor" value="#3478f9" title="Колір фону">
         <button class="ghost" id="resetPhoto">Скинути кадр</button>
@@ -175,6 +181,8 @@
     photoUrl: "",
     zoom: 1, offX: 0, offY: 0,
     capOn: true, capText: "",
+    sub: "",                 // підпис під заголовком (Commissioner Light)
+    align: "center",         // вирівнювання текстового блока: center | left
     fontSize: 88,
     articleId: "",
     logo: null,
@@ -270,6 +278,7 @@
     const m = url.match(/\/(\d{4,})-/);
     S.articleId = m ? m[1] : "card";
     setHeadline(data.title || "");
+    S.sub = ""; $("subtitle").value = "";
     S.images = data.images || [];
     S.capText = data.caption_suggestion || "";
     $("capText").value = S.capText;
@@ -363,6 +372,14 @@
   window.addEventListener("pointerup", () => { dragHl = null; });
 
   // ---------- Контроли ----------
+  $("subtitle").addEventListener("input", (e) => { S.sub = e.target.value; render(); });
+  $("alignSeg").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    [...$("alignSeg").children].forEach((el) => el.classList.toggle("on", el === b));
+    S.align = b.dataset.align;
+    render();
+  });
   $("capOn").addEventListener("change", (e) => { S.capOn = e.target.checked; render(); });
   $("capText").addEventListener("input", (e) => { S.capText = e.target.value; render(); });
   $("bgColor").addEventListener("input", (e) => { S.bg = e.target.value; render(); });
@@ -439,7 +456,10 @@
 
   // ---------- Рендер ----------
   let fontsReady = false;
-  document.fonts.load('700 78px Commissioner').then(() => { fontsReady = true; render(); });
+  Promise.all([
+    document.fonts.load('700 78px Commissioner'),
+    document.fonts.load('300 48px Commissioner'),
+  ]).then(() => { fontsReady = true; render(); });
 
   function render() {
     ctx.clearRect(0, 0, S.W, S.H);
@@ -471,6 +491,7 @@
     if (S.capOn && S.capText.trim()) {
       ctx.save();
       ctx.font = "500 34px Commissioner, sans-serif";
+      ctx.letterSpacing = "0px"; // трекінг заголовка на підпис не поширюється
       ctx.fillStyle = "rgba(255,255,255,.92)";
       ctx.textBaseline = "alphabetic";
       ctx.shadowColor = "rgba(0,0,0,.55)";
@@ -492,21 +513,28 @@
 
   function drawHeadline() {
     const words = S.words;
-    if (!words.length) return;
+    const subWords = tokenizePlain(S.sub);
+    if (!words.length && !subWords.length) return;
     const maxW = S.W - S.pad * 2;
     let size = S.fontSize;
-    let lines;
-    // Автопідбір: як не влазить у синій блок — зменшуємо шрифт
+    let lines, subLines, subSize;
+    // Автопідбір: як заголовок + підпис не влазять у синій блок — зменшуємо шрифт
     for (;;) {
-      lines = wrap(words, size, maxW);
-      const total = lines.length * lineH(size);
+      lines = wrap(words, size, maxW, 700, 0.55);
+      subSize = Math.round(size * 0.55); // підпис — Light, трохи більше половини кегля
+      subLines = subWords.length ? wrap(subWords, subSize, maxW, 300, 0.9) : [];
+      const total = lines.length * lineH(size) +
+        (subLines.length ? size * 0.75 + subLines.length * subSize * 1.42 : 0);
       if (total <= S.blueH - 120 || size <= 40) break;
       size -= 2;
     }
-    const lh = lineH(size);
-    let y = (S.blueH - lines.length * lh) / 2 + lh / 2;
+    const lh = lineH(size), subLH = subSize * 1.42;
+    const gap = subLines.length ? size * 0.75 : 0;
+    const totalH = lines.length * lh + gap + subLines.length * subLH;
+    const yTop = (S.blueH - totalH) / 2;
+    let y = yTop + lh / 2;
     ctx.textBaseline = "middle";
-    ctx.font = font(size);
+    setFont(size, 700);
     const spaceW = ctx.measureText(" ").width * 0.55;
 
     // Псевдопробіл на краях плашки: перше слово рану отримує повітря зліва,
@@ -529,7 +557,7 @@
         cursor += widths[k];
         if (runEnd(k)) cursor += runPad;
       });
-      const x0 = (S.W - cursor) / 2;
+      const x0 = S.align === "left" ? S.pad : (S.W - cursor) / 2;
 
       // Білі плашки — суцільні по ранах підряд виділених слів
       let i = 0;
@@ -551,14 +579,47 @@
       });
       y += lh;
     }
+
+    // Підпис під заголовком — Commissioner Light, менший кегль, як на
+    // референсних картках («Міністр енергетики … в інтерв'ю POLITICO»)
+    if (subLines.length) {
+      setFont(subSize, 300);
+      const sw = ctx.measureText(" ").width * 0.9;
+      ctx.fillStyle = "rgba(255,255,255,.96)";
+      subLines.forEach((line, j) => {
+        const widths = line.map((t) => ctx.measureText(t.text).width);
+        const tw = widths.reduce((a, b) => a + b, 0) + sw * (line.length - 1);
+        let x = S.align === "left" ? S.pad : (S.W - tw) / 2;
+        const sy = yTop + lines.length * lh + gap + j * subLH + subLH / 2;
+        line.forEach((t, k) => {
+          ctx.fillText(t.text, x, sy);
+          x += widths[k] + sw;
+        });
+      });
+    }
   }
 
-  const font = (size) => `700 ${size}px Commissioner, sans-serif`;
+  // Легкий трекінг 0.02 кегля: без нього букви Commissioner Bold злипаються.
+  // letterSpacing — властивість контексту і враховується в measureText.
+  function setFont(size, weight) {
+    ctx.font = `${weight} ${size}px Commissioner, sans-serif`;
+    ctx.letterSpacing = (size * 0.02).toFixed(1) + "px";
+  }
   const lineH = (size) => size * 1.34;
 
-  function wrap(words, size, maxW) {
-    ctx.font = font(size);
-    const spaceW = ctx.measureText(" ").width * 0.55;
+  // Прості токени для підпису (без виділень)
+  function tokenizePlain(text) {
+    const toks = [];
+    (text || "").split("\n").forEach((line, li) => {
+      if (li > 0) toks.push({ br: true });
+      line.split(/\s+/).filter(Boolean).forEach((w) => toks.push({ text: w, hl: false }));
+    });
+    return toks;
+  }
+
+  function wrap(words, size, maxW, weight = 700, spaceMul = 0.55) {
+    setFont(size, weight);
+    const spaceW = ctx.measureText(" ").width * spaceMul;
     const runPad = size * 0.28; // те саме повітря країв плашки, що в рендері
     const lines = [];
     let cur = [], curW = 0;
