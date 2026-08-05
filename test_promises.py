@@ -2148,6 +2148,26 @@ def test_fulfil_detector():
             check("порожній вердикт нічого не вирішує",
                   not pf.decides_itself(None))
 
+            # «Зірвано» до кінця строку — помилка ТИПУ, а не судді. Обіцянка
+            # 543 має горизонт 31.12.2029 (фінансування на 2026–2029), і
+            # оголосити її зірваною в серпні 2026-го не можна жодними
+            # доказами. Рахується з дати, тож модель тут ні до чого.
+            far = {"deadline": NOW + 400 * DAY, "polarity": "do"}
+            check("зрив до кінця строку не приймається взагалі",
+                  pf.too_early({"state": "failed"}, far))
+            check("…а після строку — приймається",
+                  not pf.too_early({"state": "failed"},
+                                   {"deadline": NOW - DAY, "polarity": "do"}))
+            check("«виконано» достроково нормальне — зробили раніше",
+                  not pf.too_early({"state": "done"}, far))
+            # Для «не дамо приватизувати» порушенням є ДІЯ, і вона трапляється
+            # коли завгодно: тут строк ні до чого.
+            check("обіцянку НЕ робити можна зірвати будь-коли",
+                  not pf.too_early({"state": "failed"},
+                                   dict(far, polarity="not_do")))
+            check("без строку правило мовчить, а не блокує",
+                  not pf.too_early({"state": "failed"}, {"polarity": "do"}))
+
             # medium — у чергу людині, статус не чіпаємо
             pp.record_closure(cur, cid, 730002,
                               {"state": "done", "confidence": "medium",

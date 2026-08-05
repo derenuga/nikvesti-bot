@@ -90,6 +90,26 @@ MAX_PAIRS = 60
 TEXT_CAP = 1800
 
 
+def too_early(verdict, promise, now=None):
+    """«Зірвано» до того, як строк минув, — не помилка судді, а помилка типу.
+
+    Обіцянка 543 («розширити програму ЖКГ для фінансування озеленення
+    районними адміністраціями») має горизонт 31.12.2029: фінансування
+    закладають на 2026–2029. Оголосити її зірваною в серпні 2026-го не можна
+    ЖОДНИМИ доказами — просто тому, що строк іще йде. Це рахується з дати, а
+    не з тексту, тож питати модель тут нема про що.
+
+    Виняток — полярність `not_do`: для «не дамо приватизувати» порушенням є
+    ДІЯ, і вона трапляється коли завгодно, зокрема задовго до строку.
+    """
+    if (verdict or {}).get("state") != "failed":
+        return False
+    if (promise or {}).get("polarity") == "not_do":
+        return False
+    deadline = (promise or {}).get("deadline")
+    return bool(deadline) and int(deadline) > (now or int(time.time()))
+
+
 def decides_itself(verdict):
     """Чи бот ставить статус САМ, без людини.
 
@@ -145,6 +165,7 @@ def _load(since, limit):
             "promise": {"title": row.get("title"),
                         "owner_text": row.get("owner_text"),
                         "deadline": row.get("deadline"),
+                        "polarity": row.get("polarity"),
                         "quote": (quotes.get(p["commitment_id"]) or "")[:400]},
             "article": art,
         })
@@ -198,7 +219,8 @@ async def scan(days=DEFAULT_DAYS, limit=MAX_PAIRS, on_progress=None):
                         continue
                     conf = v.get("confidence")
                     settled = (v.get("state") not in ("done", "failed")
-                               or conf not in ("high", "medium"))
+                               or conf not in ("high", "medium")
+                               or too_early(v, p["promise"]))
                     if settled:
                         pp.record_closure(cur, p["commitment_id"],
                                           p["article_id"],
