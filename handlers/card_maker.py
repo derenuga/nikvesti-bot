@@ -66,15 +66,25 @@ def parse_article(html_text):
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html_text, "html.parser")
 
-    result = {"title": "", "description": "", "date": "", "images": []}
+    result = {"title": "", "description": "", "date": "", "images": [],
+              "is_ad": False}
 
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(tag.string or "")
         except (ValueError, TypeError):
             continue
-        if not isinstance(data, dict) or data.get("@type") != "NewsArticle":
+        if not isinstance(data, dict):
             continue
+        # Рекламні матеріали мають @type=AdvertiserContentArticle (стаття
+        # 322051, Renault) — приймаємо будь-який *Article, а не лише
+        # NewsArticle; @type буває і списком
+        types = data.get("@type") or ""
+        if isinstance(types, str):
+            types = [types]
+        if not any("Article" in t for t in types):
+            continue
+        result["is_ad"] = any("Advertiser" in t for t in types)
         result["title"] = (data.get("headline") or "").strip()
         result["description"] = (data.get("description") or "").strip()
         result["date"] = data.get("datePublished") or ""
