@@ -91,19 +91,45 @@ def parse_article(html_text):
                 result["images"].append({"url": url, "caption": caption})
         break
 
+    # Фото з тіла статті (<img class="photo …">) — друге джерело: у частини
+    # матеріалів JSON-LD без image, а «оригінал» без розмірного префікса не
+    # існує (стаття 322051, живі лише _1500.webp з тіла). Дублікати того
+    # самого кадру в різних розмірах відсікаються за базовим іменем файлу.
+    seen = {_img_key(im["url"]) for im in result["images"]}
+    for img in soup.find_all("img", class_="photo"):
+        src = img.get("src") or ""
+        if src.startswith("/"):
+            src = "https://nikvesti.com" + src
+        # інлайн-мініатюри (_280.webp тощо) закороткі для канваса 1600px
+        m = re.search(r"_(\d{2,4})(?=\.\w+$)", src)
+        if m and int(m.group(1)) < 800:
+            continue
+        if _host_allowed(src) and _img_key(src) not in seen:
+            seen.add(_img_key(src))
+            result["images"].append({"url": src, "caption": ""})
+
     # Фолбеки, якщо JSON-LD зник або неповний
     if not result["title"]:
         og = soup.find("meta", property="og:title") or soup.find("title")
         result["title"] = (og.get("content") if og and og.has_attr("content")
                            else og.get_text() if og else "").strip()
     if not result["images"]:
+        # og:image як є (ресайз 600x315): зрізати префікс не можна —
+        # для 322051 такий «оригінал» віддавав HTML-заглушку замість фото
         og = soup.find("meta", property="og:image")
         if og and og.get("content") and _host_allowed(og["content"]):
-            # og:image — ресайз 600x315; оригінал лежить без префікса розміру
-            url = re.sub(r"(nikvesti\.com)/\d+x\d+/", r"\1/", og["content"])
-            result["images"].append({"url": url, "caption": ""})
+            result["images"].append({"url": og["content"], "caption": ""})
 
     return result
+
+
+def _img_key(url):
+    """Базове ім'я кадру без розмірного префікса (/600x315/), суфікса _1500
+    і розширення — той самий кадр у різних розмірах дає один ключ."""
+    path = urlparse(url).path
+    path = re.sub(r"^/\d+x\d+/", "/", path)
+    path = re.sub(r"_\d{2,4}(?=\.\w+$)", "", path)
+    return re.sub(r"\.\w+$", "", path)
 
 
 def suggest_photo_caption(caption):
