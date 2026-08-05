@@ -554,7 +554,7 @@
     let lines, subLines, subSize;
     // Автопідбір: як заголовок + підпис не влазять у синій блок — зменшуємо шрифт
     for (;;) {
-      lines = wrap(words, size, maxW, 700, 0.75);
+      lines = wrap(words, size, maxW, 700, 1.10);
       subSize = Math.round(size * 0.55); // підпис — Light, трохи більше половини кегля
       subLines = subWords.length ? wrap(subWords, subSize, maxW, 300, 0.9) : [];
       const total = lines.length * lineH(size) +
@@ -569,7 +569,7 @@
     let y = yTop + lh / 2;
     ctx.textBaseline = "middle";
     setFont(size, 700);
-    const spaceW = ctx.measureText(" ").width * 0.75;
+    const spaceW = ctx.measureText(" ").width * 1.10;
 
     // Псевдопробіл на краях плашки: перше слово рану отримує повітря зліва,
     // останнє — справа, а слова всередині не розсуваються. Сусідні невиділені
@@ -602,7 +602,7 @@
           const left = x0 + xs[i] - runPad;
           const right = x0 + xs[j - 1] + widths[j - 1] + runPad;
           ctx.fillStyle = SCHEMES[S.scheme].boxBg;
-          ctx.fillRect(left, y - size * 0.62, right - left, size * 1.24);
+          ctx.fillRect(left, y - size * 0.55, right - left, size * 1.24);
           i = j;
         } else i++;
       }
@@ -654,7 +654,7 @@
     return toks;
   }
 
-  function wrap(words, size, maxW, weight = 700, spaceMul = 0.75) {
+  function wrap(words, size, maxW, weight = 700, spaceMul = 1.10) {
     setFont(size, weight);
     const spaceW = ctx.measureText(" ").width * spaceMul;
     const runPad = size * 0.28; // те саме повітря країв плашки, що в рендері
