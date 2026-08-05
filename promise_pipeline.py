@@ -2681,6 +2681,35 @@ def open_closures(cur, limit=100):
     return [dict(zip(keys, r)) for r in cur.fetchall()]
 
 
+def auto_closures(cur, limit=200, state=None):
+    """Що бот закрив САМ — і досі стоїть закритим.
+
+    Журнал автоматичних рішень окремо від черги на підтвердження: до 04.08
+    їх було видно лише в момент прогону, і за два дні вони накопичились
+    мовчки («так таких обещаний куча было выполнений, за 2 дня, я тебе не
+    писал просто»). Ревізія має бути СПИСКОМ, а не спогадом.
+
+    Беремо лише ті, де людина ще не втручалась (`decided IS NULL`): відкочене
+    або підтверджене вже не рішення бота, а рішення редакції.
+    """
+    where = ["pc.applied IS TRUE", "pc.decided IS NULL",
+             "c.status <> 'expected'"]
+    params = []
+    if state:
+        where.append("pc.state = %s")
+        params.append(state)
+    params.append(limit)
+    cur.execute(
+        "SELECT pc.id, pc.commitment_id, pc.article_id, pc.state, pc.why, "
+        "       pc.created, c.title, c.deadline, c.status "
+        "FROM promise_closures pc JOIN commitments c ON c.id = pc.commitment_id "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY pc.created DESC LIMIT %s", params)
+    keys = ("id", "commitment_id", "article_id", "state", "why", "created",
+            "title", "deadline", "status")
+    return [dict(zip(keys, r)) for r in cur.fetchall()]
+
+
 def closure_ids(cur):
     """id обіцянок, у яких є непідтверджена ознака виконання — для фасета."""
     cur.execute("SELECT DISTINCT commitment_id FROM promise_closures "

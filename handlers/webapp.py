@@ -151,8 +151,16 @@ async def _authenticate(request):
         _resolve_and_remember, tg_user["id"], tg_user.get("username")
     )
     if not person:
+        # Кажемо, ЩО саме показати Олегу. Резолв іде через username, а він у
+        # Telegram міняється в один тап — і тоді людина з редакції впирається
+        # в глухий текст, а причину доводиться шукати вручну (Таміла, 04.08:
+        # бот у чаті відповідає, апка не пускає). З id у повідомленні це
+        # лікується одним рядком у ростері.
+        who = tg_user.get("username")
         raise web.HTTPForbidden(
-            text="Ця апка — для команди МикВісті. Якщо ти з редакції — напиши Олегу."
+            text="Ця апка — для команди МикВісті. Якщо ти з редакції — "
+                 f"надішли Олегу цей рядок: id {tg_user['id']}"
+                 + (f", @{who}" if who else ", username не заданий")
         )
     return person, team_roster.person_info(person), tg_user
 

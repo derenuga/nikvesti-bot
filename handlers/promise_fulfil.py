@@ -490,6 +490,115 @@ async def promise_reopen_handler(update, context):
         parse_mode="HTML")
 
 
+# ---------- /promise_auto ----------
+#
+# Ревізія того, що бот вирішив САМ. До 04.08 автоматичні закриття було видно
+# лише в момент прогону — одним повідомленням, яке легко проґавити. Олег,
+# 04.08: «так таких обещаний куча было выполнений, за 2 дня, я тебе не писал
+# просто». Тобто рішень накопичилось, а списку, у якому їх можна переглянути
+# й відкотити гуртом, не було взагалі.
+#
+# Дві купи розділені навмисно. «Зірвано» бот віднині не ставить ніколи
+# (decides_itself), тож усе, що він устиг закрити як зірване, — це рішення за
+# правилом, від якого ми відмовились, і воно повертається однією кнопкою.
+# «Виконано» лишається поштучним переглядом: там правило чинне, і гуртом
+# скасовувати його немає підстав.
+
+async def promise_auto_handler(update, context):
+    """/promise_auto [виконано|зірвано] — що бот закрив сам."""
+    from handlers.promises import _allowed, _links_for, _clip
+
+    if not _allowed(update):
+        return
+    arg = (context.args or [""])[0].lower()
+    state = ("done" if arg.startswith("викон") else
+             "failed" if arg.startswith("зірв") or arg.startswith("зирв") else None)
+
+    def run():
+        conn = ep.connect()
+        try:
+            conn.autocommit = True
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                rows = pp.auto_closures(cur, state=state)
+                links = _links_for(cur, {r["article_id"] for r in rows})
+                failed = len(pp.auto_closures(cur, limit=1000, state="failed"))
+            return rows, links, failed
+        finally:
+            conn.close()
+
+    rows, links, failed = await asyncio.to_thread(run)
+    if not rows:
+        await update.message.reply_text(
+            "🦊 Бот нічого не закривав сам — або все вже переглянуто.")
+        return
+    done_n = sum(1 for r in rows if r["state"] == "done")
+    lines = [f"🦊 <b>Що Лис закрив сам</b> — {len(rows)} "
+             f"{pp.plural(len(rows), 'обіцянка', 'обіцянки', 'обіцянок')}",
+             f"виконано {done_n} · зірвано {len(rows) - done_n}", ""]
+    for r in rows[:25]:
+        link = links.get(r["article_id"]) or {}
+        word = "виконано" if r["state"] == "done" else "ЗІРВАНО"
+        lines.append(f"• <b>{escape_html(r['title'] or '?')}</b>")
+        lines.append(f"  {word} · {escape_html((r['why'] or '')[:160])}")
+        if link.get("url"):
+            lines.append(f"  <a href=\"{link['url']}\">"
+                         f"{escape_html(link.get('title') or 'доказ')}</a>")
+        lines.append(f"  /promise_show {r['commitment_id']} · "
+                     f"/promise_reopen {r['commitment_id']}")
+    if len(rows) > 25:
+        lines.append(f"\n<i>…і ще {len(rows) - 25}. Фільтр: "
+                     f"/promise_auto виконано | зірвано</i>")
+    markup = None
+    if failed:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(
+            f"Повернути в чергу всі, закриті як зірвані ({failed})",
+            callback_data="pau:undo_failed")]])
+        lines.append("\n<i>«Зірвано» бот віднині не ставить сам — доказом зриву "
+                     "довелось би вважати відсутність події. Ті, що встиг, "
+                     "повертаються однією кнопкою.</i>")
+    await update.message.reply_text(_clip("\n".join(lines)), parse_mode="HTML",
+                                    disable_web_page_preview=True,
+                                    reply_markup=markup)
+
+
+async def promise_auto_callback(update, context):
+    from handlers.promises import _allowed
+
+    query = update.callback_query
+    await query.answer()
+    if not _allowed(update):
+        return
+    who = (update.effective_user.full_name if update.effective_user else "—")
+    await query.edit_message_text("🦊 Повертаю…")
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                rows = pp.auto_closures(cur, limit=1000, state="failed")
+                for r in rows:
+                    pp.reopen(cur, r["commitment_id"], who)
+            conn.commit()
+            return rows
+        finally:
+            conn.close()
+
+    try:
+        rows = await asyncio.to_thread(run)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Не вийшло: {type(e).__name__}: {e}")
+        return
+    head = (f"↩️ Повернув у чергу {len(rows)} "
+            f"{pp.plural(len(rows), 'обіцянку', 'обіцянки', 'обіцянок')}, "
+            f"закритих як зірвані.")
+    names = "\n".join(f"• {escape_html(r['title'] or r['commitment_id'])}"
+                      for r in rows[:15])
+    await query.edit_message_text(f"{head}\n\n{names}", parse_mode="HTML")
+
+
 # ---------- /promise_fulfil_test ----------
 #
 # Питання Олега 04.08 на реальній парі: обіцянка про дорогу до Матвіївки

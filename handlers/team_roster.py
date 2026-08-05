@@ -69,7 +69,9 @@ ROSTER = {
     "Іміра Борухова": {"username": "imira_91", "tg_id": None, "dept": DEPT_DIGITAL, "manager": False},
     "Даріна Мельничук": {"username": "dariimlk", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
     "Юлія Лук'яненко": {"username": "yuliia_lukianenko", "tg_id": None, "dept": DEPT_CREATIVE, "manager": False},
-    "Таміла Ксьонжик": {"username": "tamilissssa", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
+    # tg_id закріплено 04.08: апка не пускала, хоч у чаті бот їй відповідав —
+    # резолв ішов через username, а він у Telegram міняється в один тап.
+    "Таміла Ксьонжик": {"username": "tamilissssa", "tg_id": 6494377097, "dept": DEPT_NEWSROOM, "manager": False},
     "Кристина Леонова": {"username": "skxxlw", "tg_id": None, "dept": DEPT_NEWSROOM, "manager": False},
     "Кірілл Витвицький": {"username": "simada24", "tg_id": None, "dept": DEPT_DIGITAL, "manager": False},
     "Ірина Федорович": {"username": "diiessa", "tg_id": None, "dept": DEPT_DIGITAL, "manager": False},
