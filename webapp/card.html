@@ -273,11 +273,16 @@
   // прямо з nikvesti.com без бекенда. Джерело те саме: JSON-LD NewsArticle.
   function parseArticleClient(htmlText) {
     const doc = new DOMParser().parseFromString(htmlText, "text/html");
-    const out = { title: "", description: "", images: [], caption_suggestion: "" };
+    const out = { title: "", description: "", images: [], caption_suggestion: "", is_ad: false };
     for (const s of doc.querySelectorAll('script[type="application/ld+json"]')) {
       let data;
       try { data = JSON.parse(s.textContent); } catch { continue; }
-      if (!data || data["@type"] !== "NewsArticle") continue;
+      if (!data) continue;
+      // Рекламні статті — AdvertiserContentArticle (322051): приймаємо
+      // будь-який *Article, @type буває і списком
+      const types = Array.isArray(data["@type"]) ? data["@type"] : [data["@type"] || ""];
+      if (!types.some((t) => String(t).includes("Article"))) continue;
+      out.is_ad = types.some((t) => String(t).includes("Advertiser"));
       out.title = (data.headline || "").trim();
       out.description = (data.description || "").trim();
       let imgs = data.image || [];
@@ -332,6 +337,9 @@
     S.articleId = m ? m[1] : "card";
     setHeadline(data.title || "");
     S.sub = ""; $("subtitle").value = "";
+    // Рекламна стаття (AdvertiserContentArticle) сама вмикає плашку
+    S.adOn = !!data.is_ad;
+    $("adOn").checked = S.adOn;
     S.images = data.images || [];
     S.capText = data.caption_suggestion || "";
     $("capText").value = S.capText;
