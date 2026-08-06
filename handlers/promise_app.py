@@ -45,6 +45,9 @@ FACETS = [
     # непридатно для перегляду «що бот приніс».
     ("fresh", "Нові"),
     ("mine", "З моїх новин"),
+    # Зірочка: «веду цю тему сам». Черга спільна й велика, а людина веде
+    # п'ять справ — без свого кошика банк лишається чужим списком.
+    ("starred", "Обрані"),
     ("overdue", "Строк минув"),
     ("soon", "Скоро"),
     ("waiting", "Чекає події"),
@@ -269,7 +272,8 @@ def _first_revisions(cur, ids):
     return out
 
 
-def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
+def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None,
+          person=None):
     """Черга банку: фасети з числами + сторінка карток + межі даних."""
     now = now or int(time.time())
     conn = _conn()
@@ -300,6 +304,13 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
                     cur, limit=None, now=now, author_id=author_id)))
             counts["closed"] = len(pp.group_by_topic(
                 pp.list_queue(cur, cls="closed", limit=None, now=now)))
+            stars = pp.starred_ids(cur, person)
+            # Зірочка стоїть на ЗОБОВ'ЯЗАННІ, а черга шикується темами: тема
+            # обрана, якщо обране хоч одне з її зобов'язань — інакше зірочка
+            # зникала б із черги щоразу, коли головним стає сусід.
+            for r in rows:
+                r["starred"] = bool(stars & set(r.get("topic_ids") or [r["id"]]))
+            counts["starred"] = sum(1 for r in rows if r["starred"])
             may = pp.closure_ids(cur)
             counts["mayclose"] = sum(1 for r in rows if r["id"] in may)
             fresh_since = now - FRESH_DAYS * 86400
@@ -315,6 +326,8 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
                               key=lambda r: -(r.get("first_seen") or 0))
             elif cls == "mayclose":
                 rows = [r for r in rows if r["id"] in may]
+            elif cls == "starred":
+                rows = [r for r in rows if r["starred"]]
             elif cls == "mine" and author_id:
                 rows = pp.group_by_topic(
                     pp.list_queue(cur, limit=None, now=now, author_id=author_id))
@@ -333,6 +346,7 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None):
                 it = _item(r, rev, now)
                 it["author"] = authors.get(aid)
                 it["image"] = images.get(aid)
+                it["starred"] = bool(r.get("starred"))
                 # Скільки ще зобов'язань у цій темі — щоб рядок чесно казав,
                 # що за ним стоїть історія, а не одна заява.
                 if (r.get("topic_size") or 1) > 1:
@@ -392,7 +406,7 @@ def _step_kind(rev, prev):
     return ""
 
 
-def card(commitment_id):
+def card(commitment_id, person=None):
     """Одна обіцянка з усім ланцюгом і сусідами по темі."""
     conn = _conn()
     try:
@@ -457,6 +471,7 @@ def card(commitment_id):
             head["checked_at"] = row.get("checked_at")
             head["check_note"] = row.get("check_note")
             head["status"] = row.get("status")
+            head["starred"] = int(row["id"]) in pp.starred_ids(cur, person)
             return {
                 "commitment": head, "chain": steps,
                 # `open` потрібен фронту, щоб «Перевірили» могло чесно
@@ -485,6 +500,20 @@ def _tags(row, now):
 
 
 # ---------- Дії ----------
+
+def set_star(commitment_id, person, on):
+    """Зірочка «веду цю тему»: фасет «Обрані» + сповіщення про кожну нову
+    ревізію — у стрічку апки і в приват (див. handlers/promise_stars.py)."""
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        with conn.cursor() as cur:
+            pp.star(cur, int(commitment_id), person, bool(on))
+        conn.commit()
+        return bool(on)
+    finally:
+        conn.close()
+
 
 def check(commitment_id, who, outcome=None, note=None, scope="one"):
     """«Перевірили» — і ЧИМ це скінчилось.

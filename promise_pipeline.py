@@ -161,6 +161,21 @@ CREATE TABLE IF NOT EXISTS promise_pair_verdicts (
     PRIMARY KEY (a, b)
 );
 
+-- Зірочка: «веду цю тему сам». Черга банку спільна, і в ній сотні записів —
+-- а журналіст веде п'ять. Ключ складений із людиною, бо зірочка особиста:
+-- Олег і Катя стежать за різним, і спільний прапорець у commitments зробив
+-- би стрічку кожного шумом для іншого.
+-- `seen_rev` — до якої ревізії власник уже все бачив: без нього щогодинний
+-- сторож або мовчав би про накопичене, або смикав тим самим двічі.
+CREATE TABLE IF NOT EXISTS promise_stars (
+    commitment_id BIGINT NOT NULL,
+    person        TEXT NOT NULL,
+    seen_rev      BIGINT DEFAULT 0,
+    created       BIGINT,
+    PRIMARY KEY (commitment_id, person)
+);
+CREATE INDEX IF NOT EXISTS idx_promise_stars_person ON promise_stars (person);
+
 CREATE TABLE IF NOT EXISTS commitments (
     id                    BIGSERIAL PRIMARY KEY,
     topic_id              BIGINT REFERENCES topics (id) ON DELETE SET NULL,
@@ -2679,6 +2694,67 @@ def open_closures(cur, limit=100):
     keys = ("id", "commitment_id", "article_id", "state", "why", "title",
             "deadline")
     return [dict(zip(keys, r)) for r in cur.fetchall()]
+
+
+# ---------- Зірочка ----------
+
+def star(cur, commitment_id, person, on=True):
+    """Поставити/зняти зірочку. Повертає новий стан.
+
+    Особиста, а не спільна: черга банку одна на редакцію, і в ній сотні
+    записів, а людина веде п'ять. Зірочка — це «моє», і саме вона робить
+    банк робочим інструментом журналіста, а не спільним звалищем тем.
+    """
+    if on:
+        # seen_rev одразу на поточну ревізію: зірочка означає «стежу далі»,
+        # а не «розкажи мені всю історію» — вона вже перед очима.
+        cur.execute(
+            "INSERT INTO promise_stars (commitment_id, person, seen_rev, created) "
+            "SELECT %s, %s, coalesce(c.revisions, 0), %s FROM commitments c "
+            "WHERE c.id = %s ON CONFLICT (commitment_id, person) DO NOTHING",
+            (int(commitment_id), person, int(time.time()), int(commitment_id)))
+    else:
+        cur.execute("DELETE FROM promise_stars WHERE commitment_id = %s "
+                    "AND person = %s", (int(commitment_id), person))
+    return bool(on)
+
+
+def starred_ids(cur, person):
+    """id обіцянок, за якими стежить ця людина."""
+    if not person:
+        return set()
+    cur.execute("SELECT commitment_id FROM promise_stars WHERE person = %s",
+                (person,))
+    return {r[0] for r in cur.fetchall()}
+
+
+def star_watchers(cur, commitment_id):
+    """Хто стежить за цією обіцянкою — кому казати про подію."""
+    cur.execute("SELECT person FROM promise_stars WHERE commitment_id = %s",
+                (int(commitment_id),))
+    return [r[0] for r in cur.fetchall()]
+
+
+def star_news(cur):
+    """Обіцянки, у яких З'ЯВИЛАСЬ нова ревізія відтоді, як власник дивився.
+
+    Порівнюємо лічильник `revisions` зі знімком у зірочці: ревізія — це і є
+    подія банку («перенесли», «переформулювали», «пообіцяли ще раз»), і саме
+    її людина, що веде тему, мусить побачити без нагадування собі заходити.
+    """
+    cur.execute(
+        f"SELECT s.person, s.commitment_id, s.seen_rev, {COMMITMENT_COLS} "
+        "FROM promise_stars s JOIN commitments c ON c.id = s.commitment_id "
+        "WHERE coalesce(c.revisions, 0) > coalesce(s.seen_rev, 0)")
+    keys = ["person", "commitment_id", "seen_rev"] + _COMMITMENT_KEYS
+    rows = [dict(zip(keys, r)) for r in cur.fetchall()]
+    _decorate(rows)
+    return rows
+
+
+def star_seen(cur, commitment_id, person, revisions):
+    cur.execute("UPDATE promise_stars SET seen_rev = %s WHERE commitment_id = %s "
+                "AND person = %s", (int(revisions or 0), int(commitment_id), person))
 
 
 def auto_closures(cur, limit=200, state=None):

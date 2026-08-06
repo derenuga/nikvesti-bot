@@ -1366,7 +1366,7 @@ async def api_promises(request):
     except Exception as e:
         print(f"webapp: не резолвнув автора «{viewed}» — {e}")
     data = await asyncio.to_thread(promise_app.queue, cls, q, offset,
-                                   promise_app.PAGE, None, author_id)
+                                   promise_app.PAGE, None, author_id, viewed)
     # Чиї новини порахував фасет — щоб нуль було чим пояснити: у перегляді
     # чужими очима він має три різні причини, і вгадувати по одному фіксу за
     # раунд найдорожче.
@@ -1392,10 +1392,12 @@ async def api_promises_mine_count(request):
 
 
 async def api_promise_card(request):
-    await _authenticate(request)
+    person, _, _ = await _authenticate(request)
     from handlers import promise_app
 
-    data = await asyncio.to_thread(promise_app.card, int(request.match_info["cid"]))
+    data = await asyncio.to_thread(promise_app.card,
+                                   int(request.match_info["cid"]),
+                                   _viewed(request, person))
     if not data:
         raise web.HTTPNotFound(text="Обіцянки немає")
     return web.json_response(data)
@@ -1422,6 +1424,21 @@ async def api_promise_check(request):
     if not n:
         raise web.HTTPNotFound(text="Обіцянки немає")
     return web.json_response({"ok": True, "outcome": outcome, "count": n})
+
+
+async def api_promise_star(request):
+    """Зірочка «веду цю тему»: фасет «Обрані» + кожна нова ревізія прилітає
+    в стрічку й у приват. Особиста, тож у перегляді чужими очима ставиться
+    ТОМУ, на кого дивляться, — інакше менеджер тихо підписував би себе."""
+    person, _, _ = await _authenticate(request)
+    from handlers import promise_app
+
+    payload = await _json(request) if request.can_read_body else {}
+    on = bool((payload or {}).get("on", True))
+    await asyncio.to_thread(promise_app.set_star,
+                            int(request.match_info["cid"]),
+                            _viewed(request, person), on)
+    return web.json_response({"ok": True, "starred": on})
 
 
 async def api_promise_take(request):
@@ -1879,6 +1896,7 @@ async def start_webapp(application):
         web.get("/api/promises/mine/count", api_promises_mine_count),
         web.get("/api/promises/{cid:\\d+}", api_promise_card),
         web.post("/api/promises/{cid:\\d+}/check", api_promise_check),
+        web.post("/api/promises/{cid:\\d+}/star", api_promise_star),
         web.post("/api/promises/{cid:\\d+}/take", api_promise_take),
         web.post("/api/promises/{cid:\\d+}/drop", api_promise_drop),
         web.post("/api/promises/{cid:\\d+}/merge", api_promise_merge),

@@ -83,6 +83,7 @@ from handlers.promises import (
 )
 from handlers.promise_reminders import (promise_remind_handler,
                                         promise_remind_callback)
+from handlers.promise_stars import promise_star_handler
 from handlers.promise_fulfil import (promise_fulfil_handler,
                                      promise_reopen_handler,
                                      promise_auto_handler,
@@ -566,6 +567,7 @@ def main():
     app.add_handler(CommandHandler("promise_same", promise_same_handler))
     app.add_handler(CommandHandler("promise_reopen", promise_reopen_handler))
     app.add_handler(CommandHandler("promise_auto", promise_auto_handler))
+    app.add_handler(CommandHandler("promise_star", promise_star_handler))
     app.add_handler(CommandHandler("promise_fulfil_test", promise_fulfil_test_handler))
     app.add_handler(CommandHandler("promise_topics_undo", promise_topics_undo_handler))
     app.add_handler(CommandHandler("promise_increment_on", promise_increment_on_handler))

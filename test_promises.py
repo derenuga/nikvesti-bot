@@ -1436,6 +1436,76 @@ def test_check_topic_scope():
         conn.close()
 
 
+def test_stars():
+    """Зірочка «веду цю тему»: свій кошик у спільній черзі й сигнал про
+    кожну нову ревізію.
+
+    Черга банку одна на редакцію, і в ній сотні записів, а людина веде п'ять.
+    Головне тут — не фільтр, а те, що подія ЗНАХОДИТЬ людину: ревізія
+    («перенесли на 2027», «тепер це робитиме ДП») з'являється в статті, якої
+    вона не читала, через місяць після того, як тему відклали.
+    """
+    from handlers import promise_app as pa
+
+    conn = ep.connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            cur.execute("DELETE FROM promise_stars")
+            art = {"id": 750001, "published": 1780000000, "title_ua": "Стаття"}
+            a = pp.record(cur, art, pp.prepare(cur, case_item(
+                320276, title="Огорожа", subject="огорожа", objects=[])))[0]
+            b = pp.record(cur, art, pp.prepare(cur, case_item(
+                320276, title="Дорога", quote="Дорогу обіцяють зробити",
+                subject="дорога", objects=[])))[0]
+
+            pp.star(cur, a, "Аліна Квітко")
+            check("зірочка особиста — чужа черга її не бачить",
+                  pp.starred_ids(cur, "Олег Деренюга") == set(),
+                  str(pp.starred_ids(cur, "Олег Деренюга")))
+            check("а своя бачить", pp.starred_ids(cur, "Аліна Квітко") == {a})
+            check("хто стежить — видно з боку обіцянки",
+                  pp.star_watchers(cur, a) == ["Аліна Квітко"])
+
+            # Свіжопоставлена зірочка НЕ приносить усю історію: обіцянку
+            # щойно читали, вона перед очима.
+            check("одразу після зірочки сигналу немає", pp.star_news(cur) == [],
+                  str(pp.star_news(cur)))
+
+            # Нова ревізія — і є подія банку
+            cur.execute("UPDATE commitments SET revisions = revisions + 1 "
+                        "WHERE id = %s", (a,))
+            news = pp.star_news(cur)
+            check("нова ревізія піднімає сигнал власнику зірочки",
+                  len(news) == 1 and news[0]["person"] == "Аліна Квітко",
+                  str([(n["person"], n["commitment_id"]) for n in news]))
+            pp.star_seen(cur, a, "Аліна Квітко", news[0]["revisions"])
+            check("побачене більше не смикає", pp.star_news(cur) == [])
+
+            # Фасет «Обрані» — на рівні ТЕМИ: черга шикується темами, і
+            # зірочка не має зникати, щойно головним стане сусід.
+            cur.execute("UPDATE commitments SET topic_id = "
+                        "(SELECT topic_id FROM commitments WHERE id = %s) "
+                        "WHERE id = %s", (a, b))
+            data = pa.queue(person="Аліна Квітко")
+            starred = next(f for f in data["facets"] if f["key"] == "starred")
+            check("фасет «Обрані» рахує тему, а не лише сам запис",
+                  starred["n"] == 1, str(starred))
+            only = pa.queue(cls="starred", person="Аліна Квітко")
+            check("і фільтр показує саме її", only["total"] == 1, str(only["total"]))
+            check("у чужих очах фасет порожній",
+                  next(f for f in pa.queue(person="Олег Деренюга")["facets"]
+                       if f["key"] == "starred")["n"] == 0)
+
+            pp.star(cur, a, "Аліна Квітко", on=False)
+            check("зняли — і кошик порожній",
+                  pp.starred_ids(cur, "Аліна Квітко") == set())
+    finally:
+        conn.close()
+
+
 def test_author_filter():
     """«З моїх новин»: обіцянка з матеріалу журналістки має знаходитись за
     автором — це і є механізм «обіцянки з твоїх новин прилітають тобі»."""
@@ -2231,8 +2301,8 @@ def test_app_payload():
     q = pa.queue()
     keys = {f["key"] for f in q["facets"]}
     check("фасети з числами приїжджають усі", keys == {"all", "fresh", "mine",
-          "overdue", "soon", "waiting", "stale", "noproof", "populism",
-          "mayclose", "closed"}, str(keys))
+          "starred", "overdue", "soon", "waiting", "stale", "noproof",
+          "populism", "mayclose", "closed"}, str(keys))
     check("лічильник «усе» збігається з довжиною черги",
           dict((f["key"], f["n"]) for f in q["facets"])["all"] >= q["total"],
           str(q["total"]))
@@ -2278,6 +2348,7 @@ def main():
     test_vague_titles()
     test_check_outcome()
     test_check_topic_scope()
+    test_stars()
     test_author_filter()
     test_fresh_facet()
     test_reminders()

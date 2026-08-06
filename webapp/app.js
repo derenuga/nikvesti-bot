@@ -3135,7 +3135,8 @@ function promiseCard(p) {
         <span class="pr-state">${esc(p.state)}</span>
         ${p.how ? `<span class="pr-how${p.cheap ? " cheap" : ""}">${esc(p.how)}</span>` : ""}
       </div>
-      <div class="pr-title">${esc(p.title)}</div>
+      <div class="pr-title">${p.starred
+        ? `<span class="pr-star-mark">${icon("star", "ic star")}</span>` : ""}${esc(p.title)}</div>
       ${p.more ? `<div class="pr-more-n">${
         p.more === 1 ? "ще 1 зобовʼязання в цій темі"
                      : `ще ${p.more} зобовʼязання в цій темі`}</div>` : ""}
@@ -3238,7 +3239,12 @@ async function renderPromise() {
   $("content").innerHTML = `
     <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
     <div class="pr-detail ${p.cls}">
-      <div class="pr-dtitle">${esc(p.title)}</div>
+      <div class="pr-dhead">
+        <div class="pr-dtitle">${esc(p.title)}</div>
+        <button class="pr-star${p.starred ? " on" : ""}" id="pr-star"
+          aria-pressed="${!!p.starred}"
+          aria-label="Стежити за темою">${icon("star")}</button>
+      </div>
       ${p.image ? `<img class="pr-img" src="${esc(p.image)}" alt="" loading="lazy"
         onerror="this.remove()">` : ""}
       ${p.found ? `<div class="pr-found">${esc(p.found)}</div>` : ""}
@@ -3302,6 +3308,27 @@ function wirePromiseCard(d) {
   const id = d.commitment.id;
   document.querySelectorAll("[data-sib]").forEach((b) => b.onclick = () =>
     nav("promise", +b.dataset.sib));
+  // Зірочка: «веду цю тему». Черга спільна й велика, а людина веде п'ять
+  // справ — і кожна нова ревізія по них має знаходити її сама, а не чекати,
+  // поки вона згадає зайти.
+  const star = $("pr-star");
+  if (star) star.onclick = async () => {
+    const on = !star.classList.contains("on");
+    star.classList.toggle("on", on);
+    star.setAttribute("aria-pressed", on);
+    haptic(on ? "success" : "light");
+    try {
+      await api(`/api/promises/${id}/star`, { method: "POST",
+        body: JSON.stringify({ on }) });
+      toast(on ? "Стежу — нові згадки прилетять у сповіщення і в приват"
+               : "Зняв із відстеження");
+      STATE.promises = null;   // фасет «Обрані» має оновитись
+    } catch (e) {
+      star.classList.toggle("on", !on);
+      star.setAttribute("aria-pressed", !on);
+      toast(e.message);
+    }
+  };
   const check = $("pr-check");
   // Скільки ще ВІДКРИТИХ зобов'язань у цій справі. Черга шикується темами, і
   // «виконано» на одному записі повертало тему назад із новим головним
