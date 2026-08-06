@@ -141,11 +141,12 @@
       <h2>2 · Фото</h2>
       <div class="thumbs" id="thumbs"></div>
       <input type="file" id="photoFile" accept="image/*" hidden>
-      <div id="slotRow" hidden style="margin-top:10px">
+      <div id="slotRow" hidden style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
         <div class="seg" id="slotSeg">
           <button data-slot="0" class="on">Ліве фото</button>
           <button data-slot="1">Праве фото</button>
         </div>
+        <button class="ghost" id="swapBtn" title="Поміняти фото місцями — кроп кожного їде разом із ним">⇄ Поміняти</button>
       </div>
       <label class="row">
         <input type="checkbox" id="capOn" checked>
@@ -196,9 +197,6 @@
   <div class="preview">
     <canvas id="canvas" width="1600" height="2000"></canvas>
     <div class="stage-hint" id="stageHint">Спершу кинь посилання на матеріал ↑</div>
-    <div class="dl" id="swapRow" hidden>
-      <button class="ghost" id="swapBtn" title="Кроп кожного фото їде разом із ним">⇄ Поміняти фото місцями</button>
-    </div>
     <div class="dl">
       <button id="download" disabled>Завантажити JPG</button>
     </div>
@@ -550,7 +548,6 @@
     [...$("tplSeg").children].forEach((el) => el.classList.toggle("on", el === b));
     S.tpl = +b.dataset.tpl;
     $("slotRow").hidden = S.tpl !== 2;
-    $("swapRow").hidden = S.tpl !== 2;
     // У шаблоні з двома фото підпису нема до чого кріпитись — вимикається сам
     S.capOn = S.tpl === 1;
     $("capOn").checked = S.capOn;
