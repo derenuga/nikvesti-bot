@@ -133,6 +133,13 @@
       <h2>2 · Фото</h2>
       <div class="thumbs" id="thumbs"></div>
       <input type="file" id="photoFile" accept="image/*" hidden>
+      <div id="slotRow" hidden style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <div class="seg" id="slotSeg">
+          <button data-slot="0" class="on">Ліве фото</button>
+          <button data-slot="1">Праве фото</button>
+        </div>
+        <button class="ghost" id="swapBtn" title="Поміняти фото місцями — щоб дивились одне на одного">⇄ Поміняти</button>
+      </div>
       <label class="row">
         <input type="checkbox" id="capOn" checked>
         Підпис фото
@@ -160,6 +167,10 @@
         <div class="seg" id="fmt">
           <button data-w="1600" data-h="2000" class="on">4:5</button>
           <button data-w="1600" data-h="1600">1:1</button>
+        </div>
+        <div class="seg" id="tplSeg" title="Шаблон">
+          <button data-tpl="1" class="on">1 фото</button>
+          <button data-tpl="2">2 фото</button>
         </div>
         <div class="seg" id="alignSeg" title="Вирівнювання тексту">
           <button data-align="left" class="on" title="Зліва"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg></button>
@@ -199,9 +210,14 @@
     scheme: 0,               // індекс у SCHEMES
     words: [],               // [{text, hl}] або {br:true}
     images: [],              // [{url, caption}]
-    photo: null,             // HTMLImageElement (через проксі)
-    photoUrl: "",
-    zoom: 1, offX: 0, offY: 0,
+    tpl: 1,                  // шаблон: 1 — одне фото, 2 — два поруч
+    // Кожен слот — своє фото і свій псевдокроп; шаблон 1 живе у slots[0]
+    slots: [
+      { photo: null, zoom: 1, offX: 0, offY: 0 },
+      { photo: null, zoom: 1, offX: 0, offY: 0 },
+    ],
+    active: 0,               // який слот отримає тапнуту мініатюру (шаблон 2)
+    slotImg: [-1, -1],       // індекси мініатюр по слотах
     capOn: true, capText: "",
     adOn: false,             // плашка «Реклама» у куті фото
     sub: "",                 // підпис під заголовком (Commissioner Light)
@@ -344,6 +360,10 @@
     S.capText = data.caption_suggestion || "";
     $("capText").value = S.capText;
     buildThumbs();
+    // Нова стаття — чисті слоти (інакше в шаблоні 2 висіло б старе праве фото)
+    S.slots.forEach((st) => { st.photo = null; st.zoom = 1; st.offX = 0; st.offY = 0; });
+    S.slotImg = [-1, -1];
+    if (S.tpl === 2) setActive(0);
     if (S.images.length) selectPhoto(0);
     $("photoPanel").hidden = false;
     $("textPanel").hidden = false;
@@ -383,15 +403,40 @@
   });
 
   function selectPhoto(i) {
-    [...$("thumbs").querySelectorAll("img")].forEach((el, j) => el.classList.toggle("sel", j === i));
+    const si = S.tpl === 2 ? S.active : 0;
+    S.slotImg[si] = i;
+    const st = S.slots[si];
+    st.zoom = 1; st.offX = 0; st.offY = 0;
     const im = S.images[i];
-    S.photoUrl = im.url;
-    S.zoom = 1; S.offX = 0; S.offY = 0;
-    $("zoom").value = 100; $("zoomOut").textContent = "100%";
     const photo = new Image();
-    photo.onload = () => { S.photo = photo; render(); };
+    photo.onload = () => { st.photo = photo; render(); };
     photo.onerror = () => { $("err").textContent = "Фото не завантажилось"; $("err").hidden = false; };
     photo.src = im.local ? im.url : proxied(im.url);
+    // після призначення — перейти на ще порожній сусідній слот (тап по
+    // двох мініатюрах підряд заповнює ліве і праве без зайвих рухів)
+    if (S.tpl === 2 && !S.slots[1 - si].photo && S.slotImg[1 - si] < 0) setActive(1 - si);
+    else syncZoomUI();
+    markThumbs();
+  }
+
+  function markThumbs() {
+    const imgs = [...$("thumbs").querySelectorAll("img")];
+    imgs.forEach((el, j) => el.classList.toggle("sel",
+      S.tpl === 2 ? (j === S.slotImg[0] || j === S.slotImg[1]) : j === S.slotImg[0]));
+  }
+
+  function setActive(i) {
+    S.active = i;
+    [...$("slotSeg").children].forEach((el) => el.classList.toggle("on", +el.dataset.slot === i));
+    syncZoomUI();
+  }
+
+  function activeSlot() { return S.slots[S.tpl === 2 ? S.active : 0]; }
+
+  function syncZoomUI() {
+    const z = Math.round(activeSlot().zoom * 100);
+    $("zoom").value = z;
+    $("zoomOut").textContent = z + "%";
   }
 
   // ---------- Заголовок і виділення ----------
@@ -476,12 +521,13 @@
     S.fontSize = +e.target.value; $("fontOut").textContent = e.target.value; render();
   });
   $("zoom").addEventListener("input", (e) => {
-    S.zoom = +e.target.value / 100; $("zoomOut").textContent = e.target.value + "%";
-    clampOffsets(); render();
+    const st = activeSlot();
+    st.zoom = +e.target.value / 100; $("zoomOut").textContent = e.target.value + "%";
+    clampAll(); render();
   });
   $("resetPhoto").addEventListener("click", () => {
-    S.zoom = 1; S.offX = 0; S.offY = 0;
-    $("zoom").value = 100; $("zoomOut").textContent = "100%";
+    S.slots.forEach((st) => { st.zoom = 1; st.offX = 0; st.offY = 0; });
+    syncZoomUI();
     render();
   });
   $("fmt").addEventListener("click", (e) => {
@@ -490,7 +536,26 @@
     [...$("fmt").children].forEach((el) => el.classList.toggle("on", el === b));
     S.W = +b.dataset.w; S.H = +b.dataset.h;
     canvas.width = S.W; canvas.height = S.H;
-    clampOffsets(); render();
+    clampAll(); render();
+  });
+  $("tplSeg").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    [...$("tplSeg").children].forEach((el) => el.classList.toggle("on", el === b));
+    S.tpl = +b.dataset.tpl;
+    $("slotRow").hidden = S.tpl !== 2;
+    if (S.tpl === 2 && !S.slots[1].photo) setActive(1); else setActive(S.tpl === 2 ? S.active : 0);
+    clampAll(); markThumbs(); render();
+  });
+  $("slotSeg").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    setActive(+b.dataset.slot);
+  });
+  $("swapBtn").addEventListener("click", () => {
+    [S.slots[0], S.slots[1]] = [S.slots[1], S.slots[0]];
+    [S.slotImg[0], S.slotImg[1]] = [S.slotImg[1], S.slotImg[0]];
+    clampAll(); syncZoomUI(); markThumbs(); render();
   });
 
   // ---------- Пан/зум фото на самому прев'ю ----------
@@ -500,48 +565,63 @@
     return { x: (e.clientX - r.left) * (canvas.width / r.width),
              y: (e.clientY - r.top) * (canvas.height / r.height) };
   };
+  // Слот під точкою: шаблон 2 ділить низ навпіл по вертикалі
+  function hitSlot(p) {
+    if (p.y < S.blueH) return -1;
+    if (S.tpl === 1) return 0;
+    return p.x < S.W / 2 ? 0 : 1;
+  }
+
   canvas.addEventListener("pointerdown", (e) => {
-    if (!S.photo) return;
     const p = toCanvas(e);
-    if (p.y < S.blueH) return; // тягнеться лише фото, не синій блок
-    drag = { x: p.x, y: p.y, offX: S.offX, offY: S.offY };
+    const si = hitSlot(p);
+    if (si < 0 || !S.slots[si].photo) return;
+    if (S.tpl === 2) setActive(si);
+    const st = S.slots[si];
+    drag = { slot: si, x: p.x, y: p.y, offX: st.offX, offY: st.offY };
     canvas.classList.add("dragging");
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener("pointermove", (e) => {
     if (!drag) return;
     const p = toCanvas(e);
-    S.offX = drag.offX + (p.x - drag.x);
-    S.offY = drag.offY + (p.y - drag.y);
-    clampOffsets(); render();
+    const st = S.slots[drag.slot];
+    st.offX = drag.offX + (p.x - drag.x);
+    st.offY = drag.offY + (p.y - drag.y);
+    clampSlot(drag.slot); render();
   });
   canvas.addEventListener("pointerup", () => { drag = null; canvas.classList.remove("dragging"); });
   canvas.addEventListener("wheel", (e) => {
-    if (!S.photo) return;
     const p = toCanvas(e);
-    if (p.y < S.blueH) return;
+    const si = hitSlot(p);
+    if (si < 0 || !S.slots[si].photo) return;
     e.preventDefault();
-    const z = Math.min(3, Math.max(1, S.zoom * (e.deltaY < 0 ? 1.06 : 0.94)));
-    S.zoom = z;
-    $("zoom").value = Math.round(z * 100);
-    $("zoomOut").textContent = Math.round(z * 100) + "%";
-    clampOffsets(); render();
+    if (S.tpl === 2) setActive(si);
+    const st = S.slots[si];
+    st.zoom = Math.min(3, Math.max(1, st.zoom * (e.deltaY < 0 ? 1.06 : 0.94)));
+    syncZoomUI();
+    clampSlot(si); render();
   }, { passive: false });
 
-  function photoRect() {
-    // Слот фото — усе під синім блоком
-    return { x: 0, y: S.blueH, w: S.W, h: S.H - S.blueH };
+  function slotRect(i) {
+    const top = S.blueH, h = S.H - top;
+    if (S.tpl === 1) return { x: 0, y: top, w: S.W, h };
+    const half = S.W / 2;
+    return i === 0 ? { x: 0, y: top, w: half, h } : { x: half, y: top, w: half, h };
   }
 
-  function clampOffsets() {
-    if (!S.photo) return;
-    const slot = photoRect();
-    const s = Math.max(slot.w / S.photo.naturalWidth, slot.h / S.photo.naturalHeight) * S.zoom;
-    const dw = S.photo.naturalWidth * s, dh = S.photo.naturalHeight * s;
-    const maxX = (dw - slot.w) / 2, maxY = (dh - slot.h) / 2;
-    S.offX = Math.min(maxX, Math.max(-maxX, S.offX));
-    S.offY = Math.min(maxY, Math.max(-maxY, S.offY));
+  function clampSlot(i) {
+    const st = S.slots[i];
+    if (!st.photo) return;
+    const r = slotRect(i);
+    const s = Math.max(r.w / st.photo.naturalWidth, r.h / st.photo.naturalHeight) * st.zoom;
+    const dw = st.photo.naturalWidth * s, dh = st.photo.naturalHeight * s;
+    const maxX = (dw - r.w) / 2, maxY = (dh - r.h) / 2;
+    st.offX = Math.min(maxX, Math.max(-maxX, st.offX));
+    st.offY = Math.min(maxY, Math.max(-maxY, st.offY));
   }
+
+  function clampAll() { clampSlot(0); clampSlot(1); }
 
   // ---------- Рендер ----------
   let fontsReady = false;
@@ -557,22 +637,25 @@
     ctx.fillStyle = sc.bg;
     ctx.fillRect(0, 0, S.W, S.H);
 
-    // Фото у слоті (кліп — фіксований слот, кадр їздить всередині)
-    const slot = photoRect();
-    if (S.photo) {
-      const s = Math.max(slot.w / S.photo.naturalWidth, slot.h / S.photo.naturalHeight) * S.zoom;
-      const dw = S.photo.naturalWidth * s, dh = S.photo.naturalHeight * s;
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(slot.x, slot.y, slot.w, slot.h);
-      ctx.clip();
-      ctx.drawImage(S.photo,
-        slot.x + slot.w / 2 - dw / 2 + S.offX,
-        slot.y + slot.h / 2 - dh / 2 + S.offY, dw, dh);
-      ctx.restore();
-    } else {
-      ctx.fillStyle = sc.dark ? "rgba(255,255,255,.12)" : "rgba(0,0,0,.08)";
-      ctx.fillRect(slot.x, slot.y, slot.w, slot.h);
+    // Фото у слотах (кліп — фіксований слот, кадр їздить всередині)
+    for (let i = 0; i < S.tpl; i++) {
+      const r = slotRect(i);
+      const st = S.slots[i];
+      if (st.photo) {
+        const sf = Math.max(r.w / st.photo.naturalWidth, r.h / st.photo.naturalHeight) * st.zoom;
+        const dw = st.photo.naturalWidth * sf, dh = st.photo.naturalHeight * sf;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(r.x, r.y, r.w, r.h);
+        ctx.clip();
+        ctx.drawImage(st.photo,
+          r.x + r.w / 2 - dw / 2 + st.offX,
+          r.y + r.h / 2 - dh / 2 + st.offY, dw, dh);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = sc.dark ? "rgba(255,255,255,.12)" : "rgba(0,0,0,.08)";
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+      }
     }
 
     drawHeadline();
@@ -585,7 +668,7 @@
       const t = "Реклама";
       const tw = ctx.measureText(t).width;
       const padX = 26, h = 56;
-      const bx = S.W - 44 - tw - padX * 2, by = slot.y + 36;
+      const bx = S.W - 44 - tw - padX * 2, by = S.blueH + 36;
       ctx.fillStyle = "rgba(0,0,0,.55)";
       ctx.beginPath();
       ctx.roundRect(bx, by, tw + padX * 2, h, h / 2);
@@ -609,13 +692,14 @@
       ctx.restore();
     }
 
-    // Лого — низ-праворуч
+    // Лого: шаблон 1 — низ-праворуч, шаблон 2 — строго по центру (на стику)
     if (S.logo) {
       const lw = 250, lh = lw * (S.logo.naturalHeight / S.logo.naturalWidth || 0.454);
+      const lx = S.tpl === 2 ? (S.W - lw) / 2 : S.W - lw - 52;
       ctx.save();
       ctx.shadowColor = "rgba(0,0,0,.45)";
       ctx.shadowBlur = 12;
-      ctx.drawImage(S.logo, S.W - lw - 52, S.H - lh - 40, lw, lh);
+      ctx.drawImage(S.logo, lx, S.H - lh - 40, lw, lh);
       ctx.restore();
     }
   }
