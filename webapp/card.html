@@ -120,6 +120,14 @@
 <div class="wrap">
   <div>
     <div class="panel">
+      <h2>Шаблон</h2>
+      <div class="seg" id="tplSeg">
+        <button data-tpl="1" class="on">Стандартний: текст + фото</button>
+        <button data-tpl="2">Два фото внизу</button>
+      </div>
+    </div>
+
+    <div class="panel">
       <h2>1 · Посилання на матеріал</h2>
       <div class="urlrow">
         <input id="url" type="url" placeholder="https://nikvesti.com/news/…" autocomplete="off">
@@ -133,12 +141,11 @@
       <h2>2 · Фото</h2>
       <div class="thumbs" id="thumbs"></div>
       <input type="file" id="photoFile" accept="image/*" hidden>
-      <div id="slotRow" hidden style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+      <div id="slotRow" hidden style="margin-top:10px">
         <div class="seg" id="slotSeg">
           <button data-slot="0" class="on">Ліве фото</button>
           <button data-slot="1">Праве фото</button>
         </div>
-        <button class="ghost" id="swapBtn" title="Поміняти фото місцями — щоб дивились одне на одного">⇄ Поміняти</button>
       </div>
       <label class="row">
         <input type="checkbox" id="capOn" checked>
@@ -168,10 +175,6 @@
           <button data-w="1600" data-h="2000" class="on">4:5</button>
           <button data-w="1600" data-h="1600">1:1</button>
         </div>
-        <div class="seg" id="tplSeg" title="Шаблон">
-          <button data-tpl="1" class="on">1 фото</button>
-          <button data-tpl="2">2 фото</button>
-        </div>
         <div class="seg" id="alignSeg" title="Вирівнювання тексту">
           <button data-align="left" class="on" title="Зліва"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg></button>
           <button data-align="center" title="По центру"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="10" x2="6" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="18" y1="18" x2="6" y2="18"/></svg></button>
@@ -193,6 +196,9 @@
   <div class="preview">
     <canvas id="canvas" width="1600" height="2000"></canvas>
     <div class="stage-hint" id="stageHint">Спершу кинь посилання на матеріал ↑</div>
+    <div class="dl" id="swapRow" hidden>
+      <button class="ghost" id="swapBtn" title="Кроп кожного фото їде разом із ним">⇄ Поміняти фото місцями</button>
+    </div>
     <div class="dl">
       <button id="download" disabled>Завантажити JPG</button>
     </div>
@@ -544,6 +550,10 @@
     [...$("tplSeg").children].forEach((el) => el.classList.toggle("on", el === b));
     S.tpl = +b.dataset.tpl;
     $("slotRow").hidden = S.tpl !== 2;
+    $("swapRow").hidden = S.tpl !== 2;
+    // У шаблоні з двома фото підпису нема до чого кріпитись — вимикається сам
+    S.capOn = S.tpl === 1;
+    $("capOn").checked = S.capOn;
     if (S.tpl === 2 && !S.slots[1].photo) setActive(1); else setActive(S.tpl === 2 ? S.active : 0);
     clampAll(); markThumbs(); render();
   });
