@@ -1882,8 +1882,22 @@ body.dark { --stale: #a596e0; --stale-soft: rgba(165, 150, 224, .18);
   font-size: 11px; font-weight: 700; letter-spacing: .03em;
   text-transform: uppercase; color: var(--muted);
 }
-.pr-step.firm .pr-mod { color: var(--blue); }
-.pr-step.broken .pr-mod { color: var(--red); }
+.pr-fact.firm .pr-mod { color: var(--blue); }
+.pr-fact.broken .pr-mod { color: var(--red); }
+.pr-fact.other { opacity: .82; }
+
+/* Джерело — ЗГОРИ блока новини й один раз на неї. Раніше кожен факт ніс
+   свій заголовок і автора, і стаття з двома фактами виглядала як два
+   однакові записи. */
+.pr-nsrc { font-size: 12.5px; margin-bottom: 6px; color: var(--muted); }
+.pr-nsrc .pr-author { margin-left: 8px; }
+.pr-nsrc a { color: var(--blue); }
+/* Факти всередині однієї новини. Другий і далі відбиті лінією: видно, що це
+   ще одне зобовʼязання з ТІЄЇ САМОЇ статті, а не наступний крок історії. */
+.pr-facts { display: flex; flex-direction: column; gap: 8px; }
+.pr-facts.many .pr-fact + .pr-fact {
+  border-top: 1px dashed var(--line); padding-top: 8px;
+}
 
 .pr-sib-h { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .pr-sib-r {

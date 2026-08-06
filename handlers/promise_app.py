@@ -431,6 +431,12 @@ def card(commitment_id, person=None):
             for r in revs:
                 link = links.get(r["article_id"]) or {}
                 steps.append({
+                    # id матеріалу — щоб екран групував кроки ОДНІЄЮ новиною.
+                    # Стаття часто дає кілька фактів («пообіцяв звернутись» +
+                    # «як не зроблять, зріжемо самі»), і трьома окремими
+                    # блоками з тим самим заголовком і автором це читалось як
+                    # дублі (Олег, 05.08: «будто бы дубль выглядит»).
+                    "article_id": r.get("article_id"),
                     "when": pp.fmt_date(r.get("published")),
                     "kind": _step_kind(r, prev),
                     "modality": pp.MODALITY_WORD.get(r.get("modality"), ""),

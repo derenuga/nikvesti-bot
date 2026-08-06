@@ -2318,6 +2318,13 @@ def test_app_payload():
     card = pa.card(item["id"])
     check("картка віддає ланцюг", bool(card and card["chain"]), str(bool(card)))
     check("у ланцюгу кожен крок має дату", all(s["when"] for s in card["chain"]))
+    # Екран групує кроки ПО НОВИНАХ: стаття часто дає кілька фактів одразу
+    # («пообіцяв звернутись» + «як не зроблять, зріжемо самі»), і трьома
+    # блоками з тим самим заголовком це читалось як дублі. Без article_id
+    # групувати нема за чим.
+    check("кожен крок несе id матеріалу — інакше новину не згрупувати",
+          all(s.get("article_id") for s in card["chain"]),
+          str([s.get("article_id") for s in card["chain"]]))
     pops = [i for i in q["items"] if i.get("populism")]
     check("мітка популізму приїжджає РАЗОМ із підставою",
           all(len(p["populism"]) > 10 for p in pops), f"{len(pops)} шт")

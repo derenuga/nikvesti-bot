@@ -3261,7 +3261,7 @@ async function renderPromise() {
       ${p.based_on ? `<div class="pr-field"><b>Підстава:</b> ${esc(p.based_on)}</div>` : ""}
       ${p.condition ? `<div class="pr-field"><b>Умова:</b> ${esc(p.condition)}
         <span class="pr-dim">— умовна обіцянка не прострочується</span></div>` : ""}
-      <div class="pr-chain">${d.chain.map(chainStep).join("")}</div>
+      <div class="pr-chain">${chainGroups(d.chain).map(chainNews).join("")}</div>
       ${d.siblings.length ? `<div class="pr-sib">
         <div class="pr-sib-h">Та сама тема</div>
         ${d.siblings.map((s) => `<button class="pr-sib-r" data-sib="${s.id}">
@@ -3279,29 +3279,71 @@ async function renderPromise() {
   wirePromiseCard(d);
 }
 
-function chainStep(s) {
-  /* Історія питання йде по ВСІЙ ТЕМІ, тож крок може належати сусідньому
-     зобовʼязанню. Підписуємо це прямо: інакше в ланцюгу «Провести ямковий
-     ремонт» опинялась би цитата про звернення до Служби відновлення без
-     жодної позначки, чия вона. */
+/* Ланцюг групується ПО НОВИНАХ, а не по фактах.
+
+   Стаття часто дає кілька фактів одразу: «посадовець пообіцяв звернутись до
+   органу» і тут же «як не зроблять за вихідні — зріжемо самі». Три окремі
+   блоки з тим самим заголовком, датою й автором читались як три дублі
+   (Олег, 05.08: «одна новость выдает две секции изменений, будто бы дубль»).
+
+   Тепер одна новина — один блок на таймлайні: дата, заголовок і автор
+   згори один раз, а факти всередині окремими рядками зі своєю модальністю,
+   цитатою і строком. Дублікатів у даних не було ніколи — була верстка, яка
+   їх імітувала. */
+function chainNews(group) {
+  const head = group[0];
+  // Колір точки бере найсильніший стан групи: перенос строку («broken») —
+  // це подія, заради якої банк існує, і губитись через сусідній факт у тій
+  // самій статті вона не має.
+  const kind = group.some((s) => s.kind === "broken") ? "broken"
+             : group.some((s) => s.kind === "firm") ? "firm" : "";
+  const own = group.some((s) => !s.other);
   return `
-    <div class="pr-step ${s.kind}${s.other ? " other" : ""}">
-      <div class="pr-when">${esc(s.when)}</div>
+    <div class="pr-step ${kind}${own ? "" : " other"}">
+      <div class="pr-when">${esc(head.when)}</div>
       <div class="pr-sbody">
-        ${s.modality ? `<span class="pr-mod">${esc(s.modality)}</span>` : ""}
-        ${s.other ? `<button class="pr-other" data-sib="${s.other.id}">
-          ${esc(s.other.title || "інше зобовʼязання теми")}</button>` : ""}
-        ${s.quote ? `<p>«${esc(s.quote)}»</p>` : ""}
-        <div class="pr-src">
-          ${s.deadline ? `строк ${esc(s.deadline)} · ` : ""}
-          ${s.source ? esc(s.source) + " · " : ""}
-          ${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${
-            esc(s.article_title || "матеріал")}</a>` : "джерела немає"}
-          ${s.author ? `<div class="pr-author">${icon("edit", "ic xs")}
-            ${esc(s.author)}</div>` : ""}
+        <div class="pr-nsrc">
+          ${head.url ? `<a href="${esc(head.url)}" target="_blank" rel="noopener">${
+            esc(head.article_title || "матеріал")}</a>`
+            : `<span class="pr-dim">джерела немає</span>`}
+          ${head.author ? `<span class="pr-author">${icon("edit", "ic xs")}
+            ${esc(head.author)}</span>` : ""}
+        </div>
+        <div class="pr-facts${group.length > 1 ? " many" : ""}">
+          ${group.map(chainFact).join("")}
         </div>
       </div>
     </div>`;
+}
+
+/* Один факт усередині новини. Історія питання йде по ВСІЙ ТЕМІ, тож факт
+   може належати сусідньому зобовʼязанню — підписуємо це прямо: інакше в
+   ланцюгу «Провести ямковий ремонт» опинялась би цитата про звернення до
+   Служби відновлення без жодної позначки, чия вона. */
+function chainFact(s) {
+  const meta = [s.deadline ? `строк ${s.deadline}` : "", s.source]
+    .filter(Boolean).map(esc).join(" · ");
+  return `
+    <div class="pr-fact ${s.kind}${s.other ? " other" : ""}">
+      ${s.modality ? `<span class="pr-mod">${esc(s.modality)}</span>` : ""}
+      ${s.other ? `<button class="pr-other" data-sib="${s.other.id}">
+        ${esc(s.other.title || "інше зобовʼязання теми")}</button>` : ""}
+      ${s.quote ? `<p>«${esc(s.quote)}»</p>` : ""}
+      ${meta ? `<div class="pr-src">${meta}</div>` : ""}
+    </div>`;
+}
+
+/* Сусідні кроки однієї новини — в один блок. Саме СУСІДНІ: ревізії йдуть
+   хронологічно, і склеювати рознесені в часі згадки тієї самої статті не
+   можна — таймлайн перестав би бути таймлайном. */
+function chainGroups(chain) {
+  const out = [];
+  for (const s of chain || []) {
+    const last = out[out.length - 1];
+    if (last && s.article_id && last[0].article_id === s.article_id) last.push(s);
+    else out.push([s]);
+  }
+  return out;
 }
 
 function wirePromiseCard(d) {
