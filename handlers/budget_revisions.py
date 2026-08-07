@@ -821,6 +821,9 @@ def load_parsed(parsed, fiscal_year, decision_number, decision_date=None,
                 cur.execute("SELECT decision_date FROM budget.plan_revision WHERE id = %s",
                             (revision_id,))
                 eff_date = cur.fetchone()[0]
+                # у звіт — щоб перезалиття пакета з датою в базі не просило
+                # «додай дату підписом» (підказка дивилась лише на підпис)
+                report["decision_date"] = eff_date
                 pred = _pred_with_lines(cur, fiscal_year, order, kind, eff_date)
                 # Реконструйований original (нульовий PDF-пакет без xlsx)
                 # наповнюється лівою частиною НАЙПЕРШОЇ порівняльної таблиці
@@ -1036,7 +1039,9 @@ def process_package(data, filename, decision_date=None, decision_override=None):
             if r["revision_id"] in created:
                 r["revision_reused"] = False
         result["revision_id"] = result["loads"][-1]["revision_id"]
-        result["decision_date"] = decision_date
+        result["decision_date"] = decision_date or next(
+            (r["decision_date"] for r in result["loads"] if r.get("decision_date")), None
+        )
 
     if meta and meta.get("headline"):
         upsert_headline(result["revision_id"], meta["headline"])
