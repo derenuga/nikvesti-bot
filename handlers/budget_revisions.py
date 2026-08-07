@@ -158,6 +158,11 @@ _BUDGET_SCHEMA_STATEMENTS = [
     # видатковими рядками перед цією (не просто order-1: ревізія могла не мати
     # цієї таблиці, якщо рішення її не міняло). Підсумки розпорядників
     # виключено, щоб не задвоювати програми.
+    # Ревізія БЕЗ дати — це щойно завантажений пакет, якому ще не дали
+    # /budget_date: хронологічно він НАЙНОВІШИЙ, тому порівнюється лише за
+    # effective_order. COALESCE у 1900-01-01 ставив його ПЕРЕД усіма датованими,
+    # попередник не знаходився і всі рядки ставали «новими програмами» на повну
+    # суму плану (реальний кейс s-fi-008, 07.08.2026).
     """
     CREATE OR REPLACE VIEW budget.v_plan_amendments AS
     SELECT n.revision_id, r.decision_number, r.decision_date,
@@ -172,8 +177,10 @@ _BUDGET_SCHEMA_STATEMENTS = [
       ON p.kpkvk = n.kpkvk
      AND p.revision_id = (SELECT pr.id FROM budget.plan_revision pr
                           WHERE pr.fiscal_year = r.fiscal_year
-                            AND (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
-                              < (COALESCE(r.decision_date, DATE '1900-01-01'), r.effective_order)
+                            AND CASE WHEN r.decision_date IS NULL
+                                THEN pr.effective_order < r.effective_order
+                                ELSE (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
+                                   < (r.decision_date, r.effective_order) END
                             AND EXISTS (SELECT 1 FROM budget.plan_expenditure_line x
                                         WHERE x.revision_id = pr.id)
                           ORDER BY COALESCE(pr.decision_date, DATE '1900-01-01') DESC,
@@ -196,8 +203,10 @@ _BUDGET_SCHEMA_STATEMENTS = [
       ON p.code = n.code
      AND p.revision_id = (SELECT pr.id FROM budget.plan_revision pr
                           WHERE pr.fiscal_year = r.fiscal_year
-                            AND (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
-                              < (COALESCE(r.decision_date, DATE '1900-01-01'), r.effective_order)
+                            AND CASE WHEN r.decision_date IS NULL
+                                THEN pr.effective_order < r.effective_order
+                                ELSE (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
+                                   < (r.decision_date, r.effective_order) END
                             AND EXISTS (SELECT 1 FROM budget.plan_revenue_line x
                                         WHERE x.revision_id = pr.id)
                           ORDER BY COALESCE(pr.decision_date, DATE '1900-01-01') DESC,
@@ -213,8 +222,10 @@ _BUDGET_SCHEMA_STATEMENTS = [
     FROM budget.plan_revision n
     JOIN LATERAL (SELECT pr.id FROM budget.plan_revision pr
                   WHERE pr.fiscal_year = n.fiscal_year
-                    AND (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
-                      < (COALESCE(n.decision_date, DATE '1900-01-01'), n.effective_order)
+                    AND CASE WHEN n.decision_date IS NULL
+                        THEN pr.effective_order < n.effective_order
+                        ELSE (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
+                           < (n.decision_date, n.effective_order) END
                     AND EXISTS (SELECT 1 FROM budget.plan_expenditure_line x
                                 WHERE x.revision_id = pr.id)
                   ORDER BY COALESCE(pr.decision_date, DATE '1900-01-01') DESC,
@@ -275,7 +286,10 @@ _REV_TOP_RE = re.compile(r"^\d0{7}$")
 _TITLE_YEAR_RE = re.compile(r"на\s+(20\d{2})\s+рік")
 _TITLE_BASE_RE = re.compile(r"від\s+(\d{2}\.\d{2}\.\d{4})\s*№\s*([\d/]+)")
 _TITLE_DODATOK_RE = re.compile(r"додатк\w*\s+(\d+)", re.I)
-_SFI_RE = re.compile(r"s[\s_-]*fi[\s_-]*(\d+)", re.I)
+# Код пакета: s-fi-XXX (до 3 значущих цифр). (?!\d) не дає з'їсти хвіст,
+# коли сховище клеїть до імені дату («sfi00820260807…» — це 008, не мільярд);
+# такий токен просто не матчиться, і код береться з імен файлів усередині ZIP
+_SFI_RE = re.compile(r"s[\s_-]*fi[\s_-]*0*(\d{1,3})(?!\d)", re.I)
 # Токени з підпису до ZIP: дата ухвалення й ухвалений номер рішення (XX/YY)
 _DATE_TOKEN = re.compile(r"\b(\d{2}\.\d{2}\.\d{4})\b")
 _DECISION_TOKEN = re.compile(r"\b(\d{1,3}/\d{1,4})\b")
@@ -413,13 +427,25 @@ def parse_comparison_xlsx(data, filename=""):
     import openpyxl  # локальний імпорт: бот стартує і без openpyxl
 
     wb = openpyxl.load_workbook(BytesIO(data), data_only=True, read_only=True)
-    last_err = None
+    last_err = scope_err = None
     for sheet in wb.sheetnames:
         ws = wb[sheet]
         rows = [list(r) for r in ws.iter_rows(values_only=True)]
         num_idx, blocks = _find_numbering_row(rows[:40])
         if num_idx is None:
-            last_err = ValueError(f"лист '{sheet}': не знайшов рядок нумерації колонок")
+            # Нумерації немає — але шапка може чесно казати, що це чужий
+            # додаток (у додатка 5 блок лише з 3 колонок, до перевірки номера
+            # парсер не доходив і падав із «не знайшов рядок нумерації»)
+            head = re.sub(r"\s+", " ", " ".join(
+                str(v) for row in rows[:12] for v in row if isinstance(v, str)
+            )).strip()
+            hm = _TITLE_DODATOK_RE.search(head)
+            if hm and int(hm.group(1)) not in (1, 3):
+                e = ValueError(f"додаток {hm.group(1)} — поза схемою (вантажимо лише 1 і 3)")
+                e.out_of_scope = True
+                scope_err = scope_err or e
+            else:
+                last_err = ValueError(f"лист '{sheet}': не знайшов рядок нумерації колонок")
             continue
         if len(blocks) not in (1, 2):
             last_err = ValueError(f"лист '{sheet}': {len(blocks)} блоків нумерації")
@@ -497,6 +523,10 @@ def parse_comparison_xlsx(data, filename=""):
             "base_number": bm.group(2) if bm else None,
         }
     wb.close()
+    if scope_err:
+        # Хоч один лист чесно назвався чужим додатком — це скіп, а не збій
+        # (порожні сусідні листи «Лист2»/«Лист3» без нумерації — не показник)
+        raise scope_err
     raise ValueError(f"Не розібрав xlsx: {last_err}")
 
 
@@ -658,17 +688,22 @@ def _pred_with_lines(cur, fiscal_year, order, kind, decision_date=None):
     """Ревізія року, що ХРОНОЛОГІЧНО передує цій, у якій є рядки цієї таблиці
     (ревізія могла не мати додатка 1/3, якщо рішення його не міняло).
     Хронологія — за датою ухвалення (щоб пакети можна було вантажити в будь-якому
-    порядку); effective_order — лише тайбрейкер для ревізій без дати."""
+    порядку). Ревізія БЕЗ дати (свіжий пакет, /budget_date ще не давали) —
+    найновіша, порівнюється лише за effective_order: COALESCE у 1900-01-01
+    ставив її ПЕРЕД усіма датованими, попередник не знаходився, і ліва частина
+    затирала реконструйований original (реальний кейс s-fi-008, 07.08.2026)."""
     table, _ = _LINE_COLS[kind]
     cur.execute(
         f"""SELECT pr.id, pr.notes FROM budget.plan_revision pr
             WHERE pr.fiscal_year = %s
-              AND (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
-                < (COALESCE(%s::date, DATE '1900-01-01'), %s)
+              AND CASE WHEN %s::date IS NULL
+                  THEN pr.effective_order < %s
+                  ELSE (COALESCE(pr.decision_date, DATE '1900-01-01'), pr.effective_order)
+                     < (%s::date, %s) END
               AND EXISTS (SELECT 1 FROM {table} x WHERE x.revision_id = pr.id)
             ORDER BY COALESCE(pr.decision_date, DATE '1900-01-01') DESC,
                      pr.effective_order DESC LIMIT 1""",
-        (fiscal_year, decision_date, order),
+        (fiscal_year, decision_date, order, decision_date, order),
     )
     return cur.fetchone()
 
@@ -787,21 +822,26 @@ def load_parsed(parsed, fiscal_year, decision_number, decision_date=None,
                             (revision_id,))
                 eff_date = cur.fetchone()[0]
                 pred = _pred_with_lines(cur, fiscal_year, order, kind, eff_date)
-                if pred is None:
-                    # Попередніх рядків цієї таблиці немає ніде: якщо original
-                    # реконструйований/порожній (PDF-пакет) — доливаємо в нього
-                    cur.execute(
-                        "SELECT id, notes FROM budget.plan_revision "
-                        "WHERE fiscal_year = %s AND effective_order = 0",
-                        (fiscal_year,),
-                    )
-                    orig = cur.fetchone()
-                    if orig and "reconstructed" in (orig[1] or ""):
-                        _insert_lines(cur, orig[0], kind, left_present)
-                        # original_created вимикає валідацію (це той самий файл),
-                        # але pred лишаємо — щоб порахувати «було → стало»
-                        report["original_created"] = True
-                        pred = orig
+                # Реконструйований original (нульовий PDF-пакет без xlsx)
+                # наповнюється лівою частиною НАЙПЕРШОЇ порівняльної таблиці
+                # року — і тільки нею: рефіл лише коли попередник цієї ревізії —
+                # сам original або попередника ще немає. Повторне завантаження
+                # першого пакета — ідемпотентний перечит (так і лагодиться
+                # затертий original). Ліва частина ПІЗНІШОЇ ревізії в original
+                # не потрапляє ніколи — це вже план з усіма попередніми змінами.
+                cur.execute(
+                    "SELECT id, notes FROM budget.plan_revision "
+                    "WHERE fiscal_year = %s AND effective_order = 0",
+                    (fiscal_year,),
+                )
+                orig = cur.fetchone()
+                if (orig and "reconstructed" in (orig[1] or "")
+                        and (pred is None or pred[0] == orig[0])):
+                    _insert_lines(cur, orig[0], kind, left_present)
+                    # original_created вимикає валідацію (це той самий файл),
+                    # але pred лишаємо — щоб порахувати «було → стало»
+                    report["original_created"] = True
+                    pred = orig
 
                 inserted, dupes = _insert_lines(cur, revision_id, kind, right_present)
                 report.update(inserted=inserted, dupes=dupes)
@@ -989,6 +1029,12 @@ def process_package(data, filename, decision_date=None, decision_override=None):
         for p in sorted(by_dodatok.values(), key=lambda x: x["dodatok"]):
             rep = load_parsed(p, fiscal_year, decision, decision_date, p["filename"])
             result["loads"].append(rep)
+        # «♻️ повторне завантаження» — лише про справді повторний пакет:
+        # другу таблицю того ж пакета ревізія, створена першою, не рахує
+        created = {r["revision_id"] for r in result["loads"] if not r["revision_reused"]}
+        for r in result["loads"]:
+            if r["revision_id"] in created:
+                r["revision_reused"] = False
         result["revision_id"] = result["loads"][-1]["revision_id"]
         result["decision_date"] = decision_date
 
@@ -1336,7 +1382,19 @@ async def budget_date_handler(update, context):
             (fiscal_year, code),
         )
         if not rev:
-            await msg.reply_text(f"Ревізії {code}/{fiscal_year} немає — спочатку завантаж пакет.")
+            # Найчастіша причина «немає» — одруківка в коді (si-fi-008 замість
+            # s-fi-008): показуємо, що в році Є, замість «завантаж пакет»
+            have = await bot_db.aquery(
+                "SELECT decision_number FROM budget.plan_revision "
+                "WHERE fiscal_year = %s ORDER BY effective_order",
+                (fiscal_year,),
+            )
+            hint = (
+                "У " + str(fiscal_year) + " є: "
+                + ", ".join(r["decision_number"] for r in have)
+                if have else "У цьому році ревізій ще немає — спочатку завантаж пакет."
+            )
+            await msg.reply_text(f"Ревізії {code}/{fiscal_year} немає. {hint}")
             return
         await asyncio.to_thread(
             bot_db.execute,
