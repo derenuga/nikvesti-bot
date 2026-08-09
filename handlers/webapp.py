@@ -1917,9 +1917,11 @@ async def setup_menu_button(bot):
     """Кнопка апки зліва від поля вводу в приваті (як «Кошелёк» у Wallet).
 
     setChatMenuButton без chat_id міняє ДЕФОЛТНУ кнопку меню всіх приватних
-    чатів бота: замість «Меню» зі списком команд стоятиме «Команда», що
-    відкриває Mini App. Команди при цьому нікуди не діваються — Telegram
-    підказує їх, щойно людина набирає «/». Ставимо при кожному старті
+    чатів бота: замість «Меню» зі списком команд стоятиме «МикВісті», що
+    відкриває Mini App (напис — бренд, а не назва апки: кнопка живе поруч з
+    полем вводу постійно, як «Кошелёк» у Wallet). Команди при цьому нікуди
+    не діваються — Telegram підказує їх, щойно людина набирає «/» (список
+    реєструє set_my_commands у bot.py). Ставимо при кожному старті
     (ідемпотентно), щоб не залежати від ручного /setmenubutton у BotFather;
     без WEBAPP_URL нічого не чіпаємо — інакше зламали б звичайне меню."""
     if not WEBAPP_URL:
@@ -1927,8 +1929,8 @@ async def setup_menu_button(bot):
     from telegram import MenuButtonWebApp, WebAppInfo
     await bot.set_chat_menu_button(
         menu_button=MenuButtonWebApp(
-            text="Команда", web_app=WebAppInfo(url=WEBAPP_URL)))
-    print("webapp: menu button «Команда» встановлено")
+            text="МикВісті", web_app=WebAppInfo(url=WEBAPP_URL)))
+    print("webapp: menu button «МикВісті» встановлено")
 
 
 # ---------- /team ----------

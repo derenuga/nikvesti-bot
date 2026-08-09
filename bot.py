@@ -121,6 +121,25 @@ ALLOWED_USER_IDS = {
 
 last_channel_post_time = {"time": datetime.now()}
 
+# Підказки команд під «/» (setMyCommands). Menu button тепер відкриває апку
+# замість списку команд, тож цей список — єдине меню, що лишилось. Тільки
+# редакційні команди: службові й дебажні (nora_*, entity_*, roles_*, dbquery,
+# бэкфіли…) сюди не йдуть свідомо — у списку на півтори сотні рядків не видно
+# жодного. Порядок = частота вжитку, Telegram показує як є.
+PUBLIC_COMMANDS = [
+    ("team", "Апка «Команда»: таски, KPI, проєкти"),
+    ("stat", "Статистика матеріалу за лінком"),
+    ("todo", "Записати справу в блокнот"),
+    ("promises", "Банк тем: що горить сьогодні"),
+    ("dossier", "Історія питання з 17-річного архіву"),
+    ("analytics", "Трафік сайту за вчора + топ-5"),
+    ("traffic", "Хто зараз на сайті"),
+    ("weekly", "Тижневик Лиса в чат редакції"),
+    ("outage", "Графік відключень світла"),
+    ("reset", "Забути контекст розмови з Лисом"),
+    ("status", "Чи живий бот"),
+]
+
 async def check_allowed(update, context):
     """Захист від спаму через глобальний пошук Telegram: блокує приватні повідомлення
     від користувачів поза ALLOWED_USER_IDS. Якщо змінна не задана — пускає всіх (дефолт)."""
@@ -411,6 +430,15 @@ async def post_init(application):
         await setup_menu_button(application.bot)
     except Exception as e:
         print(f"webapp: menu button не встановився — {e}")
+    # Публічний список команд для підказок під «/» — раніше його не було
+    # взагалі, а після заміни menu button на апку це єдине меню команд.
+    try:
+        from telegram import BotCommand
+        await application.bot.set_my_commands(
+            [BotCommand(cmd, desc) for cmd, desc in PUBLIC_COMMANDS])
+        print(f"bot: зареєстровано {len(PUBLIC_COMMANDS)} публічних команд")
+    except Exception as e:
+        print(f"bot: set_my_commands не спрацював — {e}")
 
 
 async def shared_contact_handler(update, context):
