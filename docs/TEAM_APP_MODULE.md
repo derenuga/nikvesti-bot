@@ -970,8 +970,13 @@ Annenberg School (USC), адаптованої MDF у «News Deserts in Ukraine 
    `https://t.me/<username>?startapp=…` бот збирає сам із `get_me`
    (`helpers.resolve_app_link`). Змінна потрібна лише коли треба вести саме
    на окрему апку з short name.
-4. Опційно BotFather → Menu Button → той самий URL; і **Configure Mini App** —
-   тоді працює «Додати на головний екран» (⋯ у вікні апки).
+4. Menu button (кнопка «Команда» зліва від поля вводу в приваті, як «Кошелёк»
+   у Wallet) бот ставить **сам при кожному старті** (`setup_menu_button` у
+   `webapp.py`, `setChatMenuButton` без chat_id = дефолт для всіх приватів);
+   у BotFather нічого тиснути не треба. Вона заміняє стандартне «Меню» зі
+   списком команд — команди лишаються доступними через набір «/». Опційно
+   BotFather → **Configure Mini App** — тоді працює «Додати на головний
+   екран» (⋯ у вікні апки).
 5. Бонус: `GET /health` віддає 200 — придатний як `VIBER_WEBHOOK_URL`.
 
 Перевірка: `/team` у приваті → кнопка → апка.

@@ -97,8 +97,8 @@ from handlers.builder_monitor import builder_handler, builder_test_handler, is_b
 from handlers.fb_missing import fbmissing_handler, fbmissing_test_handler
 from handlers.news_archive import news_back_callback, news_select_callback, BACK_CALLBACK_DATA, SELECT_CALLBACK_PREFIX
 from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, viber_test_handler
-from handlers.webapp import (start_webapp, team_handler, todo_handler,
-                            todo_today_callback)
+from handlers.webapp import (setup_menu_button, start_webapp, team_handler,
+                            todo_handler, todo_today_callback)
 from handlers.team_matching import (
     match_test_handler, match_scan_handler, match_estimate_handler,
     match_backfill_handler, match_tg_handler, match_cards_handler,
@@ -405,6 +405,12 @@ async def post_init(application):
         await start_webapp(application)
     except Exception as e:
         print(f"webapp: не стартував — {e}")
+    # Кнопка «Команда» зліва від поля вводу в приваті (menu button з web_app).
+    # Окремий try: збій Bot API тут не має чіпати ні веб-шар, ні старт бота.
+    try:
+        await setup_menu_button(application.bot)
+    except Exception as e:
+        print(f"webapp: menu button не встановився — {e}")
 
 
 async def shared_contact_handler(update, context):
