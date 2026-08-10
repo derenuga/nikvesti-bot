@@ -13,10 +13,13 @@
 замість того щоб мовчки застрягнути в стані "взято, але без запису".
 """
 
+import os
 from datetime import datetime
 
 from handlers import storage
 from handlers.sheets import append_pickup_row
+
+PROZORRO_CHAT_ID = os.environ.get("PROZORRO_CHAT_ID")
 
 
 async def handle_message_reaction(update, context):
@@ -26,6 +29,17 @@ async def handle_message_reaction(update, context):
         return
 
     print(f"Реакція: отримано update на message_id={reaction.message_id} в chat_id={reaction.chat.id}")
+
+    # ТІЛЬКИ тендерний канал. message_id унікальний лише В МЕЖАХ одного чату,
+    # а бот-адмін отримує реакції з усіх своїх чатів (редакція, фінанси…).
+    # Без цієї перевірки лайк в іншому чаті на повідомлення, чий id випадково
+    # збігся з id тендерного поста в каналі, лягав у таблицю фантомним
+    # рядком «взято» — від людини, якої в тендерному каналі взагалі немає
+    # (кейс «Елена», серпень 2026: лайки нагадувань в іншому чаті закривали
+    # тендери в таблиці її ім'ям).
+    if PROZORRO_CHAT_ID and str(reaction.chat.id) != str(PROZORRO_CHAT_ID):
+        print(f"Реакція: chat_id={reaction.chat.id} — не тендерний канал ({PROZORRO_CHAT_ID}), ігноруємо")
+        return
 
     # Реагуємо тільки на додавання нової реакції (new_reaction непорожній)
     if not reaction.new_reaction:
@@ -53,7 +67,7 @@ async def handle_message_reaction(update, context):
     else:
         taken_by = "Невідомо (анонімна реакція)"
 
-    print(f"Реакція: користувач, що поставив реакцію — {taken_by}")
+    print(f"Реакція: користувач, що поставив реакцію — {taken_by} (id={user.id if user else 'немає'})")
 
     taken_at = datetime.now()
 
