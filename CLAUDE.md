@@ -70,7 +70,7 @@ handlers/
   google_analytics.py     — GA4 щоденна аналітика, /analytics, /report
   analytics_store.py      — пам'ять щоденної аналітики GA4 у Postgres (daily_stats): тихий щоденний захват (capture_yesterday), /analytics_backfill, серія для NLQ-tool get_traffic_history; ПЛЮС денний розріз Search Console по типах пошуку (sc_daily_stats: web/discover/googleNews) — захват піггібеком о 09:00 (трейлінг-вікно, бо SC латентить), /sc_backfill, тоталі по каналах для NLQ-tool get_search_console_history («трафік без Discover» дешево з локальної БД). AI Overviews/AI Mode Google окремим типом в API НЕ віддає — вони в 'web'
   weekly_digest.py        — «Тижневик Лиса»: понеділковий дайджест тижня сайту з порівнянням тиждень-до-тижня (заміна щоденного 09:00-звіту), /weekly
-  traffic_spikes.py       — детектор сплесків трафіку (GA4 Realtime, самонавчальний профіль), /traffic
+  traffic_spikes.py       — детектор сплесків трафіку (GA4 Realtime, самонавчальний профіль), /traffic; дедуп за ЗМІСТОМ: лідер сплеску, що вже був у топі минулого алерту, не повторюється тиждень (кейс «вербовий ліс Каховки» — два дні тих самих алертів, мінялось лише число) — хіба що хвиля виросла у 1.5× від озвученого; порівняння з усім топом, бо рос./укр. версії матеріалу — різні заголовки однієї історії
   stat.py                 — /stat <url>: статистика матеріалу (Facebook + Instagram + TikTok + YouTube + Telegram + GA4). Повторні виклики — швидким шляхом по індексу article_stats (минають пошук/матчинг), збій живого джерела → фолбек-снімок «з Нори»
   stat_store.py           — снімки /stat у Нору (article_stats, upsert «останній стан»): збереження після кожного /stat, індекс object_id для швидкого шляху, mark_nora для фолбека
   stat_instagram.py       — пошук допису Instagram про матеріал для /stat СЕМАНТИЧНО: у стрічці інсти немає URL статті (діляться візуалом), тому зіставляємо сигнатуру статті (заголовок+лід із <meta description>) з підписами дописів у вікні дат; лексична схожість (coverage значущих слів) → впевнений збіг без AI, сіра зона → Claude-суддя (Haiku). Метрики допису — views/reach/поширення/збереження через get_media_insights
@@ -412,7 +412,9 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
   },
   "traffic_spikes": {
     "profile": {"2_14": [312, 298, ...]},
-    "last_alert_at": "2026-07-02T14:35:00+03:00"
+    "last_alert_at": "2026-07-02T14:35:00+03:00",
+    "last_alert_top": ["заголовок 1", "заголовок 2"],
+    "last_alert_users": 969
   },
   "builder_monitor": {
     "last_alert_at": 1783093933
