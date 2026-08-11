@@ -1244,10 +1244,15 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 }
 .sdot .ic { width: 15px; height: 15px; stroke-width: 3; }
 .step.done .sdot { background: var(--good); }
-.step.miss .sdot { box-shadow: inset 0 0 0 2px var(--warn); }
+/* Тиждень, який минув без графіка, обведений НЕЙТРАЛЬНИМ, а не бурштиновим:
+   порожній кружечок і без кольору тривоги читається як «не закрито», а поруч
+   із зеленими галочками шлях видно однаково добре. Різниця з майбутнім тижнем
+   лишається — у того обведення немає взагалі (Олег, 11.08: на своєму екрані
+   людину не фарбують). */
+.step.miss .sdot { box-shadow: inset 0 0 0 2px var(--muted); opacity: .8; }
 .step.away .sdot { opacity: .35; }
 .step.cur .sdot { box-shadow: 0 0 0 4px var(--blue-soft); }
-.step.cur.miss .sdot { box-shadow: inset 0 0 0 2px var(--warn), 0 0 0 4px var(--blue-soft); }
+.step.cur.miss .sdot { box-shadow: inset 0 0 0 2px var(--muted), 0 0 0 4px var(--blue-soft); }
 .slbl { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .step.cur .slbl { color: var(--blue); font-weight: 700; }
 
