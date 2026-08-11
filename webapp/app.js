@@ -4645,17 +4645,22 @@ function overdueCard(t) {
   const { partner } = taskProject(t);
   return `
     <div class="al-card">
-      <div class="al-head">
-        ${avatar(t.person, personEntry(t.person), 38)}
-        <div class="al-h-txt">
-          <span class="al-who">${esc(overdueTitle(t))}</span>
-          ${partner ? `<span class="nt-by od-donor">${donorChip(partner)}<span class="nt-donor">${esc(partner)}</span></span>` : ""}
-          <div class="al-date">${esc(t.person)} · строк був ${esc(shortDate(t.deadline))},
-            ${d} ${word} тому</div>
+      ${/* Шапка тапабельна в картку таска (Олег, 11.08): «зараховано 2 з 3»
+            на кнопці — це цифра, а ЯКІ саме публікації зараховані, видно
+            лише в самому таску. Кнопки дій лишаються поза тап-зоною. */""}
+      <div class="al-tap" data-task="${t.id}">
+        <div class="al-head">
+          ${avatar(t.person, personEntry(t.person), 38)}
+          <div class="al-h-txt">
+            <span class="al-who">${esc(overdueTitle(t))}</span>
+            ${partner ? `<span class="nt-by od-donor">${donorChip(partner)}<span class="nt-donor">${esc(partner)}</span></span>` : ""}
+            <div class="al-date">${esc(t.person)} · строк був ${esc(shortDate(t.deadline))},
+              ${d} ${word} тому</div>
+          </div>
+          ${progressHtml(t)}
         </div>
-        ${progressHtml(t)}
+        ${t.note ? `<div class="al-why">${esc(t.note)}</div>` : ""}
       </div>
-      ${t.note ? `<div class="al-why">${esc(t.note)}</div>` : ""}
       <div class="al-actions">
         <button class="sbtn ${done > 0 ? "good" : "danger"}" data-oclose="${t.id}">
           ${done > 0
