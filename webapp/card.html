@@ -108,6 +108,7 @@
     border: 1px solid var(--line); padding: 0;
   }
   .swatch.on { outline: 3px solid var(--brand); outline-offset: 2px; }
+  .swatches.disabled { opacity: .35; pointer-events: none; }
 
   .preview { position: sticky; top: 16px; }
   #canvas {
@@ -130,7 +131,8 @@
       <div class="seg" id="tplSeg">
         <button data-tpl="1" class="on">Стандартний: текст + фото</button>
         <button data-tpl="2">Два фото внизу</button>
-        <button data-tpl="3">Цитата</button>
+        <button data-tpl="3">Цитата на фото</button>
+        <button data-tpl="4">Цитата з колом</button>
       </div>
     </div>
 
@@ -457,7 +459,7 @@
       el.textContent = q;
       box.appendChild(el);
     });
-    $("quotesPanel").hidden = !(S.tpl === 3 && S.quotes.length);
+    $("quotesPanel").hidden = !(S.tpl >= 3 && S.quotes.length);
   }
 
   function markThumbs() {
@@ -588,11 +590,17 @@
     // Поза стандартним шаблоном підпису фото нема до чого кріпитись
     S.capOn = S.tpl === 1;
     $("capOn").checked = S.capOn;
-    // У шаблоні цитати ті самі поля означають інше: текст = цитата, підпис = ім'я
-    const quote = S.tpl === 3;
+    // У шаблонах цитат ті самі поля означають інше: текст = цитата, підпис = ім'я
+    const quote = S.tpl >= 3;
     $("textTitle").textContent = quote ? "3 · Цитата" : "3 · Заголовок";
-    $("subLabel").textContent = quote ? "Ім'я (жирним над цитатою)" : "Підпис під заголовком (необов'язково)";
-    $("subtitle").placeholder = quote ? "Олександр Сєнкевич" : "напр.: Міністр енергетики Денис Шмигаль\nв інтерв'ю POLITICO";
+    $("subLabel").textContent =
+      S.tpl === 4 ? "Підпис унизу (ім'я, посада)" :
+      S.tpl === 3 ? "Ім'я (жирним над цитатою)" : "Підпис під заголовком (необов'язково)";
+    $("subtitle").placeholder =
+      S.tpl === 4 ? "Олександр Сєнкевич, мер Миколаєва" :
+      S.tpl === 3 ? "Олександр Сєнкевич" : "напр.: Міністр енергетики Денис Шмигаль\nв інтерв'ю POLITICO";
+    // На фото-цитаті фон — саме фото, кольори не діють
+    $("swatches").classList.toggle("disabled", S.tpl === 3);
     renderQuotesPanel();
     if (S.tpl === 2 && !S.slots[1].photo) setActive(1); else setActive(S.tpl === 2 ? S.active : 0);
     clampAll(); markThumbs(); render();
@@ -616,8 +624,17 @@
              y: (e.clientY - r.top) * (canvas.height / r.height) };
   };
   // Слот під точкою: шаблон 2 ділить низ навпіл по вертикалі
+  function circleGeom() {
+    const r = 360;
+    return { cx: S.W / 2, cy: 240 + r, r };
+  }
+
   function hitSlot(p) {
     if (S.tpl === 3) return 0; // фото на весь канвас — тягнеться будь-де
+    if (S.tpl === 4) {
+      const c = circleGeom();
+      return Math.hypot(p.x - c.cx, p.y - c.cy) <= c.r + 30 ? 0 : -1;
+    }
     if (p.y < S.blueH) return -1;
     if (S.tpl === 1) return 0;
     return p.x < S.W / 2 ? 0 : 1;
@@ -656,6 +673,10 @@
 
   function slotRect(i) {
     if (S.tpl === 3) return { x: 0, y: 0, w: S.W, h: S.H }; // фото на весь канвас
+    if (S.tpl === 4) { // квадрат, описаний навколо кола — псевдо-circle-crop
+      const c = circleGeom();
+      return { x: c.cx - c.r, y: c.cy - c.r, w: c.r * 2, h: c.r * 2 };
+    }
     const top = S.blueH, h = S.H - top;
     if (S.tpl === 1) return { x: 0, y: top, w: S.W, h };
     const half = S.W / 2;
@@ -690,6 +711,9 @@
     ctx.fillRect(0, 0, S.W, S.H);
 
     // Фото у слотах (кліп — фіксований слот, кадр їздить всередині)
+    if (S.tpl === 4) {
+      drawCirclePhoto(sc);
+    } else
     for (let i = 0; i < (S.tpl === 2 ? 2 : 1); i++) {
       const r = slotRect(i);
       const st = S.slots[i];
@@ -710,7 +734,9 @@
       }
     }
 
-    if (S.tpl === 3) drawQuote(); else drawHeadline();
+    if (S.tpl === 3) drawQuote();
+    else if (S.tpl === 4) drawQuoteCircle();
+    else drawHeadline();
 
     // Плашка «Реклама» — верх-праворуч фото, півпрозора пігулка
     if (S.adOn) {
@@ -720,8 +746,8 @@
       const t = "Реклама";
       const tw = ctx.measureText(t).width;
       const padX = 26, h = 56;
-      const bx = S.tpl === 3 ? 44 : S.W - 44 - tw - padX * 2;
-      const by = S.tpl === 3 ? 44 : S.blueH + 36;
+      const bx = S.tpl >= 3 ? 44 : S.W - 44 - tw - padX * 2;
+      const by = S.tpl >= 3 ? 44 : S.blueH + 36;
       ctx.fillStyle = "rgba(0,0,0,.55)";
       ctx.beginPath();
       ctx.roundRect(bx, by, tw + padX * 2, h, h / 2);
@@ -749,12 +775,130 @@
     if (S.logo) {
       const lw = 250, lh = lw * (S.logo.naturalHeight / S.logo.naturalWidth || 0.454);
       const lx = S.tpl === 2 ? (S.W - lw) / 2 : S.W - lw - 52;
-      const ly = S.tpl === 3 ? 44 : S.H - lh - 40;
+      const ly = S.tpl >= 3 ? 44 : S.H - lh - 40;
+      // На світлому фоні «цитати з колом» білий вордмарк невидимий —
+      // перефарбовуємо в колір тексту схеми
+      const img = S.tpl === 4 ? logoTinted(sc.text) : S.logo;
       ctx.save();
-      ctx.shadowColor = "rgba(0,0,0,.45)";
-      ctx.shadowBlur = 12;
-      ctx.drawImage(S.logo, lx, ly, lw, lh);
+      if (S.tpl !== 4 || sc.dark) {
+        ctx.shadowColor = "rgba(0,0,0,.45)";
+        ctx.shadowBlur = 12;
+      }
+      ctx.drawImage(img, lx, ly, lw, lh);
       ctx.restore();
+    }
+  }
+
+  // Перефарбований вордмарк (SVG-лого біле; на світлих фонах — колір тексту)
+  const _logoTints = {};
+  function logoTinted(color) {
+    if (!S.logo || color === "#ffffff") return S.logo;
+    if (!_logoTints[color]) {
+      const c = document.createElement("canvas");
+      c.width = S.logo.naturalWidth; c.height = S.logo.naturalHeight;
+      const cc = c.getContext("2d");
+      cc.drawImage(S.logo, 0, 0);
+      cc.globalCompositeOperation = "source-in";
+      cc.fillStyle = color;
+      cc.fillRect(0, 0, c.width, c.height);
+      _logoTints[color] = c;
+    }
+    return _logoTints[color];
+  }
+
+  // Кругле фото шаблону «Цитата з колом»: кліп по колу + обводка;
+  // кадр їздить/зумиться всередині — псевдо-circle-crop
+  function drawCirclePhoto(sc) {
+    const c = circleGeom();
+    const st = S.slots[0];
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(c.cx, c.cy, c.r, 0, Math.PI * 2);
+    ctx.clip();
+    if (st.photo) {
+      const sq = slotRect(0);
+      const sf = Math.max(sq.w / st.photo.naturalWidth, sq.h / st.photo.naturalHeight) * st.zoom;
+      const dw = st.photo.naturalWidth * sf, dh = st.photo.naturalHeight * sf;
+      ctx.drawImage(st.photo,
+        sq.x + sq.w / 2 - dw / 2 + st.offX,
+        sq.y + sq.h / 2 - dh / 2 + st.offY, dw, dh);
+    } else {
+      ctx.fillStyle = sc.dark ? "rgba(255,255,255,.16)" : "rgba(0,0,0,.08)";
+      ctx.fillRect(c.cx - c.r, c.cy - c.r, c.r * 2, c.r * 2);
+    }
+    ctx.restore();
+    // Обводка поверх краю фото: біла на темних фонах, брендова на світлих
+    ctx.beginPath();
+    ctx.arc(c.cx, c.cy, c.r + 8, 0, Math.PI * 2);
+    ctx.strokeStyle = sc.dark ? "#ffffff" : "#3478f9";
+    ctx.lineWidth = 18;
+    ctx.stroke();
+  }
+
+  // Текст шаблону «Цитата з колом»: жирна цитата між колом і підписом унизу
+  function drawQuoteCircle() {
+    const sc = SCHEMES[S.scheme];
+    const words = S.words;
+    const nameText = S.sub.trim();
+    if (!words.length && !nameText) return;
+    const maxW = S.W - S.pad * 2;
+    const c = circleGeom();
+    const areaTop = c.cy + c.r + 80;
+    const nameSize = Math.max(38, Math.round(S.fontSize * 0.5));
+    const nameY = S.H - 110;
+    const areaBottom = nameText ? nameY - nameSize : S.H - 100;
+    let size = S.fontSize;
+    let lines, lh;
+    for (;;) {
+      lines = words.length ? wrap(words, size, maxW, 700, 1.10) : [];
+      lh = size * 1.34;
+      if (lines.length * lh <= areaBottom - areaTop || size <= 44) break;
+      size -= 2;
+    }
+    ctx.textBaseline = "middle";
+    setFont(size, 700);
+    const spaceW = ctx.measureText(" ").width * 1.10;
+    const runPad = size * 0.28;
+    let y = areaTop + (areaBottom - areaTop - lines.length * lh) / 2 + lh / 2;
+    for (const line of lines) {
+      const widths = line.map((t) => ctx.measureText(t.text).width);
+      const runStart = (k) => line[k].hl && (k === 0 || !line[k - 1].hl);
+      const runEnd = (k) => line[k].hl && (k === line.length - 1 || !line[k + 1].hl);
+      const xs = [];
+      let cursor = 0;
+      line.forEach((t, k) => {
+        if (k > 0) cursor += spaceW;
+        if (runStart(k)) cursor += runPad;
+        xs.push(cursor);
+        cursor += widths[k];
+        if (runEnd(k)) cursor += runPad;
+      });
+      const x0 = (S.W - cursor) / 2;
+      let i = 0;
+      while (i < line.length) {
+        if (line[i].hl) {
+          let j = i;
+          while (j < line.length && line[j].hl) j++;
+          const left = x0 + xs[i] - runPad;
+          const right = x0 + xs[j - 1] + widths[j - 1] + runPad;
+          ctx.fillStyle = sc.boxBg;
+          ctx.fillRect(left, y - size * 0.55, right - left, size * 1.24);
+          i = j;
+        } else i++;
+      }
+      line.forEach((t, k) => {
+        ctx.fillStyle = t.hl ? sc.boxText : sc.text;
+        ctx.fillText(t.text, x0 + xs[k], y + size * 0.04);
+      });
+      y += lh;
+    }
+    if (nameText) {
+      setFont(nameSize, 500);
+      const w = ctx.measureText(nameText).width;
+      ctx.fillStyle = sc.text;
+      ctx.globalAlpha = 0.95;
+      ctx.fillText(nameText, (S.W - w) / 2, nameY);
+      ctx.globalAlpha = 1;
     }
   }
 
