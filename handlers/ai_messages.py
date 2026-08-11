@@ -1,5 +1,6 @@
 import anthropic
 import os
+import re
 from datetime import datetime
 
 from handlers import storage
@@ -157,8 +158,15 @@ def _record_usage(model, usage):
 def clean_ai_text(text):
     """Прибирає Markdown-форматування (*bold*, _italic_) з AI-тексту.
     Telegram не рендерить Markdown в HTML-режимі — зірочки і підкреслення
-    залишаються як є і псують вигляд повідомлення."""
-    return text.replace("*", "").replace("_", " ")
+    залишаються як є і псують вигляд повідомлення.
+
+    Вміст <a href="…"> не чіпаємо: підкреслення там — частина URL (шорткоди
+    Instagram: instagram.com/p/DA_xyz/), і заміна на пробіл ламала лінк."""
+    parts = re.split(r'(<a href="[^"]*">)', text)
+    return "".join(
+        p if p.startswith('<a href="') else p.replace("*", "").replace("_", " ")
+        for p in parts
+    )
 
 
 def get_todays_birthdays():
