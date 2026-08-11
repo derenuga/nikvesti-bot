@@ -6136,11 +6136,22 @@ function paintDirCard() {
         : `<div class="dc-na">Оцінок ще немає — заповнюється в «Оцінці за квартал»</div>`}
     </div>
 
-    <div class="dept-title">Вплив</div>
+    <div class="dept-title">Вплив${c.impacts.length ? ` · ${c.impacts.length}` : ""}</div>
     <div class="soft-card">
       ${c.impacts.length ? c.impacts.map((im) => `
-        <div class="dc-imp"><b>${esc(im.title)}</b>
-          ${im.note ? `<span>${esc(im.note)}</span>` : ""}</div>`).join("")
+        <button class="dc-imp" data-dcimp="${im.id}">
+          <span class="dc-imp-pic">${im.image
+            ? imgHtml(im.image)
+            : `<span class="dc-imp-ph">${icon("award")}</span>`}</span>
+          <span class="dc-imp-t">
+            <b>${esc(im.title)}</b>
+            <span class="dc-imp-meta">${icon("award", "ic sm")}
+              ${im.date ? esc(im.date) : "дата невідома"}${im.articles
+                ? ` · ${im.articles} ${plural(im.articles, "матеріал", "матеріали", "матеріалів")}`
+                : ""}</span>
+            ${im.note ? `<span class="dc-imp-note">${esc(im.note)}</span>` : ""}
+          </span>
+        </button>`).join("")
         : `<div class="dc-kv"><span>Медальок в імпакт-архіві</span><b>0</b></div>
            <div class="dc-na">Нуль тут очікуваний для стрічки: імпакти дають
              довгі теми, а не щоденний потік. Це властивість роботи, а не людини.</div>`}
@@ -6159,6 +6170,11 @@ function paintDirCard() {
       </div>
     </div>`;
   $("dc-stamp").onclick = () => directorSheet(c.person);
+  // Кейс відкривається повністю — «назад» поверне в картку, бо стек веде себе
+  body.querySelectorAll("[data-dcimp]").forEach((b) => (b.onclick = () => {
+    STATE.currentImpact = +b.dataset.dcimp;
+    nav("impact");
+  }));
 }
 
 /* Шторка фіксації. Дата за замовчуванням сьогоднішня, але поле відкрите —
