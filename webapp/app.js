@@ -479,6 +479,16 @@ function goBack() {
   const target = backTarget();
   if (!target) return;
   if (STATE.stack.length) STATE.stack.pop();   // йдемо НАЗАД, а не вглиб
+  // Шторка утиліт лежала ПОВЕРХ екрана, з якого її відкрили, тож «назад»
+  // повертає той екран РАЗОМ із відкритою шторкою — як воно й виглядало.
+  // Наступне «назад» закриє шторку (гілка sheetOpen вище), і лише третє піде
+  // глибше. Саме такий покроковий шлях і очікується від кнопки.
+  if (target[0] === TOOLS_STEP) {
+    const below = STATE.stack.length ? STATE.stack.pop() : ["home", undefined];
+    nav(below[0], below[1], true);
+    toolsSheet();
+    return;
+  }
   nav(target[0], target[1], true);
 }
 
@@ -501,20 +511,31 @@ function currentArg() {
 
 /* Пункти нижнього меню — КОРЕНІ. Захід у корінь обнуляє історію: інакше
    стек ріс би нескінченно і «назад» водило б по колу вчорашніх переходів. */
-const NAV_ROOTS = new Set(["home", "projects", "people", "reports", "alerts",
-                           "mypubs", "todo", "contacts", "myfeed", "away"]);
 const STACK_MAX = 12;
 
-function nav(view, arg, back) {
+/* Крок «шторка утиліт» у стеку історії. Шторка — це НЕ спливашка, а рівень
+   навігації: людина відкрила сітку, тицьнула інструмент, і «назад» має
+   повернути її туди, звідки вона тицяла, а не на Головну. Без цього, щоб
+   відкрити другий інструмент, доводилось іти Головна → сітка → інструмент
+   заново — і так на кожній утиліті. */
+const TOOLS_STEP = "__tools";
+
+function nav(view, arg, back, opts = {}) {
   // Історія переходів. Доти «назад» рахувалось за статичною мапою «екран →
   // батько», тому третій рівень губився ЗАВЖДИ: банк → дублі → картка і назад
   // викидало в банк, а не в дублі. Мапа лишається запасним варіантом — для
   // випадку, коли екран відкрито першим (глибокий лінк, startapp).
   if (!back && STATE.view && STATE.view !== view) {
-    if (NAV_ROOTS.has(view)) STATE.stack = [];
+    // Історію скидає ТІЛЬКИ тап у нижнє меню (opts.root), а не назва екрана.
+    // Доти скидав будь-який перехід НА кореневий екран, звідки й бралось
+    // «жму назад — і я на головній»: person → Контакти → «назад» викидало на
+    // Головну, бо стек стерся на вході в контакти. Меню — це «почати
+    // спочатку», перехід із іншого екрана — звичайний крок углиб.
+    if (opts.root) STATE.stack = [];
     else {
       STATE.stack.push([STATE.view, currentArg()]);
-      if (STATE.stack.length > STACK_MAX) STATE.stack.shift();
+      if (opts.via) STATE.stack.push([opts.via, null]);
+      while (STATE.stack.length > STACK_MAX) STATE.stack.shift();
     }
   }
   STATE.view = view;
@@ -693,7 +714,8 @@ function toolsSheet() {
     </button>`);
   $("sheet").querySelectorAll("[data-tool]").forEach((b) => b.onclick = () => {
     closeSheet();
-    nav(b.dataset.tool);
+    // via: шторка лишається кроком у стеку — див. TOOLS_STEP
+    nav(b.dataset.tool, undefined, false, { via: TOOLS_STEP });
   });
 }
 
@@ -7054,7 +7076,9 @@ document.addEventListener("click", (e) => {
 
 $("bottomnav").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-view]");
-  if (btn) nav(btn.dataset.view);
+  // root: тап у меню — це «почати спочатку», єдине місце, де історія
+  // скидається. Будь-який інший перехід лишається кроком і повертається назад
+  if (btn) nav(btn.dataset.view, undefined, false, { root: true });
 });
 
 $("sheet-backdrop").addEventListener("click", (e) => {
