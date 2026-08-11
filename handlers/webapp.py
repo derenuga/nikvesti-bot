@@ -41,6 +41,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from datetime import datetime
 from urllib.parse import parse_qsl
@@ -51,9 +52,9 @@ except ImportError:  # локальний dev без aiohttp — модуль п
     web = None
 
 from handlers import (
-    bot_db, card_maker, impact_archive, team_analytics, team_contacts, team_kpi,
-    team_matches, team_notifications, team_publications,
-    team_projects, team_roster, team_tasks, team_todos,
+    bot_db, card_maker, content_report, impact_archive, team_analytics,
+    team_contacts, team_kpi, team_matches, team_notifications,
+    team_publications, team_projects, team_roster, team_tasks, team_todos,
 )
 from handlers.helpers import normalize_https_url
 
@@ -623,6 +624,45 @@ async def api_project_drive(request):
         team_tasks.set_drive_link, int(request.match_info["project_id"]), url, person
     )
     return web.json_response({"ok": True, "url": url or None})
+
+
+# ---------- Контент-звіт проєкту ----------
+
+async def api_project_report_months(request):
+    """Місяці для пікера контент-звіту з к-стю публікацій у кожному —
+    апка одразу підсвічує, скільки зроблено."""
+    person, info, _ = await _require_manager(request)
+    project_id = int(request.match_info["project_id"])
+    projects = await asyncio.to_thread(team_projects.list_projects, False)
+    project = next((p for p in projects if p["id"] == project_id), None)
+    if not project:
+        raise web.HTTPNotFound(text="Проєкту немає")
+    try:
+        months = await asyncio.to_thread(
+            content_report.month_options, project_id, project.get("start_date"))
+    except Exception as e:
+        raise web.HTTPBadRequest(text=f"БД сайту не відповіла: {e}")
+    return web.json_response({"months": months})
+
+
+async def api_project_report(request):
+    """Запустити збір контент-звіту за місяць. Збір асинхронний (FB/TG —
+    хвилини), файл .html прилітає в приват тому, хто натиснув."""
+    person, info, tg_user = await _require_manager(request)
+    payload = await _json(request)
+    ym = (payload.get("month") or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}", ym) or not 1 <= int(ym[5:7]) <= 12:
+        raise web.HTTPBadRequest(text="month: YYYY-MM")
+    project_id = int(request.match_info["project_id"])
+    projects = await asyncio.to_thread(team_projects.list_projects, False)
+    project = next((p for p in projects if p["id"] == project_id), None)
+    if not project:
+        raise web.HTTPNotFound(text="Проєкту немає")
+    started = content_report.start_report(
+        request.app["bot"], tg_user["id"], project, ym)
+    if not started:
+        raise web.HTTPConflict(text="Цей звіт уже збирається — файл прийде в приват")
+    return web.json_response({"ok": True, "status": "building"})
 
 
 # ---------- Дедлайни звітності проєктів ----------
@@ -1845,6 +1885,8 @@ async def start_webapp(application):
         web.delete("/api/themes/{theme_id:\\d+}", api_themes_delete),
         web.put("/api/projects/order", api_projects_order),
         web.put("/api/projects/{project_id:\\d+}/drive", api_project_drive),
+        web.get("/api/projects/{project_id:\\d+}/report_months", api_project_report_months),
+        web.post("/api/projects/{project_id:\\d+}/report", api_project_report),
         web.post("/api/project_deadlines", api_deadline_create),
         web.patch("/api/project_deadlines/{dl_id:\\d+}", api_deadline_patch),
         web.put("/api/project_deadlines/{dl_id:\\d+}/assignee", api_deadline_assignee),
