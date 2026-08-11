@@ -18,11 +18,13 @@
 1. НОРА: article_stats (знімки /stat, object_id постів FB) і індекс tg_posts
    у storage — якщо матеріал уже «статили», пошук не потрібен, лише свіжі
    метрики по відомих id.
-2. БД сайту: колонки nodes fb_post_id / fb_post_url / fb_post_views і
-   tg_post_url / tg_post_views (точні назви зняв Олег з information_schema
-   11.08). По fb_post_id тягнуться свіжі метрики Graph; збій → лінк із
-   лічильником *_post_views сайту. Значення все одно звіряється регекспом
-   і типом — чужу схему правлять без нас.
+2. БД сайту, таблиця social_posts (розвідано з Олегом 11.08: node_id,
+   platform, social_post_id у форматі Graph, url, views/reactions/comments/
+   shares, stats_updated; matched_by=fb_api). ЛИШЕ Facebook — Telegram у ній
+   немає, тож для TG цей крок пропускається. По social_post_id тягнуться
+   свіжі метрики Graph; збій → збережені числа таблиці з датою stats_updated.
+   Колонки nodes.fb_post_* / tg_post_* НЕ чіпаємо — це артефакти старої
+   розробки (Олег, 11.08), перша версія на них і спіткнулась.
 3. Живий пошук, ОДНИМ прогоном на весь місяць, а не по матеріалу: стрічка
    постів FB + рілзи в вікні [місяць − 1 день; кінець + 10 днів] і одна
    прокрутка t.me/s по вікну місяця. Побічний продукт /stat поштучно тут не
@@ -116,24 +118,6 @@ def month_options(project_id, start_date=None):
 
 # ---------- Публікації місяця (БД сайту) ----------
 
-# Колонки nodes із постами соцмереж — ТОЧНІ назви, зняті Олегом з БД 11.08
-# (information_schema): fb_post_id, fb_post_url, fb_post_views, tg_post_url,
-# tg_post_views. Наявність кожної все одно звіряємо інтроспекцією (кеш
-# _table_columns) — схему сайту правлять без нас, і зникла колонка не має
-# класти SELECT. Значення URL додатково перевіряємо регекспом: перший підхід
-# «вгадати колонку за назвою» впіймав числовий прапорець і поклав збір.
-_SITE_SOCIAL_COLS = ("fb_post_id", "fb_post_url", "fb_post_views",
-                     "tg_post_url", "tg_post_views")
-_FB_URL_RE = re.compile(r"https?://(?:www\.|m\.|web\.)?(?:facebook\.com|fb\.com|fb\.watch)/\S+", re.I)
-_TG_URL_RE = re.compile(r"https?://(?:t|telegram)\.me/\S+", re.I)
-
-
-def _social_link_cols():
-    """Наявні в nodes колонки соцпостів (список назв)."""
-    cols = _table_columns("nodes")
-    return [c for c in _SITE_SOCIAL_COLS if c in cols]
-
-
 def _pub_url(row):
     """URL матеріалу з урахуванням типу (як _nora_url в impact_archive)."""
     tail = (row.get("slug_ua") or row.get("slug") or "").strip() or str(row["id"])
@@ -143,31 +127,13 @@ def _pub_url(row):
     return f"{BASE_URL}/news/{cat}/{tail}" if cat else f"{BASE_URL}/news/{tail}"
 
 
-def _as_url(value, pattern):
-    """Значення колонки → URL, якщо воно строкове і схоже на потрібну мережу
-    (тип у чужій схемі — не факт: інцидент 11.08, int замість URL)."""
-    m = pattern.search(value) if isinstance(value, str) else None
-    return m.group(0) if m else None
-
-
-def _as_int(value):
-    try:
-        n = int(value)
-        return n if n > 0 else None
-    except (TypeError, ValueError):
-        return None
-
-
 def list_publications(project_id, start_ts, end_ts):
-    """Публікації проєкту за місяць із автором, аватаркою, переглядами сайту
-    і соцколонками nodes (fb_post_*, tg_post_*)."""
+    """Публікації проєкту за місяць із автором, аватаркою і переглядами сайту."""
     vcol = _views_column()
     vsel = f", n.{vcol} AS views" if vcol else ""
-    soc_cols = _social_link_cols()
-    extra = "".join(f", n.{c}" for c in soc_cols)
     rows = db.query(
         "SELECT n.id, n.published, n.title_ua, n.title, n.slug_ua, n.slug, "
-        f"n.category, n.own_material, n.type{vsel}{extra}, u.avatar, "
+        f"n.category, n.own_material, n.type{vsel}, u.avatar, "
         "TRIM(CONCAT(COALESCE(u.first_name,''), ' ', COALESCE(u.last_name,''))) AS author "
         "FROM nodes n LEFT JOIN users u ON u.id = n.owner_id "
         "WHERE n.partner_project = %s AND n.status = 1 "
@@ -177,7 +143,6 @@ def list_publications(project_id, start_ts, end_ts):
     pubs = []
     for r in rows[:MAX_PUBLICATIONS]:
         dt = datetime.fromtimestamp(int(r["published"]), KYIV_TZ)
-        fb_id = r.get("fb_post_id")
         pubs.append({
             "id": int(r["id"]),
             "title": (r.get("title_ua") or r.get("title") or "").strip(),
@@ -190,13 +155,34 @@ def list_publications(project_id, start_ts, end_ts):
             "author": (r.get("author") or "").strip() or None,
             "avatar": team_projects.avatar_url(r.get("avatar"),
                                                team_projects.AVATAR_SIZE_SM),
-            "site_fb_id": str(fb_id).strip() if fb_id not in (None, "", 0) else None,
-            "site_fb": _as_url(r.get("fb_post_url"), _FB_URL_RE),
-            "site_fb_views": _as_int(r.get("fb_post_views")),
-            "site_tg": _as_url(r.get("tg_post_url"), _TG_URL_RE),
-            "site_tg_views": _as_int(r.get("tg_post_views")),
         })
     return pubs, len(rows) > MAX_PUBLICATIONS
+
+
+def site_social_posts(node_ids):
+    """{node_id: {platform: [рядки social_posts]}} одним запитом — таблиця
+    сайту, де кожному соцпосту вказано, до якої новини він належить
+    (matched_by=fb_api). На замірі 11.08 у ній лише platform='facebook';
+    платформу не фільтруємо навмисно — з'явиться telegram, підхопиться без
+    правок. Збій/відсутність таблиці → {} — звіт збереться рештою джерел."""
+    ids = [int(i) for i in node_ids]
+    if not ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(ids))
+    try:
+        rows = db.query(
+            "SELECT node_id, platform, social_post_id, url, views, reactions, "
+            "comments, shares, stats_updated FROM social_posts "
+            f"WHERE node_id IN ({placeholders})",
+            tuple(ids))
+    except Exception as e:
+        print(f"content_report: social_posts не прочитались — {e}")
+        return {}
+    out = {}
+    for r in rows:
+        platform = (r.get("platform") or "").strip().lower()
+        out.setdefault(int(r["node_id"]), {}).setdefault(platform, []).append(r)
+    return out
 
 
 def _themes_for(project_id, pub_ids):
@@ -322,60 +308,53 @@ def _fb_sweep(missing, start_ts, end_ts):
     return out
 
 
-def _fb_object_id(pub):
-    """Graph-сумісний id поста з колонок сайту: fb_post_id як є (чи з
-    префіксом сторінки, якщо він «короткий»), інакше число з fb_post_url."""
-    import os
-    raw = pub.get("site_fb_id")
-    if raw and re.fullmatch(r"\d+_\d+", raw):
-        return raw
-    if raw and raw.isdigit():
-        return f"{os.environ.get('FACEBOOK_PAGE_ID', '')}_{raw}"
-    m = re.search(r"(?:posts/|story_fbid=|videos/|/reel/)(\d{6,})",
-                  pub.get("site_fb") or "")
-    if m:
-        return f"{os.environ.get('FACEBOOK_PAGE_ID', '')}_{m.group(1)}"
-    return None
-
-
-def _fb_from_site(pub):
-    """Пост із колонок сайту (fb_post_id/fb_post_url/fb_post_views): свіжі
-    метрики по id, збій Graph → лінк із переглядами-лічильником сайту."""
-    link = pub.get("site_fb")
-    oid = _fb_object_id(pub) if _fb_configured() else None
-    if not link and not oid:
+def _site_stamp(row):
+    """Дата збережених метрик social_posts (stats_updated, unix) → 'DD.MM'."""
+    try:
+        return datetime.fromtimestamp(int(row["stats_updated"]), KYIV_TZ).strftime("%d.%m")
+    except (KeyError, TypeError, ValueError):
         return None
-    item = {"type": "post", "id": oid or "", "permalink": link or "", "date": "",
-            "views": pub.get("site_fb_views"), "reactions": None,
-            "comments": None, "shares": None}
-    if pub.get("site_fb_views") is not None:
-        item["site_counter"] = True  # перегляди — лічильник сайту, не Graph
-    if oid:
-        from handlers.facebook import get_post_metrics
-        metrics = get_post_metrics(oid)
-        if any(metrics[k] is not None for k in ("views", "reactions", "comments", "shares")):
-            item.update({"views": metrics["views"], "reactions": metrics["reactions"],
-                         "comments": metrics["comments"], "shares": metrics["shares"]})
-            item.pop("site_counter", None)
-            if not item["permalink"]:
-                item["permalink"] = ("https://www.facebook.com/nikvesti/posts/"
-                                     + oid.split("_")[1])
-    if not item["permalink"]:
-        return None
-    return [item]
 
 
-def collect_facebook(pubs, nora_entries, start_ts, end_ts):
-    """{node_id: items}: Нора → колонки БД сайту → живий прогін місяця для
-    решти. nora_entries — знімки article_stats, прочитані заздалегідь однією
-    сесією (мережеві походи не мають тримати з'єднання з Норою)."""
+def _fb_from_site(site_rows):
+    """Пости з social_posts сайту: свіжі метрики Graph по social_post_id,
+    збій → збережені числа таблиці з датою stats_updated."""
+    items = []
+    for row in site_rows or []:
+        oid = str(row.get("social_post_id") or "").strip()
+        url = (row.get("url") or "").strip()
+        if not oid and not url:
+            continue
+        item = {"type": "post", "id": oid, "permalink": url, "date": "",
+                "views": row.get("views"), "reactions": row.get("reactions"),
+                "comments": row.get("comments"), "shares": row.get("shares"),
+                "site_stamp": _site_stamp(row)}
+        if oid and _fb_configured():
+            from handlers.facebook import get_post_metrics
+            metrics = get_post_metrics(oid)
+            if any(metrics[k] is not None for k in ("views", "reactions", "comments", "shares")):
+                item.update({"views": metrics["views"], "reactions": metrics["reactions"],
+                             "comments": metrics["comments"], "shares": metrics["shares"]})
+                item.pop("site_stamp", None)
+                if not item["permalink"] and "_" in oid:
+                    item["permalink"] = ("https://www.facebook.com/nikvesti/posts/"
+                                         + oid.split("_")[1])
+        if item["permalink"]:
+            items.append(item)
+    return items or None
+
+
+def collect_facebook(pubs, nora_entries, site_posts, start_ts, end_ts):
+    """{node_id: items}: Нора → social_posts БД сайту → живий прогін місяця
+    для решти. nora_entries — знімки article_stats, прочитані заздалегідь
+    однією сесією (мережеві походи не мають тримати з'єднання з Норою)."""
     out = {}
     for pub in pubs:
         items = _fb_from_nora(pub, nora_entries.get(pub["id"]))
         if items:
             out[pub["id"]] = items
             continue
-        items = _fb_from_site(pub)
+        items = _fb_from_site((site_posts.get(pub["id"]) or {}).get("facebook"))
         if items:
             out[pub["id"]] = items
             # у Нору — лише з живим object_id: снімок без id не дає швидкого
@@ -440,25 +419,41 @@ def _tg_sweep(start_ts, end_ts, wanted_ids, max_pages=90, pace_seconds=0.25):
     return found
 
 
-def collect_telegram(pubs, start_ts, end_ts):
-    """{node_id: {"url", "views"}}: індекс tg_posts → колонка tg_post_url БД
-    сайту → прокрутка місяця ЛИШЕ для тих, кого ніде немає. Перегляди — з
-    embed t.me; збій → лічильник tg_post_views сайту. Знайдене пишеться в
-    індекс і в Нору."""
+# Написання платформи Telegram у social_posts (на замірі 11.08 рядків ще не
+# було — приймаємо розумні варіанти, точне звіримо, коли з'являться)
+_TG_PLATFORMS = ("telegram", "tg")
+_TG_MSG_RE = re.compile(r"(?:t|telegram)\.me/(?:s/)?[\w]+/(\d+)")
+
+
+def _site_tg_row(site_posts, node_id):
+    """Рядок Telegram із social_posts для ноди (перший), або None."""
+    by_platform = site_posts.get(node_id) or {}
+    for name in _TG_PLATFORMS:
+        rows = by_platform.get(name)
+        if rows:
+            return rows[0]
+    return None
+
+
+def collect_telegram(pubs, site_posts, start_ts, end_ts):
+    """{node_id: {"url", "views"}}: індекс tg_posts → social_posts БД сайту →
+    прокрутка місяця ЛИШЕ для тих, кого ніде немає. Перегляди — з embed t.me;
+    збій → збережене число social_posts із датою. Знайдене пишеться в індекс
+    і в Нору."""
     from handlers import telegram_stats as ts
 
     out, to_index, known, missing = {}, {}, [], []
     for pub in pubs:
         entry = storage.get_tg_post(pub["id"])
         message_id = entry["message_id"] if entry else None
-        if not message_id:
-            m = re.search(r"(?:t|telegram)\.me/(?:s/)?[\w]+/(\d+)",
-                          pub.get("site_tg") or "")
+        site_row = _site_tg_row(site_posts, pub["id"])
+        if not message_id and site_row:
+            m = _TG_MSG_RE.search(site_row.get("url") or "")
             if m:
                 message_id = int(m.group(1))
                 to_index[pub["id"]] = message_id
         if message_id:
-            known.append((pub, message_id))
+            known.append((pub, message_id, site_row))
         else:
             missing.append(pub)
 
@@ -470,20 +465,23 @@ def collect_telegram(pubs, start_ts, end_ts):
                               "views": hit["views"]}
             to_index[pub["id"]] = hit["message_id"]
 
-    for pub, message_id in known:
+    for pub, message_id, site_row in known:
         views = None
         try:
             views = ts.fetch_post_views(message_id)
         except Exception as e:
             print(f"content_report: перегляди TG-поста {message_id} — {e}")
-        if views is None:
-            views = pub.get("site_tg_views")  # лічильник сайту як фолбек
-        out[pub["id"]] = {"url": f"https://t.me/{ts.CHANNEL}/{message_id}",
-                          "views": views}
+        item = {"url": f"https://t.me/{ts.CHANNEL}/{message_id}", "views": views}
+        if views is None and site_row and site_row.get("views") is not None:
+            item["views"] = site_row["views"]
+            item["site_stamp"] = _site_stamp(site_row)
+        out[pub["id"]] = item
 
     for pub in pubs:
         if pub["id"] in out:
-            stat_store.save_snapshot(pub["id"], {"telegram": out[pub["id"]]})
+            # знімок у Нору — БЕЗ службової позначки давності
+            snap = {k: v for k, v in out[pub["id"]].items() if k != "site_stamp"}
+            stat_store.save_snapshot(pub["id"], {"telegram": snap})
     if to_index:
         try:
             storage.bulk_save_tg_posts(to_index)
@@ -528,8 +526,8 @@ def _fb_line(items):
             metrics.append(f"{_num(it['shares'])} поширень")
         label = "рілз" if it.get("type") == "reel" else "пост"
         stale = f' <span class="stale">знімок від {_esc(it["nora"])}</span>' if it.get("nora") else ""
-        if it.get("site_counter"):
-            stale += ' <span class="stale">лічильник сайту</span>'
+        if it.get("site_stamp"):
+            stale += f' <span class="stale">з БД сайту, {_esc(it["site_stamp"])}</span>'
         parts.append(
             f'<a href="{_esc(it.get("permalink") or "")}">{label}</a>'
             f'{" — " + " · ".join(metrics) if metrics else ""}{stale}')
@@ -551,6 +549,8 @@ def _pub_block(number, pub, fb_items, tg_item):
         soc.append('<div class="soc none"><span class="net fb">Facebook</span> поста не знайшли</div>')
     if tg_item:
         views = f' — {_num(tg_item["views"])} переглядів' if tg_item.get("views") is not None else ""
+        if tg_item.get("site_stamp"):
+            views += f' <span class="stale">з БД сайту, {_esc(tg_item["site_stamp"])}</span>'
         soc.append(f'<div class="soc"><span class="net tg">Telegram</span> '
                    f'<a href="{_esc(tg_item["url"])}">пост</a>{views}</div>')
     else:
@@ -708,8 +708,9 @@ def build_report(project, ym):
                     nora_entries[p["id"]] = (stat_store.load_index(p["id"]) or {}).get("facebook")
                 except Exception:
                     nora_entries[p["id"]] = None
-    fb = collect_facebook(pubs, nora_entries, start_ts, end_ts)
-    tg = collect_telegram(pubs, start_ts, end_ts)
+    site_posts = site_social_posts([p["id"] for p in pubs])
+    fb = collect_facebook(pubs, nora_entries, site_posts, start_ts, end_ts)
+    tg = collect_telegram(pubs, site_posts, start_ts, end_ts)
 
     # Групування по тематиках у порядку картки проєкту; без матчу — в кінець
     by_theme = {}
