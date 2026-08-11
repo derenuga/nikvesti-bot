@@ -515,6 +515,52 @@ function currentArg() {
    стек ріс би нескінченно і «назад» водило б по колу вчорашніх переходів. */
 const STACK_MAX = 12;
 
+/* Де людина була, коли апку перезапустили. Telegram піднімає WebView заново
+   САМ — зміна теми, повернення з фону, «Reload» у меню, — і доти будь-який
+   такий перезапуск викидав на Головну: з картки людини, з банку тем, звідки
+   завгодно (скарга Олега 11.08). Тепер позиція переживає перезапуск разом зі
+   стеком, тож і «назад» після нього веде туди ж, куди вело б до.
+
+   Явний намір сильніший за памʼять: deep-link із чату і ?screen= від пінга
+   Лиса ведуть туди, куди вели, а не туди, де людина сиділа перед тим. */
+const LAST_VIEW_KEY = "team.lastView";
+const LAST_VIEW_TTL = 2 * 60 * 60 * 1000;   // через дві години це вже не
+                                            // допомога, а сюрприз
+
+function rememberView() {
+  try {
+    localStorage.setItem(LAST_VIEW_KEY, JSON.stringify({
+      view: STATE.view, arg: currentArg(), stack: STATE.stack,
+      preview: STATE.previewPerson, at: Date.now(),
+    }));
+  } catch (e) { /* приватний режим чи старий клієнт — просто без памʼяті */ }
+}
+
+/* Що можна відновлювати. Менеджеру — будь-що, усі екрани його. Журналістці —
+   лише її власні: інакше після перезапуску вона побачила б менеджерський
+   екран, і навіть порожній він каже те, чого казати не мав. Набір береться з
+   тих самих констант, що й меню, тож новий журналістський екран не доведеться
+   дописувати ще й сюди. */
+function canRestore(view, isManager) {
+  if (isManager) return true;
+  if (view === "preview") return false;   // це менеджер дивиться чужими очима
+  return J_SUBVIEWS.has(view) || NAV_JOURNALIST.some(([v]) => v === view)
+    || view === "away" || view === "contacts";
+}
+
+function restoreView(isManager) {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(LAST_VIEW_KEY) || "null"); }
+  catch (e) { return false; }
+  if (!saved || !saved.view || saved.view === "home") return false;
+  if (Date.now() - (saved.at || 0) > LAST_VIEW_TTL) return false;
+  if (!canRestore(saved.view, isManager)) return false;
+  STATE.stack = Array.isArray(saved.stack) ? saved.stack : [];
+  if (saved.preview) STATE.previewPerson = saved.preview;
+  nav(saved.view, saved.arg, true);   // back=true: стек уже відновлено вручну
+  return true;
+}
+
 /* Крок «шторка утиліт» у стеку історії. Шторка — це НЕ спливашка, а рівень
    навігації: людина відкрила сітку, тицьнула інструмент, і «назад» має
    повернути її туди, звідки вона тицяла, а не на Головну. Без цього, щоб
@@ -583,6 +629,7 @@ function nav(view, arg, back, opts = {}) {
     };
     STATE.promiseSeed = null;
   }
+  rememberView();
   paintNav();
   // KPI і його підекрани більше не пункт нижнього меню — заходять із
   // Головної, тож і підсвічуємо Головну
@@ -7150,15 +7197,21 @@ async function boot() {
       // start_param від t.me-лінка (кнопка «Дедлайни в апці» у чаті фінансів)
       const start = (tg.initDataUnsafe || {}).start_param || "";
       const deep = promiseDeepLink(start);
+      const explicit = startScreen() || (start === "reports" ? "reports"
+        : start === "promises" ? "promises" : null);
       if (deep) nav("promise", deep);
-      else nav(startScreen() || (start === "reports" ? "reports"
-        : start === "promises" ? "promises" : "home"));
+      else if (explicit) nav(explicit);
+      // Прийшли без явного наміру — отже це перезапуск, а не новий захід:
+      // повертаємо туди, де людина була
+      else if (!restoreView(true)) nav("home");
     } else {
       // Журналістці лінк із «винюхав» теж має відкривати банк одразу
       const start = (tg.initDataUnsafe || {}).start_param || "";
       const deep = promiseDeepLink(start);
+      const explicit = startScreen() || (start === "promises" ? "promises" : null);
       if (deep) nav("promise", deep);
-      else nav(startScreen() || (start === "promises" ? "promises" : "home"));
+      else if (explicit) nav(explicit);
+      else if (!restoreView(false)) nav("home");
     }
     syncBackButton();
   } catch (e) {
