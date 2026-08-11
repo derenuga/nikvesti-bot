@@ -109,6 +109,20 @@
   }
   .swatch.on { outline: 3px solid var(--brand); outline-offset: 2px; }
   .swatches.disabled { opacity: .35; pointer-events: none; }
+  .tpl-groups { display: flex; gap: 14px; align-items: stretch; flex-wrap: wrap; }
+  .tpl-group .cap {
+    font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .06em; margin-bottom: 6px; font-weight: 600;
+  }
+  .tpl-tiles { display: flex; gap: 8px; }
+  button.tpl {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    background: #eef2fb; color: var(--ink); border-radius: 12px;
+    padding: 10px 12px 9px; font-size: 12.5px; font-weight: 600; min-width: 92px;
+  }
+  button.tpl svg { width: 30px; height: 30px; }
+  button.tpl.on { background: #fff; color: var(--brand); box-shadow: inset 0 0 0 2px var(--brand); }
+  .tpl-sep { width: 1px; background: var(--line); margin: 6px 2px 0; }
 
   .preview { position: sticky; top: 16px; }
   #canvas {
@@ -128,11 +142,34 @@
   <div>
     <div class="panel">
       <h2>Шаблон</h2>
-      <div class="seg" id="tplSeg">
-        <button data-tpl="1" class="on">Стандартний: текст + фото</button>
-        <button data-tpl="2">Два фото внизу</button>
-        <button data-tpl="3">Цитата на фото</button>
-        <button data-tpl="4">Цитата з колом</button>
+      <div class="tpl-groups" id="tplSeg">
+        <div class="tpl-group">
+          <div class="cap">Новинні</div>
+          <div class="tpl-tiles">
+            <button class="tpl on" data-tpl="1" title="Синій блок із заголовком зверху, фото знизу">
+              <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="24" height="24" rx="3"/><line x1="8" y1="10" x2="24" y2="10"/><line x1="8" y1="14" x2="20" y2="14"/><rect x="8" y="19" width="16" height="6" fill="currentColor" stroke="none" opacity=".35"/></svg>
+              <span>Текст + фото</span>
+            </button>
+            <button class="tpl" data-tpl="2" title="Заголовок зверху, два фото поруч знизу">
+              <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="24" height="24" rx="3"/><line x1="8" y1="10" x2="24" y2="10"/><line x1="8" y1="14" x2="20" y2="14"/><rect x="8" y="19" width="7" height="6" fill="currentColor" stroke="none" opacity=".35"/><rect x="17" y="19" width="7" height="6" fill="currentColor" stroke="none" opacity=".35"/></svg>
+              <span>Два фото</span>
+            </button>
+          </div>
+        </div>
+        <div class="tpl-sep"></div>
+        <div class="tpl-group">
+          <div class="cap">Цитатні</div>
+          <div class="tpl-tiles">
+            <button class="tpl" data-tpl="3" title="Цитата поверх фото на весь кадр, темна підложка">
+              <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="24" height="24" rx="3"/><path d="M4 23 l7-8 5 5 4-4 8 8" opacity=".45"/><path d="M12 9 l-3 3 3 3 M20 9 l-3 3 3 3"/></svg>
+              <span>На фото</span>
+            </button>
+            <button class="tpl" data-tpl="4" title="Кругле фото зверху, цитата на кольоровому фоні">
+              <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><circle cx="16" cy="11" r="6"/><line x1="8" y1="23" x2="24" y2="23"/><line x1="11" y1="27" x2="21" y2="27"/></svg>
+              <span>З колом</span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -582,9 +619,9 @@
     clampAll(); render();
   });
   $("tplSeg").addEventListener("click", (e) => {
-    const b = e.target.closest("button");
+    const b = e.target.closest("button.tpl");
     if (!b) return;
-    [...$("tplSeg").children].forEach((el) => el.classList.toggle("on", el === b));
+    $("tplSeg").querySelectorAll("button.tpl").forEach((el) => el.classList.toggle("on", el === b));
     S.tpl = +b.dataset.tpl;
     $("slotRow").hidden = S.tpl !== 2;
     // Поза стандартним шаблоном підпису фото нема до чого кріпитись
