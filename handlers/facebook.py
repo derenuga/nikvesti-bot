@@ -220,14 +220,16 @@ def get_page_posts(since_ts, until_ts=None, max_pages=5):
     return posts
 
 
-def get_top_posts(since_ts=None, until_ts=None, max_pages=5):
+def get_top_posts(since_ts=None, until_ts=None, max_pages=5, progress=None):
     """Топ-5 постів вікна за залученістю + скільки всього постів про матеріали.
 
     Листинг легкий, залученість добирається ПОШТУЧНО (паралельно) — інакше
     Facebook ховає частину постів прямо у відповіді, і топ рахується по
     неповному тижню. max_pages — для вікон, довших за тиждень: 5 сторінок
     (500 постів) місяць на 15-20 постів/день не вміщує, і топ рахувався б
-    по обрізку."""
+    по обрізку. progress — необов'язковий dict {'done','total','stage'},
+    який ця функція оновлює по ходу (прогрес-бар NLQ читає його з іншого
+    потоку; точність ±1 неважлива, тому без локів)."""
     if since_ts is None:
         since_ts = int((datetime.now() - timedelta(days=7)).timestamp())
 
@@ -237,8 +239,17 @@ def get_top_posts(since_ts=None, until_ts=None, max_pages=5):
     if not posts:
         return [], 0
 
+    if progress is not None:
+        progress.update(done=0, total=total, stage="постів")
+
+    def _one(p):
+        m = get_post_metrics(p["id"])
+        if progress is not None:
+            progress["done"] = progress.get("done", 0) + 1
+        return m
+
     with ThreadPoolExecutor(max_workers=5) as pool:
-        metrics = list(pool.map(lambda p: get_post_metrics(p["id"]), posts))
+        metrics = list(pool.map(_one, posts))
 
     for post, m in zip(posts, metrics):
         post["engagement"] = sum(
@@ -275,7 +286,7 @@ def get_reel_insights(reel_id):
     except:
         return 0, 0, 0
 
-def get_top_reels(since_dt=None, until_dt=None):
+def get_top_reels(since_dt=None, until_dt=None, progress=None):
     if since_dt is None:
         since_dt = (datetime.now(tz=timezone.utc) - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
     elif since_dt.tzinfo is None:
@@ -307,9 +318,13 @@ def get_top_reels(since_dt=None, until_dt=None):
             pass
 
     total = len(week_reels)
+    if progress is not None and week_reels:
+        progress.update(done=0, total=total, stage="рілзів")
 
     for r in week_reels:
         reactions, comments, shares = get_reel_insights(r["id"])
+        if progress is not None:
+            progress["done"] = progress.get("done", 0) + 1
         r["reactions"] = reactions
         r["comments_count"] = comments
         r["shares_count"] = shares

@@ -690,7 +690,10 @@ def _social_window(period_days, start_date, end_date):
             f"{start:%d.%m.%Y} — {now:%d.%m.%Y}")
 
 
-def _nlq_facebook_stats(period_days=7, start_date=None, end_date=None):
+def _nlq_facebook_stats(period_days=7, start_date=None, end_date=None, _progress=None):
+    # _progress — службовий dict, який ІН'ЄКТУЄ виконавець tool-ів (не модель):
+    # довгі стадії (поштучні метрики сотень постів на місячному вікні)
+    # оновлюють його, а прогрес-бар у плейсхолдері читає з event loop.
     from datetime import timezone
     from handlers import facebook as fb
 
@@ -712,8 +715,9 @@ def _nlq_facebook_stats(period_days=7, start_date=None, end_date=None):
     # сторінку; тижню вистачає 5 (як у звіті), місяцю треба ~7.
     window_days = max(1, (until_ts - since_ts) // 86400)
     pages = min(10, max(5, window_days // 4))
-    posts, total_posts = fb.get_top_posts(since_ts, until_ts, max_pages=pages)
-    reels, total_reels = fb.get_top_reels(since_dt, until_dt)
+    posts, total_posts = fb.get_top_posts(since_ts, until_ts, max_pages=pages,
+                                          progress=_progress)
+    reels, total_reels = fb.get_top_reels(since_dt, until_dt, progress=_progress)
 
     def fmt_post(p):
         # get_top_posts (після рефакторингу facebook.py 03.08) кладе метрики
@@ -1701,6 +1705,31 @@ async def _update_placeholder(placeholder, text, last_text):
         pass
 
 
+# Tools, що вміють звітувати прогрес довгих стадій (виконавець ін'єктує їм
+# _progress-dict і поруч крутить прогрес-бар у плейсхолдері)
+PROGRESS_TOOL_NAMES = {"get_facebook_stats"}
+
+
+async def _progress_bar_updater(placeholder, base_text, state, last_text):
+    """Фонове перемальовування плейсхолдера прогрес-баром, поки tool працює
+    в сусідньому потоці: «🦊 Заглядаю у Facebook... ▓▓▓░░░░░░░ 156/450 постів».
+    Період 2.5 с — частіші edit_text упираються в rate limit Telegram.
+    Мовчить, поки total невідомий (короткі стадії бар не малюють)."""
+    try:
+        while True:
+            await asyncio.sleep(2.5)
+            total = state.get("total") or 0
+            if total <= 0:
+                continue
+            done = min(state.get("done") or 0, total)
+            filled = int(round(done / total * 10))
+            bar = "▓" * filled + "░" * (10 - filled)
+            text = f"{base_text} {bar} {done}/{total} {state.get('stage', '')}".rstrip()
+            await _update_placeholder(placeholder, text, last_text)
+    except asyncio.CancelledError:
+        pass
+
+
 async def handle_natural_language_query(update, context):
     question = update.message.text
     today = datetime.now().strftime("%Y-%m-%d")
@@ -1907,6 +1936,19 @@ async def handle_natural_language_query(update, context):
                         if block.name in ("search_news_archive", "search_archive_fulltext"):
                             kwargs["turn_id"] = turn_id
                         result = await asyncio.to_thread(func, dialog_key, **kwargs)
+                    elif func and block.name in PROGRESS_TOOL_NAMES:
+                        # Довгий tool: поруч із потоком крутиться прогрес-бар у
+                        # плейсхолдері (місячне вікно ФБ — сотні поштучних
+                        # запитів метрик, без бару це виглядає як зависання)
+                        progress_state = {"done": 0, "total": 0, "stage": ""}
+                        updater = asyncio.create_task(_progress_bar_updater(
+                            placeholder, progress or "🦊 Працюю...",
+                            progress_state, last_placeholder_text))
+                        try:
+                            result = await asyncio.to_thread(
+                                func, **block.input, _progress=progress_state)
+                        finally:
+                            updater.cancel()
                     elif func:
                         # GA4/Search Console/HTTP — синхронні; виконуємо в окремому
                         # потоці, щоб не заморожувати бота на час запиту (REVIEW б.1)
