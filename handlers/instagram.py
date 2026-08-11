@@ -15,7 +15,13 @@ def get_instagram_profile():
     }
     return requests.get(url, params=params).json()
 
-def get_instagram_stats():
+def get_instagram_stats(since_ts=None, until_ts=None):
+    """Зведені метрики акаунта. Без аргументів — фіксований тиждень Meta
+    (period=week), як у тижневому звіті. Зі since/until — тотал за довільне
+    вікно тією самою схемою period=day + metric_type=total_value, якою
+    get_follows_week давно ходить у проді. УВАГА: reach за вікно Meta рахує
+    сумою денних охоплень — людина, що заходила в різні дні, порахується
+    повторно; для чесного порівняння це треба озвучувати."""
     url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/insights"
     params = {
         "metric": "reach,views,total_interactions,accounts_engaged",
@@ -23,6 +29,10 @@ def get_instagram_stats():
         "metric_type": "total_value",
         "access_token": INSTAGRAM_TOKEN
     }
+    if since_ts:
+        params["period"] = "day"
+        params["since"] = since_ts
+        params["until"] = until_ts or int(datetime.now().timestamp())
     data = requests.get(url, params=params).json()
     if "error" in data:
         raise Exception(data["error"]["message"])

@@ -51,6 +51,35 @@ def get_page_stats():
             print(f"facebook: помилка метрики {metric} — {e}")
     return stats
 
+def get_page_stats_range(since_ts, until_ts):
+    """Метрики сторінки за ДОВІЛЬНЕ вікно: сума денних значень (period=day +
+    since/until — перевірено в Graph Explorer 11.08.2026, 14 днів віддаються
+    по днях). Сумуються лише перегляди й залученість — це лічильники ПОДІЙ;
+    page_follows тут свідомо немає (це стан, а не потік — сума брехала б).
+    Порожній dict = діапазон не віддався (задовге вікно, збій) — виклик має
+    фолбекнути на тижневий get_page_stats()."""
+    url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/insights"
+    stats = {}
+    for metric in ("page_media_view", "page_post_engagements"):
+        try:
+            data = requests.get(url, params={
+                "metric": metric, "period": "day",
+                "since": since_ts, "until": until_ts,
+                "access_token": FACEBOOK_PAGE_TOKEN,
+            }, timeout=15).json()
+            if "error" in data:
+                print(f"facebook: діапазон {metric} — {data['error'].get('message')}")
+                continue
+            for item in data.get("data", []):
+                vals = [v.get("value") for v in item.get("values", [])
+                        if isinstance(v.get("value"), (int, float))]
+                if vals:
+                    stats[item["name"]] = int(sum(vals))
+        except Exception as e:
+            print(f"facebook: помилка діапазону {metric} — {e}")
+    return stats
+
+
 def fix_permalink(url):
     if not url:
         return url
