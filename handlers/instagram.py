@@ -70,7 +70,10 @@ def get_follows_week(since=None, until=None):
     except:
         return None, None
 
-def get_top_media(since=None, until=None):
+def get_top_media(since=None, until=None, max_pages=3):
+    """Топ-5 медіа вікна за лайками+коментарями. З пагінацією: одна сторінка
+    (limit=100) місяць уже не вміщує, і топ рахувався б по обрізку — лайки
+    приходять у самому листингу, тож догортати дешево."""
     if since is None:
         since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/media"
@@ -78,14 +81,20 @@ def get_top_media(since=None, until=None):
         "fields": "id,media_type,permalink,like_count,comments_count,caption,timestamp",
         "since": since,
         "access_token": INSTAGRAM_TOKEN,
-        "limit": 50
+        "limit": 100
     }
     if until:
         params["until"] = until
-    data = requests.get(url, params=params).json()
-    if "error" in data:
-        return []
-    media = data.get("data", [])
+    media = []
+    for _ in range(max_pages):
+        data = requests.get(url, params=params).json()
+        if "error" in data:
+            break
+        media.extend(data.get("data", []))
+        next_url = data.get("paging", {}).get("next")
+        if not next_url:
+            break
+        url, params = next_url, {}  # next уже містить усі параметри
     for m in media:
         m["engagement"] = m.get("like_count", 0) + m.get("comments_count", 0)
     media.sort(key=lambda x: x["engagement"], reverse=True)
@@ -173,7 +182,9 @@ def get_media_insights(media_id, media_type=None):
     return {}
 
 
-def get_media_counts(since=None, until=None):
+def get_media_counts(since=None, until=None, max_pages=3):
+    """Скільки опубліковано за вікно, по типах. З пагінацією — місяць не
+    влазить в одну сторінку (limit=100) і лічильник брехав би в менший бік."""
     if since is None:
         since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/media"
@@ -185,14 +196,19 @@ def get_media_counts(since=None, until=None):
     }
     if until:
         params["until"] = until
-    data = requests.get(url, params=params).json()
-    if "error" in data:
-        return {}
     counts = {"IMAGE": 0, "VIDEO": 0, "CAROUSEL_ALBUM": 0}
-    for m in data.get("data", []):
-        t = m.get("media_type", "")
-        if t in counts:
-            counts[t] += 1
+    for _ in range(max_pages):
+        data = requests.get(url, params=params).json()
+        if "error" in data:
+            break
+        for m in data.get("data", []):
+            t = m.get("media_type", "")
+            if t in counts:
+                counts[t] += 1
+        next_url = data.get("paging", {}).get("next")
+        if not next_url:
+            break
+        url, params = next_url, {}
     return counts
 
 def short_caption(caption, words=5):
