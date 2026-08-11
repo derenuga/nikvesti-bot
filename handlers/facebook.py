@@ -220,16 +220,18 @@ def get_page_posts(since_ts, until_ts=None, max_pages=5):
     return posts
 
 
-def get_top_posts(since_ts=None, until_ts=None):
-    """Топ-5 постів тижня за залученістю + скільки всього постів про матеріали.
+def get_top_posts(since_ts=None, until_ts=None, max_pages=5):
+    """Топ-5 постів вікна за залученістю + скільки всього постів про матеріали.
 
     Листинг легкий, залученість добирається ПОШТУЧНО (паралельно) — інакше
     Facebook ховає частину постів прямо у відповіді, і топ рахується по
-    неповному тижню."""
+    неповному тижню. max_pages — для вікон, довших за тиждень: 5 сторінок
+    (500 постів) місяць на 15-20 постів/день не вміщує, і топ рахувався б
+    по обрізку."""
     if since_ts is None:
         since_ts = int((datetime.now() - timedelta(days=7)).timestamp())
 
-    posts = [p for p in get_page_posts(since_ts, until_ts)
+    posts = [p for p in get_page_posts(since_ts, until_ts, max_pages=max_pages)
              if "nikvesti.com" in (p.get("message") or "")]
     total = len(posts)
     if not posts:
