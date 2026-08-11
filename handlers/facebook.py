@@ -273,11 +273,13 @@ def get_reel_insights(reel_id):
     except:
         return 0, 0, 0
 
-def get_top_reels(since_dt=None):
+def get_top_reels(since_dt=None, until_dt=None):
     if since_dt is None:
         since_dt = (datetime.now(tz=timezone.utc) - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
     elif since_dt.tzinfo is None:
         since_dt = since_dt.replace(tzinfo=timezone.utc)
+    if until_dt is not None and until_dt.tzinfo is None:
+        until_dt = until_dt.replace(tzinfo=timezone.utc)
 
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/video_reels"
     params = {
@@ -297,7 +299,7 @@ def get_top_reels(since_dt=None):
         created = r.get("created_time", "")
         try:
             created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-            if created_dt >= since_dt:
+            if created_dt >= since_dt and (until_dt is None or created_dt <= until_dt):
                 week_reels.append(r)
         except:
             pass
