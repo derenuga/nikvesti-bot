@@ -125,6 +125,14 @@ NOTIFS = [
      "object_id": "3", "title": "Фінансовий звіт · фінальний",
      "body": "IWPR · за 2 дні · пише Олена Бондаренко", "url": "",
      "created_at": "2026-07-25T09:40:00+03:00", "unread": False},
+    # Автозакриття банку тем: тап має вести в картку обіцянки, не лінком
+    {"id": 29, "kind": "promise_closed", "kind_title": "promise_closed",
+     "audience": "managers", "person": None, "object_type": "promise",
+     "object_id": "551",
+     "title": "Лис закрив як виконано: Відновити газопостачання по вул. Шосейній",
+     "body": "Фахівці «Газмережі» провели роботи · Газопостачання відновили",
+     "url": "https://nikvesti.com/news/321999-gaz",
+     "created_at": "2026-07-26T19:00:00+03:00", "unread": False},
 ]
 
 STUB = """
@@ -192,6 +200,15 @@ window.fetch = async (url, opts = {}) => {
     return json({ ok: true, unread: 0 });
   }
   let m;
+  // Картка обіцянки: подія «Лис закрив як виконано» веде сюди, а не лінком
+  if ((m = url.match(/^\\/api\\/promises\\/(\\d+)$/)) && (!opts.method || opts.method === "GET")) {
+    window.__gets.push(url);
+    return json({ commitment: { id: +m[1], cls: "checked", starred: false,
+        title: "Відновити газопостачання по вул. Шосейній", tags: [],
+        who: null, image: null, found: "", populism: null, criterion: null,
+        based_on: null, condition: null },
+      chain: [], siblings: [] });
+  }
   // Картка завдання зі стрічки подій: таск 71 закритий давно, у bootstrap
   // його немає — апка доганяє окремим GET (як справжній /api/tasks/{id})
   if ((m = url.match(/^\\/api\\/tasks\\/(\\d+)$/)) && (!opts.method || opts.method === "GET")) {
@@ -285,7 +302,7 @@ async def main():
             check("коли суддя не обрав — так і сказано", "обери вручну" in body)
             # --- стрічка подій під чергою ---
             check("стрічка подій показана під чергою",
-                  await page.locator(".nt-row").count() == 2)
+                  await page.locator(".nt-row").count() == 3)
             # Олег, 30.07: «незрозуміло, що виконано» — тепер тематика
             # догори, завдання рядком, автор і донор із іконкою внизу
             check("видно, ЩО виконано — тематика першою",
@@ -331,6 +348,25 @@ async def main():
                   ).count() == 1)
             await page.screenshot(path="/tmp/alerts-task-card.png")
             await page.evaluate("closeSheet()")
+
+            # --- тап по автозакриттю банку тем відкриває картку ОБІЦЯНКИ ---
+            # «Лис закрив як виконано» — автоматичне рішення, і перше, що з
+            # ним роблять, — дивляться на ланцюг і цитати, а не на новину
+            await page.click('.nt-row[data-npromise="551"]')
+            await page.wait_for_selector(".pr-detail", timeout=5000)
+            check("подія банку тем веде в картку обіцянки",
+                  await page.evaluate("STATE.view") == "promise"
+                  and "/api/promises/551" in await page.evaluate("window.__gets"))
+            check("і не відкриває зовнішній лінк",
+                  await page.evaluate("window.__opened") == [])
+            check("це саме та обіцянка",
+                  "Відновити газопостачання" in await page.inner_text("#content"))
+            await page.screenshot(path="/tmp/alerts-promise-card.png")
+            # «Назад» повертає рівно туди, звідки прийшли — у «Сповіщення»
+            await page.click("#content .back")
+            await page.wait_for_selector("[data-mconfirm]", timeout=5000)
+            check("«назад» з картки повертає у Сповіщення",
+                  await page.evaluate("STATE.view") == "alerts")
 
             # --- пост Telegram: автора немає, питаємо кому і куди ---
             check("пост каналу підписаний як пост, а не як автор",

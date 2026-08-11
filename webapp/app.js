@@ -2816,6 +2816,12 @@ function notifRow(n) {
   if (n.object_type === "task" && n.object_id)
     return `<button class="${cls}" data-task="${esc(n.object_id)}"${
       n.url ? ` data-taskurl="${esc(n.url)}"` : ""}>${inner}</button>`;
+  // Подія банку тем («Лис закрив як виконано», зірочка, «бере тему») — те
+  // саме: тап відкриває КАРТКУ обіцянки з ланцюгом і цитатами, а не лінк на
+  // новину. Перше, що треба зробити з автоматичним рішенням, — подивитись на
+  // підставу, і новина-доказ лежить у самій картці.
+  if (n.object_type === "promise" && n.object_id)
+    return `<button class="${cls}" data-npromise="${esc(n.object_id)}">${inner}</button>`;
   return n.url
     ? `<a class="${cls}" href="${esc(n.url)}" data-ext="${esc(n.url)}">${inner}</a>`
     : `<div class="${cls}">${inner}</div>`;
@@ -7333,7 +7339,12 @@ $("content").addEventListener("click", (e) => {
   const task = e.target.closest("[data-task]");
   // Без перевірки на менеджера: журналістці зі стрічки подій відкривається
   // її власна картка (read-only, taskViewSheet) — роль вирішує openTaskCard
-  if (task) openTaskCard(+task.dataset.task, task.dataset.taskurl);
+  if (task) { openTaskCard(+task.dataset.task, task.dataset.taskurl); return; }
+  // Подія банку тем зі стрічки — в картку обіцянки. Окремий атрибут, а не
+  // data-promise: на тому висять локальні обробники екранів банку, і подвійна
+  // навігація з делегата їм ні до чого
+  const npr = e.target.closest("[data-npromise]");
+  if (npr) nav("promise", +npr.dataset.npromise);
 });
 
 /* Лінк на зараховану публікацію. Слухач документний, а не на #content:
