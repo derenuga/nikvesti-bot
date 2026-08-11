@@ -1011,23 +1011,31 @@ def _collect_facebook(year, month, with_followers):
             key = "views" if metric == "page_media_view" else "engagement"
             out[key] = int(total)
 
-    # Пости місяця: рахуємо всі публікації сторінки, топ — за реакціями+
-    # коментарями+шерами (у тижневих звітах «пости» — лише з лінком на сайт,
-    # тут — усі: це число публікацій за місяць)
+    # Пости місяця (у тижневих звітах «пости» — лише з лінком на сайт, тут —
+    # усі: це число публікацій за місяць). ЛІЧИМО легким листингом: важкі поля
+    # залученості мовчки викидають пости зі списку (інцидент 03.08.2026), і
+    # лічильник місяця брехав у менший бік. Топ-допис обираємо окремим важким
+    # листингом: для топа пропущений пост — рідкісна косметика, для лічильника —
+    # системна недостача; ганяти поштучні insights по ~400-600 постах заради
+    # одного рядка-прикраси не варте сотень запитів на місяць бекфілу.
+    from handlers.facebook import get_page_posts
+    light = get_page_posts(since_ts, until_ts, max_pages=12)
+    if light:
+        out["posts"] = len(light)
+
     url = f"https://graph.facebook.com/v19.0/{page_id}/posts"
     params = {
         "fields": "message,permalink_url,created_time,shares,"
                   "reactions.summary(true),comments.summary(true)",
         "since": since_ts, "until": until_ts, "limit": 100, "access_token": token,
     }
-    count, top = 0, None
+    top = None
     for _ in range(12):  # до 1200 постів на місяць — з великим запасом
         data = requests.get(url, params=params, timeout=30).json()
         if "error" in data:
             print(f"social_sheet: FB /posts — {data['error'].get('message')}")
             break
         for p in data.get("data", []):
-            count += 1
             eng = (p.get("reactions", {}).get("summary", {}).get("total_count", 0)
                    + p.get("comments", {}).get("summary", {}).get("total_count", 0)
                    + p.get("shares", {}).get("count", 0))
@@ -1039,8 +1047,7 @@ def _collect_facebook(year, month, with_followers):
         if not next_url:
             break
         url, params = next_url, None
-    if count:
-        out["posts"] = count
+    if top:
         out["top"] = top
     return out
 
