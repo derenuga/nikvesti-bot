@@ -1584,10 +1584,79 @@ function wirePersonKpi(person) {
   });
 }
 
+/* Рядок «чиє це завдання» у картці: лого донора + донор + назва проєкту.
+   Відповідає на питання, з яким Олег прийшов зі стрічки подій (11.08): по
+   якому проєкту завдання і чий логотип — доти це знав лише список тасків. */
+function taskProjRow(t) {
+  const tp = taskProject(t);
+  if (!tp.partner && !tp.projName) return "";
+  const proj = t.project_id ? STATE.projects.find((p) => p.id === t.project_id) : null;
+  return `<div class="al-proj-row tk-proj">
+    ${proj ? logoSq(proj, 30) : ""}
+    <span><b>${esc(tp.partner || tp.projName)}</b>${
+      tp.partner && tp.projName && tp.projName !== tp.partner
+        ? ` · ${esc(tp.projName)}` : ""}</span>
+  </div>`;
+}
+
+/* Стан закритого таска словами: коли закрито і хто зарахував («Лис зарахував
+   сам» — та сама фраза, що в стрічці; рахує сервер із самих матчів). */
+function taskStatusLine(t) {
+  if (t.status === "done")
+    return `<div class="tk-status"><span class="st-mark done">${icon("check")}</span>
+      <span>Виконано${t.done_at ? " " + esc(shortDate(t.done_at)) : ""}${
+        t.credit ? ` · ${esc(t.credit)}` : ""}</span></div>`;
+  if (t.status === "dropped")
+    return `<div class="tk-status"><span class="st-mark dropped">${icon("x")}</span>
+      <span>Знято</span></div>`;
+  return "";
+}
+
+/* Картка завдання для журналістки — та сама інформація, що в редакторській
+   (донор із лого, хто поставив, зараховані публікації), але без дій:
+   редагувати, зараховувати і знімати — редакторське. */
+function taskViewSheet(t) {
+  openSheet(`
+    <h2>${esc(t.theme_name || taskLine(t))}</h2>
+    <p style="color:var(--muted);margin:-8px 0 6px">${esc(taskLine(t, { donor: true }))}${deadlineHtml(t)}</p>
+    ${taskProjRow(t)}
+    ${taskStatusLine(t)}
+    ${t.note ? `<p style="margin-bottom:6px">${esc(t.note)}</p>` : ""}
+    ${t.done_count ? `<div class="sc-t" style="margin:10px 0 2px">Зараховано ${t.done_count} із ${t.qty}</div>
+       ${matchesHtml(t)}` : ""}
+    <p style="color:var(--muted);font-size:12.5px">поставив(ла) ${esc(t.creator.split(" ")[0])} · ${new Date(t.created_at).toLocaleDateString("uk-UA")}</p>
+    <div class="sheet-actions">
+      <button class="sbtn" id="tv-close">Закрити</button>
+    </div>`);
+  $("tv-close").onclick = closeSheet;
+}
+
+/* Відкрити картку завдання за id — вхід зі стрічки подій. У bootstrap живе
+   лише свіже (відкриті + закриті за 30 днів), а подія може вказувати на
+   старіший таск — тоді доганяємо його окремим запитом. fallbackUrl — лінк
+   із самої події: якщо таска вже немає, хоч публікацію відкриємо. */
+async function openTaskCard(taskId, fallbackUrl) {
+  let t = STATE.tasks.find((x) => x.id === taskId);
+  if (!t) {
+    try {
+      t = (await api(`/api/tasks/${taskId}`)).task;
+    } catch (e) {
+      if (fallbackUrl) {
+        try { tg.openLink(fallbackUrl); } catch (err) { window.open(fallbackUrl, "_blank"); }
+      } else toast(e.message);
+      return;
+    }
+  }
+  if (STATE.me && STATE.me.manager) taskSheet(t);
+  else taskViewSheet(t);
+}
+
 function taskSheet(t) {
   openSheet(`
     <h2>${esc(t.person)}</h2>
     <p style="color:var(--muted);margin:-8px 0 6px">${esc(taskLine(t, { donor: true }))}${deadlineHtml(t)}</p>
+    ${taskProjRow(t)}
+    ${taskStatusLine(t)}
     ${t.note ? `<p style="margin-bottom:6px">${esc(t.note)}</p>` : ""}
     ${t.done_count ? `<div class="sc-t" style="margin:10px 0 2px">Зараховано ${t.done_count} із ${t.qty}</div>
        ${matchesHtml(t, { editable: true })}
@@ -2751,6 +2820,13 @@ function notifRow(n) {
     ${main}
     ${structured ? "" : `<span class="tr-right"><span class="mr-d">${esc(when)}</span></span>`}`;
   const cls = `task-row nt-row${n.unread ? " unread" : ""}`;
+  // Подія про завдання відкриває КАРТКУ завдання, а не лінк на публікацію:
+  // з самого рядка не видно ні хто ставив, ні проєкту, ні донора (Олег,
+  // 11.08 — «інформації нуль, навіть автора не зрозуміти»). Лінк на матеріал
+  // нікуди не зник — він у картці, серед зарахованих публікацій.
+  if (n.object_type === "task" && n.object_id)
+    return `<button class="${cls}" data-task="${esc(n.object_id)}"${
+      n.url ? ` data-taskurl="${esc(n.url)}"` : ""}>${inner}</button>`;
   return n.url
     ? `<a class="${cls}" href="${esc(n.url)}" data-ext="${esc(n.url)}">${inner}</a>`
     : `<div class="${cls}">${inner}</div>`;
@@ -7294,10 +7370,9 @@ $("content").addEventListener("click", (e) => {
     return;
   }
   const task = e.target.closest("[data-task]");
-  if (task && STATE.me.manager) {
-    const t = STATE.tasks.find((x) => x.id === +task.dataset.task);
-    if (t) taskSheet(t);
-  }
+  // Без перевірки на менеджера: журналістці зі стрічки подій відкривається
+  // її власна картка (read-only, taskViewSheet) — роль вирішує openTaskCard
+  if (task) openTaskCard(+task.dataset.task, task.dataset.taskurl);
 });
 
 /* Лінк на зараховану публікацію. Слухач документний, а не на #content:
