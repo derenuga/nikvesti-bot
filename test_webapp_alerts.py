@@ -125,12 +125,17 @@ NOTIFS = [
      "object_id": "3", "title": "Фінансовий звіт · фінальний",
      "body": "IWPR · за 2 дні · пише Олена Бондаренко", "url": "",
      "created_at": "2026-07-25T09:40:00+03:00", "unread": False},
-    # Автозакриття банку тем: тап має вести в картку обіцянки, не лінком
+    # Автозакриття банку тем: свій макет (підпис типу + назва обіцянки +
+    # новина з мініатюрою), тап веде в картку обіцянки, не лінком
     {"id": 29, "kind": "promise_closed", "kind_title": "promise_closed",
      "audience": "managers", "person": None, "object_type": "promise",
      "object_id": "551",
      "title": "Лис закрив як виконано: Відновити газопостачання по вул. Шосейній",
-     "body": "Фахівці «Газмережі» провели роботи · Газопостачання відновили",
+     "body": "Фахівці «Газмережі» провели роботи",
+     "meta": {"promise": True, "label": "Лис оновив обіцянку · виконано",
+              "title": "Відновити газопостачання по вул. Шосейній",
+              "news_title": "Газопостачання по вул. Шосейній відновили",
+              "image": "https://nikvesti.com/600x315/images/imageeditor/321999.webp"},
      "url": "https://nikvesti.com/news/321999-gaz",
      "created_at": "2026-07-26T19:00:00+03:00", "unread": False},
 ]
@@ -349,10 +354,43 @@ async def main():
             await page.screenshot(path="/tmp/alerts-task-card.png")
             await page.evaluate("closeSheet()")
 
+            # --- подія банку тем: свій макет, не як таск (Олег, 11.08) ---
+            prow = page.locator('.nt-row[data-npromise="551"]')
+            check("підпис типу відрізняє обіцянку від таска",
+                  "Лис оновив обіцянку · виконано" in await prow.inner_text())
+            check("назва обіцянки жирним",
+                  await prow.locator(".tr-who").inner_text()
+                  == "Відновити газопостачання по вул. Шосейній")
+            check("новина-доказ окремим рядком із мініатюрою",
+                  await prow.locator(".nt-news .nt-thumb img").count() == 1
+                  and "Газопостачання по вул. Шосейній відновили"
+                      in await prow.locator(".nt-news-t").inner_text())
+            # Тап по НОВИНІ відкриває новину, а не картку
+            await prow.locator(".nt-news").click()
+            await page.wait_for_timeout(200)
+            check("тап по новині відкрив новину і лишив екран на місці",
+                  await page.evaluate("window.__opened")
+                  == ["https://nikvesti.com/news/321999-gaz"]
+                  and await page.evaluate("STATE.view") == "alerts")
+            await page.evaluate("window.__opened = []")
+
+            # --- фільтр стрічки: типи з числами ---
+            chips = await page.locator(".nt-filter").inner_text()
+            check("над стрічкою чипи типів із числами",
+                  "Всі · 3" in chips and "Завдання · 1" in chips
+                  and "Обіцянки · 1" in chips and "Звітність · 1" in chips)
+            await page.click('[data-nf="promise"]')
+            check("фільтр «Обіцянки» лишає лише обіцянки",
+                  await page.locator(".nt-row").count() == 1
+                  and await page.locator('.nt-row[data-npromise="551"]').count() == 1)
+            await page.click('[data-nf="all"]')
+            check("«Всі» повертає всю стрічку",
+                  await page.locator(".nt-row").count() == 3)
+
             # --- тап по автозакриттю банку тем відкриває картку ОБІЦЯНКИ ---
             # «Лис закрив як виконано» — автоматичне рішення, і перше, що з
             # ним роблять, — дивляться на ланцюг і цитати, а не на новину
-            await page.click('.nt-row[data-npromise="551"]')
+            await page.click('.nt-row[data-npromise="551"] .tr-who')
             await page.wait_for_selector(".pr-detail", timeout=5000)
             check("подія банку тем веде в картку обіцянки",
                   await page.evaluate("STATE.view") == "promise"

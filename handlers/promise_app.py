@@ -674,6 +674,10 @@ def take(commitment_id, person):
         body=row.get("title"),
         object_type="promise", object_id=row["id"],
         dedup_key=f"promise_take:{row['id']}:{person}",
-        meta={"promise_id": row["id"], "person": person,
+        # promise/label/title — макет події банку тем у стрічці (як у
+        # promise_fulfil): підпис типу + назва обіцянки жирним
+        meta={"promise": True, "label": f"{person} бере тему з банку",
+              "title": row.get("title"),
+              "promise_id": row["id"], "person": person,
               "state": _state(row, int(time.time()))})
     return {"ok": True, "title": row.get("title")}

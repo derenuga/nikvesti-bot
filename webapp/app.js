@@ -2791,6 +2791,44 @@ const NOTIF_ICON = {
    два стани, і все, що не «зроблено», малювалось червоним хрестом */
 const NOTIF_GOOD = new Set(["task_done", "impact_credit"]);
 
+/* Старі події банку тем (до meta) несуть назву обіцянки в заголовку після
+   «Лис закрив як виконано: …» — підпис типу відновлюється з kind */
+const PROMISE_LABELS = {
+  promise_closed: "Лис оновив обіцянку",
+  promise_closure: "Схоже, виконано — перевір",
+  promise_star: "Нова згадка у твоїй темі",
+};
+
+/* Подія банку тем у стрічці. Окремий макет, бо в загальному вона читалась
+   як таск (Олег, 11.08: «кажется будто это про таск "виконано"»): дрібний
+   підпис типу («Лис оновив обіцянку · виконано»), назва обіцянки жирним,
+   під нею новина-доказ окремим рядком із мініатюрою — тап по новині
+   відкриває її, тап по решті рядка — картку обіцянки. */
+function promiseNotifInner(n, when, glue) {
+  const pm = n.meta && n.meta.promise ? n.meta : null;
+  let label = pm ? pm.label : PROMISE_LABELS[n.kind] || "Обіцянка з банку тем";
+  let title = pm ? pm.title : n.title;
+  if (!pm && PROMISE_LABELS[n.kind]) {
+    const i = title.indexOf(": ");
+    if (i > 0) title = title.slice(i + 2);
+    if (n.kind === "promise_closed")
+      label += n.title.includes("зірвано") ? " · зірвано" : " · виконано";
+  }
+  const news = pm && pm.news_title;
+  return `
+    <span class="st-mark note">${icon(n.kind === "promise_star" ? "star" : "bell")}</span>
+    <span class="tr-main">
+      <span class="nt-kind">${esc(label)}</span>
+      <span class="tr-who">${esc(title)}</span>
+      ${n.body ? `<span class="tr-what">${glue(n.body)}</span>` : ""}
+      ${news ? `<span class="nt-news"${n.url ? ` data-ext="${esc(n.url)}"` : ""}>
+          ${pm.image ? `<span class="nt-thumb">${imgHtml(pm.image)}</span>` : ""}
+          <span class="nt-news-t">${esc(news)}</span>
+        </span>` : ""}
+      <span class="nt-by"><span class="nt-when">${esc(when)}</span></span>
+    </span>`;
+}
+
 function notifRow(n) {
   const when = n.created_at ? shortDate(n.created_at) : "";
   const m = n.meta || null;
@@ -2827,12 +2865,13 @@ function notifRow(n) {
   if (n.object_type === "task" && n.object_id)
     return `<button class="${cls}" data-task="${esc(n.object_id)}"${
       n.url ? ` data-taskurl="${esc(n.url)}"` : ""}>${inner}</button>`;
-  // Подія банку тем («Лис закрив як виконано», зірочка, «бере тему») — те
-  // саме: тап відкриває КАРТКУ обіцянки з ланцюгом і цитатами, а не лінк на
-  // новину. Перше, що треба зробити з автоматичним рішенням, — подивитись на
-  // підставу, і новина-доказ лежить у самій картці.
+  // Подія банку тем («Лис закрив як виконано», зірочка, «бере тему») — свій
+  // макет і тап у КАРТКУ обіцянки з ланцюгом і цитатами: перше, що роблять з
+  // автоматичним рішенням, — дивляться на підставу. Новина-доказ — рядком із
+  // мініатюрою всередині події, тап по ній відкриває саму новину.
   if (n.object_type === "promise" && n.object_id)
-    return `<button class="${cls}" data-npromise="${esc(n.object_id)}">${inner}</button>`;
+    return `<button class="${cls}" data-npromise="${esc(n.object_id)}">${
+      promiseNotifInner(n, when, glue)}</button>`;
   return n.url
     ? `<a class="${cls}" href="${esc(n.url)}" data-ext="${esc(n.url)}">${inner}</a>`
     : `<div class="${cls}">${inner}</div>`;
@@ -4699,6 +4738,43 @@ function absenceRequestCard(r) {
     </div>`;
 }
 
+/* Типи стрічки для фільтра (Олег, 11.08: «добавь вверху сповищень
+   фільтрацію: таски (5), обіцянки (2)»). Групуємо за СУТТЮ події, а не за
+   kind: «бере тему з банку» їде як task_assigned, але це подія обіцянки —
+   розрізняє object_type. */
+const NOTIF_TABS = [
+  ["task", "Завдання", (n) => n.object_type === "task"],
+  ["promise", "Обіцянки", (n) => n.object_type === "promise"],
+  ["report", "Звітність", (n) => n.kind === "report_deadline"],
+  ["absence", "Відпустки", (n) => (n.kind || "").startsWith("absence")],
+  ["impact", "Імпакти", (n) => n.kind === "impact_credit"],
+];
+
+function notifTabOf(n) {
+  const t = NOTIF_TABS.find(([, , match]) => match(n));
+  return t ? t[0] : "other";
+}
+
+/* Чипи над стрічкою: лише групи, у яких щось є, і лише коли груп більше
+   однієї — фільтр з одного пункту був би шумом. Обраний фільтр без подій
+   (усе відфільтрованого типу прочитали й воно випало з вибірки) тихо
+   скидається на «Всі». */
+function notifFilterHtml(feed) {
+  const counts = {};
+  feed.forEach((n) => { const k = notifTabOf(n); counts[k] = (counts[k] || 0) + 1; });
+  const groups = NOTIF_TABS.map(([k, label]) => [k, label]).filter(([k]) => counts[k]);
+  if (counts.other) groups.push(["other", "Інше"]);
+  if (groups.length < 2) { STATE.notifFilter = "all"; return { chips: "", shown: feed }; }
+  const filter = counts[STATE.notifFilter] ? STATE.notifFilter : "all";
+  STATE.notifFilter = filter;
+  const chips = `<div class="chips nt-filter">
+    <button class="chip${filter === "all" ? " on" : ""}" data-nf="all">Всі · ${feed.length}</button>
+    ${groups.map(([k, label]) => `<button class="chip${filter === k ? " on" : ""}"
+      data-nf="${k}">${label} · ${counts[k]}</button>`).join("")}</div>`;
+  const shown = filter === "all" ? feed : feed.filter((n) => notifTabOf(n) === filter);
+  return { chips, shown };
+}
+
 function paintAlerts() {
   const list = STATE.pending || [];
   const feed = STATE.notifs || [];
@@ -4706,6 +4782,7 @@ function paintAlerts() {
   if (!box) return;
   const late = overdueTasks();
   const asks = STATE.absenceRequests || [];
+  const nf = notifFilterHtml(feed);
   box.innerHTML = `
     ${asks.length
       ? `<div class="dept-title">Просять відсутність · ${asks.length}</div>
@@ -4722,7 +4799,8 @@ function paintAlerts() {
            усе, що вийшло, Лис розібрав сам.</div>`}
     ${feed.length
       ? `<div class="dept-title">Що сталось</div>
-         <div class="soft-card">${feed.map(notifRow).join("")}</div>`
+         ${nf.chips}
+         <div class="soft-card">${nf.shown.map(notifRow).join("")}</div>`
       : ""}
     <div class="soft-card">
       <div class="sc-t">Летить у чати</div>
@@ -4745,6 +4823,10 @@ function paintAlerts() {
       syncAlertsBadge();
     } catch (e) { toast(e.message); }
   };
+  box.querySelectorAll("[data-nf]").forEach((b) => b.onclick = () => {
+    STATE.notifFilter = b.dataset.nf;
+    paintAlerts();
+  });
   box.querySelectorAll("[data-aryes]").forEach((b) =>
     b.onclick = () => decideAbsence(+b.dataset.aryes, true));
   box.querySelectorAll("[data-arno]").forEach((b) => b.onclick = async () => {
@@ -7384,6 +7466,9 @@ $("content").addEventListener("click", (e) => {
     nav("project", +proj.dataset.project);
     return;
   }
+  // Лінк на новину всередині рядка-кнопки (подія банку тем): його відкриває
+  // документний слухач data-ext, а рядок-власник не має вести ще й у картку
+  if (e.target.closest("[data-ext]")) return;
   const task = e.target.closest("[data-task]");
   // Без перевірки на менеджера: журналістці зі стрічки подій відкривається
   // її власна картка (read-only, taskViewSheet) — роль вирішує openTaskCard
