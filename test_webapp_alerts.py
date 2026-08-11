@@ -130,8 +130,23 @@ NOTIFS = [
 STUB = """
 window.__posts = [];
 window.__reads = [];
+window.__gets = [];
 window.__opened = [];
 window.__confirmAnswer = true;
+// Таск для картки зі стрічки: подія «виконано» вказує на нього object_id
+window.TASK_CARD = {
+  id: 71, person: "Юлія Бойченко", creator: "Катерина Середа",
+  project_id: 43, project_name: "Стійкість локального медіа",
+  partner_name: "IWPR", platform: null, type: "news",
+  theme_id: 1, theme_name: "Критичні інформаційні потреби", qty: 3,
+  note: "три новини про потреби громад", deadline: "2026-07-25",
+  status: "done", auto_done: true, created_at: "2026-07-01T10:00:00+03:00",
+  done_at: "2026-07-26T18:20:00+03:00", done_count: 3,
+  credit: "Лис зарахував сам",
+  matches: [{ id: 601, title: "Хто виграв тендери на укриття",
+              url: "https://nikvesti.com/news/economics/321844-tendery",
+              published: "2026-07-26", source: "site" }],
+};
 window.Telegram = { WebApp: {
   initData: "stub", colorScheme: "light",
   ready(){}, expand(){}, onEvent(){}, disableVerticalSwipes(){},
@@ -177,6 +192,12 @@ window.fetch = async (url, opts = {}) => {
     return json({ ok: true, unread: 0 });
   }
   let m;
+  // Картка завдання зі стрічки подій: таск 71 закритий давно, у bootstrap
+  // його немає — апка доганяє окремим GET (як справжній /api/tasks/{id})
+  if ((m = url.match(/^\\/api\\/tasks\\/(\\d+)$/)) && (!opts.method || opts.method === "GET")) {
+    window.__gets.push(url);
+    return json({ task: window.TASK_CARD });
+  }
   if ((m = url.match(/^\\/api\\/tasks\\/(\\d+)$/)) && opts.method === "PATCH") {
     window.__posts.push({ patch: +m[1], body });
     const t = (STATE.tasks || []).find((x) => x.id === +m[1]) || { id: +m[1] };
@@ -284,6 +305,32 @@ async def main():
                   await page.evaluate("window.__reads") == [{"all": True}])
             check("лічильник меню лишився тільки за спірними",
                   await page.inner_text('#bottomnav [data-view="alerts"] .bn-badge') == "3")
+
+            # --- тап по події «виконано» відкриває КАРТКУ завдання ---
+            # Олег, 11.08: з рядка стрічки не видно ні хто ставив, ні проєкту,
+            # ні донора — а тап вів лінком на публікацію. Тепер тап відкриває
+            # картку таска, лінк на публікацію живе в ній серед зарахованих.
+            await page.click('.nt-row[data-task="71"]')
+            await page.wait_for_selector("#sheet h2", timeout=5000)
+            card = await page.inner_text("#sheet")
+            check("тап по події НЕ повів на зовнішній лінк",
+                  await page.evaluate("window.__opened") == [])
+            check("таск, якого немає в bootstrap, доїхав окремим GET",
+                  await page.evaluate("window.__gets") == ["/api/tasks/71"])
+            check("видно, чиє завдання", "Юлія Бойченко" in card)
+            check("видно донора і проєкт",
+                  "IWPR" in card and "Стійкість локального медіа" in card)
+            check("видно стан і хто зарахував",
+                  "Виконано" in card and "Лис зарахував сам" in card)
+            check("видно, хто поставив завдання", "поставив(ла) Катерина" in card)
+            check("нотатка редактора на місці",
+                  "три новини про потреби громад" in card)
+            check("лінк на зараховану публікацію — у картці",
+                  await page.locator(
+                      '#sheet [data-ext="https://nikvesti.com/news/economics/321844-tendery"]'
+                  ).count() == 1)
+            await page.screenshot(path="/tmp/alerts-task-card.png")
+            await page.evaluate("closeSheet()")
 
             # --- пост Telegram: автора немає, питаємо кому і куди ---
             check("пост каналу підписаний як пост, а не як автор",

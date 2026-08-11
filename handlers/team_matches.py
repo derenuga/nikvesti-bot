@@ -275,6 +275,10 @@ def attach_progress(tasks):
             for m in items
         ]
         t["done_count"] = len(items)
+        # «Лис зарахував сам» / «підтвердив(ла) Катерина» — картці таска
+        # треба те саме, що й стрічці подій, і рахується воно з тих самих
+        # матчів (status + decided_by), тож словами діляться однією функцією
+        t["credit"] = _credit(items) if items else None
     return tasks
 
 

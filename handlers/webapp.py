@@ -456,6 +456,27 @@ async def api_tasks_patch(request):
     return web.json_response({"task": task})
 
 
+def _task_card_blocking(task_id):
+    task = team_tasks.get_task(task_id)
+    if task:
+        team_matches.attach_progress([task])
+    return task
+
+
+async def api_task_get(request):
+    """Один таск із прогресом — для картки зі стрічки подій. bootstrap тримає
+    лише свіже (закриті за останні 30 днів), а подія «виконано» у стрічці може
+    вказувати на старіший таск — картка доганяє його цим запитом.
+    Журналістці віддаються тільки її власні завдання."""
+    person, info, _ = await _authenticate(request)
+    task = await _in_session(_task_card_blocking, int(request.match_info["task_id"]))
+    if not task:
+        raise web.HTTPNotFound(text="Такого завдання вже немає")
+    if not info["manager"] and task["person"] != person:
+        raise web.HTTPForbidden(text="Це завдання іншої людини")
+    return web.json_response({"task": task})
+
+
 def _set_status_blocking(task_id, person, status):
     """Статус руками + свіжий прогрес у відповідь (щоб картка одразу показала
     зараховані публікації, а не чекала наступного bootstrap)."""
@@ -1984,6 +2005,7 @@ async def start_webapp(application):
         web.get("/api/bootstrap", api_bootstrap),
         web.post("/api/tasks", api_tasks_create),
         web.post("/api/tasks/bulk", api_tasks_bulk),
+        web.get("/api/tasks/{task_id:\\d+}", api_task_get),
         web.patch("/api/tasks/{task_id:\\d+}", api_tasks_patch),
         web.post("/api/themes", api_themes_create),
         web.patch("/api/themes/{theme_id:\\d+}", api_themes_patch),
