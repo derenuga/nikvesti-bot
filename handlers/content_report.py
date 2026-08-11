@@ -167,10 +167,14 @@ def list_publications(project_id, start_ts, end_ts):
     pubs = []
     for r in rows[:MAX_PUBLICATIONS]:
         dt = datetime.fromtimestamp(int(r["published"]), KYIV_TZ)
-        site_fb = (r.get("site_fb") or "").strip() if fb_col else ""
-        site_tg = (r.get("site_tg") or "").strip() if tg_col else ""
-        m_fb = _FB_URL_RE.search(site_fb)
-        m_tg = _TG_URL_RE.search(site_tg)
+        # Колонка вгадана за назвою, тож тип значення — не факт: у nodes
+        # поруч живуть числові прапорці з тим самим префіксом (реальний
+        # інцидент 11.08: int замість URL поклав увесь збір звіту).
+        # Строкове і схоже на URL відповідної мережі — інакше ігноруємо.
+        site_fb = r.get("site_fb") if fb_col else None
+        site_tg = r.get("site_tg") if tg_col else None
+        m_fb = _FB_URL_RE.search(site_fb) if isinstance(site_fb, str) else None
+        m_tg = _TG_URL_RE.search(site_tg) if isinstance(site_tg, str) else None
         pubs.append({
             "id": int(r["id"]),
             "title": (r.get("title_ua") or r.get("title") or "").strip(),
