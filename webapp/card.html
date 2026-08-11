@@ -264,10 +264,11 @@
     $("scrape").disabled = true;
     $("scrape").textContent = "Читаю…";
     try {
-      let data;
+      let data, finalUrl = url;
       if (SAME_ORIGIN) {
         const resp = await fetch(url);
         if (!resp.ok) throw new Error("Сторінка не читається: " + resp.status);
+        if (resp.url) finalUrl = resp.url;
         data = parseArticleClient(await resp.text());
         if (!data.title && !data.images.length)
           throw new Error("Схоже, це не сторінка матеріалу");
@@ -279,8 +280,11 @@
         });
         data = await resp.json();
         if (!resp.ok) throw new Error(data.error || resp.statusText);
+        if (data.final_url) finalUrl = data.final_url;
       }
-      applyArticle(url, data);
+      // У полі лишається канонічний URL після редіректів (тип/рубрика/slug)
+      $("url").value = finalUrl;
+      applyArticle(finalUrl, data);
     } catch (e) {
       $("err").textContent = String(e.message || e);
       $("err").hidden = false;

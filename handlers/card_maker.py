@@ -183,15 +183,18 @@ async def api_scrape(request):
         resp = requests.get(url, timeout=FETCH_TIMEOUT,
                             headers={"User-Agent": _UA})
         resp.raise_for_status()
-        return resp.text
+        return resp.text, resp.url
 
     try:
-        html_text = await asyncio.to_thread(fetch)
+        html_text, final_url = await asyncio.to_thread(fetch)
     except requests.RequestException as e:
         return web.json_response(
             {"error": f"Не вдалося прочитати сторінку: {e}"}, status=502)
 
     data = parse_article(html_text)
+    # Фінальний URL після редіректів: nikvesti.com/<id> → повний лінк зі
+    # slug-ом — сторінка підставить його в поле замість короткого
+    data["final_url"] = final_url if _host_allowed(final_url) else url
     if not data["title"] and not data["images"]:
         return web.json_response(
             {"error": "Схоже, це не сторінка матеріалу — ні заголовка, "
