@@ -54,7 +54,8 @@ except ImportError:  # локальний dev без aiohttp — модуль п
 from handlers import (
     bot_db, card_maker, content_report, impact_archive, team_analytics,
     team_contacts, team_kpi, team_matches, team_notifications,
-    team_publications, team_projects, team_roster, team_tasks, team_todos,
+    team_publications, team_projects, team_reviews, team_roster, team_tasks,
+    team_todos,
 )
 from handlers.helpers import normalize_https_url
 
@@ -1323,6 +1324,58 @@ async def api_publications(request):
     return web.json_response(data)
 
 
+# ---------- Квартальна оцінка редактора ----------
+#
+# Менеджерське й ТІЛЬКИ менеджерське: журналістка своєї оцінки не бачить —
+# і це не приховування, а умова, за якої оцінку взагалі можна ставити чесно
+# (спека COMPENSATION_ADVISOR.md, §«Оцінку і гроші розводять у часі»).
+# Що з оцінки казати людині — вирішує редакторка в розмові, а не екран.
+
+async def api_reviews(request):
+    """Зведення за квартал: ?offset=0 (поточний), -1 (попередній) …
+
+    Глибина обмежена вісьмома кварталами назад: це два роки, далі оцінки
+    просто немає, а від'ємний offset без межі дозволив би згенерувати запит
+    за 1900 рік."""
+    person, info, _ = await _require_manager(request)
+    try:
+        offset = max(-8, min(0, int(request.query.get("offset", "0"))))
+    except ValueError:
+        offset = 0
+    data = await _in_session(team_reviews.review_payload, offset)
+    return web.json_response(data)
+
+
+async def api_review_save(request):
+    """Зберегти оцінку однієї людини. Тіло: person, offset, чипи вимірів,
+    note, або clear=true — зняти оцінку цілком.
+
+    Виміри, яких у тілі немає, НЕ чіпаються: екран шле по одному чипу на тап,
+    і повний перезапис стирав би сусідні відповіді."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    who = payload.get("person")
+    if who not in team_roster.ROSTER or team_roster.ROSTER[who]["manager"]:
+        raise web.HTTPBadRequest(text="Невідома людина")
+    try:
+        offset = max(-8, min(0, int(payload.get("offset", 0))))
+    except (TypeError, ValueError):
+        offset = 0
+
+    if payload.get("clear"):
+        await _in_session(team_reviews.clear_review, who, offset)
+        return web.json_response({"cleared": True})
+
+    dims = {k: payload[k] for k in team_reviews.DIMENSION_KEYS if k in payload}
+    note = payload.get("note")
+    saved = await _in_session(
+        lambda: team_reviews.save_review(
+            who, person, offset, note if isinstance(note, str) else None, **dims))
+    if not saved:
+        raise web.HTTPBadRequest(text="Нічого зберігати")
+    return web.json_response({"review": saved})
+
+
 # ---------- Блокнот (особистий список справ) ----------
 #
 # Приватний повністю: person береться з initData і в кожному запиті йде у
@@ -1925,6 +1978,8 @@ async def start_webapp(application):
         web.delete("/api/impacts/{impact_id:\\d+}", api_impact_delete),
         web.post("/api/impacts/{impact_id:\\d+}/retry", api_impact_retry),
         web.post("/api/impacts/{impact_id:\\d+}/send", api_impact_send),
+        web.get("/api/reviews", api_reviews),
+        web.put("/api/reviews", api_review_save),
         web.get("/api/todos", api_todos),
         web.post("/api/todos", api_todo_create),
         web.patch("/api/todos/{todo_id:\\d+}", api_todo_patch),
