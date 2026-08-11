@@ -2197,6 +2197,7 @@ function renderProject() {
         <span class="chev" id="drive-edit" style="margin-left:auto">${icon("edit", "ic chev")}</span>
       </button>`
       : `<button class="add-theme" id="drive-attach" style="margin-top:10px">${icon("folder")} Прикріпити папку Google Drive</button>`}
+    <button class="add-theme" id="content-report" style="margin-top:2px">${icon("file-text")} Контент-звіт за місяць</button>
     <div class="f-label">Тематики — тап, щоб поставити таски</div>
     ${p.themes.map((t) => `
       <div class="theme-row tappable" data-bulk-theme="${t.id}">
@@ -2226,6 +2227,7 @@ function renderProject() {
   const bulkNothing = $("bulk-nothing");
   if (bulkNothing) bulkNothing.onclick = () => nav("bulk", { projectId: p.id, themeId: null });
   $("add-dl").onclick = () => dlSheet(p, null);
+  $("content-report").onclick = () => reportSheet(p);
   $("content").querySelectorAll("[data-edit-dl]").forEach((b) =>
     b.onclick = () => dlSheet(p, p.deadlines.find((d) => d.id === +b.dataset.editDl)));
   if (p.drive_url) {
@@ -2236,6 +2238,37 @@ function renderProject() {
   } else {
     $("drive-attach").onclick = () => driveSheet(p);
   }
+}
+
+/* Контент-звіт проєкту: пікер місяця з к-стю публікацій (місяці без
+   публікацій вимкнені), тап → збір у фоні, .html прилітає в приват. */
+function reportSheet(p) {
+  openSheet(`
+    <h2>Контент-звіт</h2>
+    <div class="h-sub">${esc(p.partner ? p.partner + " · " : "")}${esc(p.name)}</div>
+    <div id="rep-months" class="left-hint" style="margin-top:10px">Рахую публікації по місяцях…</div>
+    <div class="sheet-actions"><button class="sbtn" id="rep-cancel">Закрити</button></div>`);
+  $("rep-cancel").onclick = closeSheet;
+  api(`/api/projects/${p.id}/report_months`).then((res) => {
+    const box = $("rep-months");
+    if (!res.months.length) { box.textContent = "Публікацій у проєкті ще немає."; return; }
+    box.className = "";
+    box.innerHTML = res.months.map((m) => `
+      <button class="theme-row ${m.count ? "tappable" : ""}" data-rep-ym="${m.ym}" ${m.count ? "" : "disabled"}>
+        <span class="tn">${esc(m.label)}</span>
+        <span class="tc">${m.count ? m.count + " публ." : "·"}</span>
+      </button>`).join("");
+    box.querySelectorAll("[data-rep-ym]").forEach((b) => b.onclick = async () => {
+      b.disabled = true;
+      try {
+        await api(`/api/projects/${p.id}/report`, {
+          method: "POST", body: JSON.stringify({ month: b.dataset.repYm }) });
+        haptic("success");
+        closeSheet();
+        toast("Збираю звіт — файл прийде в приват із Лисом 🦊");
+      } catch (e) { toast(e.message); b.disabled = false; }
+    });
+  }).catch((e) => { $("rep-months").textContent = e.message; });
 }
 
 function driveSheet(p) {
