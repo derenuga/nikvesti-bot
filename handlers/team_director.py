@@ -76,7 +76,16 @@ def _stability(person, months):
 
     Беремо готову помісячну історію team_kpi: там уже враховані ставка,
     відсутності й вага статті ×3, тож картка не може розійтися з кружечком у
-    «Звіті». Місяць вважається закритим, якщо ВСІ норми того місяця виконані."""
+    «Звіті». Місяць вважається закритим, якщо ВСІ норми того місяця виконані.
+
+    Поточний місяць у знаменник НЕ йде, поки не закритий. 11 серпня людина
+    фізично не могла закрити серпень, і рахувати його провалом означало б
+    щомісяця першого числа псувати картку кожному. Але якщо норму вже набрано —
+    місяць рахується одразу: факт лише росте, закриття не відкотиться.
+
+    Разом із `done` віддаємо `pct` — саме ту цифру, що малює стовпчик у «Звіті».
+    Без неї картка казала б «не закрито» однаково про 90% і про 35%, і два
+    екрани суперечили б одне одному (зауваження Олега 11.08)."""
     hist = team_kpi.kpi_person_history(person, months=months)
     if not hist or not hist.get("has_norms"):
         return {"applies": False, "reason": "норм не ставили"}
@@ -88,12 +97,16 @@ def _stability(person, months):
             "pct": m.get("overall_pct"),
             "done": bool(norms) and all(n.get("done") for n in norms),
             "empty": not norms,          # звільнена того місяця / вся у відпустці
+            "running": bool(m.get("is_current")),
         })
-    counted = [m for m in out if not m["empty"]]
+    counted = [m for m in out if not m["empty"] and (m["done"] or not m["running"])]
+    running = next((m for m in out if m["running"] and not m["empty"]
+                    and not m["done"]), None)
     return {
         "applies": True,
         "closed": sum(1 for m in counted if m["done"]),
         "of": len(counted),
+        "running": running["label"] if running else None,
         "months": out,
         "site_db": hist.get("site_db", True),
     }

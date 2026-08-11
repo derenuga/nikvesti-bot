@@ -461,6 +461,17 @@ function backTarget() {
   }
 }
 
+/* Підпис намальованої кнопки «назад». Вона мусить називати те місце, куди
+   реально поверне: Головна — це три різні вкладки, і «Звіт» на екрані,
+   відкритому з «Аналітики», був би неправдою. Для решти лишається переданий
+   запасний підпис — там, де попередник завжди один. */
+const HOME_TAB_TITLES = { analytics: "Аналітика", tasks: "Завдання", report: "Звіт" };
+function backName(fallback) {
+  const t = backTarget();
+  if (t && t[0] === "home") return HOME_TAB_TITLES[STATE.homeView] || fallback;
+  return fallback;
+}
+
 function sheetOpen() {
   return !$("sheet-backdrop").classList.contains("hidden");
 }
@@ -5276,7 +5287,7 @@ async function renderPersonHistory() {
   const person = STATE.currentPerson;
   const entry = personEntry(person);
   $("content").innerHTML = `
-    <button class="back" data-nav="home">${icon("chevron-left")} Звіт</button>
+    <button class="back" data-back>${icon("chevron-left")} ${esc(backName("Звіт"))}</button>
     <div class="who">
       ${avatar(person, entry, 56)}
       <div><div class="wn">${esc(person)}</div>
@@ -6124,6 +6135,34 @@ function na(block) {
   return `<div class="dc-na">${esc(block.reason || "не застосовується")}</div>`;
 }
 
+/* Висота мінісмуги місяця в картці. Маленька — це підсумок, а не графік. */
+const DC_BAR_H = 30;
+
+/* Місяць у смузі стабільності — ТОЙ САМИЙ стовпчик, що в «Звіті», лише
+   маленький: і висота, і колір беруться з того самого overall_pct тією самою
+   pctColor. Доти картка фарбувала місяць у два кольори «закрито / не закрито»,
+   і травень виходив жовтим тут при зеленому 90% там — два екрани про той самий
+   місяць казали різне (Олег, 11.08). Закриття лишається фактом, але його
+   показує ✓ біля назви, а не колір: 90% і 35% не одне й те саме, хоч норму не
+   закрито в обох. */
+function dirMonth(m) {
+  const mon = esc(m.label.split(" ")[0]);
+  if (m.empty) {
+    return `<div class="dc-mon"><span class="dc-mp">—</span>
+      <span class="dc-mt" style="height:${DC_BAR_H}px"></span>
+      <span class="dc-ml">${mon}</span></div>`;
+  }
+  const color = pctColor(m.pct) || "var(--line)";
+  const h = m.pct == null ? 0 : Math.max(3, Math.min(100, m.pct) / 100 * DC_BAR_H);
+  return `<div class="dc-mon${m.running ? " run" : ""}">
+    <span class="dc-mp" style="color:${m.pct == null ? "var(--muted)" : color}">${
+      m.pct == null ? "—" : m.pct + "%"}</span>
+    <span class="dc-mt" style="height:${DC_BAR_H}px">
+      <i style="height:${h.toFixed(0)}px;background:${color}"></i></span>
+    <span class="dc-ml${m.done ? " ok" : ""}">${mon}${m.done ? " ✓" : ""}</span>
+  </div>`;
+}
+
 function paintDirCard() {
   const c = STATE.dirCard;
   const body = $("dc-body");
@@ -6144,11 +6183,11 @@ function paintDirCard() {
     <div class="soft-card">
       ${st.applies ? `
         <div class="dc-kv"><span>Норма закрита</span>
-          <b class="${st.closed === st.of ? "g" : ""}">${st.closed} із ${st.of}
+          <b class="${st.of && st.closed === st.of ? "g" : ""}">${st.closed} із ${st.of}
             ${plural(st.of, "місяця", "місяців", "місяців")}</b></div>
-        <div class="dc-months">${st.months.map((m) => `
-          <i class="${m.empty ? "" : m.done ? "ok" : "no"}"
-             title="${esc(m.label)}">${esc(m.label.split(" ")[0])}</i>`).join("")}</div>`
+        <div class="dc-months">${st.months.map(dirMonth).join("")}</div>
+        ${st.running ? `<div class="dc-runs">${esc(st.running)} ще триває —
+          цей місяць не рахуємо</div>` : ""}`
         : na(st)}
     </div>
     ${out.applies ? `<div class="soft-card">
