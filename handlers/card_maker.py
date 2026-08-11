@@ -67,7 +67,7 @@ def parse_article(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
 
     result = {"title": "", "description": "", "date": "", "images": [],
-              "is_ad": False}
+              "is_ad": False, "quotes": []}
 
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
@@ -117,6 +117,13 @@ def parse_article(html_text):
         if _host_allowed(src) and _img_key(src) not in seen:
             seen.add(_img_key(src))
             result["images"].append({"url": src, "caption": ""})
+
+    # Цитати зі статті (blockquote) — для шаблону «Цитата»: зручно виділити
+    # й скопіювати потрібний фрагмент, не ходячи на сайт
+    for bq in soup.find_all("blockquote"):
+        text = bq.get_text(" ", strip=True)
+        if len(text) > 20 and text not in result["quotes"]:
+            result["quotes"].append(text)
 
     # Фолбеки, якщо JSON-LD зник або неповний
     if not result["title"]:

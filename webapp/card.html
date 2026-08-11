@@ -60,6 +60,12 @@
   textarea::placeholder { color: #a7b2c9; }
   #subtitle { min-height: 56px; }
   label.caption-label { display: block; margin-top: 14px; margin-bottom: 6px; font-size: 13px; color: var(--muted); }
+  .bq {
+    border-left: 3px solid var(--brand); padding: 8px 12px; margin: 0 0 10px;
+    font-size: 14px; line-height: 1.5; color: var(--ink); background: #f8faff;
+    border-radius: 0 10px 10px 0; user-select: text; cursor: text;
+  }
+  .bq:last-child { margin-bottom: 0; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; user-select: none; }
   .chip {
     padding: 5px 9px; border-radius: 8px; background: #eef2fb; color: var(--ink);
@@ -161,6 +167,12 @@
       <div class="hint">Фото на картці можна тягнути мишкою і зумити коліщатком чи повзунком нижче — синій блок лишається на місці, кадр «кропиться» сам.</div>
     </div>
 
+    <div class="panel" id="quotesPanel" hidden>
+      <h2>Цитати зі статті</h2>
+      <div id="quotesList"></div>
+      <div class="hint">Це просто текст: виділи потрібний шматок і скопіюй у поле цитати нижче.</div>
+    </div>
+
     <div class="panel" id="textPanel" hidden>
       <h2 id="textTitle">3 · Заголовок</h2>
       <textarea id="headline" spellcheck="false"></textarea>
@@ -215,6 +227,7 @@
     scheme: 0,               // індекс у SCHEMES
     words: [],               // [{text, hl}] або {br:true}
     images: [],              // [{url, caption}]
+    quotes: [],              // blockquote зі статті — для шаблону «Цитата»
     tpl: 1,                  // шаблон: 1 — одне фото, 2 — два поруч
     // Кожен слот — своє фото і свій псевдокроп; шаблон 1 живе у slots[0]
     slots: [
@@ -298,7 +311,7 @@
   // прямо з nikvesti.com без бекенда. Джерело те саме: JSON-LD NewsArticle.
   function parseArticleClient(htmlText) {
     const doc = new DOMParser().parseFromString(htmlText, "text/html");
-    const out = { title: "", description: "", images: [], caption_suggestion: "", is_ad: false };
+    const out = { title: "", description: "", images: [], caption_suggestion: "", is_ad: false, quotes: [] };
     for (const s of doc.querySelectorAll('script[type="application/ld+json"]')) {
       let data;
       try { data = JSON.parse(s.textContent); } catch { continue; }
@@ -317,6 +330,10 @@
         if (u) out.images.push({ url: u, caption: (im.caption || "").trim() });
       }
       break;
+    }
+    for (const bq of doc.querySelectorAll("blockquote")) {
+      const t = (bq.textContent || "").replace(/\s+/g, " ").trim();
+      if (t.length > 20 && !out.quotes.includes(t)) out.quotes.push(t);
     }
     // Фото з тіла статті — друге джерело: буває, що JSON-LD без image,
     // а «оригінал» без розмірного префікса не існує (стаття 322051)
@@ -362,6 +379,8 @@
     S.articleId = m ? m[1] : "card";
     setHeadline(data.title || "");
     S.sub = ""; $("subtitle").value = "";
+    S.quotes = data.quotes || [];
+    renderQuotesPanel();
     // Рекламна стаття (AdvertiserContentArticle) сама вмикає плашку
     S.adOn = !!data.is_ad;
     $("adOn").checked = S.adOn;
@@ -426,6 +445,19 @@
     if (S.tpl === 2 && !S.slots[1 - si].photo && S.slotImg[1 - si] < 0) setActive(1 - si);
     else syncZoomUI();
     markThumbs();
+  }
+
+  // Панель цитат видно лише в шаблоні «Цитата» і лише коли вони знайшлись
+  function renderQuotesPanel() {
+    const box = $("quotesList");
+    box.textContent = "";
+    S.quotes.forEach((q) => {
+      const el = document.createElement("p");
+      el.className = "bq";
+      el.textContent = q;
+      box.appendChild(el);
+    });
+    $("quotesPanel").hidden = !(S.tpl === 3 && S.quotes.length);
   }
 
   function markThumbs() {
@@ -561,6 +593,7 @@
     $("textTitle").textContent = quote ? "3 · Цитата" : "3 · Заголовок";
     $("subLabel").textContent = quote ? "Ім'я (жирним над цитатою)" : "Підпис під заголовком (необов'язково)";
     $("subtitle").placeholder = quote ? "Олександр Сєнкевич" : "напр.: Міністр енергетики Денис Шмигаль\nв інтерв'ю POLITICO";
+    renderQuotesPanel();
     if (S.tpl === 2 && !S.slots[1].photo) setActive(1); else setActive(S.tpl === 2 ? S.active : 0);
     clampAll(); markThumbs(); render();
   });
