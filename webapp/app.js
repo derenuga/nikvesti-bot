@@ -5979,8 +5979,8 @@ function paintDirector() {
   body.innerHTML = `
     ${unseeded ? `<div class="dir-seed">
       Історію ще не заводили для ${unseeded} ${plural(unseeded, "людини", "людей", "людей")}.
-      Постав кожному дату останнього перегляду — це разова робота, далі журнал
-      веде себе сам.</div>` : ""}
+      Постав кожному дату останнього перегляду — це разова робота, далі дата
+      оновлюється сама, щойно фіксуєш новий перегляд.</div>` : ""}
     ${segment("data-dirtab", [
       ["people", "Люди"],
       ["attention", `Не забудь про${d.attention.length ? " · " + d.attention.length : ""}`],
@@ -6008,15 +6008,17 @@ function dirAttention(d) {
     return `<div class="empty-hint">Нікого. Усім переглядали умови
       за останні ${d.threshold} місяців.</div>`;
   }
-  return d.attention.map((p) => dirRow(p, true)).join("");
+  return d.attention.map((p) => dirRow(p)).join("");
 }
 
-function dirRow(p, withReason) {
+function dirRow(p) {
   const never = !p.last;
-  // Підпис різний за причиною: «не зафіксовано» — діра в даних, яку закривають
-  // руками, «2 роки» — сигнал. Однаковим сірим це читалось би як одне й те саме
+  // Підпис каже, ЩО з людиною, звичайними словами. Раніше праворуч ще висів
+  // тег — «засіяти» (жаргон розробника, який нікому нічого не каже) або
+  // просто повтор того самого строку. Прибрано: стан видно з тексту й кольору,
+  // а що робити — з того, що рядок відкриває шторку з датою.
   const meta = never
-    ? "не зафіксовано"
+    ? "дату ще не ставили"
     : `${p.gap} тому${p.count > 1 ? ` · переглядів: ${p.count}` : ""}`;
   const late = !never && p.months >= (STATE.director.threshold || 12);
   return `
@@ -6026,9 +6028,6 @@ function dirRow(p, withReason) {
         <b>${esc(p.person)}</b>
         <small class="${never ? "never" : late ? "late" : ""}">${esc(meta)}</small>
       </span>
-      ${withReason && never
-        ? `<span class="dir-tag">засіяти</span>`
-        : late ? `<span class="dir-tag warn">${esc(p.gap)}</span>` : ""}
       <span class="dir-chev">${icon("chevron-right")}</span>
     </button>`;
 }

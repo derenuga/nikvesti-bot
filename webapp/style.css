@@ -1372,11 +1372,6 @@ body.dark .soc-ic.viber { color: #9c8cff; }
    діра в даних, яку закривають руками, а «2 роки» — сигнал про людину */
 .dir-who small.never { font-style: italic; }
 .dir-who small.late { color: var(--warn); }
-.dir-tag {
-  flex: none; background: var(--fill); color: var(--muted);
-  border-radius: 20px; padding: 4px 10px; font-size: 11.5px; font-weight: 700;
-}
-.dir-tag.warn { background: rgba(207, 122, 28, .13); color: var(--warn); }
 .dir-chev { flex: none; color: var(--muted); display: flex; }
 .dir-chev .ic { width: 18px; height: 18px; }
 
