@@ -596,6 +596,13 @@ async def main():
             check("кнопка зелена (good), не червона і не синя",
                   await page.locator("[data-oclose].good").count() == 1
                   and await page.locator("[data-oclose].danger").count() == 0)
+            # Тап по САМІЙ картці (не кнопці) відкриває таск — «зараховано
+            # 9 з 10» на кнопці це цифра, а ЯКІ публікації — видно в таску
+            await page.click('.al-tap[data-task="902"]')
+            await page.wait_for_selector("#sheet h2", timeout=5000)
+            check("тап по картці простроченого відкриває сам таск",
+                  "Зараховано 9 із 10" in await page.inner_text("#sheet"))
+            await page.evaluate("closeSheet()")
             await page.click("[data-oclose]")
             await page.wait_for_timeout(300)
             sent = await page.evaluate("window.__posts.slice(-1)[0]")
