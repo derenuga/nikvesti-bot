@@ -895,6 +895,23 @@ body.dark .tl-bar.c8 { background: #e66767; color: #10202f; }
 /* Рядок стрічки подій. Непрочитане — синя крапка збоку: помітно, але без
    кричущих кольорів, бо це не тривога, а хроніка. */
 .nt-row { text-decoration: none; color: inherit; position: relative; }
+/* Подія банку тем: підпис типу над назвою, синій дзвіночок (не зелена
+   галочка тасків — саме так вони й плутались), новина-доказ із мініатюрою */
+.st-mark.note { background: var(--blue-soft); color: var(--blue); }
+.nt-kind { display: block; font-size: 12px; color: var(--muted); margin-bottom: 1px; }
+.nt-news { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-width: 0; }
+.nt-thumb {
+  width: 46px; height: 32px; border-radius: 7px; overflow: hidden;
+  flex-shrink: 0; background: var(--fill);
+}
+.nt-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.nt-news-t {
+  font-size: 13px; color: var(--blue); min-width: 0;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* Фільтр стрічки: чипи типів із числами */
+.nt-filter { margin: 0 0 10px; }
 /* У стрічці подій рядки НЕ обрізаються в один рядок з «…» — «Аліна Квітко:
    2 новини · Місце…» не каже нічого (Олег, 30.07). До двох рядків. */
 .nt-row .tr-who, .nt-row .tr-what {

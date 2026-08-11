@@ -292,12 +292,15 @@ def _notify(queued, closed_by_bot=False):
       чому теми зникають (Олег, 04.08: «а що він закрив, я навіть не бачу»).
     """
     from handlers.promises import _links_for
+    from handlers.promise_app import _images_for
 
     conn = ep.connect()
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
-            links = _links_for(cur, {p["article_id"] for p in queued})
+            art_ids = {p["article_id"] for p in queued}
+            links = _links_for(cur, art_ids)
+            images = _images_for(cur, art_ids)
     finally:
         conn.close()
     for p in queued:
@@ -305,13 +308,27 @@ def _notify(queued, closed_by_bot=False):
         link = links.get(p["article_id"]) or {}
         word = "виконано" if v.get("state") == "done" else "зірвано"
         head = (f"Лис закрив як {word}" if closed_by_bot else f"Схоже, {word}")
+        # meta — структуровані шматки для стрічки апки: подія про ОБІЦЯНКУ
+        # має читатись інакше, ніж про таск (Олег, 11.08 — «неотличимо від
+        # тасків»): підпис типу, назва обіцянки жирним, новина-доказ окремим
+        # рядком із мініатюрою (og:image уже закешовано в норі — _images_for
+        # нічого не тягне). Заголовок лишається повним — це фолбек для подій,
+        # які читатимуть без meta
+        meta = {
+            "promise": True,
+            "label": (f"Лис оновив обіцянку · {word}" if closed_by_bot
+                      else f"Схоже, {word} — перевір"),
+            "title": p["promise"]["title"],
+            "news_title": link.get("title"),
+            "image": images.get(p["article_id"]),
+        }
         try:
             team_notifications.notify_safe(
                 "promise_closed" if closed_by_bot else "promise_closure",
                 f"{head}: {p['promise']['title']}",
-                body=(v.get("why") or "")
-                     + (f" · {link.get('title')}" if link.get("title") else ""),
+                body=(v.get("why") or ""),
                 url=link.get("url"),
+                meta={k: val for k, val in meta.items() if val},
                 object_type="promise",
                 object_id=p["commitment_id"],
                 # Одна стаття про одну обіцянку смикає раз.

@@ -49,8 +49,10 @@ def _pick():
             revs = pp.revisions(cur, [r["commitment_id"] for r in rows])
             links = {}
             from handlers.promises import _links_for
-            links = _links_for(cur, {v["article_id"] for v in revs
-                                     if v.get("article_id")})
+            from handlers.promise_app import _images_for
+            art_ids = {v["article_id"] for v in revs if v.get("article_id")}
+            links = _links_for(cur, art_ids)
+            images = _images_for(cur, art_ids)
             # Остання ревізія кожної обіцянки — саме вона й є новина.
             last = {}
             for v in revs:
@@ -59,7 +61,9 @@ def _pick():
                     last[v["commitment_id"]] = v
             for r in rows:
                 r["rev"] = last.get(r["commitment_id"])
-                r["link"] = links.get((r["rev"] or {}).get("article_id")) or {}
+                aid = (r["rev"] or {}).get("article_id")
+                r["link"] = links.get(aid) or {}
+                r["image"] = images.get(aid)
             return rows, links
     finally:
         conn.close()
@@ -83,13 +87,22 @@ def _bell(rows):
     """Стрічка апки. Подія адресна — audience person, а не менеджерам."""
     for r in rows:
         link = r.get("link") or {}
+        # meta — стрічка малює подію банку тем за макетом: підпис типу,
+        # назва обіцянки жирним, новина з мініатюрою (як у promise_fulfil)
+        meta = {
+            "promise": True,
+            "label": "Нова згадка у твоїй темі",
+            "title": r["title"],
+            "news_title": link.get("title"),
+            "image": r.get("image"),
+        }
         try:
             team_notifications.notify_safe(
                 "promise_star",
                 f"Нова згадка про тему, за якою ти стежиш: {r['title']}",
-                body=((r.get("rev") or {}).get("quote") or "")[:300]
-                     + (f" · {link.get('title')}" if link.get("title") else ""),
+                body=((r.get("rev") or {}).get("quote") or "")[:300],
                 url=link.get("url"),
+                meta={k: v for k, v in meta.items() if v},
                 audience="person",
                 person=r["person"],
                 object_type="promise",
