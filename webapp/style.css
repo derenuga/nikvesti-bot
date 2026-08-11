@@ -1348,6 +1348,71 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   background: var(--fill); border-radius: 7px; padding: 2px 7px; white-space: nowrap;
 }
 
+/* ---------- Квартальна оцінка ---------- */
+/* Смуга прогресу тут рахує ЛЮДЕЙ, яких уже торкнулись, а не бали — колір
+   рівний, без «червоний → зелений»: це не виконання норми, а проходження
+   списку, і відставання в ньому нікого не характеризує */
+.rv-top {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin: 0 0 18px;
+}
+.rv-per { display: flex; align-items: center; gap: 2px; }
+.rv-per b { font-size: 14px; min-width: 118px; text-align: center; }
+.rv-arrow {
+  width: 30px; height: 30px; border: 0; background: none; color: var(--muted);
+  border-radius: 9px; display: grid; place-items: center; cursor: pointer;
+}
+.rv-arrow:disabled { opacity: .3; cursor: default; }
+.rv-arrow .ic { width: 18px; height: 18px; }
+.rv-prog { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 130px; }
+.rv-bar { flex: 1; height: 5px; border-radius: 3px; background: var(--fill); overflow: hidden; }
+.rv-bar i { display: block; height: 100%; background: var(--blue); transition: width .35s ease; }
+.rv-prog span { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.rv-card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 14px; margin-bottom: 8px; overflow: hidden;
+}
+.rv-card.open { border-color: var(--blue); }
+.rv-head {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 11px 13px; border: 0; background: none; text-align: left;
+  font: inherit; color: inherit; cursor: pointer;
+}
+.rv-who { flex: 1; min-width: 0; }
+.rv-who b { display: block; font-size: 15px; font-weight: 700; }
+.rv-who small {
+  display: block; color: var(--muted); font-size: 12.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rv-who small.none { font-style: italic; }
+.rv-tick { color: var(--good); display: flex; }
+.rv-tick .ic { width: 18px; height: 18px; }
+.rv-chev { color: var(--muted); display: flex; transition: transform .2s ease; }
+.rv-chev .ic { width: 18px; height: 18px; }
+.rv-card.open .rv-chev { transform: rotate(180deg); }
+
+.rv-open { padding: 2px 13px 14px; }
+.rv-grp { margin-top: 14px; }
+.rv-grp-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.rv-grp-h b { font-size: 13.5px; font-weight: 700; }
+.rv-grp-h span { font-size: 12px; color: var(--muted); }
+.rv-open .chip { padding: 7px 13px; font-size: 13px; }
+.rv-was { font-size: 12px; color: var(--muted); margin-top: 7px; }
+.rv-was b { color: var(--ink); font-weight: 600; }
+.rv-note-lab { display: block; font-size: 12px; color: var(--muted); margin: 16px 0 6px; }
+.rv-note {
+  width: 100%; border: 1.5px solid var(--line); border-radius: 12px;
+  padding: 10px 12px; font: inherit; font-size: 14px; background: var(--paper);
+  color: var(--ink); resize: vertical;
+}
+.rv-saved {
+  display: flex; align-items: center; gap: 5px; margin-top: 9px;
+  font-size: 12px; color: var(--good); opacity: 0; transition: opacity .2s ease;
+}
+.rv-saved.on { opacity: 1; }
+.rv-saved .ic { width: 14px; height: 14px; }
+
 /* ---------- Блокнот ---------- */
 /* Поле захоплення стоїть ЗВЕРХУ і завжди на видноті: половину зроблених
    пунктів закривають у день запису, тож усе вирішує швидкість запису */

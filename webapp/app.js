@@ -447,6 +447,7 @@ function backTarget() {
     case "myimpacts":
     case "mypubs":
     case "todo":
+    case "reviews":
     case "away":
     case "impacts":
     case "promises":
@@ -535,6 +536,9 @@ function nav(view, arg, back) {
   if (view === "mypubs") STATE.pubsOffset = 0;   // входимо завжди в поточний місяць
   // Блокнот перечитуємо при кожному вході: запис міг прилетіти з /todo у чаті
   if (view === "todo") STATE.todos = null;
+  // Оцінка — теж свіжа при кожному вході: другий менеджер міг щось поставити,
+  // а показувати вчорашній зріз екрана, який редагують удвох, немає сенсу
+  if (view === "reviews") { STATE.reviews = null; STATE.reviewOpen = -1; }
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
   // Черга і стрічка могли змінитись у колеги — перечитуємо при кожному вході
   if (view === "alerts") {
@@ -579,6 +583,7 @@ function render() {
   else if (v === "myhist") renderMyHistory();
   else if (v === "mypubs") renderMyPubs();
   else if (v === "todo") renderTodos();
+  else if (v === "reviews") renderReviews();
   else if (v === "contacts") renderContacts();
   else if (v === "away") renderAway();
   else if (v === "promises") renderPromises();
@@ -645,6 +650,13 @@ function toolsSheet() {
       <span class="pk-txt">
         <span class="pk-name">Блокнот</span>
         <span class="pk-meta">особистий список справ · /todo у чаті</span>
+      </span>
+    </button>
+    <button class="pick-row" data-tool="reviews">
+      <span class="door-ic c-blue-ic">${icon("star")}</span>
+      <span class="pk-txt">
+        <span class="pk-name">Оцінка за квартал</span>
+        <span class="pk-meta">три питання про кожного — те, чого не видно з цифр</span>
       </span>
     </button>
     <button class="pick-row" data-tool="impacts">
@@ -5894,6 +5906,178 @@ function pubRow(p) {
    Пріоритетів, дедлайнів, тегів і підзадач тут немає СВІДОМО — кожен із них
    вимагає рішення в момент захоплення, тобто платить саме там, де має бути
    безкоштовно. Для зобовʼязань перед редакцією є creative tasks. */
+/* Квартальна оцінка редактора — крок 2 порадника зарплат
+   (docs/COMPENSATION_ADVISOR.md). Три виміри, у кожного СВОЇ три відповіді.
+
+   Тут ніде не рахується жодна сума — і це головне, що треба знати, перш ніж
+   щось сюди дописувати. Лічильник угорі рахує ЛЮДЕЙ, яких уже торкнулись, а
+   не бали: спільної шкали 1–3 немає навмисно, бо з неї одразу вивели б
+   «середній бал якості», а середній бал за тиждень стає рейтингом людей.
+
+   Акордеон, а не окремий екран на людину: спека просить 30 секунд на людину,
+   а перехід туди-назад коштує більше, ніж самі три тапи. Розгорнутий рядок
+   рівно один — інакше список на 15 осіб не гортається.
+
+   Кожен тап зберігається ОДРАЗУ, окремим запитом на один вимір. Кнопки
+   «Зберегти» немає свідомо: вона перетворює 30 секунд на 30 секунд плюс
+   згадати натиснути, а незбережений екран — це та сама анкета, яку не
+   заповнили. */
+async function renderReviews() {
+  const head = `
+    <button class="back" data-back>${icon("chevron-left")} Назад</button>
+    <div class="h-big">Оцінка</div>
+    <div class="h-sub">те, чого не видно з цифр — лишається в картці перегляду</div>`;
+  if (!STATE.reviews) {
+    $("content").innerHTML = head + `<div id="rv-body">${skeleton("rows", 4)}</div>`;
+    try {
+      STATE.reviews = await api("/api/reviews?offset=" + (STATE.reviewOffset || 0));
+    } catch (e) {
+      const b = $("rv-body");
+      if (b) b.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+      return;
+    }
+    if (STATE.view !== "reviews") return;
+  } else {
+    $("content").innerHTML = head + `<div id="rv-body"></div>`;
+  }
+  paintReviews();
+}
+
+/* Людину вважаємо пройденою, щойно є ХОЧ ОДНА відповідь, а не всі три.
+   Порожній вимір — легальна відповідь («не маю думки»), тож вимога «всі три»
+   означала б, що свідомо лишений пропуск вічно висить як недороблене. */
+function reviewTouched(p) {
+  return !!(p.review && p.review.filled);
+}
+
+function paintReviews() {
+  const d = STATE.reviews;
+  const body = $("rv-body");
+  if (!body || !d) return;
+  const off = STATE.reviewOffset || 0;
+  const done = d.people.filter(reviewTouched).length;
+  const pct = d.total ? Math.round((done / d.total) * 100) : 0;
+  let html = `
+    <div class="rv-top">
+      <div class="rv-per">
+        <button class="rv-arrow" data-rvper="-1"
+          aria-label="Попередній квартал">${icon("chevron-left")}</button>
+        <b>${esc(d.period.label)}</b>
+        <button class="rv-arrow" data-rvper="1" ${off >= 0 ? "disabled" : ""}
+          aria-label="Наступний квартал">${icon("chevron-right")}</button>
+      </div>
+      <div class="rv-prog">
+        <div class="rv-bar"><i style="width:${pct}%"></i></div>
+        <span>${done} із ${d.total}</span>
+      </div>
+    </div>`;
+  let dept = null;
+  d.people.forEach((p, i) => {
+    if (p.dept_title !== dept) {
+      dept = p.dept_title;
+      html += `<div class="dept-title">${esc(dept)}</div>`;
+    }
+    html += reviewCard(p, i, d);
+  });
+  body.innerHTML = html;
+  wireReviews();
+}
+
+function reviewCard(p, i, d) {
+  const open = STATE.reviewOpen === i;
+  const rv = p.review;
+  const labels = (rv && rv.labels) || {};
+  const sum = d.dimensions.map((x) => labels[x.key]).filter(Boolean).join(" · ");
+  return `
+    <div class="rv-card${open ? " open" : ""}">
+      <button class="rv-head" data-rvopen="${i}" aria-expanded="${open}">
+        ${avatar(p.person, personEntry(p.person), 36)}
+        <span class="rv-who">
+          <b>${esc(p.person)}</b>
+          <small${sum ? "" : ' class="none"'}>${sum ? esc(sum) : "ще не оцінено"}</small>
+        </span>
+        ${reviewTouched(p) ? `<span class="rv-tick">${icon("check")}</span>` : ""}
+        <span class="rv-chev">${icon("chevron-down")}</span>
+      </button>
+      ${open ? `<div class="rv-open">
+        ${d.dimensions.map((dim) => reviewGroup(dim, p, i)).join("")}
+        <label class="rv-note-lab" for="rv-note-${i}">Що змінилось за пів року</label>
+        <textarea class="rv-note" id="rv-note-${i}" data-rvnote="${i}" rows="2"
+          maxlength="${d.note_max}"
+          placeholder="Один рядок — те, чого не видно з цифр">${esc((rv && rv.note) || "")}</textarea>
+        <div class="rv-saved" id="rv-saved-${i}">${icon("check")} збережено</div>
+      </div>` : ""}
+    </div>`;
+}
+
+function reviewGroup(dim, p, i) {
+  const cur = (p.review && p.review.values[dim.key]) || null;
+  const wasLabel = (p.previous && p.previous.labels[dim.key]) || null;
+  const was = (p.previous && p.previous.values[dim.key]) || null;
+  return `
+    <div class="rv-grp">
+      <div class="rv-grp-h"><b>${esc(dim.title)}</b><span>${esc(dim.hint)}</span></div>
+      <div class="chips">
+        ${dim.levels.map((l) => `<button class="chip${cur === l.value ? " on" : ""}"
+          data-rvset="${i}|${dim.key}|${l.value}">${esc(l.label)}</button>`).join("")}
+      </div>
+      ${was && cur && was !== cur
+        ? `<div class="rv-was">минулого кварталу: <b>${esc(wasLabel)}</b></div>` : ""}
+    </div>`;
+}
+
+function wireReviews() {
+  const body = $("rv-body");
+  if (!body) return;
+  body.querySelectorAll("[data-rvper]").forEach((b) => (b.onclick = () => {
+    const next = Math.max(-8, Math.min(0, (STATE.reviewOffset || 0) + (+b.dataset.rvper)));
+    if (next === (STATE.reviewOffset || 0)) return;
+    STATE.reviewOffset = next;
+    STATE.reviews = null;
+    STATE.reviewOpen = -1;
+    renderReviews();
+  }));
+  body.querySelectorAll("[data-rvopen]").forEach((b) => (b.onclick = () => {
+    const i = +b.dataset.rvopen;
+    STATE.reviewOpen = STATE.reviewOpen === i ? -1 : i;
+    paintReviews();
+  }));
+  body.querySelectorAll("[data-rvset]").forEach((b) => (b.onclick = () => {
+    const [i, key, val] = b.dataset.rvset.split("|");
+    const p = STATE.reviews.people[+i];
+    const cur = (p.review && p.review.values[key]) || null;
+    // Повторний тап по вибраному чипу знімає відповідь: інакше помилковий
+    // тап неможливо скасувати, і лишається брехня, яку легше перетерпіти
+    saveReview(+i, { [key]: cur === val ? "" : val });
+  }));
+  body.querySelectorAll("[data-rvnote]").forEach((t) => (t.onchange = () => {
+    saveReview(+t.dataset.rvnote, { note: t.value });
+  }));
+}
+
+async function saveReview(i, patch) {
+  const d = STATE.reviews;
+  const p = d && d.people[i];
+  if (!p) return;
+  try {
+    const { review } = await api("/api/reviews", {
+      method: "PUT",
+      body: JSON.stringify({
+        person: p.person, offset: STATE.reviewOffset || 0, ...patch,
+      }),
+    });
+    p.review = review;
+    paintReviews();
+    const el = $("rv-saved-" + i);
+    if (el) {
+      el.classList.add("on");
+      setTimeout(() => el.classList.remove("on"), 1400);
+    }
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
 async function renderTodos() {
   const head = `
     <button class="back" data-back>${icon("chevron-left")} Назад</button>
