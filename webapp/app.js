@@ -448,6 +448,7 @@ function backTarget() {
     case "mypubs":
     case "todo":
     case "reviews":
+    case "director":
     case "away":
     case "impacts":
     case "promises":
@@ -539,6 +540,8 @@ function nav(view, arg, back) {
   // Оцінка — теж свіжа при кожному вході: другий менеджер міг щось поставити,
   // а показувати вчорашній зріз екрана, який редагують удвох, немає сенсу
   if (view === "reviews") { STATE.reviews = null; STATE.reviewOpen = -1; }
+  // Кабінет — свіжий при кожному вході: журнал міг поповнити інший менеджер
+  if (view === "director") STATE.director = null;
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
   // Черга і стрічка могли змінитись у колеги — перечитуємо при кожному вході
   if (view === "alerts") {
@@ -584,6 +587,7 @@ function render() {
   else if (v === "mypubs") renderMyPubs();
   else if (v === "todo") renderTodos();
   else if (v === "reviews") renderReviews();
+  else if (v === "director") renderDirector();
   else if (v === "contacts") renderContacts();
   else if (v === "away") renderAway();
   else if (v === "promises") renderPromises();
@@ -650,6 +654,13 @@ function toolsSheet() {
       <span class="pk-txt">
         <span class="pk-name">Блокнот</span>
         <span class="pk-meta">особистий список справ · /todo у чаті</span>
+      </span>
+    </button>
+    <button class="pick-row" data-tool="director">
+      <span class="door-ic c-blue-ic">${icon("home")}</span>
+      <span class="pk-txt">
+        <span class="pk-name">Кабінет директора</span>
+        <span class="pk-meta">коли кому востаннє переглядали умови</span>
       </span>
     </button>
     <button class="pick-row" data-tool="reviews">
@@ -5906,6 +5917,175 @@ function pubRow(p) {
    Пріоритетів, дедлайнів, тегів і підзадач тут немає СВІДОМО — кожен із них
    вимагає рішення в момент захоплення, тобто платить саме там, де має бути
    безкоштовно. Для зобовʼязань перед редакцією є creative tasks. */
+/* Кабінет директора — журнал переглядів умов (крок 3.1 порадника зарплат).
+
+   Тут НЕМАЄ сум і немає типу рішення («підвищив» / «премія»). Це не забули
+   додати: зберігаючи, ЩО саме вирішили, Нора наполовину стає зарплатним
+   реєстром, а «Не забудь про» від цього не виграє нічого — там працює
+   виключно час. Записується дата й рядок контексту, який Олег пише сам.
+
+   Дві вкладки, бо це два різні режими: «Люди» — засів і поточна робота,
+   «Не забудь про» — те, заради чого кабінет узагалі існує. Порожній список
+   у другій вкладці це успіх, а не порожній екран, і підписаний він саме так. */
+async function renderDirector() {
+  const head = `
+    <button class="back" data-back>${icon("chevron-left")} Назад</button>
+    <div class="h-big">Кабінет директора</div>
+    <div class="h-sub">коли кому востаннє переглядали умови</div>`;
+  if (!STATE.director) {
+    $("content").innerHTML = head + `<div id="dir-body">${skeleton("rows", 4)}</div>`;
+    try {
+      STATE.director = await api("/api/conditions");
+    } catch (e) {
+      const b = $("dir-body");
+      if (b) b.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+      return;
+    }
+    if (STATE.view !== "director") return;
+  } else {
+    $("content").innerHTML = head + `<div id="dir-body"></div>`;
+  }
+  paintDirector();
+}
+
+function paintDirector() {
+  const d = STATE.director;
+  const body = $("dir-body");
+  if (!body || !d) return;
+  const tab = STATE.dirTab || "people";
+  const unseeded = d.total - d.seeded;
+  body.innerHTML = `
+    ${unseeded ? `<div class="dir-seed">
+      Історію ще не заводили для ${unseeded} ${plural(unseeded, "людини", "людей", "людей")}.
+      Постав кожному дату останнього перегляду — це разова робота, далі журнал
+      веде себе сам.</div>` : ""}
+    ${segment("data-dirtab", [
+      ["people", "Люди"],
+      ["attention", `Не забудь про${d.attention.length ? " · " + d.attention.length : ""}`],
+    ], tab)}
+    <div id="dir-list">${tab === "people" ? dirPeople(d) : dirAttention(d)}</div>`;
+  wireDirector();
+}
+
+function dirPeople(d) {
+  let out = "", dept = null;
+  d.people.forEach((p) => {
+    if (p.dept_title !== dept) {
+      dept = p.dept_title;
+      out += `<div class="dept-title">${esc(dept)}</div>`;
+    }
+    out += dirRow(p);
+  });
+  return out;
+}
+
+/* Порожньо тут — це добре, і формулювання має це казати: інакше екран
+   виглядає зламаним саме в тому стані, заради якого його робили. */
+function dirAttention(d) {
+  if (!d.attention.length) {
+    return `<div class="empty-hint">Нікого. Усім переглядали умови
+      за останні ${d.threshold} місяців.</div>`;
+  }
+  return d.attention.map((p) => dirRow(p, true)).join("");
+}
+
+function dirRow(p, withReason) {
+  const never = !p.last;
+  // Підпис різний за причиною: «не зафіксовано» — діра в даних, яку закривають
+  // руками, «2 роки» — сигнал. Однаковим сірим це читалось би як одне й те саме
+  const meta = never
+    ? "не зафіксовано"
+    : `${p.gap} тому${p.count > 1 ? ` · переглядів: ${p.count}` : ""}`;
+  const late = !never && p.months >= (STATE.director.threshold || 12);
+  return `
+    <button class="dir-row" data-dirperson="${esc(p.person)}">
+      ${avatar(p.person, personEntry(p.person), 38)}
+      <span class="dir-who">
+        <b>${esc(p.person)}</b>
+        <small class="${never ? "never" : late ? "late" : ""}">${esc(meta)}</small>
+      </span>
+      ${withReason && never
+        ? `<span class="dir-tag">засіяти</span>`
+        : late ? `<span class="dir-tag warn">${esc(p.gap)}</span>` : ""}
+      <span class="dir-chev">${icon("chevron-right")}</span>
+    </button>`;
+}
+
+function wireDirector() {
+  const body = $("dir-body");
+  if (!body) return;
+  body.querySelectorAll("[data-dirtab]").forEach((b) => (b.onclick = () => {
+    STATE.dirTab = b.dataset.dirtab;
+    paintDirector();
+  }));
+  body.querySelectorAll("[data-dirperson]").forEach((b) => (b.onclick = () =>
+    directorSheet(b.dataset.dirperson)));
+}
+
+/* Шторка фіксації. Дата за замовчуванням сьогоднішня, але поле відкрите —
+   саме через нього засівається історія минулими датами, і окремого «режиму
+   засіву» тому не потрібно: це та сама дія, просто з іншою датою. */
+function directorSheet(person) {
+  const d = STATE.director;
+  const row = d.people.find((x) => x.person === person);
+  if (!row) return;
+  // З РОКОМ, а не shortDate: поруч стоїть «1 рік 6 місяців тому», і «12.01»
+  // без року в такому сусідстві читається як дата цього року
+  const full = (iso) => iso.slice(0, 10).split("-").reverse().join(".");
+  openSheet(`
+    <h2>Перегляд умов</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(person)}</p>
+    ${row.last ? `<div class="f-label" style="margin-top:0">Востаннє</div>
+      <div class="pick-row" style="justify-content:space-between">
+        <span>
+          <span class="pk-name">${esc(full(row.last.date))} · ${esc(row.gap)} тому</span>
+          ${row.last.note ? `<span class="pk-meta">${esc(row.last.note)}</span>` : ""}
+        </span>
+        <button class="st-mark dropped" data-dirdel="${row.last.id}"
+          aria-label="Прибрати">${icon("x")}</button>
+      </div>` : `<div class="mr-hint" style="margin-top:0">Переглядів ще не
+        фіксували. Постав дату останнього — можна минулу.</div>`}
+    <div class="f-label">Дата перегляду</div>
+    <input id="dir-date" type="date" value="${todayISO()}" max="${esc(d.today)}">
+    <div class="f-label">Контекст (не обов'язково)</div>
+    <input id="dir-note" maxlength="${d.note_max}"
+      placeholder="Один рядок — чому саме зараз">
+    <div class="mr-hint">Записується <b>лише дата й цей рядок</b>. Ні суми, ні
+      того, що саме вирішили, система не зберігає й не питає.</div>
+    <div class="sheet-actions">
+      <button class="sbtn" id="dir-cancel">Скасувати</button>
+      <button class="sbtn primary" id="dir-save">Зафіксувати</button>
+    </div>`);
+  $("dir-cancel").onclick = closeSheet;
+  $("sheet").querySelectorAll("[data-dirdel]").forEach((b) => (b.onclick = async () => {
+    try {
+      await api(`/api/conditions/${b.dataset.dirdel}`, { method: "DELETE" });
+      STATE.director = null;
+      closeSheet();
+      renderDirector();
+      toast("Прибрав");
+    } catch (e) { toast(e.message); }
+  }));
+  $("dir-save").onclick = async () => {
+    const date = $("dir-date").value;
+    if (!date) { toast("Вкажи дату"); return; }
+    $("dir-save").disabled = true;
+    try {
+      await api("/api/conditions", {
+        method: "POST",
+        body: JSON.stringify({ person, date, note: $("dir-note").value }),
+      });
+      STATE.director = null;
+      closeSheet();
+      renderDirector();
+      toast("Зафіксовано");
+    } catch (e) {
+      $("dir-save").disabled = false;
+      toast(e.message);
+    }
+  };
+}
+
 /* Квартальна оцінка редактора — крок 2 порадника зарплат
    (docs/COMPENSATION_ADVISOR.md). Три виміри, у кожного СВОЇ три відповіді.
 

@@ -1348,6 +1348,38 @@ body.dark .soc-ic.viber { color: #9c8cff; }
   background: var(--fill); border-radius: 7px; padding: 2px 7px; white-space: nowrap;
 }
 
+/* ---------- Кабінет директора ---------- */
+/* Підказка про засів зникає сама, коли історію завели всім: підказка, яка
+   лишається назавжди, за тиждень перестає читатись */
+.dir-seed {
+  background: var(--sky); border: 1px solid var(--line); border-radius: 13px;
+  padding: 11px 14px; font-size: 13px; color: var(--muted);
+  line-height: 1.5; margin-bottom: 14px;
+}
+.dir-row {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 10px 13px; margin-bottom: 7px; border: 1px solid var(--line);
+  border-radius: 14px; background: var(--card); text-align: left;
+  font: inherit; color: inherit; cursor: pointer;
+}
+.dir-who { flex: 1; min-width: 0; }
+.dir-who b { display: block; font-size: 15px; font-weight: 700; }
+.dir-who small {
+  display: block; color: var(--muted); font-size: 12.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Три різні стани підпису — навмисно не однаковим сірим: «не зафіксовано» це
+   діра в даних, яку закривають руками, а «2 роки» — сигнал про людину */
+.dir-who small.never { font-style: italic; }
+.dir-who small.late { color: var(--warn); }
+.dir-tag {
+  flex: none; background: var(--fill); color: var(--muted);
+  border-radius: 20px; padding: 4px 10px; font-size: 11.5px; font-weight: 700;
+}
+.dir-tag.warn { background: rgba(207, 122, 28, .13); color: var(--warn); }
+.dir-chev { flex: none; color: var(--muted); display: flex; }
+.dir-chev .ic { width: 18px; height: 18px; }
+
 /* ---------- Квартальна оцінка ---------- */
 /* Смуга прогресу тут рахує ЛЮДЕЙ, яких уже торкнулись, а не бали — колір
    рівний, без «червоний → зелений»: це не виконання норми, а проходження

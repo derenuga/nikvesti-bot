@@ -53,7 +53,7 @@ except ImportError:  # локальний dev без aiohttp — модуль п
 
 from handlers import (
     bot_db, card_maker, content_report, impact_archive, team_analytics,
-    team_contacts, team_kpi, team_matches, team_notifications,
+    team_conditions, team_contacts, team_kpi, team_matches, team_notifications,
     team_publications, team_projects, team_reviews, team_roster, team_tasks,
     team_todos,
 )
@@ -1324,6 +1324,43 @@ async def api_publications(request):
     return web.json_response(data)
 
 
+# ---------- Кабінет директора: перегляди умов ----------
+#
+# Менеджерське через _require_manager, тобто це бачать Олег, Катя й Олена.
+# ⚠️ Якщо кабінет має бути тільки Олегів — це один рядок (звірка person із
+# конкретним іменем), але вирішувати за Олега я не став: Олена фінансова
+# менеджерка, і закрити їй доступ мовчки було б не безпечніше, а незручніше.
+
+async def api_conditions(request):
+    person, info, _ = await _require_manager(request)
+    return web.json_response(await _in_session(team_conditions.payload))
+
+
+async def api_condition_create(request):
+    """Зафіксувати перегляд. Тіло: person, date (опційно — засів історії
+    минулою датою), note. Сум і типу рішення тут немає за задумом."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    who = payload.get("person")
+    if who not in team_roster.ROSTER:
+        raise web.HTTPBadRequest(text="Невідома людина")
+    saved = await _in_session(
+        team_conditions.add_review, who, person,
+        payload.get("date") or None, payload.get("note"))
+    if not saved:
+        raise web.HTTPBadRequest(text="Не вдалось зберегти — перевір дату")
+    return web.json_response({"review": saved})
+
+
+async def api_condition_delete(request):
+    person, info, _ = await _require_manager(request)
+    deleted = await _in_session(
+        team_conditions.delete_review, int(request.match_info["review_id"]))
+    if not deleted:
+        raise web.HTTPNotFound(text="Запису немає")
+    return web.json_response({"ok": True})
+
+
 # ---------- Квартальна оцінка редактора ----------
 #
 # Менеджерське й ТІЛЬКИ менеджерське: журналістка своєї оцінки не бачить —
@@ -1980,6 +2017,9 @@ async def start_webapp(application):
         web.post("/api/impacts/{impact_id:\\d+}/send", api_impact_send),
         web.get("/api/reviews", api_reviews),
         web.put("/api/reviews", api_review_save),
+        web.get("/api/conditions", api_conditions),
+        web.post("/api/conditions", api_condition_create),
+        web.delete("/api/conditions/{review_id:\\d+}", api_condition_delete),
         web.get("/api/todos", api_todos),
         web.post("/api/todos", api_todo_create),
         web.patch("/api/todos/{todo_id:\\d+}", api_todo_patch),
