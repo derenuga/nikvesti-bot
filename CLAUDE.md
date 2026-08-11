@@ -515,6 +515,7 @@ DB_READ_TIMEOUT             # опційно, сек (дефолт 30)
 - Тендери Prozorro — окремого дока немає, детальний опис у док-стрінгу [`handlers/prozorro.py`](handlers/prozorro.py)
 - [`docs/BUILDER_MONITOR_MODULE.md`](docs/BUILDER_MONITOR_MODULE.md) — монітор білдера головної + схема БД сайту (options/nodes/users/logs), розвідана 03.07
 - [`docs/STAT_MODULE.md`](docs/STAT_MODULE.md) — статистика матеріалів (/stat)
+- [`docs/CARD_MAKER_MODULE.md`](docs/CARD_MAKER_MODULE.md) — генератор карток для соцмереж (/card): архітектура «все в браузері», правила скрапінгу з причинами (реальні статті), чотири шаблони, механіки псевдокропу й плашок виділення, бренд-константи
 - [`docs/ENGLISH_REPORT_MODULE.md`](docs/ENGLISH_REPORT_MODULE.md) — EN-звіт
 - [`docs/FOX_LORE.md`](docs/FOX_LORE.md) — identity frame персонажа Лиса Микити
 - [`docs/NATURAL_LANGUAGE_QUERIES_MODULE.md`](docs/NATURAL_LANGUAGE_QUERIES_MODULE.md) — природномовні запити (Agentic Query Layer): GA4 + Search Console, tool use, whitelist
