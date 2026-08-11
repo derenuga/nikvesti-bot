@@ -53,9 +53,9 @@ except ImportError:  # локальний dev без aiohttp — модуль п
 
 from handlers import (
     bot_db, card_maker, content_report, impact_archive, team_analytics,
-    team_conditions, team_contacts, team_kpi, team_matches, team_notifications,
-    team_publications, team_projects, team_reviews, team_roster, team_tasks,
-    team_todos,
+    team_conditions, team_contacts, team_director, team_kpi, team_matches,
+    team_notifications, team_publications, team_projects, team_reviews,
+    team_roster, team_tasks, team_todos,
 )
 from handlers.helpers import normalize_https_url
 
@@ -1336,6 +1336,21 @@ async def api_conditions(request):
     return web.json_response(await _in_session(team_conditions.payload))
 
 
+async def api_director_card(request):
+    """Картка перегляду на людину: ?person=…
+
+    Збірка тягне і Нору, і БД сайту, тож усе в одній сесії й одному потоці —
+    інакше на кожен блок відкривалось би своє з'єднання."""
+    person, info, _ = await _require_manager(request)
+    who = request.query.get("person")
+    if who not in team_roster.ROSTER:
+        raise web.HTTPBadRequest(text="Невідома людина")
+    data = await _in_session(team_director.card, who)
+    if not data:
+        raise web.HTTPNotFound(text="Людину не знайдено")
+    return web.json_response(data)
+
+
 async def api_condition_create(request):
     """Зафіксувати перегляд. Тіло: person, date (опційно — засів історії
     минулою датою), note. Сум і типу рішення тут немає за задумом."""
@@ -2018,6 +2033,7 @@ async def start_webapp(application):
         web.get("/api/reviews", api_reviews),
         web.put("/api/reviews", api_review_save),
         web.get("/api/conditions", api_conditions),
+        web.get("/api/conditions/card", api_director_card),
         web.post("/api/conditions", api_condition_create),
         web.delete("/api/conditions/{review_id:\\d+}", api_condition_delete),
         web.get("/api/todos", api_todos),

@@ -1373,6 +1373,56 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 .dir-who small.never { font-style: italic; }
 .dir-who small.late { color: var(--warn); }
 .dir-chev { flex: none; color: var(--muted); display: flex; }
+
+/* Картка перегляду. Блок, якого у відділу немає, приглушений і підписаний
+   причиною — він не має ні хвалити нулем, ні докоряти прочерком */
+.dc-period { color: var(--muted); font-size: 13px; margin: 6px 0 20px; }
+.dc-kv { display: flex; align-items: baseline; gap: 10px; padding: 4px 0; }
+.dc-kv span { flex: 1; color: var(--muted); font-size: 13.5px; }
+.dc-kv b { font-size: 14.5px; font-variant-numeric: tabular-nums; }
+.dc-kv b.g { color: var(--good); }
+.dc-kv b.w { color: var(--warn); }
+.dc-kv b small { color: var(--muted); font-weight: 400; font-size: 12px; }
+.dc-na { color: var(--muted); font-size: 12.5px; line-height: 1.5; font-style: italic; }
+.soft-card.muted-card { background: var(--paper); border-style: dashed; }
+.dc-months { display: flex; gap: 4px; margin-top: 10px; }
+.dc-months i {
+  flex: 1; height: 28px; border-radius: 6px; background: var(--fill);
+  display: grid; place-items: center; font-style: normal; font-size: 10px;
+  font-weight: 700; color: var(--muted);
+}
+.dc-months i.ok { background: var(--good-soft); color: var(--good); }
+.dc-months i.no { background: rgba(207, 122, 28, .14); color: var(--warn); }
+.dc-q + .dc-q { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.dc-q.old { opacity: .62; }
+.dc-qh { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; }
+.dc-qr { display: flex; align-items: baseline; gap: 10px; padding: 3px 0; }
+.dc-qr span { flex: 1; color: var(--muted); font-size: 13px; }
+.dc-qr b { font-size: 13.5px; font-weight: 600; }
+.dc-note {
+  margin-top: 8px; padding: 9px 11px; background: var(--paper); border-radius: 10px;
+  border-left: 2px solid var(--line); font-size: 13px; color: var(--muted);
+}
+.dc-imp { padding: 6px 0; }
+.dc-imp + .dc-imp { border-top: 1px solid var(--line); }
+.dc-imp b { display: block; font-size: 14px; }
+.dc-imp span { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.dc-rev {
+  margin-top: 22px; border: 1.5px solid var(--blue); border-radius: var(--radius);
+  overflow: hidden;
+}
+.dc-rev-h {
+  background: var(--blue-soft); color: var(--blue); padding: 11px 15px;
+  font-weight: 700; font-size: 14.5px;
+}
+.dc-rev-b { padding: 13px 15px; font-size: 13.5px; color: var(--muted); }
+.dc-rev-b b { color: var(--ink); }
+.dc-stamp {
+  width: 100%; margin-top: 13px; border: 0; border-radius: 12px;
+  background: var(--blue); color: var(--blue-fg); padding: 12px;
+  font-size: 14px; font-weight: 700;
+}
+.dc-hint { margin: 9px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
 .dir-chev .ic { width: 18px; height: 18px; }
 
 /* ---------- Квартальна оцінка ---------- */

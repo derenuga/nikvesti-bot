@@ -455,6 +455,7 @@ function backTarget() {
     case "contacts": return ["home"];
     case "promise":
     case "dupes": return ["promises"];
+    case "dircard": return ["director"];
     case "preview": return ["personhist", STATE.previewPerson];
     default: return null;      // корінь табів — назад нікуди
   }
@@ -503,6 +504,7 @@ function currentArg() {
     case "personhist": return STATE.currentPerson;
     case "preview": return STATE.previewPerson;
     case "promise": return STATE.currentPromise;
+    case "dircard": return STATE.dirPerson;
     case "impact": return STATE.currentImpact;
     case "bulk": return STATE.bulk;
     default: return undefined;
@@ -563,6 +565,7 @@ function nav(view, arg, back, opts = {}) {
   if (view === "reviews") { STATE.reviews = null; STATE.reviewOpen = -1; }
   // Кабінет — свіжий при кожному вході: журнал міг поповнити інший менеджер
   if (view === "director") STATE.director = null;
+  if (view === "dircard") STATE.dirPerson = arg;
   if (view === "kpi") STATE.kpi = null; // свіже зведення при кожному вході (факти кешує сервер)
   // Черга і стрічка могли змінитись у колеги — перечитуємо при кожному вході
   if (view === "alerts") {
@@ -609,6 +612,7 @@ function render() {
   else if (v === "todo") renderTodos();
   else if (v === "reviews") renderReviews();
   else if (v === "director") renderDirector();
+  else if (v === "dircard") renderDirCard();
   else if (v === "contacts") renderContacts();
   else if (v === "away") renderAway();
   else if (v === "promises") renderPromises();
@@ -6040,15 +6044,137 @@ function wireDirector() {
     paintDirector();
   }));
   body.querySelectorAll("[data-dirperson]").forEach((b) => (b.onclick = () =>
-    directorSheet(b.dataset.dirperson)));
+    nav("dircard", b.dataset.dirperson)));
+}
+
+/* Картка перегляду — крок 3.2. Збирає її сервер (team_director), тут лише
+   малювання. Головне правило показу: блок, якого у відділу структурно немає,
+   підписаний ПРИЧИНОЮ («завдань відділу не ставлять»), а не нулем і не
+   прочерком. Нуль хвалив би за те, чого не було («жодного прострочення!»), а
+   прочерк докоряв би за те, чого не просили — і картка людини зі стрічки
+   виглядала б біднішою за картку з Creative без жодної на те підстави. */
+async function renderDirCard() {
+  const who = STATE.dirPerson;
+  const head = `
+    <button class="back" data-back>${icon("chevron-left")} Кабінет</button>`;
+  if (!STATE.dirCard || STATE.dirCard.person !== who) {
+    $("content").innerHTML = head + `<div id="dc-body">${skeleton("rows", 5)}</div>`;
+    try {
+      STATE.dirCard = await api("/api/conditions/card?person=" + encodeURIComponent(who));
+    } catch (e) {
+      const b = $("dc-body");
+      if (b) b.innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`;
+      return;
+    }
+    if (STATE.view !== "dircard") return;
+  } else {
+    $("content").innerHTML = head + `<div id="dc-body"></div>`;
+  }
+  paintDirCard();
+}
+
+function na(block) {
+  return `<div class="dc-na">${esc(block.reason || "не застосовується")}</div>`;
+}
+
+function paintDirCard() {
+  const c = STATE.dirCard;
+  const body = $("dc-body");
+  if (!body || !c) return;
+  const st = c.stability, out = c.output, tk = c.tasks, q = c.quality || [];
+  const cond = c.conditions;
+
+  body.innerHTML = `
+    <div class="who">
+      ${avatar(c.person, personEntry(c.person), 48)}
+      <span><span class="wn">${esc(c.person)}</span>
+        <span class="wd">${esc(c.dept_title)}</span></span>
+    </div>
+    <div class="dc-period">${esc(c.period.label)}${cond.gap
+      ? ` · умови не міняли ${esc(cond.gap)}` : " · дату перегляду ще не ставили"}</div>
+
+    <div class="dept-title">Робота — рахує бот</div>
+    <div class="soft-card">
+      ${st.applies ? `
+        <div class="dc-kv"><span>Норма закрита</span>
+          <b class="${st.closed === st.of ? "g" : ""}">${st.closed} із ${st.of}
+            ${plural(st.of, "місяця", "місяців", "місяців")}</b></div>
+        <div class="dc-months">${st.months.map((m) => `
+          <i class="${m.empty ? "" : m.done ? "ok" : "no"}"
+             title="${esc(m.label)}">${esc(m.label.split(" ")[0])}</i>`).join("")}</div>`
+        : na(st)}
+    </div>
+    ${out.applies ? `<div class="soft-card">
+      <div class="dc-kv"><span>Матеріалів за період</span>
+        <b>${out.total}<small> · ${out.own} власних</small></b></div>
+      ${out.articles ? `<div class="dc-kv"><span>З них статей</span>
+        <b>${out.articles}</b></div>` : ""}
+    </div>` : `<div class="soft-card">${na(out)}</div>`}
+    <div class="soft-card${tk.applies ? "" : " muted-card"}">
+      ${tk.applies ? `
+        <div class="dc-kv"><span>Проєктні завдання</span>
+          <b>${tk.counted} із ${tk.given}</b></div>
+        ${tk.late ? `<div class="dc-kv"><span>Прострочено зараз</span>
+          <b class="w">${tk.late}</b></div>` : ""}`
+        : `<div class="dc-kv"><span>Проєктні завдання</span></div>${na(tk)}`}
+    </div>
+    ${c.absences.days ? `<div class="soft-card">
+      <div class="dc-kv"><span>Відсутності</span>
+        <b>${c.absences.days} ${plural(c.absences.days, "робочий день", "робочі дні", "робочих днів")}
+          <small> · цілі знижено</small></b></div></div>` : ""}
+
+    <div class="dept-title">Якість — оцінка Каті</div>
+    <div class="soft-card">
+      ${q.length ? q.map((r, i) => `
+        <div class="dc-q${i ? " old" : ""}">
+          <div class="dc-qh">${esc(r.period)}</div>
+          ${r.rows.length ? r.rows.map((x) =>
+            `<div class="dc-qr"><span>${esc(x.title)}</span><b>${esc(x.value)}</b></div>`).join("")
+            : `<div class="dc-na">не заповнено</div>`}
+          ${r.note ? `<div class="dc-note">${esc(r.note)}</div>` : ""}
+        </div>`).join("")
+        : `<div class="dc-na">Оцінок ще немає — заповнюється в «Оцінці за квартал»</div>`}
+    </div>
+
+    <div class="dept-title">Вплив</div>
+    <div class="soft-card">
+      ${c.impacts.length ? c.impacts.map((im) => `
+        <div class="dc-imp"><b>${esc(im.title)}</b>
+          ${im.note ? `<span>${esc(im.note)}</span>` : ""}</div>`).join("")
+        : `<div class="dc-kv"><span>Медальок в імпакт-архіві</span><b>0</b></div>
+           <div class="dc-na">Нуль тут очікуваний для стрічки: імпакти дають
+             довгі теми, а не щоденний потік. Це властивість роботи, а не людини.</div>`}
+    </div>
+
+    <div class="dc-rev">
+      <div class="dc-rev-h">Перегляд умов</div>
+      <div class="dc-rev-b">
+        ${cond.last ? `Востаннє — <b>${esc(cond.last.date.split("-").reverse().join("."))}</b>,
+          ${esc(cond.gap)} тому${cond.count > 1 ? ` · усього переглядів: ${cond.count}` : ""}
+          ${cond.last.note ? `<div class="dc-note">${esc(cond.last.note)}</div>` : ""}`
+          : "Дату перегляду ще не ставили."}
+        <button class="dc-stamp" id="dc-stamp">Зафіксувати перегляд</button>
+        <p class="dc-hint">Записується лише дата й рядок, який ти напишеш.
+          Ні суми, ні того, що саме вирішили, система не зберігає.</p>
+      </div>
+    </div>`;
+  $("dc-stamp").onclick = () => directorSheet(c.person);
 }
 
 /* Шторка фіксації. Дата за замовчуванням сьогоднішня, але поле відкрите —
    саме через нього засівається історія минулими датами, і окремого «режиму
    засіву» тому не потрібно: це та сама дія, просто з іншою датою. */
 function directorSheet(person) {
-  const d = STATE.director;
-  const row = d.people.find((x) => x.person === person);
+  // Шторку відкривають з ДВОХ місць — зі списку кабінету і з картки людини,
+  // — а кожне має свій зріз даних. Тому останній перегляд беремо звідти, де
+  // він зараз є, а не з одного жорстко зашитого стану: інакше виклик із
+  // картки падав би на порожньому STATE.director.
+  const d = STATE.director || { note_max: 500, today: todayISO() };
+  const fromList = (d.people || []).find((x) => x.person === person);
+  const fromCard = STATE.dirCard && STATE.dirCard.person === person
+    ? { last: STATE.dirCard.conditions.last, gap: STATE.dirCard.conditions.gap }
+    : null;
+  const row = fromList || fromCard;
   if (!row) return;
   // З РОКОМ, а не shortDate: поруч стоїть «1 рік 6 місяців тому», і «12.01»
   // без року в такому сусідстві читається як дата цього року
@@ -6082,8 +6208,9 @@ function directorSheet(person) {
     try {
       await api(`/api/conditions/${b.dataset.dirdel}`, { method: "DELETE" });
       STATE.director = null;
+      STATE.dirCard = null;      // картка теж протухла — перечитаємо при показі
       closeSheet();
-      renderDirector();
+      render();
       toast("Прибрав");
     } catch (e) { toast(e.message); }
   }));
@@ -6097,8 +6224,9 @@ function directorSheet(person) {
         body: JSON.stringify({ person, date, note: $("dir-note").value }),
       });
       STATE.director = null;
+      STATE.dirCard = null;
       closeSheet();
-      renderDirector();
+      render();               // лишаємось там, звідки фіксували
       toast("Зафіксовано");
     } catch (e) {
       $("dir-save").disabled = false;
