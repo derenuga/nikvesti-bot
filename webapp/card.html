@@ -124,6 +124,7 @@
       <div class="seg" id="tplSeg">
         <button data-tpl="1" class="on">Стандартний: текст + фото</button>
         <button data-tpl="2">Два фото внизу</button>
+        <button data-tpl="3">Цитата</button>
       </div>
     </div>
 
@@ -161,11 +162,11 @@
     </div>
 
     <div class="panel" id="textPanel" hidden>
-      <h2>3 · Заголовок</h2>
+      <h2 id="textTitle">3 · Заголовок</h2>
       <textarea id="headline" spellcheck="false"></textarea>
       <div class="hint">Тапни слово, щоб виділити його білим (ще раз — зняти). Можна провести мишкою по кількох словах. Enter у тексті — примусовий перенос рядка.</div>
       <div class="chips" id="chips"></div>
-      <label class="caption-label" for="subtitle">Підпис під заголовком (необов'язково)</label>
+      <label class="caption-label" for="subtitle" id="subLabel">Підпис під заголовком (необов'язково)</label>
       <textarea id="subtitle" rows="2" spellcheck="false" placeholder="напр.: Міністр енергетики Денис Шмигаль&#10;в інтерв'ю POLITICO"></textarea>
     </div>
 
@@ -548,9 +549,14 @@
     [...$("tplSeg").children].forEach((el) => el.classList.toggle("on", el === b));
     S.tpl = +b.dataset.tpl;
     $("slotRow").hidden = S.tpl !== 2;
-    // У шаблоні з двома фото підпису нема до чого кріпитись — вимикається сам
+    // Поза стандартним шаблоном підпису фото нема до чого кріпитись
     S.capOn = S.tpl === 1;
     $("capOn").checked = S.capOn;
+    // У шаблоні цитати ті самі поля означають інше: текст = цитата, підпис = ім'я
+    const quote = S.tpl === 3;
+    $("textTitle").textContent = quote ? "3 · Цитата" : "3 · Заголовок";
+    $("subLabel").textContent = quote ? "Ім'я (жирним над цитатою)" : "Підпис під заголовком (необов'язково)";
+    $("subtitle").placeholder = quote ? "Олександр Сєнкевич" : "напр.: Міністр енергетики Денис Шмигаль\nв інтерв'ю POLITICO";
     if (S.tpl === 2 && !S.slots[1].photo) setActive(1); else setActive(S.tpl === 2 ? S.active : 0);
     clampAll(); markThumbs(); render();
   });
@@ -574,6 +580,7 @@
   };
   // Слот під точкою: шаблон 2 ділить низ навпіл по вертикалі
   function hitSlot(p) {
+    if (S.tpl === 3) return 0; // фото на весь канвас — тягнеться будь-де
     if (p.y < S.blueH) return -1;
     if (S.tpl === 1) return 0;
     return p.x < S.W / 2 ? 0 : 1;
@@ -611,6 +618,7 @@
   }, { passive: false });
 
   function slotRect(i) {
+    if (S.tpl === 3) return { x: 0, y: 0, w: S.W, h: S.H }; // фото на весь канвас
     const top = S.blueH, h = S.H - top;
     if (S.tpl === 1) return { x: 0, y: top, w: S.W, h };
     const half = S.W / 2;
@@ -645,7 +653,7 @@
     ctx.fillRect(0, 0, S.W, S.H);
 
     // Фото у слотах (кліп — фіксований слот, кадр їздить всередині)
-    for (let i = 0; i < S.tpl; i++) {
+    for (let i = 0; i < (S.tpl === 2 ? 2 : 1); i++) {
       const r = slotRect(i);
       const st = S.slots[i];
       if (st.photo) {
@@ -665,7 +673,7 @@
       }
     }
 
-    drawHeadline();
+    if (S.tpl === 3) drawQuote(); else drawHeadline();
 
     // Плашка «Реклама» — верх-праворуч фото, півпрозора пігулка
     if (S.adOn) {
@@ -675,7 +683,8 @@
       const t = "Реклама";
       const tw = ctx.measureText(t).width;
       const padX = 26, h = 56;
-      const bx = S.W - 44 - tw - padX * 2, by = S.blueH + 36;
+      const bx = S.tpl === 3 ? 44 : S.W - 44 - tw - padX * 2;
+      const by = S.tpl === 3 ? 44 : S.blueH + 36;
       ctx.fillStyle = "rgba(0,0,0,.55)";
       ctx.beginPath();
       ctx.roundRect(bx, by, tw + padX * 2, h, h / 2);
@@ -703,11 +712,96 @@
     if (S.logo) {
       const lw = 250, lh = lw * (S.logo.naturalHeight / S.logo.naturalWidth || 0.454);
       const lx = S.tpl === 2 ? (S.W - lw) / 2 : S.W - lw - 52;
+      const ly = S.tpl === 3 ? 44 : S.H - lh - 40;
       ctx.save();
       ctx.shadowColor = "rgba(0,0,0,.45)";
       ctx.shadowBlur = 12;
-      ctx.drawImage(S.logo, lx, S.H - lh - 40, lw, lh);
+      ctx.drawImage(S.logo, lx, ly, lw, lh);
       ctx.restore();
+    }
+  }
+
+  // Шаблон «Цитата»: фото на весь канвас, темна градієнтна підложка знизу,
+  // жирне ім'я по центру і цитата під ним; виділення — бренд-сині плашки
+  function drawQuote() {
+    const nameText = S.sub.trim();
+    const words = S.words;
+    if (!nameText && !words.length) return;
+    const maxW = S.W - S.pad * 2;
+
+    // Автопідбір: блок тексту не має з'їсти більше половини картки
+    let base = S.fontSize;
+    let qSize, nSize, qLines, qLH, nameH, gap, totalH;
+    for (;;) {
+      qSize = Math.round(base * 0.8);
+      nSize = Math.round(base * 1.2);
+      setFont(nSize, 700);
+      while (nameText && ctx.measureText(nameText).width > maxW && nSize > 40) {
+        nSize -= 2; setFont(nSize, 700);
+      }
+      qLines = words.length ? wrap(words, qSize, maxW, 500, 0.9) : [];
+      qLH = qSize * 1.38;
+      nameH = nameText ? nSize * 1.15 : 0;
+      gap = nameText && qLines.length ? qSize * 0.8 : 0;
+      totalH = nameH + gap + qLines.length * qLH;
+      if (totalH <= S.H * 0.52 || base <= 48) break;
+      base -= 2;
+    }
+    const bottom = S.H - 96;
+    const top = bottom - totalH;
+
+    // Темна градієнтна підложка — читабельність на будь-якому фото
+    const gradTop = top - 320;
+    const g = ctx.createLinearGradient(0, gradTop, 0, S.H);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(0.45, "rgba(0,0,0,.55)");
+    g.addColorStop(1, "rgba(0,0,0,.82)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, gradTop, S.W, S.H - gradTop);
+
+    ctx.textBaseline = "middle";
+    if (nameText) {
+      setFont(nSize, 700);
+      const w = ctx.measureText(nameText).width;
+      ctx.fillStyle = "#fff";
+      ctx.fillText(nameText, (S.W - w) / 2, top + nameH / 2);
+    }
+
+    setFont(qSize, 500);
+    const spaceW = ctx.measureText(" ").width * 0.9;
+    const runPad = qSize * 0.28;
+    let y = top + nameH + gap + qLH / 2;
+    for (const line of qLines) {
+      const widths = line.map((t) => ctx.measureText(t.text).width);
+      const runStart = (k) => line[k].hl && (k === 0 || !line[k - 1].hl);
+      const runEnd = (k) => line[k].hl && (k === line.length - 1 || !line[k + 1].hl);
+      const xs = [];
+      let cursor = 0;
+      line.forEach((t, k) => {
+        if (k > 0) cursor += spaceW;
+        if (runStart(k)) cursor += runPad;
+        xs.push(cursor);
+        cursor += widths[k];
+        if (runEnd(k)) cursor += runPad;
+      });
+      const x0 = (S.W - cursor) / 2;
+      let i = 0;
+      while (i < line.length) {
+        if (line[i].hl) {
+          let j = i;
+          while (j < line.length && line[j].hl) j++;
+          const left = x0 + xs[i] - runPad;
+          const right = x0 + xs[j - 1] + widths[j - 1] + runPad;
+          ctx.fillStyle = "#3478f9";
+          ctx.fillRect(left, y - qSize * 0.55, right - left, qSize * 1.24);
+          i = j;
+        } else i++;
+      }
+      line.forEach((t, k) => {
+        ctx.fillStyle = "#fff";
+        ctx.fillText(t.text, x0 + xs[k], y + qSize * 0.04);
+      });
+      y += qLH;
     }
   }
 
@@ -865,6 +959,15 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     }, "image/jpeg", 0.92);
   });
+
+  // ?url=<id або повний лінк> — одразу скрапнути (кнопка з адмінки)
+  const qpUrl = new URLSearchParams(location.search).get("url");
+  if (qpUrl) {
+    let u = qpUrl.trim();
+    if (/^\d+$/.test(u)) u = "https://nikvesti.com/" + u; // сайт сам редіректить на повний URL
+    $("url").value = u;
+    scrape();
+  }
 
   render();
 })();
