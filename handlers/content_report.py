@@ -256,7 +256,7 @@ def _fb_item_from_post(post, metrics):
     }
 
 
-def _fb_sweep(missing, start_ts, end_ts):
+def _fb_sweep(missing, start_ts, end_ts, progress=None):
     """ОДИН прогін стрічки постів + рілзів на весь місяць і матчинг усіх
     відсутніх публікацій по ньому. Метрики — поштучно, лише на знайдених.
     Повертає {node_id: items} і пише знайдене в Нору."""
@@ -265,6 +265,8 @@ def _fb_sweep(missing, start_ts, end_ts):
     from handlers import stat
     from handlers.facebook import get_page_posts, get_post_metrics, get_reel_insights, fix_permalink
 
+    if progress:
+        progress("Facebook: гортаю стрічку сторінки за місяць", 54)
     since = start_ts - 86400
     until = min(end_ts + FB_FORWARD_DAYS * 86400, int(time.time()))
     try:
@@ -279,7 +281,10 @@ def _fb_sweep(missing, start_ts, end_ts):
         reels = []
 
     out = {}
-    for pub in missing:
+    for i, pub in enumerate(missing):
+        if progress:
+            progress(f"Facebook: шукаю в стрічці, {i + 1} із {len(missing)}",
+                     58 + 6 * (i + 1) / len(missing))
         clean = stat._clean_url(pub["url"])
         items, reel_keys = [], set()
         for reel in reels:
@@ -344,12 +349,16 @@ def _fb_from_site(site_rows):
     return items or None
 
 
-def collect_facebook(pubs, nora_entries, site_posts, start_ts, end_ts):
+def collect_facebook(pubs, nora_entries, site_posts, start_ts, end_ts,
+                     progress=None):
     """{node_id: items}: Нора → social_posts БД сайту → живий прогін місяця
     для решти. nora_entries — знімки article_stats, прочитані заздалегідь
     однією сесією (мережеві походи не мають тримати з'єднання з Норою)."""
     out = {}
-    for pub in pubs:
+    for i, pub in enumerate(pubs):
+        if progress:
+            progress(f"Facebook: {i + 1} із {len(pubs)}",
+                     12 + 40 * (i + 1) / len(pubs))
         items = _fb_from_nora(pub, nora_entries.get(pub["id"]))
         if items:
             out[pub["id"]] = items
@@ -362,7 +371,7 @@ def collect_facebook(pubs, nora_entries, site_posts, start_ts, end_ts):
             if any(it.get("id") for it in items):
                 stat_store.save_snapshot(pub["id"], {"facebook": items})
     missing = [p for p in pubs if p["id"] not in out]
-    out.update(_fb_sweep(missing, start_ts, end_ts))
+    out.update(_fb_sweep(missing, start_ts, end_ts, progress=progress))
     return out
 
 
@@ -435,7 +444,7 @@ def _site_tg_row(site_posts, node_id):
     return None
 
 
-def collect_telegram(pubs, site_posts, start_ts, end_ts):
+def collect_telegram(pubs, site_posts, start_ts, end_ts, progress=None):
     """{node_id: {"url", "views"}}: індекс tg_posts → social_posts БД сайту →
     прокрутка місяця ЛИШЕ для тих, кого ніде немає. Перегляди — з embed t.me;
     збій → збережене число social_posts із датою. Знайдене пишеться в індекс
@@ -457,6 +466,8 @@ def collect_telegram(pubs, site_posts, start_ts, end_ts):
         else:
             missing.append(pub)
 
+    if missing and progress:
+        progress("Telegram: гортаю стрічку каналу за місяць", 68)
     swept = _tg_sweep(start_ts, end_ts, {p["id"] for p in missing}) if missing else {}
     for pub in missing:
         hit = swept.get(pub["id"])
@@ -465,7 +476,10 @@ def collect_telegram(pubs, site_posts, start_ts, end_ts):
                               "views": hit["views"]}
             to_index[pub["id"]] = hit["message_id"]
 
-    for pub, message_id, site_row in known:
+    for i, (pub, message_id, site_row) in enumerate(known):
+        if progress:
+            progress(f"Telegram: {i + 1} із {len(known)}",
+                     78 + 17 * (i + 1) / len(known))
         views = None
         try:
             views = ts.fetch_post_views(message_id)
@@ -686,15 +700,26 @@ def render_html(project, label, groups, fb, tg, totals, capped):
 
 # ---------- Збірка ----------
 
-def build_report(project, ym):
+def build_report(project, ym, progress=None):
     """Повний блокуючий збір: публікації → тематики → FB → TG → HTML.
-    Повертає (fname, html, totals) або кидає виняток із людською причиною."""
+    Повертає (fname, html, totals) або кидає виняток із людською причиною.
+    progress(text, pct) — необов'язковий колбек для живого статусу (кличеться
+    з робочого потоку; збій колбека збір не зупиняє)."""
+    def _p(text, pct):
+        if progress:
+            try:
+                progress(text, int(pct))
+            except Exception as e:
+                print(f"content_report: колбек прогресу впав — {e}")
+
     if not db.is_configured():
         raise RuntimeError("БД сайту недоступна — публікації не зібрати")
     start_ts, end_ts, label, _ = _month_range(ym)
+    _p("читаю публікації місяця", 3)
     pubs, capped = list_publications(project["id"], start_ts, end_ts)
     if not pubs:
         raise RuntimeError(f"За {label.lower()} у проєкті немає публікацій")
+    _p(f"{len(pubs)} {_plural(len(pubs))} · читаю Нору", 8)
 
     # Читання Нори — однією сесією; мережеві походи (FB/TG) — поза нею,
     # щоб не тримати Postgres-з'єднання відкритим хвилинами
@@ -709,8 +734,10 @@ def build_report(project, ym):
                 except Exception:
                     nora_entries[p["id"]] = None
     site_posts = site_social_posts([p["id"] for p in pubs])
-    fb = collect_facebook(pubs, nora_entries, site_posts, start_ts, end_ts)
-    tg = collect_telegram(pubs, site_posts, start_ts, end_ts)
+    fb = collect_facebook(pubs, nora_entries, site_posts, start_ts, end_ts,
+                          progress=_p)
+    tg = collect_telegram(pubs, site_posts, start_ts, end_ts, progress=_p)
+    _p("верстаю файл", 97)
 
     # Групування по тематиках у порядку картки проєкту; без матчу — в кінець
     by_theme = {}
@@ -751,22 +778,54 @@ def start_report(bot, chat_id, project, ym):
     return True
 
 
+def _progress_bar(pct):
+    """32 → '▰▰▰▱▱▱▱▱▱▱ 32%' (десять блоків, без розмітки)."""
+    filled = max(0, min(10, round(pct / 10)))
+    return "▰" * filled + "▱" * (10 - filled) + f" {pct}%"
+
+
 async def _build_and_send(bot, chat_id, project, ym, key):
     """Збір у фоні + файл у приват. Помилки не летять нагору — людині в
-    приват, причиною."""
+    приват, причиною. Повідомлення «збираю…» живе: редагується етапом і
+    відсотком (тротлінг ~3 с — ліміти editMessageText)."""
     from io import BytesIO
 
     _, _, label, _ = _month_range(ym)
     name = project.get("partner") or project.get("name")
+    head = f"🦊 Збираю контент-звіт «{name}» за {label.lower()}."
+    status_msg = None
     try:
+        status_msg = await bot.send_message(
+            chat_id, f"{head}\nЧитаю публікації… {_progress_bar(1)}")
+    except Exception as e:
+        print(f"content_report: не долетіло «збираю» — {e}")
+
+    loop = asyncio.get_running_loop()
+    state = {"at": 0.0, "text": None}
+
+    async def _edit(text):
         try:
-            await bot.send_message(
-                chat_id,
-                f"🦊 Збираю контент-звіт «{name}» за {label.lower()} — ходжу по "
-                f"Facebook і Telegram, це кілька хвилин. Файл прийде сюди.")
-        except Exception as e:
-            print(f"content_report: не долетіло «збираю» — {e}")
-        fname, html, totals = await asyncio.to_thread(build_report, project, ym)
+            await bot.edit_message_text(
+                chat_id=chat_id, message_id=status_msg.message_id, text=text)
+        except Exception:
+            pass  # «message is not modified», ліміти — статус не критичний
+
+    def progress(text, pct):
+        """Кличеться з робочого потоку — редагування штовхаємо в event loop."""
+        if not status_msg:
+            return
+        now = time.monotonic()
+        if now - state["at"] < 3:
+            return
+        full = f"{head}\n{text}… {_progress_bar(pct)}"
+        if full == state["text"]:
+            return
+        state["at"], state["text"] = now, full
+        asyncio.run_coroutine_threadsafe(_edit(full), loop)
+
+    try:
+        fname, html, totals = await asyncio.to_thread(
+            build_report, project, ym, progress)
         buf = BytesIO(html.encode("utf-8"))
         buf.name = fname
         caption = (f"🦊 Контент-звіт «{name}» за {totals['label'].lower()}: "
@@ -774,13 +833,18 @@ async def _build_and_send(bot, chat_id, project, ym, key):
                    f"{', у Facebook знайшлось ' + str(totals['fb_found']) if totals['fb_found'] else ''}"
                    f"{', у Telegram — ' + str(totals['tg_found']) if totals['tg_found'] else ''}. "
                    "Відкривається в браузері, звідти — у PDF.")
+        if status_msg:
+            await _edit(f"🦊 Контент-звіт «{name}» за {label.lower()} зібрано ✅")
         await bot.send_document(chat_id=chat_id, document=buf, caption=caption)
     except Exception as e:
         msg = str(e)[:300]
         print(f"content_report: збір {key} впав — {msg}")
+        fail = f"🦊 Контент-звіт «{name}» за {label.lower()} не зібрався: {msg}"
         try:
-            await bot.send_message(
-                chat_id, f"🦊 Контент-звіт «{name}» за {label.lower()} не зібрався: {msg}")
+            if status_msg:
+                await _edit(fail)
+            else:
+                await bot.send_message(chat_id, fail)
         except Exception:
             pass
     finally:
