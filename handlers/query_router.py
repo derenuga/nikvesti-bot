@@ -673,26 +673,43 @@ def get_social_history(platform=None, limit=12):
 
 # ---------- Meta: Facebook + Instagram (обгортки над facebook.py/instagram.py) ----------
 
-def _nlq_facebook_stats(period_days=7):
+def _social_window(period_days, start_date, end_date):
+    """Вікно запиту соцмереж: явні дати сильніші за period_days («минулі два
+    тижні» — не завжди останні 14 днів: буває, питають про календарні тижні
+    або конкретні числа). end_date включно — до кінця доби, але не в
+    майбутнє. Повертає (since_ts, until_ts, підпис вікна для відповіді)."""
+    now = datetime.now()
+    if start_date:
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = min(datetime.strptime(end_date, "%Y-%m-%d"), now) if end_date else now
+        until = min(end + timedelta(days=1), now) if end_date else now
+        return (int(start.timestamp()), int(until.timestamp()),
+                f"{start:%d.%m.%Y} — {end:%d.%m.%Y}")
+    start = now - timedelta(days=period_days)
+    return (int(start.timestamp()), int(now.timestamp()),
+            f"{start:%d.%m.%Y} — {now:%d.%m.%Y}")
+
+
+def _nlq_facebook_stats(period_days=7, start_date=None, end_date=None):
     from datetime import timezone
     from handlers import facebook as fb
 
-    now = datetime.now()
-    since_ts = int((now - timedelta(days=period_days)).timestamp())
-    since_dt = datetime.now(timezone.utc) - timedelta(days=period_days)
+    since_ts, until_ts, window = _social_window(period_days, start_date, end_date)
+    since_dt = datetime.fromtimestamp(since_ts, tz=timezone.utc)
+    until_dt = datetime.fromtimestamp(until_ts, tz=timezone.utc)
 
     page = fb.get_page_followers()
-    # Чесне вікно period_days: сума денних значень (перевірено в Graph
-    # Explorer 11.08.2026). Порожньо (задовге вікно, збій) → фолбек на
-    # фіксований тижневий пресет Meta, і це чесно підписується.
-    stats = fb.get_page_stats_range(since_ts, int(now.timestamp()))
-    metrics_window = f"сума по днях за останні {period_days} дн."
+    # Чесне вікно: сума денних значень (перевірено в Graph Explorer
+    # 11.08.2026). Порожньо (задовге вікно, збій) → фолбек на фіксований
+    # тижневий пресет Meta, і це чесно підписується.
+    stats = fb.get_page_stats_range(since_ts, until_ts)
+    metrics_window = f"сума по днях за вікно {window}"
     if not stats:
         stats = fb.get_page_stats()
         metrics_window = ("фіксований останній тиждень Meta — діапазон по днях "
                           "не віддався (фолбек)")
-    posts, total_posts = fb.get_top_posts(since_ts)
-    reels, total_reels = fb.get_top_reels(since_dt)
+    posts, total_posts = fb.get_top_posts(since_ts, until_ts)
+    reels, total_reels = fb.get_top_reels(since_dt, until_dt)
 
     def fmt_post(p):
         # get_top_posts (після рефакторингу facebook.py 03.08) кладе метрики
@@ -721,13 +738,12 @@ def _nlq_facebook_stats(period_days=7):
         }
 
     return {
-        "period_days": period_days,
-        "window": f"{now - timedelta(days=period_days):%d.%m.%Y} — {now:%d.%m.%Y}",
+        "window": window,
         "followers": page.get("followers_count") or stats.get("page_follows"),
         "views": stats.get("page_media_view"),
         "engagements": stats.get("page_post_engagements"),
         "metrics_window": metrics_window,
-        "note": "views — перегляди контенту сторінки (page_media_view; замінило охоплення/impressions, яке Meta задепрекейтила лист.2025). Топ постів — тільки пости з посиланням на nikvesti.com.",
+        "note": "views — перегляди контенту сторінки (page_media_view; замінило охоплення/impressions, яке Meta задепрекейтила лист.2025). Топ постів — тільки пости з посиланням на nikvesti.com. followers — поточний стан, не на кінець вікна.",
         "total_posts": total_posts,
         "top_posts": [fmt_post(p) for p in posts],
         "total_reels": total_reels,
@@ -735,26 +751,25 @@ def _nlq_facebook_stats(period_days=7):
     }
 
 
-def _nlq_instagram_stats(period_days=7):
+def _nlq_instagram_stats(period_days=7, start_date=None, end_date=None):
     from handlers import instagram as ig
 
-    now = datetime.now()
-    since_ts = int((now - timedelta(days=period_days)).timestamp())
+    since_ts, until_ts, window = _social_window(period_days, start_date, end_date)
 
     profile = ig.get_instagram_profile()
-    # Чесне вікно period_days тією самою схемою, що get_follows_week (period=day
-    # + total_value + since/until). Збій діапазону (задовге вікно — в IG ліміт
+    # Чесне вікно тією самою схемою, що get_follows_week (period=day +
+    # total_value + since/until). Збій діапазону (задовге вікно — в IG ліміт
     # ~30 днів) → фолбек на фіксований тиждень Meta, чесно підписаний.
     try:
-        window_stats = ig.get_instagram_stats(since_ts, int(now.timestamp()))
-        metrics_window = (f"тотал за останні {period_days} дн. (reach — сума "
-                          "денних охоплень: людина з різних днів рахується повторно)")
+        window_stats = ig.get_instagram_stats(since_ts, until_ts)
+        metrics_window = (f"тотал за вікно {window} (reach — сума денних "
+                          "охоплень: людина з різних днів рахується повторно)")
     except Exception as e:
         window_stats = ig.get_instagram_stats()
         metrics_window = f"фіксований останній тиждень Meta — діапазон не віддався ({e})"
-    follows, unfollows = ig.get_follows_week(since_ts, int(now.timestamp()))
-    top_media = ig.get_top_media(since_ts)
-    counts = ig.get_media_counts(since_ts)
+    follows, unfollows = ig.get_follows_week(since_ts, until_ts)
+    top_media = ig.get_top_media(since_ts, until_ts)
+    counts = ig.get_media_counts(since_ts, until_ts)
 
     def fmt_media(m):
         return {
@@ -767,8 +782,7 @@ def _nlq_instagram_stats(period_days=7):
         }
 
     return {
-        "period_days": period_days,
-        "window": f"{now - timedelta(days=period_days):%d.%m.%Y} — {now:%d.%m.%Y}",
+        "window": window,
         "followers": profile.get("followers_count"),
         "follows_gained": follows,
         "follows_lost": unfollows,
@@ -782,7 +796,7 @@ def _nlq_instagram_stats(period_days=7):
         "interactions": window_stats.get("total_interactions"),
         "accounts_engaged": window_stats.get("accounts_engaged"),
         "metrics_window": metrics_window,
-        "note": "Meta перейшов з reach на views — головна метрика IG тепер views. follows_gained/lost, published і топ — завжди за period_days.",
+        "note": "Meta перейшов з reach на views — головна метрика IG тепер views. follows_gained/lost, published і топ — завжди за вікно window. followers — поточний стан, не на кінець вікна.",
         "top_media": [fmt_media(m) for m in top_media],
     }
 
@@ -1178,7 +1192,9 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "period_days": {"type": "integer", "description": "За скільки останніх днів брати топ постів/рілзів, за замовчуванням 7"},
+                "period_days": {"type": "integer", "description": "За скільки останніх днів, за замовчуванням 7. Для конкретних дат чи календарних періодів бери start_date/end_date замість цього"},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD — початок вікна для точних дат («з 1 по 10 серпня») чи календарних періодів («минулого тижня» = пн–нд); сильніше за period_days"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD — кінець вікна, включно; без нього — по сьогодні"},
             },
             "required": [],
         },
@@ -1195,7 +1211,9 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "period_days": {"type": "integer", "description": "За скільки останніх днів, за замовчуванням 7"},
+                "period_days": {"type": "integer", "description": "За скільки останніх днів, за замовчуванням 7. Для конкретних дат чи календарних періодів бери start_date/end_date замість цього"},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD — початок вікна для точних дат («з 1 по 10 серпня») чи календарних періодів («минулого тижня» = пн–нд); сильніше за period_days"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD — кінець вікна, включно; без нього — по сьогодні"},
             },
             "required": [],
         },
@@ -1656,7 +1674,7 @@ QUERY_ROUTER_SYSTEM_PROMPT = FOX_SYSTEM_PROMPT + """
 URL бери РІВНО з поля url (символ-у-символ), час — з поля time, автора — з поля author (author=null — рядок з 👤 пропусти). Якщо викликав БЕЗ own_material=true і питання розрізняє власні й рерайти — познач власні ✍️ у рядку автора (поле own). Якщо total більший за shown — чесно скажи, що показуєш перші shown із total. Символи & < > у заголовках заміни на &amp; &lt; &gt;.
 Якщо у повідомленні є посилання на nikvesti.com і просять зробити з них бек ("зроби бек із цих новин", "бек про те, як парки демонтують стелу" + список лінків) — виклич get_leads_from_urls, передавши УСІ ці посилання масивом urls (не шукай нічого через search_news_archive — новини вже задані посиланнями). Далі склади бек за тими самими правилами, що нижче. Якщо користувач задав кут/тему беку ("про те, як…") — тримайся його: підбирай і зв'язуй факти навколо цієї теми, а не переказуй усе підряд. items уже відсортовані свіжіше→давніше — цей порядок і тримай (по хронології, а не за порядком посилань). Якщо у відповіді є missing — коротко зазнач наприкінці, які посилання не знайшлись.
 Якщо просять написати бек (бекграунд, "нагадаємо") — виклич get_news_leads (з numbers, якщо вказали номери новин) і склади бек: 2-4 короткі абзаци (якщо новин багато — 7+ — можна до 5-6 абзаців, але кожну згадай), починай з "Нагадаємо,", далі від свіжішого до давнішого, тільки факти з лідів і заголовків, нічого не додумуй, стиль стрічки новин, без емодзі. Рік вказуй ЗАВЖДИ при першій згадці події та на кожному новому абзаці / новій події ("ще у квітні 2026-го анонсували…", а не просто "ще у квітні") — орієнтуйся на дати новин і сьогоднішню дату вище. Якщо в межах того ж абзацу йдеться про ті самі події того ж року — рік далі можна не повторювати; перескочив на новий абзац чи нову подію — знову назви рік. Посилання на кожну новину — HTML-гіперлінк <a href="URL">…</a>, яким обгортаєш 1-3 слова, що ВЖЕ стоять у реченні (зазвичай дієслівну фразу факту): "Ільюк <a href="URL">пропонував провести ротацію</a> керівників адміністрацій". ЗАБОРОНЕНО дописувати анкор окремим хвостом через тире чи кому ("…, — заявляв про дитсадки") — речення має читатись однаково і з лінком, і без нього. Не "тут", не голий URL; одна новина — один лінк. URL у href бери РІВНО як у полі url новини з результату tool, символ-у-символ. Короткий url без слага (напр. /news/business/143444) — НОРМАЛЬНИЙ робочий канонічний лінк старої новини: лінкуй ним так само впевнено, як і довгим, і НЕ уникай таких новин у беку. ЗАБОРОНЕНО конструювати, "відновлювати" чи транслітерувати слаг із заголовка — вигаданий хвіст дає 404. Лінк має бути в КОЖНОЇ згаданої новини: бек без лінків — брак.
-Якщо питають про соцмережі — get_facebook_stats (сторінка ФБ: підписники, перегляди, взаємодії, топ постів і рілзів) або get_instagram_stats (підписники з приростом/відтоком, публікації, перегляди/охоплення, топ за лайками). Метрики йдуть за period_days; поле metrics_window каже, за яке САМЕ вікно числа — якщо там фолбек «фіксований тиждень Meta», а питали про інший період, чесно зазнач це. У заголовку блоку кожної мережі став КОНКРЕТНІ ДАТИ вікна з поля window, а не лише кількість днів: «Facebook (28.07 — 11.08)» — інакше незрозуміло, які саме дні порахувались. Охоплення (reach) IG за вікно — сума денних охоплень, людина з різних днів рахується повторно: при порівняннях і великих числах кажи «сумарне денне охоплення», а не «стільки людей нас побачило». Для трендів і динаміки соцмереж у часі ("як росла інста за пів року", "динаміка охоплення ФБ", "скільки підписників було місяць тому", "соцмережі місяць до місяця") бери get_social_history — це накопичена історія тижневих зрізів у пам'яті бота (Meta не дає її заднім числом). Для Instagram орієнтуйся на views (Meta перейшов з reach на views). Масив snapshots зручно передати в render_chart.
+Якщо питають про соцмережі — get_facebook_stats (сторінка ФБ: підписники, перегляди, взаємодії, топ постів і рілзів) або get_instagram_stats (підписники з приростом/відтоком, публікації, перегляди/охоплення, топ за лайками). ПЕРІОД: «останні N днів» → period_days; конкретні дати («з 1 по 10 серпня») чи календарні періоди («минулого тижня», «за липень», «перший тиждень серпня») → start_date/end_date, порахуй дати сам від сьогоднішньої (тиждень = пн–нд). Розмовне «за два тижні» без уточнення = period_days=14 — але якщо з контексту видно календарні межі, бери дати. Поле metrics_window каже, за яке САМЕ вікно числа — якщо там фолбек «фіксований тиждень Meta», а питали про інший період, чесно зазнач це. У заголовку блоку кожної мережі став КОНКРЕТНІ ДАТИ вікна з поля window, а не лише кількість днів: «Facebook (28.07 — 11.08)» — інакше незрозуміло, які саме дні порахувались. Охоплення (reach) IG за вікно — сума денних охоплень, людина з різних днів рахується повторно: при порівняннях і великих числах кажи «сумарне денне охоплення», а не «стільки людей нас побачило». Для трендів і динаміки соцмереж у часі ("як росла інста за пів року", "динаміка охоплення ФБ", "скільки підписників було місяць тому", "соцмережі місяць до місяця") бери get_social_history — це накопичена історія тижневих зрізів у пам'яті бота (Meta не дає її заднім числом). Для Instagram орієнтуйся на views (Meta перейшов з reach на views). Масив snapshots зручно передати в render_chart.
 На ЗАГАЛЬНЕ питання про статистику соцмереж ("як справи в інсті?", "статистика ФБ та інстаграму за два тижні") відповідай ЗВЕДЕНИМИ числами: підписники з приростом/відтоком, скільки опубліковано, охоплення/перегляди, взаємодії. Топ публікацій у таку відповідь НЕ вставляй, хоч він і лежить у результаті tool — його не просили, і він топить головні числа. Топ показуй лише коли питають саме про публікації ("який пост найкраще зайшов?", "топ рілзів", "що залетіло цього тижня?").
 КОЛИ ПОКАЗУЄШ ТОП ПУБЛІКАЦІЙ СОЦМЕРЕЖ (top_posts/top_reels з get_facebook_stats, top_media з get_instagram_stats) — кожна публікація МУСИТЬ бути гіперлінком: список без лінків марний, публікацію неможливо відкрити. Нумерований список, один рядок на публікацію, у форматі (HTML):
 1. 🎬 <a href="URL">Рілз про атаку на жителя області</a> — 2051 лайк, 312 коментарів

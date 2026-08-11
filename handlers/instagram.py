@@ -70,7 +70,7 @@ def get_follows_week(since=None, until=None):
     except:
         return None, None
 
-def get_top_media(since=None):
+def get_top_media(since=None, until=None):
     if since is None:
         since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/media"
@@ -80,6 +80,8 @@ def get_top_media(since=None):
         "access_token": INSTAGRAM_TOKEN,
         "limit": 50
     }
+    if until:
+        params["until"] = until
     data = requests.get(url, params=params).json()
     if "error" in data:
         return []
@@ -171,7 +173,7 @@ def get_media_insights(media_id, media_type=None):
     return {}
 
 
-def get_media_counts(since=None):
+def get_media_counts(since=None, until=None):
     if since is None:
         since = int((datetime.now() - timedelta(days=7)).timestamp())
     url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/media"
@@ -181,6 +183,8 @@ def get_media_counts(since=None):
         "access_token": INSTAGRAM_TOKEN,
         "limit": 100
     }
+    if until:
+        params["until"] = until
     data = requests.get(url, params=params).json()
     if "error" in data:
         return {}
