@@ -80,6 +80,31 @@ def _build_tsquery(text):
 
 # ---------- Пошук ----------
 
+# Фрагмент ТЕКСТУ навколо збігу (ts_headline). НАВІЩО (інцидент 12.08.2026):
+# Аліна попросила «бек про критику від Дмитра Рябченка на роботу КП
+# „Миколаївські парки"», і Лис відповів, що підтвердження не знайшов —
+# «його ім'я в жодному з лідів не фігурує, можливо, він згадується в тілі
+# тексту, але переконатись у контексті без повного тексту я не можу».
+# Він мав рацію щодо себе: пошук ШУКАВ по повному тексту, а віддавав лише
+# заголовок, дату й URL. Тобто будь-яке питання «хто кого критикував / хто
+# що заявив» упиралось у стіну, хоча цитата лежала в норі. Тепер кожен збіг
+# приносить із собою речення, у якому він стався.
+#
+# Маркери виділення ПОРОЖНІ свідомо: Лис цитує фрагмент майже дослівно, і
+# будь-які <b>/«» звідси поїхали б у текст відповіді або в HTML-розмітку.
+# Мова береться одна (укр., фолбек рос.) — інакше в українському збігу
+# показувався б російський дубль того ж речення.
+_HEADLINE_OPTS = ('StartSel="", StopSel="", MaxWords=26, MinWords=12, '
+                  'ShortWord=3, MaxFragments=2, FragmentDelimiter=" … "')
+_EXCERPT_SQL = (
+    ", ts_headline('simple', left(coalesce(nullif(a2.text_ua,''), a2.text_ru, ''), 20000),"
+    " q.query, '" + _HEADLINE_OPTS + "') AS excerpt"
+)
+# Скільки тексту фрагмента лишаємо в результаті tool'а: два речення на новину
+# × 30 новин — це ще дешево, а без них модель не бачить, ЧОМУ стаття збіглась.
+EXCERPT_MAX_CHARS = 320
+
+
 def _fmt_item(n, row):
     title = (row.get("title_ua") or row.get("title_ru") or "").strip()
     slug = (row.get("slug") or "").strip()
@@ -100,6 +125,9 @@ def _fmt_item(n, row):
     item = {"n": n, "id": row["id"], "published": published, "date": date, "title": title, "url": url}
     if "own_material" in row:
         item["own"] = bool(row.get("own_material"))
+    excerpt = " ".join((row.get("excerpt") or "").split())
+    if excerpt:
+        item["excerpt"] = excerpt[:EXCERPT_MAX_CHARS]
     return item
 
 
@@ -127,12 +155,16 @@ def _filter_conditions(own_material=None, category=None, region=None, tag=None):
 
 def search_items(query, limit=10, year_from=None, year_to=None,
                  spread_years=False, per_year=3,
-                 own_material=None, category=None, region=None, tag=None):
+                 own_material=None, category=None, region=None, tag=None,
+                 with_context=False):
     """Ядро пошуку: повертає list[dict] (n/id/date/title/url/own) без побічних
     ефектів. Використовується і NLQ-tool'ом (з пам'яттю), і /dossier (без).
     Без spread_years видача — FRESH_SLOTS найсвіжіших збігів + добір до limit
     за релевантністю (ts_rank); показ у будь-якому разі хронологічний.
-    Фільтри: own_material (тільки власні), category (слаг), region (код), tag (назва)."""
+    Фільтри: own_material (тільки власні), category (слаг), region (код), tag (назва).
+    with_context — додати до кожного збігу excerpt (речення навколо збігу):
+    ts_headline рахується ЛИШЕ для відібраних limit рядків, а не для всіх
+    збігів, яких на «Миколаїв» десятки тисяч."""
     tsquery = _build_tsquery(query)
     if not tsquery:
         return []
@@ -151,6 +183,14 @@ def search_items(query, limit=10, year_from=None, year_to=None,
     conds += fconds
     params += fparams
     where = " AND ".join(conds)
+    # Витяг чіпляється в ОСТАННЬОМУ select — там рядків уже ≤ limit. Порахувати
+    # його всередині matches/ranked означало б ганяти ts_headline по всьому
+    # збігу (десятки тисяч статей на «Миколаїв»).
+    excerpt_col = _EXCERPT_SQL if with_context else ""
+
+    def _excerpt_join(alias):
+        return (f" JOIN articles a2 ON a2.id = {alias}.id CROSS JOIN q"
+                if with_context else "")
 
     if spread_years:
         sql = f"""
@@ -166,9 +206,11 @@ def search_items(query, limit=10, year_from=None, year_to=None,
                 FROM articles a, q
                 WHERE {where}
             )
-            SELECT id, published, title_ua, title_ru, slug, category, kind, own_material
-            FROM ranked WHERE rn <= %s
-            ORDER BY yr ASC, rank DESC
+            SELECT r.id, r.published, r.title_ua, r.title_ru, r.slug, r.category,
+                   r.kind, r.own_material{excerpt_col}
+            FROM ranked r{_excerpt_join('r')}
+            WHERE r.rn <= %s
+            ORDER BY r.yr ASC, r.rank DESC
             LIMIT %s
         """
         params.extend([max(1, int(per_year or 3)), limit])
@@ -194,9 +236,10 @@ def search_items(query, limit=10, year_from=None, year_to=None,
                 ORDER BY rank DESC, published DESC
                 LIMIT %s
             )
-            SELECT id, published, title_ua, title_ru, slug, category, kind, own_material
-            FROM matches
-            WHERE id IN (SELECT id FROM fresh UNION SELECT id FROM top_ranked)
+            SELECT m.id, m.published, m.title_ua, m.title_ru, m.slug, m.category,
+                   m.kind, m.own_material{excerpt_col}
+            FROM matches m{_excerpt_join('m')}
+            WHERE m.id IN (SELECT id FROM fresh UNION SELECT id FROM top_ranked)
         """
         params.extend([fresh, limit - fresh])
 
@@ -241,6 +284,11 @@ def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
             query, limit=limit, year_from=year_from, year_to=year_to,
             spread_years=spread_years, per_year=per_year,
             own_material=own_material, category=category, region=region, tag=tag,
+            # Витяг тексту навколо збігу — завжди, а не за прапорцем: питання
+            # «хто кого критикував» ставлять щодня, а прапорець, який модель
+            # має здогадатись поставити, і є той самий промах, через який
+            # Лис відповів Аліні «переконатись не можу».
+            with_context=True,
         )
     except Exception as e:
         return {"error": f"Пошук по норі не вдався: {e}"}
@@ -275,6 +323,12 @@ def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
         + "У items — ПОВНИЙ накопичений список цього запиту (кілька пошуків одного "
           "запиту зливаються в один список з наскрізною нумерацією). Показуй усі "
           "items рівно під цими номерами n, ОДНИМ наскрізним списком. "
+        + "У кожного збігу є excerpt — речення З ТЕКСТУ матеріалу навколо збігу. "
+          "Це твоя перевірка контексту: по ньому видно, ЧОМУ стаття знайшлась і чи "
+          "справді там те, що питають (хто кого критикував, хто що заявив). "
+          "excerpt — обрізаний фрагмент, не повний текст: спирайся на нього, але "
+          "не видавай за дослівну цитату більше, ніж у ньому є, і НЕ друкуй його "
+          "в списку новин (список — рядок на новину). "
         + "Якщо результатів мало — спробуй синоніми або російське написання (старі матеріали російською)."
     )
     return {"query": query, "found": len(items), "note": note, "items": all_items}
