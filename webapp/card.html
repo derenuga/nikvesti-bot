@@ -130,6 +130,58 @@
   }
   button.preset.on { background: #fff; color: var(--brand); box-shadow: inset 0 0 0 2px var(--brand); }
 
+  .canvas-wrap { position: relative; }
+  .fab {
+    position: absolute; right: 14px; bottom: 14px; display: flex; align-items: center;
+    gap: 8px; padding: 10px 14px; border-radius: 999px; font-size: 13px;
+    background: rgba(12, 20, 40, .72); color: #fff; backdrop-filter: blur(6px);
+    box-shadow: 0 4px 16px rgba(0,0,0,.28);
+  }
+  .fab svg { width: 16px; height: 16px; }
+  .fab:hover { background: rgba(12, 20, 40, .88); }
+
+  .modal {
+    position: fixed; inset: 0; z-index: 50; background: rgba(6, 10, 20, .88);
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  /* display:flex перебиває атрибут hidden — без цього закрита модалка
+     лишається невидимо поверх сторінки і з'їдає кліки */
+  .modal[hidden] { display: none; }
+  .modal-box {
+    background: #10182c; color: #eef2fb; border-radius: 18px; padding: 18px;
+    width: min(980px, 100%); max-height: 100%; overflow: auto;
+    display: grid; grid-template-columns: minmax(240px, 1fr) minmax(300px, 420px);
+    grid-template-areas: "head head" "pic ctrl"; gap: 16px 20px;
+  }
+  @media (max-width: 780px) {
+    .modal-box { grid-template-columns: 1fr; grid-template-areas: "head" "pic" "ctrl"; }
+  }
+  .modal-head {
+    grid-area: head; display: flex; align-items: center; gap: 12px;
+    font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: #93a4c8;
+    font-weight: 600;
+  }
+  .modal-head .seg { background: #1b2540; }
+  .modal-head .seg button { color: #cdd8ef; }
+  .modal-head .seg button.on { background: #2c3a63; color: #fff; box-shadow: none; }
+  .modal-x {
+    margin-left: auto; background: #1b2540; color: #cdd8ef; padding: 6px 12px;
+    border-radius: 8px; font-size: 15px;
+  }
+  #adjCanvas {
+    grid-area: pic; width: 100%; height: auto; border-radius: 12px; display: block;
+    background: #0a1020; cursor: grab; touch-action: none;
+  }
+  #adjCanvas.dragging { cursor: grabbing; }
+  .modal-controls { grid-area: ctrl; }
+  .modal-controls .sliders label { color: #93a4c8; }
+  .modal-controls .sliders output { color: #93a4c8; }
+  .modal-controls button.preset { background: #1b2540; color: #dfe7f7; }
+  .modal-controls button.preset.on { background: #fff; color: var(--brand); box-shadow: none; }
+  .modal-controls button.ghost { background: #1b2540; color: #cdd8ef; }
+  .modal-actions { display: flex; gap: 10px; margin-top: 18px; }
+  .modal-actions button { flex: 1; padding: 12px; }
+
   .preview { position: sticky; top: 16px; }
   #canvas {
     width: 100%; height: auto; border-radius: 14px; display: block;
@@ -212,21 +264,6 @@
       <div class="hint">Фото на картці можна тягнути мишкою і зумити коліщатком чи повзунком нижче — синій блок лишається на місці, кадр «кропиться» сам.</div>
     </div>
 
-    <div class="panel" id="adjPanel" hidden>
-      <h2 id="adjTitle">Обробка фото</h2>
-      <div class="presets" id="presets"></div>
-      <div class="sliders" style="margin-top:14px">
-        <label>Яскравість</label><input type="range" id="adjBright" min="50" max="150" value="100"><output>0</output>
-        <label>Контраст</label><input type="range" id="adjContrast" min="50" max="150" value="100"><output>0</output>
-        <label>Насиченість</label><input type="range" id="adjSat" min="0" max="200" value="100"><output>0</output>
-        <label>Тепло</label><input type="range" id="adjWarm" min="-60" max="60" value="0"><output>0</output>
-        <label>Виразність</label><input type="range" id="adjVivid" min="0" max="60" value="0"><output>0</output>
-      </div>
-      <div class="toolrow">
-        <button class="ghost" id="adjReset">Скинути обробку</button>
-      </div>
-    </div>
-
     <div class="panel" id="quotesPanel" hidden>
       <h2>Цитати зі статті</h2>
       <div id="quotesList"></div>
@@ -268,10 +305,44 @@
   </div>
 
   <div class="preview">
-    <canvas id="canvas" width="1600" height="2000"></canvas>
+    <div class="canvas-wrap">
+      <canvas id="canvas" width="1600" height="2000"></canvas>
+      <button id="adjOpen" class="fab" hidden title="Обробка фото: яскравість, контраст, фільтри">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+        <span>Обробка фото</span>
+      </button>
+    </div>
     <div class="stage-hint" id="stageHint">Спершу кинь посилання на матеріал ↑</div>
     <div class="dl">
       <button id="download" disabled>Завантажити JPG</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="adjModal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <div id="adjTitle">Обробка фото</div>
+      <div class="seg" id="adjSlotSeg" hidden>
+        <button data-slot="0" class="on">Ліве</button>
+        <button data-slot="1">Праве</button>
+      </div>
+      <button class="modal-x" id="adjClose" title="Закрити">✕</button>
+    </div>
+    <canvas id="adjCanvas" width="900" height="900"></canvas>
+    <div class="modal-controls">
+      <div class="presets" id="presets"></div>
+      <div class="sliders" style="margin-top:16px">
+        <label>Яскравість</label><input type="range" id="adjBright" min="50" max="150" value="100"><output>0</output>
+        <label>Контраст</label><input type="range" id="adjContrast" min="50" max="150" value="100"><output>0</output>
+        <label>Насиченість</label><input type="range" id="adjSat" min="0" max="200" value="100"><output>0</output>
+        <label>Тепло</label><input type="range" id="adjWarm" min="-60" max="60" value="0"><output>0</output>
+        <label>Виразність</label><input type="range" id="adjVivid" min="0" max="60" value="0"><output>0</output>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost" id="adjReset">Скинути</button>
+        <button id="adjDone">Готово</button>
+      </div>
     </div>
   </div>
 </div>
@@ -672,6 +743,7 @@
       st.adj[key] = +e.target.value;
       st.preset = "custom"; // ручна правка знімає позначку пресета
       syncAdjUI(); render();
+      if (!$("adjModal").hidden) drawAdjPreview();
     });
   });
   $("adjReset").addEventListener("click", () => {
@@ -694,11 +766,90 @@
     });
     $("presets").querySelectorAll("button").forEach((b) =>
       b.classList.toggle("on", b.dataset.preset === st.preset));
-    $("adjTitle").textContent = S.tpl === 2
-      ? `Обробка фото · ${S.active === 0 ? "ліве" : "праве"}`
-      : "Обробка фото";
-    $("adjPanel").hidden = !activeSlot().photo;
+    $("adjTitle").textContent = "Обробка фото";
+    $("adjSlotSeg").hidden = S.tpl !== 2;
+    [...$("adjSlotSeg").children].forEach((el) =>
+      el.classList.toggle("on", +el.dataset.slot === S.active));
+    $("adjOpen").hidden = !st.photo;   // кнопка над прев'ю
+    if (!$("adjModal").hidden) drawAdjPreview();
   }
+
+  // ---------- Модалка обробки ----------
+  const adjCanvas = $("adjCanvas"), actx = adjCanvas.getContext("2d");
+
+  function openAdj() {
+    if (!activeSlot().photo) return;
+    $("adjModal").hidden = false;
+    syncAdjUI();
+    drawAdjPreview();
+  }
+  function closeAdj() { $("adjModal").hidden = true; }
+
+  $("adjOpen").addEventListener("click", openAdj);
+  $("adjClose").addEventListener("click", closeAdj);
+  $("adjDone").addEventListener("click", closeAdj);
+  $("adjModal").addEventListener("click", (e) => {
+    if (e.target === $("adjModal")) closeAdj(); // клік по чорному фону
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("adjModal").hidden) closeAdj();
+  });
+  $("adjSlotSeg").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (b) setActive(+b.dataset.slot);
+  });
+
+  // Прев'ю в модалці — той самий слот, лише в своєму масштабі:
+  // видно РІВНО той кадр, який піде в картку
+  function drawAdjPreview() {
+    const st = activeSlot();
+    const r = slotRect(S.tpl === 2 ? S.active : 0);
+    const k = Math.min(900 / r.w, 900 / r.h);
+    adjCanvas.width = Math.round(r.w * k);
+    adjCanvas.height = Math.round(r.h * k);
+    actx.setTransform(k, 0, 0, k, -r.x * k, -r.y * k);
+    actx.clearRect(r.x, r.y, r.w, r.h);
+    if (st.photo) paintPhoto(st, r, actx);
+    actx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  // Драг і зум просто в модалці — кроп правиться там само, де дивишся
+  let adrag = null;
+  const toSlot = (e) => {
+    const r = slotRect(S.tpl === 2 ? S.active : 0);
+    const box = adjCanvas.getBoundingClientRect();
+    const k = r.w / box.width;
+    return { x: (e.clientX - box.left) * k, y: (e.clientY - box.top) * k };
+  };
+  adjCanvas.addEventListener("pointerdown", (e) => {
+    const st = activeSlot();
+    if (!st.photo) return;
+    const p = toSlot(e);
+    adrag = { x: p.x, y: p.y, offX: st.offX, offY: st.offY };
+    adjCanvas.classList.add("dragging");
+    adjCanvas.setPointerCapture(e.pointerId);
+  });
+  adjCanvas.addEventListener("pointermove", (e) => {
+    if (!adrag) return;
+    const st = activeSlot();
+    const p = toSlot(e);
+    st.offX = adrag.offX + (p.x - adrag.x);
+    st.offY = adrag.offY + (p.y - adrag.y);
+    clampSlot(S.tpl === 2 ? S.active : 0);
+    drawAdjPreview(); render();
+  });
+  adjCanvas.addEventListener("pointerup", () => {
+    adrag = null; adjCanvas.classList.remove("dragging");
+  });
+  adjCanvas.addEventListener("wheel", (e) => {
+    const st = activeSlot();
+    if (!st.photo) return;
+    e.preventDefault();
+    st.zoom = Math.min(3, Math.max(1, st.zoom * (e.deltaY < 0 ? 1.06 : 0.94)));
+    syncZoomUI();
+    clampSlot(S.tpl === 2 ? S.active : 0);
+    drawAdjPreview(); render();
+  }, { passive: false });
 
   $("resetPhoto").addEventListener("click", () => {
     S.slots.forEach((st) => { st.zoom = 1; st.offX = 0; st.offY = 0; });
@@ -795,8 +946,7 @@
     if (drag) {
       const p = toCanvas(e);
       if (Math.hypot(p.x - drag.x, p.y - drag.y) < 6 && S.slots[drag.slot].photo) {
-        syncAdjUI();
-        $("adjPanel").scrollIntoView({ behavior: "smooth", block: "center" });
+        openAdj(); // тап по фото = «редагувати це фото»
       }
     }
     drag = null;
@@ -948,36 +1098,100 @@
   // Кругле фото шаблону «Цитата з колом»: кліп по колу + обводка;
   // кадр їздить/зумиться всередині — псевдо-circle-crop
   // Малює фото слота у вже накладений кліп із його обробкою.
-  // ctx.filter тягне яскравість/контраст/насиченість, «тепло» і «виразність»
-  // домальовуються шарами поверх — фільтром їх не виразити.
-  function paintPhoto(st, rect) {
+  //
+  // Обробка йде в ОФСКРІН-канвас розміру слота, а вже він кладеться в кліп.
+  // Два наслідки, обидва потрібні: putImageData ігнорує кліп (інакше круглий
+  // кроп перетворився б на квадрат), і Safari можна обслужити руками.
+  //
+  // ctx.filter у WebKit немає — у Safari яскравість/контраст/насиченість
+  // просто нічого не робили (перевірено Олегом 13.08). Тому: є фільтр —
+  // беремо його (швидко, GPU), немає — рахуємо пікселі самі. Тепло і
+  // виразність фільтром не виражаються ніде, вони шарами composite.
+  const SUPPORTS_FILTER = (() => {
+    const c = document.createElement("canvas").getContext("2d");
+    c.filter = "brightness(50%)";
+    return c.filter === "brightness(50%)";
+  })();
+
+  const _off = document.createElement("canvas");
+  const _octx = _off.getContext("2d", { willReadFrequently: !SUPPORTS_FILTER });
+
+  function isNeutral(a) {
+    return a.bright === 100 && a.contrast === 100 && a.sat === 100
+      && !a.warm && !a.vivid;
+  }
+
+  // Ручні яскравість/контраст/насиченість (фолбек для Safari).
+  // LUT на 256 значень для яскравості+контрасту, насиченість — лерп до
+  // яскравісної складової (Rec. 601), як це робить CSS-фільтр saturate.
+  function applyPixelAdjust(c, w, h, a) {
+    const img = c.getImageData(0, 0, w, h);
+    const d = img.data;
+    const b = a.bright / 100, ct = a.contrast / 100, sat = a.sat / 100;
+    const lut = new Uint8ClampedArray(256);
+    for (let i = 0; i < 256; i++) {
+      lut[i] = Math.max(0, Math.min(255, ((i * b - 128) * ct) + 128));
+    }
+    for (let i = 0; i < d.length; i += 4) {
+      let r = lut[d[i]], g = lut[d[i + 1]], bl = lut[d[i + 2]];
+      if (sat !== 1) {
+        const lum = 0.299 * r + 0.587 * g + 0.114 * bl;
+        r = lum + (r - lum) * sat;
+        g = lum + (g - lum) * sat;
+        bl = lum + (bl - lum) * sat;
+      }
+      d[i] = r; d[i + 1] = g; d[i + 2] = bl;
+    }
+    c.putImageData(img, 0, 0);
+  }
+
+  function paintPhoto(st, rect, c = ctx) {
     const a = st.adj;
     const sf = Math.max(rect.w / st.photo.naturalWidth, rect.h / st.photo.naturalHeight) * st.zoom;
     const dw = st.photo.naturalWidth * sf, dh = st.photo.naturalHeight * sf;
-    const dx = rect.x + rect.w / 2 - dw / 2 + st.offX;
-    const dy = rect.y + rect.h / 2 - dh / 2 + st.offY;
-    ctx.filter = `brightness(${a.bright}%) contrast(${a.contrast}%) saturate(${a.sat}%)`;
-    ctx.drawImage(st.photo, dx, dy, dw, dh);
-    ctx.filter = "none";
+    const dx = rect.w / 2 - dw / 2 + st.offX;   // координати ВСЕРЕДИНІ слота
+    const dy = rect.h / 2 - dh / 2 + st.offY;
+
+    if (isNeutral(a)) { // без обробки — без зайвого проміжного канваса
+      c.drawImage(st.photo, rect.x + dx, rect.y + dy, dw, dh);
+      return;
+    }
+
+    _off.width = Math.round(rect.w);
+    _off.height = Math.round(rect.h);
+    _octx.setTransform(1, 0, 0, 1, 0, 0);
+    _octx.clearRect(0, 0, _off.width, _off.height);
+
+    if (SUPPORTS_FILTER) {
+      _octx.filter = `brightness(${a.bright}%) contrast(${a.contrast}%) saturate(${a.sat}%)`;
+      _octx.drawImage(st.photo, dx, dy, dw, dh);
+      _octx.filter = "none";
+    } else {
+      _octx.drawImage(st.photo, dx, dy, dw, dh);
+      if (a.bright !== 100 || a.contrast !== 100 || a.sat !== 100) {
+        applyPixelAdjust(_octx, _off.width, _off.height, a);
+      }
+    }
+
     if (a.warm) {
-      ctx.globalCompositeOperation = "soft-light";
-      ctx.globalAlpha = Math.min(0.85, Math.abs(a.warm) / 60 * 0.8);
-      ctx.fillStyle = a.warm > 0 ? "#ff9a3c" : "#3ca8ff";
-      ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = "source-over";
+      _octx.globalCompositeOperation = "soft-light";
+      _octx.globalAlpha = Math.min(0.85, Math.abs(a.warm) / 60 * 0.8);
+      _octx.fillStyle = a.warm > 0 ? "#ff9a3c" : "#3ca8ff";
+      _octx.fillRect(0, 0, _off.width, _off.height);
+      _octx.globalAlpha = 1;
+      _octx.globalCompositeOperation = "source-over";
     }
     if (a.vivid) {
       // «Виразність» — м'який overlay самого кадру: підіймає локальний
       // контраст, не вибілюючи світлі ділянки, як робить contrast
-      ctx.globalCompositeOperation = "overlay";
-      ctx.globalAlpha = a.vivid / 100;
-      ctx.filter = `saturate(${a.sat}%)`;
-      ctx.drawImage(st.photo, dx, dy, dw, dh);
-      ctx.filter = "none";
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = "source-over";
+      _octx.globalCompositeOperation = "overlay";
+      _octx.globalAlpha = a.vivid / 100;
+      _octx.drawImage(_off, 0, 0);
+      _octx.globalAlpha = 1;
+      _octx.globalCompositeOperation = "source-over";
     }
+
+    c.drawImage(_off, rect.x, rect.y);
   }
 
   function drawCirclePhoto(sc) {
