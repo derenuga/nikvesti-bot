@@ -135,11 +135,14 @@
 
   .canvas-wrap { position: relative; }
   .fab {
-    position: absolute; right: 14px; bottom: 14px; display: flex; align-items: center;
+    position: absolute; top: 14px; right: 14px; display: flex; align-items: center;
     gap: 8px; padding: 10px 14px; border-radius: 999px; font-size: 13px;
     background: rgba(12, 20, 40, .72); color: #fff; backdrop-filter: blur(6px);
     box-shadow: 0 4px 16px rgba(0,0,0,.28);
   }
+  /* у цитатних шаблонах вордмарк сам стоїть у правому верхньому куті —
+     кнопка йде ліворуч, щоб знову не сісти на логотип */
+  .fab.left { right: auto; left: 14px; }
   .fab svg { width: 16px; height: 16px; }
   .fab:hover { background: rgba(12, 20, 40, .88); }
 
@@ -777,6 +780,7 @@
     // ще порожній сусід, і ховати через це кнопку означало б «обробка
     // зникла», хоч ліве фото на місці
     $("adjOpen").hidden = !(S.tpl === 2 ? (S.slots[0].photo || S.slots[1].photo) : st.photo);
+    $("adjOpen").classList.toggle("left", S.tpl >= 3); // лого цитат — вгорі праворуч
     if (!$("adjModal").hidden) drawAdjPreview();
   }
 
