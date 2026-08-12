@@ -58,11 +58,15 @@ import requests
 from bs4 import BeautifulSoup
 
 from handlers import db, storage
+from handlers.helpers import normalize_https_url
 from handlers.stat import get_fb_stats, known_fb_post_alive
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 CHAT_ID = os.environ.get("CHAT_ID")
 BASE_URL = "https://nikvesti.com"
+# Домен Mini App: там же живе генератор карток (/card). Без нього кнопки
+# «Зробити картку» просто не буде — модуль від цього не ламається.
+WEBAPP_URL = normalize_https_url(os.environ.get("WEBAPP_URL"))
 
 MIN_AGE_HOURS = 3      # грейс: не чіпати новину молодшу за це (SMM постить не миттєво)
 MAX_AGE_HOURS = 24     # «свіжі» — старіше не піднімаємо
@@ -357,10 +361,24 @@ def _author_html(row):
     return "автор невідомий"
 
 
+def _card_markup(row):
+    """Кнопка «Зробити картку» — /card?url=<id> генератора карток одразу з
+    цією новиною (сторінка сама скрапить її по id). Без WEBAPP_URL кнопки
+    немає: краще повідомлення без кнопки, ніж кнопка в нікуди."""
+    if not WEBAPP_URL:
+        return None
+    article_id = str(row.get("id") or "").strip()
+    if not article_id:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    return InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🎨 Зробити картку", url=f"{WEBAPP_URL}/card?url={article_id}")]])
+
+
 async def _send_alert(bot, chat_id, row, note=None, page_html=None):
     """Повідомлення в чат: підказка + автор + лінк, а нижче — чернетка поста
-    окремим блоком коду (готова до копіювання). page_html — вже завантажена
-    сторінка статті, щоб не тягти її вдруге."""
+    окремим блоком коду (готова до копіювання) і кнопка в генератор карток.
+    page_html — вже завантажена сторінка статті, щоб не тягти її вдруге."""
     url = _article_url(row)
     lines = [
         "🦊 Ось цієї миколаївської новини досі немає у Facebook. "
@@ -382,6 +400,7 @@ async def _send_alert(bot, chat_id, row, note=None, page_html=None):
     await bot.send_message(
         chat_id=chat_id, text="\n".join(lines),
         parse_mode="HTML", disable_web_page_preview=True,
+        reply_markup=_card_markup(row),
     )
 
 
