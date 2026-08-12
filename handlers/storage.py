@@ -485,6 +485,30 @@ def save_news_search(dialog_id, entry):
         _write_state(state)
 
 
+# Беки, віддані на сторінку /back для копіювання з лінками (back_export).
+# Живуть рівно доти, доки текст не вставили в статтю; кап — щоб стан не ріс.
+BACK_EXPORTS_MAX = 40
+
+
+def get_back_export(token):
+    """Збережений бек за токеном лінка або None (застарів/не той токен)."""
+    with _lock:
+        return _read_state().get("back_exports", {}).get(token)
+
+
+def save_back_export(token, entry):
+    """Зберігає {"html": ..., "topic": ..., "at": iso} під токеном лінка."""
+    with _lock:
+        state = _read_state()
+        exports = state.setdefault("back_exports", {})
+        exports[token] = entry
+        if len(exports) > BACK_EXPORTS_MAX:
+            oldest = sorted(exports, key=lambda k: exports[k].get("at", ""))
+            for key in oldest[:len(exports) - BACK_EXPORTS_MAX]:
+                del exports[key]
+        _write_state(state)
+
+
 def get_seen_competitor_ids(source_id):
     """
     Повертає список вже бачених ID для конкретного джерела конкурента.

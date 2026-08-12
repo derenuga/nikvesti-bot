@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from handlers import db, storage
+from handlers import back_export, db, storage, tg_html
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, FOX_MODEL_SMART, async_client, clean_ai_text
 
 BASE_URL = "https://nikvesti.com"
@@ -680,11 +680,17 @@ async def news_back_callback(update, context):
         text = await compose_back(with_leads)
         if len(items) > BACK_MAX_ITEMS:
             text += f"\n\n(Взяв перші {BACK_MAX_ITEMS} новин — забагато для одного беку.)"
-        try:
-            await msg.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
-        except Exception:
-            # Битий HTML від моделі — шлемо як plain text, лінки лишаться видимими.
-            await msg.edit_text(text, disable_web_page_preview=True)
+        # Кнопка «для Docs і адмінки»: з Telegram лінки в буфер обміну не
+        # копіюються взагалі (клієнт кладе плоский текст), тому бек одразу
+        # лягає на сторінку, яка вміє копіювати розміткою — див. back_export.
+        topic = entry.get("query") or (items[0].get("title") if items else "")
+        markup = await back_export.copy_button(text, topic)
+        # send_html спершу лагодить розмітку від моделі (криве `</a}` валило
+        # ВЕСЬ бек у сирі теги — інцидент 12.08), а якщо Telegram усе одно
+        # відмовився, шле текст без тегів, а не з ними.
+        await tg_html.send_html(
+            msg.edit_text, text,
+            disable_web_page_preview=True, reply_markup=markup)
         # Кладемо бек у пам'ять діалогу NLQ, щоб працювали follow-up'и
         # («скороти», «прибери другий абзац»). Імпорт тут — щоб уникнути
         # циклічного імпорту query_router ↔ news_archive на старті.
@@ -694,7 +700,6 @@ async def news_back_callback(update, context):
         # пошуковий запит, з якого прийшов список (фолбек — перший заголовок).
         try:
             from handlers.usage_report import display_name
-            topic = entry.get("query") or (items[0].get("title") if items else "")
             await asyncio.to_thread(
                 storage.record_usage_back, user_id, display_name(query.from_user),
                 topic, len(items[:BACK_MAX_ITEMS]))

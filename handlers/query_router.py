@@ -28,7 +28,8 @@ from google.analytics.data_v1beta.types import (
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as gapi_build
 
-from handlers import analytics_store, archive_search, budget_nlq, news_archive, news_stats, social_store, storage
+from handlers import (analytics_store, archive_search, back_export, budget_nlq, news_archive,
+                      news_stats, social_store, storage, tg_html)
 from handlers.ai_messages import FOX_SYSTEM_PROMPT, clean_ai_text
 from handlers.helpers import extract_article_id, get_author_from_url
 
@@ -1888,23 +1889,27 @@ async def handle_natural_language_query(update, context):
                     shown = news_archive.reconcile_shown(dialog_key, final_text)
                     if shown:
                         reply_markup = news_archive.build_keyboard(dialog_key)
+                elif lead_items_seen:
+                    # Відповідь і Є беком (Лис читав ліди). З Telegram лінки в
+                    # буфер обміну не копіюються взагалі — клієнт кладе плоский
+                    # текст, — тому під беком кнопка на сторінку копіювання
+                    # розміткою (back_export), інакше в Docs приїде текст без
+                    # жодного лінка.
+                    reply_markup = await back_export.copy_button(final_text, question)
                 # HTML-режим, коли у відповіді є розмітка: <a href> (архів/бек)
                 # або <b> (блоки змін бюджету) — інакше теги показуються голим
                 # текстом. Без розмітки — простий edit_text (менше шансів на 400).
                 has_html = ("<a href=" in final_text or "<b>" in final_text
                             or "</b>" in final_text)
                 if used_tools & NEWS_TOOL_NAMES or has_html:
-                    try:
-                        await placeholder.edit_text(
-                            final_text, parse_mode="HTML",
-                            disable_web_page_preview=True, reply_markup=reply_markup,
-                        )
-                    except Exception:
-                        # Битий HTML (неекранований символ) — шлемо як plain text,
-                        # посилання Telegram все одно підсвітить.
-                        await placeholder.edit_text(
-                            final_text, disable_web_page_preview=True, reply_markup=reply_markup,
-                        )
+                    # send_html спершу лагодить розмітку від моделі (криве
+                    # закриття тега `</a}` валило ВЕСЬ бек у сирі теги —
+                    # інцидент 12.08), а якщо Telegram усе одно відмовився,
+                    # шле текст БЕЗ тегів: анкор стає «текст (URL)».
+                    await tg_html.send_html(
+                        placeholder.edit_text, final_text,
+                        disable_web_page_preview=True, reply_markup=reply_markup,
+                    )
                 else:
                     await placeholder.edit_text(final_text)
                 if chart_path:
