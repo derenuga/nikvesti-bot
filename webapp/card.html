@@ -123,6 +123,12 @@
   button.tpl svg { width: 30px; height: 30px; }
   button.tpl.on { background: #fff; color: var(--brand); box-shadow: inset 0 0 0 2px var(--brand); }
   .tpl-sep { width: 1px; background: var(--line); margin: 6px 2px 0; }
+  .presets { display: flex; flex-wrap: wrap; gap: 8px; }
+  button.preset {
+    background: #eef2fb; color: var(--ink); font-size: 12.5px; padding: 8px 12px;
+    border-radius: 10px;
+  }
+  button.preset.on { background: #fff; color: var(--brand); box-shadow: inset 0 0 0 2px var(--brand); }
 
   .preview { position: sticky; top: 16px; }
   #canvas {
@@ -206,6 +212,21 @@
       <div class="hint">Фото на картці можна тягнути мишкою і зумити коліщатком чи повзунком нижче — синій блок лишається на місці, кадр «кропиться» сам.</div>
     </div>
 
+    <div class="panel" id="adjPanel" hidden>
+      <h2 id="adjTitle">Обробка фото</h2>
+      <div class="presets" id="presets"></div>
+      <div class="sliders" style="margin-top:14px">
+        <label>Яскравість</label><input type="range" id="adjBright" min="50" max="150" value="100"><output>0</output>
+        <label>Контраст</label><input type="range" id="adjContrast" min="50" max="150" value="100"><output>0</output>
+        <label>Насиченість</label><input type="range" id="adjSat" min="0" max="200" value="100"><output>0</output>
+        <label>Тепло</label><input type="range" id="adjWarm" min="-60" max="60" value="0"><output>0</output>
+        <label>Виразність</label><input type="range" id="adjVivid" min="0" max="60" value="0"><output>0</output>
+      </div>
+      <div class="toolrow">
+        <button class="ghost" id="adjReset">Скинути обробку</button>
+      </div>
+    </div>
+
     <div class="panel" id="quotesPanel" hidden>
       <h2>Цитати зі статті</h2>
       <div id="quotesList"></div>
@@ -269,9 +290,10 @@
     quotes: [],              // blockquote зі статті — для шаблону «Цитата»
     tpl: 1,                  // шаблон: 1 — одне фото, 2 — два поруч
     // Кожен слот — своє фото і свій псевдокроп; шаблон 1 живе у slots[0]
+    // adj — обробка ЦЬОГО фото (у двох фото ліве й праве правляться окремо)
     slots: [
-      { photo: null, zoom: 1, offX: 0, offY: 0 },
-      { photo: null, zoom: 1, offX: 0, offY: 0 },
+      { photo: null, zoom: 1, offX: 0, offY: 0, adj: newAdj(), preset: "none" },
+      { photo: null, zoom: 1, offX: 0, offY: 0, adj: newAdj(), preset: "none" },
     ],
     active: 0,               // який слот отримає тапнуту мініатюру (шаблон 2)
     slotImg: [-1, -1],       // індекси мініатюр по слотах
@@ -292,6 +314,22 @@
     { name: "Білий",         bg: "#ffffff", text: "#000000", boxBg: "#3478f9", boxText: "#ffffff", dark: false },
     { name: "Лавандовий #C9CFF2", bg: "#c9cff2", text: "#000000", boxBg: "#3478f9", boxText: "#ffffff", dark: false },
   ];
+  function newAdj() {
+    return { bright: 100, contrast: 100, sat: 100, warm: 0, vivid: 0 };
+  }
+  // Пресети — не «інстаграмні», а те, що реально рятує газетне фото:
+  // темний кадр, плаский пасмурний, ч/б для важких тем
+  const PRESETS = {
+    none:     { label: "Оригінал",   adj: { bright: 100, contrast: 100, sat: 100, warm: 0, vivid: 0 } },
+    pop:      { label: "Соковитий",  adj: { bright: 103, contrast: 112, sat: 125, warm: 6, vivid: 20 } },
+    light:    { label: "Освітлити",  adj: { bright: 118, contrast: 104, sat: 105, warm: 4, vivid: 10 } },
+    contrast: { label: "Контраст",   adj: { bright: 98,  contrast: 130, sat: 105, warm: 0, vivid: 25 } },
+    warm:     { label: "Теплий",     adj: { bright: 104, contrast: 104, sat: 110, warm: 34, vivid: 8 } },
+    cool:     { label: "Холодний",   adj: { bright: 102, contrast: 106, sat: 100, warm: -32, vivid: 8 } },
+    mute:     { label: "Приглушений",adj: { bright: 102, contrast: 96,  sat: 72,  warm: 8, vivid: 0 } },
+    bw:       { label: "Чорно-біле", adj: { bright: 102, contrast: 112, sat: 0,   warm: 0, vivid: 12 } },
+  };
+
   const $ = (id) => document.getElementById(id);
   const canvas = $("canvas"), ctx = canvas.getContext("2d");
   // Двурежимність: якщо файл лежить на самому nikvesti.com — усе same-origin,
@@ -428,7 +466,10 @@
     $("capText").value = S.capText;
     buildThumbs();
     // Нова стаття — чисті слоти (інакше в шаблоні 2 висіло б старе праве фото)
-    S.slots.forEach((st) => { st.photo = null; st.zoom = 1; st.offX = 0; st.offY = 0; });
+    S.slots.forEach((st) => {
+      st.photo = null; st.zoom = 1; st.offX = 0; st.offY = 0;
+      st.adj = newAdj(); st.preset = "none";
+    });
     S.slotImg = [-1, -1];
     if (S.tpl === 2) setActive(0);
     if (S.images.length) selectPhoto(0);
@@ -476,7 +517,7 @@
     st.zoom = 1; st.offX = 0; st.offY = 0;
     const im = S.images[i];
     const photo = new Image();
-    photo.onload = () => { st.photo = photo; render(); };
+    photo.onload = () => { st.photo = photo; syncAdjUI(); render(); };
     photo.onerror = () => { $("err").textContent = "Фото не завантажилось"; $("err").hidden = false; };
     photo.src = im.local ? im.url : proxied(im.url);
     // після призначення — перейти на ще порожній сусідній слот (тап по
@@ -509,6 +550,7 @@
     S.active = i;
     [...$("slotSeg").children].forEach((el) => el.classList.toggle("on", +el.dataset.slot === i));
     syncZoomUI();
+    syncAdjUI();
   }
 
   function activeSlot() { return S.slots[S.tpl === 2 ? S.active : 0]; }
@@ -605,6 +647,59 @@
     st.zoom = +e.target.value / 100; $("zoomOut").textContent = e.target.value + "%";
     clampAll(); render();
   });
+  // ---------- Обробка фото ----------
+  Object.entries(PRESETS).forEach(([key, pr]) => {
+    const b = document.createElement("button");
+    b.className = "preset" + (key === "none" ? " on" : "");
+    b.dataset.preset = key;
+    b.textContent = pr.label;
+    b.addEventListener("click", () => {
+      const st = activeSlot();
+      st.adj = { ...pr.adj };
+      st.preset = key;
+      syncAdjUI(); render();
+    });
+    $("presets").appendChild(b);
+  });
+
+  const ADJ_INPUTS = {
+    adjBright: "bright", adjContrast: "contrast",
+    adjSat: "sat", adjWarm: "warm", adjVivid: "vivid",
+  };
+  Object.entries(ADJ_INPUTS).forEach(([id, key]) => {
+    $(id).addEventListener("input", (e) => {
+      const st = activeSlot();
+      st.adj[key] = +e.target.value;
+      st.preset = "custom"; // ручна правка знімає позначку пресета
+      syncAdjUI(); render();
+    });
+  });
+  $("adjReset").addEventListener("click", () => {
+    const st = activeSlot();
+    st.adj = newAdj(); st.preset = "none";
+    syncAdjUI(); render();
+  });
+
+  function syncAdjUI() {
+    const st = activeSlot();
+    const a = st.adj;
+    Object.entries(ADJ_INPUTS).forEach(([id, key]) => {
+      $(id).value = a[key];
+      const out = $(id).nextElementSibling;
+      if (out) {
+        const base = key === "warm" || key === "vivid" ? 0 : 100;
+        const d = a[key] - base;
+        out.textContent = d > 0 ? "+" + d : String(d);
+      }
+    });
+    $("presets").querySelectorAll("button").forEach((b) =>
+      b.classList.toggle("on", b.dataset.preset === st.preset));
+    $("adjTitle").textContent = S.tpl === 2
+      ? `Обробка фото · ${S.active === 0 ? "ліве" : "праве"}`
+      : "Обробка фото";
+    $("adjPanel").hidden = !activeSlot().photo;
+  }
+
   $("resetPhoto").addEventListener("click", () => {
     S.slots.forEach((st) => { st.zoom = 1; st.offX = 0; st.offY = 0; });
     syncZoomUI();
@@ -640,7 +735,7 @@
     $("swatches").classList.toggle("disabled", S.tpl === 3);
     renderQuotesPanel();
     if (S.tpl === 2 && !S.slots[1].photo) setActive(1); else setActive(S.tpl === 2 ? S.active : 0);
-    clampAll(); markThumbs(); render();
+    clampAll(); markThumbs(); syncAdjUI(); render();
   });
   $("slotSeg").addEventListener("click", (e) => {
     const b = e.target.closest("button");
@@ -650,7 +745,7 @@
   $("swapBtn").addEventListener("click", () => {
     [S.slots[0], S.slots[1]] = [S.slots[1], S.slots[0]];
     [S.slotImg[0], S.slotImg[1]] = [S.slotImg[1], S.slotImg[0]];
-    clampAll(); syncZoomUI(); markThumbs(); render();
+    clampAll(); syncZoomUI(); syncAdjUI(); markThumbs(); render();
   });
 
   // ---------- Пан/зум фото на самому прев'ю ----------
@@ -695,7 +790,18 @@
     st.offY = drag.offY + (p.y - drag.y);
     clampSlot(drag.slot); render();
   });
-  canvas.addEventListener("pointerup", () => { drag = null; canvas.classList.remove("dragging"); });
+  canvas.addEventListener("pointerup", (e) => {
+    // Тап без протяжки по фото = «відкрити обробку» (драг лишається драгом)
+    if (drag) {
+      const p = toCanvas(e);
+      if (Math.hypot(p.x - drag.x, p.y - drag.y) < 6 && S.slots[drag.slot].photo) {
+        syncAdjUI();
+        $("adjPanel").scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
+    drag = null;
+    canvas.classList.remove("dragging");
+  });
   canvas.addEventListener("wheel", (e) => {
     const p = toCanvas(e);
     const si = hitSlot(p);
@@ -755,15 +861,11 @@
       const r = slotRect(i);
       const st = S.slots[i];
       if (st.photo) {
-        const sf = Math.max(r.w / st.photo.naturalWidth, r.h / st.photo.naturalHeight) * st.zoom;
-        const dw = st.photo.naturalWidth * sf, dh = st.photo.naturalHeight * sf;
         ctx.save();
         ctx.beginPath();
         ctx.rect(r.x, r.y, r.w, r.h);
         ctx.clip();
-        ctx.drawImage(st.photo,
-          r.x + r.w / 2 - dw / 2 + st.offX,
-          r.y + r.h / 2 - dh / 2 + st.offY, dw, dh);
+        paintPhoto(st, r);
         ctx.restore();
       } else {
         ctx.fillStyle = sc.dark ? "rgba(255,255,255,.12)" : "rgba(0,0,0,.08)";
@@ -845,6 +947,39 @@
 
   // Кругле фото шаблону «Цитата з колом»: кліп по колу + обводка;
   // кадр їздить/зумиться всередині — псевдо-circle-crop
+  // Малює фото слота у вже накладений кліп із його обробкою.
+  // ctx.filter тягне яскравість/контраст/насиченість, «тепло» і «виразність»
+  // домальовуються шарами поверх — фільтром їх не виразити.
+  function paintPhoto(st, rect) {
+    const a = st.adj;
+    const sf = Math.max(rect.w / st.photo.naturalWidth, rect.h / st.photo.naturalHeight) * st.zoom;
+    const dw = st.photo.naturalWidth * sf, dh = st.photo.naturalHeight * sf;
+    const dx = rect.x + rect.w / 2 - dw / 2 + st.offX;
+    const dy = rect.y + rect.h / 2 - dh / 2 + st.offY;
+    ctx.filter = `brightness(${a.bright}%) contrast(${a.contrast}%) saturate(${a.sat}%)`;
+    ctx.drawImage(st.photo, dx, dy, dw, dh);
+    ctx.filter = "none";
+    if (a.warm) {
+      ctx.globalCompositeOperation = "soft-light";
+      ctx.globalAlpha = Math.min(0.85, Math.abs(a.warm) / 60 * 0.8);
+      ctx.fillStyle = a.warm > 0 ? "#ff9a3c" : "#3ca8ff";
+      ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
+    }
+    if (a.vivid) {
+      // «Виразність» — м'який overlay самого кадру: підіймає локальний
+      // контраст, не вибілюючи світлі ділянки, як робить contrast
+      ctx.globalCompositeOperation = "overlay";
+      ctx.globalAlpha = a.vivid / 100;
+      ctx.filter = `saturate(${a.sat}%)`;
+      ctx.drawImage(st.photo, dx, dy, dw, dh);
+      ctx.filter = "none";
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
+    }
+  }
+
   function drawCirclePhoto(sc) {
     const c = circleGeom();
     const st = S.slots[0];
@@ -853,12 +988,7 @@
     ctx.arc(c.cx, c.cy, c.r, 0, Math.PI * 2);
     ctx.clip();
     if (st.photo) {
-      const sq = slotRect(0);
-      const sf = Math.max(sq.w / st.photo.naturalWidth, sq.h / st.photo.naturalHeight) * st.zoom;
-      const dw = st.photo.naturalWidth * sf, dh = st.photo.naturalHeight * sf;
-      ctx.drawImage(st.photo,
-        sq.x + sq.w / 2 - dw / 2 + st.offX,
-        sq.y + sq.h / 2 - dh / 2 + st.offY, dw, dh);
+      paintPhoto(st, slotRect(0));
     } else {
       ctx.fillStyle = sc.dark ? "rgba(255,255,255,.16)" : "rgba(0,0,0,.08)";
       ctx.fillRect(c.cx - c.r, c.cy - c.r, c.r * 2, c.r * 2);
