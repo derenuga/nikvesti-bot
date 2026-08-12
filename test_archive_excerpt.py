@@ -33,11 +33,17 @@
 - витяг рахується ЛИШЕ для відібраних рядків: план запиту не має містити
   ts_headline під сканом усіх збігів (на «Миколаїв» це десятки тисяч статей).
 
-Дані свої (дві статті), бо перевіряємо механіку SQL: у чужій норі під рукою
-немає гарантованої статті з прізвищем лише в тілі тексту.
+**Дані у фікстурах ВИГАДАНІ, і імена в них навмисно неіснуючі.** Перевіряємо
+механіку SQL (де рахується ts_headline, чи знаходить пара, чи чистий фрагмент),
+а для неї байдуже, чиє прізвище в тексті — потрібна лише жива українська
+морфологія. Реальних людей у фікстурах не називаємо: вигадану цитату, вкладену
+в уста справжньої людини, наступний читач тесту може прийняти за факт з нори
+(так і сталось 12.08 — у першій версії цього файлу стояло справжнє прізвище з
+питання Аліни й вигаданою посадою «депутат», якої ця людина не обіймає).
+Справжня перевірка «чи є така цитата в архіві» — це той самий запит по живій
+норі, а не тест.
 """
 
-import os
 import sys
 
 from handlers import archive_search, bot_db
@@ -52,16 +58,21 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 
+# Прізвище й підприємство вигадані (див. шапку файлу). Форма тексту — справжня:
+# заява людини в СЕРЕДИНІ статті, а не в заголовку й не в ліді. Саме ця форма і
+# провалювалась, бо пошук віддавав лише заголовок.
+PERSON = "Пилип Кущенко"
+ORG = "Тестозеленбуд"
 ARTICLE_WITH_QUOTE = (
-    "Комунальне підприємство «Миколаївські парки» подало заявку на знесення 12 тополь "
-    "на Флотському бульварі, назвавши їх аварійними. Проти виступила державна екологічна "
-    "інспекція. Депутат Миколаївської міської ради Дмитро Рябченко розкритикував роботу "
-    "комунального підприємства: «Парки роками не доглядають за деревами, а потім приходять "
-    "і кажуть, що дерево аварійне і його треба зрізати», — заявив депутат на засіданні "
+    f"Комунальне підприємство «{ORG}» подало заявку на знесення 12 тополь "
+    "на приміському бульварі, назвавши їх аварійними. Проти виступила державна екологічна "
+    f"інспекція. Голова громадської ради {PERSON} розкритикував роботу "
+    "комунального підприємства: «Роками не доглядають за деревами, а потім приходять "
+    "і кажуть, що дерево аварійне і його треба зрізати», — заявив він на засіданні "
     "профільної комісії. Він додав, що підприємство не веде інвентаризації насаджень."
 )
 ARTICLE_PLAIN = (
-    "У комунальному підприємстві «Миколаївські парки» повідомили, що фінансування на "
+    f"У комунальному підприємстві «{ORG}» повідомили, що фінансування на "
     "висадку дерев навесні 2026 року не передбачено. Директор пояснив це секвестром бюджету."
 )
 
@@ -74,15 +85,15 @@ def seed():
                title_ua = EXCLUDED.title_ua, published = EXCLUDED.published""",
         (TEST_IDS[0], 1776200000,
          # Прізвища в заголовку НЕМАЄ свідомо — саме цей випадок і провалився.
-         "У Миколаєві хочуть знести тополі на Флотському бульварі: екоінспекція вимагає експертизу",
-         "test-topoli-flotskyi", ARTICLE_WITH_QUOTE, "екологія, Миколаївські парки"))
+         "Хочуть знести тополі на приміському бульварі: екоінспекція вимагає експертизу",
+         "test-topoli-bulvar", ARTICLE_WITH_QUOTE, f"екологія, {ORG}"))
     bot_db.execute(
         """INSERT INTO articles (id, published, status, title_ua, slug, category, text_ua, tags_text)
            VALUES (%s, %s, 1, %s, %s, 'public', %s, %s)
            ON CONFLICT (id) DO UPDATE SET text_ua = EXCLUDED.text_ua""",
         (TEST_IDS[1], 1774000000,
-         "«Миколаївські парки» заявили, що грошей на висадку дерев цієї весни немає",
-         "test-parky-finansuvannia", ARTICLE_PLAIN, "бюджет, Миколаївські парки"))
+         f"«{ORG}» заявив, що грошей на висадку дерев цієї весни немає",
+         "test-zelenbud-finansuvannia", ARTICLE_PLAIN, f"бюджет, {ORG}"))
 
 
 def cleanup():
@@ -97,7 +108,7 @@ def main():
     seed()
     try:
         print("\n1. Питання на ПЕРЕТИН: прізвище лише в тілі тексту")
-        items = archive_search.search_items("Рябченко Миколаївські парки", limit=10,
+        items = archive_search.search_items(f"{PERSON.split()[1]} {ORG}", limit=10,
                                             with_context=True)
         mine = [it for it in items if it["id"] == TEST_IDS[0]]
         check("стаття знайшлась по парі «прізвище + об'єкт»", bool(mine),
@@ -105,26 +116,27 @@ def main():
         if mine:
             exc = mine[0].get("excerpt") or ""
             check("excerpt є", bool(exc))
-            check("у excerpt видно, ХТО критикує", "Рябченко" in exc, exc[:120])
+            check("у excerpt видно, ХТО критикує", PERSON.split()[1] in exc, exc[:120])
             check("у excerpt видно, ЩО саме сказано",
                   "розкритикував" in exc or "не доглядають" in exc, exc[:120])
             check("прізвища в заголовку немає (перевіряємо саме той випадок)",
-                  "Рябченко" not in mine[0]["title"])
+                  PERSON.split()[1] not in mine[0]["title"])
             check("excerpt без маркерів виділення",
                   "<b>" not in exc and "</b>" not in exc and "<" not in exc, exc[:80])
 
-        print("\n2. Пошук лише по об'єкту (як зробив Лис) персону не знаходить")
-        obj_items = archive_search.search_items("Миколаївські парки", limit=10,
-                                                with_context=True)
-        check("статті про КП знайшлись", len(obj_items) >= 2, f"знайдено {len(obj_items)}")
-        joined = " ".join((it.get("excerpt") or "") + it["title"] for it in obj_items
-                          if it["id"] in TEST_IDS)
-        check("прізвища у видачі по об'єкту немає — тому й потрібен крок «спершу пара»",
-              "Рябченко" not in joined)
+        print("\n2. Пошук лише по об'єкту (як зробив Лис) персони не гарантує")
+        obj_items = archive_search.search_items(ORG, limit=10, with_context=True)
+        check("статті про об'єкт знайшлись", len(obj_items) >= 2, f"знайдено {len(obj_items)}")
+        # Заголовки — це РІВНО те, що Лис бачив до цієї зміни. Прізвища там немає
+        # в жодному, тому висновок «не згадується» він зробив на порожньому місці.
+        # (Витяг по запиту про об'єкт іноді ЗАЧЕПИТЬ і потрібне речення — але це
+        # везіння з вибору фрагмента, а не метод: питати треба парою.)
+        titles = " ".join(it["title"] for it in obj_items if it["id"] in TEST_IDS)
+        check("у заголовках видачі по об'єкту прізвища немає — саме тому потрібен "
+              "крок «спершу пара»", PERSON.split()[1] not in titles)
 
         print("\n3. Режим «історія питання» (інша гілка SQL)")
-        spread = archive_search.search_items("Миколаївські парки", limit=10,
-                                             spread_years=True, with_context=True)
+        spread = archive_search.search_items(ORG, limit=10, spread_years=True, with_context=True)
         got = [it for it in spread if it["id"] in TEST_IDS]
         check("spread_years віддає результати", bool(got))
         check("spread_years теж віддає excerpt",
@@ -132,7 +144,7 @@ def main():
               str([it.get("excerpt") for it in got])[:120])
 
         print("\n4. Без with_context (шлях /dossier) — нічого не змінилось")
-        plain = archive_search.search_items("Миколаївські парки", limit=5)
+        plain = archive_search.search_items(ORG, limit=5)
         check("ключа excerpt немає взагалі", all("excerpt" not in it for it in plain))
 
         print("\n5. Витяг рахується лише для відібраних рядків, не для всіх збігів")
@@ -162,7 +174,7 @@ def _capture_sql():
 
     bot_db.query = spy
     try:
-        archive_search.search_items("Миколаївські парки", limit=5, with_context=True)
+        archive_search.search_items(ORG, limit=5, with_context=True)
     finally:
         bot_db.query = real_query
     return captured["sql"]
