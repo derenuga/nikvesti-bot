@@ -98,6 +98,9 @@
   .sliders output { font-size: 12px; color: var(--muted); min-width: 42px; text-align: right; }
   input[type="range"] { width: 100%; accent-color: var(--brand); }
   .seg { display: inline-flex; background: #eef2fb; border-radius: 10px; padding: 3px; gap: 3px; }
+  /* як і в .modal: inline-flex перебиває атрибут hidden, і перемикач
+     «Ліве/Праве» світився в шаблонах з одним фото */
+  .seg[hidden], .swatches[hidden] { display: none; }
   .seg button { padding: 7px 14px; background: transparent; color: var(--ink); font-size: 13px; }
   .seg button.on { background: #fff; color: var(--brand); box-shadow: 0 1px 3px rgba(20,40,90,.15); }
   .seg button svg { width: 16px; height: 16px; display: block; }
@@ -770,7 +773,10 @@
     $("adjSlotSeg").hidden = S.tpl !== 2;
     [...$("adjSlotSeg").children].forEach((el) =>
       el.classList.toggle("on", +el.dataset.slot === S.active));
-    $("adjOpen").hidden = !st.photo;   // кнопка над прев'ю
+    // Кнопка є, якщо є ЩО обробляти: у двох фото активним слотом буває
+    // ще порожній сусід, і ховати через це кнопку означало б «обробка
+    // зникла», хоч ліве фото на місці
+    $("adjOpen").hidden = !(S.tpl === 2 ? (S.slots[0].photo || S.slots[1].photo) : st.photo);
     if (!$("adjModal").hidden) drawAdjPreview();
   }
 
@@ -778,7 +784,12 @@
   const adjCanvas = $("adjCanvas"), actx = adjCanvas.getContext("2d");
 
   function openAdj() {
-    if (!activeSlot().photo) return;
+    if (!activeSlot().photo) {
+      // активний слот порожній — беремо той, у якому фото є
+      const other = S.slots.findIndex((st) => st.photo);
+      if (other < 0) return;
+      setActive(other);
+    }
     $("adjModal").hidden = false;
     syncAdjUI();
     drawAdjPreview();
@@ -1107,10 +1118,22 @@
   // просто нічого не робили (перевірено Олегом 13.08). Тому: є фільтр —
   // беремо його (швидко, GPU), немає — рахуємо пікселі самі. Тепло і
   // виразність фільтром не виражаються ніде, вони шарами composite.
+  // Питаємо не властивість, а РЕЗУЛЬТАТ: Safari приймає ctx.filter (записав —
+  // прочитав те саме) і мовчки не застосовує його при малюванні, тож перевірка
+  // «чи є властивість» брехала і фолбек не вмикався (Олег, 13.08). Малюємо
+  // білий піксель крізь brightness(0%): лишився білим — фільтра насправді немає.
   const SUPPORTS_FILTER = (() => {
-    const c = document.createElement("canvas").getContext("2d");
-    c.filter = "brightness(50%)";
-    return c.filter === "brightness(50%)";
+    try {
+      const c = document.createElement("canvas");
+      c.width = c.height = 1;
+      const x = c.getContext("2d", { willReadFrequently: true });
+      x.filter = "brightness(0%)";
+      x.fillStyle = "#fff";
+      x.fillRect(0, 0, 1, 1);
+      return x.getImageData(0, 0, 1, 1).data[0] < 40;
+    } catch (e) {
+      return false; // не змогли перевірити — рахуємо пікселі самі, це надійніше
+    }
   })();
 
   const _off = document.createElement("canvas");
