@@ -30,6 +30,7 @@ from handlers import stat_instagram
 from handlers import stat_tiktok
 from handlers import stat_youtube
 from handlers import stat_store
+from handlers import fb_token
 from handlers.helpers import extract_article_id
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
@@ -564,6 +565,8 @@ def get_ga4_stat(article_id):
 def _short_fb_error(error):
     """Людський опис помилки Graph API для повідомлення."""
     low = error.lower()
+    if fb_token.is_token_error(error):
+        return "протух токен Facebook — потрібен новий FACEBOOK_PAGE_TOKEN"
     if "timed out" in low or "timeout" in low:
         return "Facebook відповідав надто довго (таймаут)"
     if "request limit" in low or "rate limit" in low or "#4" in error or "#17" in error:
@@ -617,9 +620,15 @@ def format_stat_message(article_url, fb_stats, ga4_stat, tg_stat, pub_date=None,
     fb_views_total = None
 
     if not fb_stats and fb_error:
-        # Помилка API — це НЕ "поста немає". Кажемо чесно й радимо повторити.
+        # Помилка API — це НЕ "поста немає". Кажемо чесно, і порада залежить
+        # від природи збою: протухлий токен сам не оживає, «спробуйте ще раз»
+        # тут брехня (12.08.2026 — саме так /stat назвав мертвий токен
+        # тимчасовим); адміну в цей момент уже пішов алерт з інструкцією
         lines.append(f"⚠️ {_short_fb_error(fb_error)}")
-        lines.append("Спробуйте /stat ще раз за хвилину — це тимчасово.")
+        if fb_token.is_token_error(fb_error):
+            lines.append("Це не тимчасово — Олегу надіслано інструкцію з заміни.")
+        else:
+            lines.append("Спробуйте /stat ще раз за хвилину — це тимчасово.")
     elif not fb_stats:
         # Діагностика: чи визначилась дата + скільки постів переглянуто у вікні.
         # Багато постів і нема збігу → проблема матчингу; мало → вікно/пагінація.
@@ -874,16 +883,24 @@ async def stat_handler(update, context):
     # (краще вчорашня цифра з позначкою, ніж «не знайдено» через ліміт API)
     if isinstance(fb_res, Exception):
         print(f"stat: помилка Facebook — {fb_res}")
+        fb_raw_error = str(fb_res)
         if index.get("facebook"):
             fb_stats, fb_scanned, fb_error = stat_store.mark_nora(index["facebook"]), None, None
         else:
-            fb_stats, fb_scanned, fb_error = [], None, str(fb_res)
+            fb_stats, fb_scanned, fb_error = [], None, fb_raw_error
     else:
         fb_stats, fb_scanned, fb_error = fb_res
+        fb_raw_error = fb_error
         if fb_error:
             print(f"stat: Facebook стрічка постів — {fb_error}")
             if not fb_stats and index.get("facebook"):
                 fb_stats, fb_error = stat_store.mark_nora(index["facebook"]), None
+
+    # Мертвий токен видно просто зараз — алерт адміну одразу (дедуп на добу
+    # всередині), не чекаючи щогодинного сторожа. Сира помилка, а не fb_error:
+    # фолбек на знімок Нори вище міг затерти fb_error, а токен від того не ожив
+    if fb_raw_error and fb_token.is_token_error(fb_raw_error):
+        await fb_token.alert_token_dead(context.bot, fb_raw_error, source="/stat")
 
     if isinstance(ga4_res, Exception):
         print(f"stat: помилка GA4 — {ga4_res}")
