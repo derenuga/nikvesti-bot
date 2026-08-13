@@ -427,6 +427,24 @@ def save_fb_missing_state(fb_missing_state):
         _write_state(state)
 
 
+def get_fb_token_state():
+    """Стан сторожа токена Facebook (fb_token.py):
+    {"down_since": iso, "last_alert_at": iso, "warned_expiry": unix}.
+    down_since — токен зараз мертвий і про це алертили (щоб помітити одужання);
+    last_alert_at — дедуп нагадувань (раз на добу); warned_expiry — за який
+    саме expires_at уже попереджали заздалегідь. Порожній dict = усе гаразд."""
+    with _lock:
+        state = _read_state()
+        return state.get("fb_token", {})
+
+
+def save_fb_token_state(fb_token_state):
+    with _lock:
+        state = _read_state()
+        state["fb_token"] = fb_token_state
+        _write_state(state)
+
+
 def get_tiktok_oauth():
     """OAuth-стан TikTok: {"refresh_token", "access_token", "access_expires_at"}.
     TikTok РОТУЄ refresh token на кожному оновленні (старий протухає), тому
