@@ -11,6 +11,14 @@
 1. Менеджер відкриває Імпакт-архів, тисне «+», кидає URL новини-фіксації
    («Дорогу до Матвіївки відремонтували після скарг») і, за бажанням, суть
    своїми словами («після нас відремонтували, реакція на новину»).
+   Фіксацією буває і ЧУЖА публікація (Олег, 14.08): ІМІ пише, що суд послався
+   на матеріали МикВісті, — і саме чужа сторінка є доказом впливу. Тоді все,
+   що бот звично бере з бази (id, автор, донор), у ній відсутнє: сторінка
+   читається як текст, а нашу історію бот шукає трьома шляхами — лінки на нас
+   із самої сторінки, наш матеріал, підказаний людиною в тому ж вікні
+   («приложи ссылочку»), і пошук по норі за запитами, які складає модель.
+   Третій шлях і є відповіддю на «на зовнішніх джерелах немає прямої
+   гіперссилки на нас».
 2. Далі бот САМ:
    - читає живу сторінку матеріалу і збирає беклінки з тексту — передісторія
      зазвичай уже злінкована самими журналістами;
@@ -55,6 +63,11 @@ MAX_CANDIDATES = 24
 MAX_SERIES = 12
 EXCERPT_CHARS = 600
 STORY_MAX_TOKENS = 2500
+# Скільки тексту чужої сторінки читаємо: тригер описує подію, а не переказує
+# нашу серію — на розуміння сюжету вистачає перших абзаців
+EXTERNAL_TEXT_CHARS = 4000
+# Скільки збігів бере кожен пошуковий запит по норі, коли лінка на нас немає
+SEARCH_PER_QUERY = 8
 
 _SCHEMA_STATEMENTS = [
     """
@@ -115,6 +128,11 @@ _SCHEMA_STATEMENTS = [
     # прикол?» — прикол був у моделі). Міграція нижче переносить старі кейси.
     "ALTER TABLE impact_articles ADD COLUMN IF NOT EXISTS is_key BOOLEAN NOT NULL DEFAULT FALSE",
     "UPDATE impact_articles SET is_key = TRUE, role = 'series' WHERE role = 'key'",
+    # Наш матеріал, підказаний людиною при заведенні кейсу з ЧУЖОГО джерела:
+    # на сторонній сторінці лінка на нас може не бути взагалі, а зв'язок
+    # людина знає. Живе в базі, бо «перезібрати заново» має бачити ту саму
+    # підказку — інакше друга спроба слабша за першу.
+    "ALTER TABLE impacts ADD COLUMN IF NOT EXISTS our_url TEXT",
 ]
 
 _schema_lock = threading.Lock()
@@ -152,40 +170,163 @@ def ensure_impact_schema():
 
 # ---------- Збір кандидатів ----------
 
+def _fetch_soup(url):
+    """BeautifulSoup живої сторінки. Читаємо БАЙТИ, а не resp.text: у
+    imi.org.ua Content-Type приходить без charset, і requests за RFC вважає
+    таку сторінку ISO-8859-1 — увесь український текст перетворювався на
+    кракозябри (перевірено на живій сторінці 14.08). bs4 бере кодування з
+    <meta> самої сторінки і не помиляється."""
+    import requests
+    from bs4 import BeautifulSoup
+
+    resp = requests.get(url, timeout=20,
+                        headers={"User-Agent": "Mozilla/5.0 (nikvesti-bot)"})
+    resp.raise_for_status()
+    return BeautifulSoup(resp.content, "html.parser")
+
+
+def _body_node(soup):
+    """Контейнер тіла статті; не знайшли — вся сторінка (зайве відсіється
+    далі відсутністю id матеріалу)."""
+    return (soup.find("article")
+            or soup.find(class_=re.compile("article|content|news-text"))
+            or soup)
+
+
+# Обвіска, яку віддає get_text разом із текстом: кнопки поширення, теги,
+# «читайте також». На живій сторінці imi.org.ua текст статті починався з
+# «Поширити на Facebook Поширити у Telegram … Скопійовано!» — двісті символів
+# сміття рівно там, де модель шукає, про що новина.
+_NOISE_CLASS = re.compile(
+    # «sharing-links» (саме так у imi.org.ua) під «share» не підпадає —
+    # тому корінь, а не ціле слово
+    "shar|social|breadcrumb|related|subscribe|tags|comment|banner|advert", re.I)
+
+
+def _strip_noise(node):
+    for tag in node.find_all(["script", "style", "noscript", "nav", "aside", "form"]):
+        tag.decompose()
+    for tag in node.find_all(class_=_NOISE_CLASS):
+        tag.decompose()
+    return node
+
+
+def _our_links(soup, page_url):
+    """Лінки на nikvesti.com із тіла сторінки, у порядку появи, без дублів.
+    Відносні шляхи добудовуються від САМОЇ сторінки (urljoin), а не від
+    nikvesti.com: на чужому сайті «/news/foo» — чужа новина, і сліпе
+    приклеювання нашого домену робило б із неї наш неіснуючий матеріал."""
+    from urllib.parse import urljoin, urlparse
+
+    out, seen = [], set()
+    for a in _body_node(soup).find_all("a", href=True):
+        href = urljoin(page_url, a["href"]).split("?")[0].split("#")[0]
+        if not urlparse(href).netloc.endswith("nikvesti.com"):
+            continue
+        if href not in seen:
+            seen.add(href)
+            out.append(href)
+    return out
+
+
 def _page_scrape(url):
     """(беклінки, og:image) з ЖИВОЇ сторінки матеріалу. Нора тримає чистий
     текст без розмітки, тож і передісторія-беклінки, і фото беруться лише зі
     сторінки. Збій → ([], None), не виняток: FTS-кандидати все одно будуть."""
     try:
-        import requests
-        from bs4 import BeautifulSoup
-
-        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (nikvesti-bot)"})
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = _fetch_soup(url)
         og = soup.find("meta", property="og:image")
         image = (og.get("content") or "").strip() if og else None
-        # лише лінки з тіла статті; якщо контейнер не знайшли — з усієї
-        # сторінки, зайве відсіється відсутністю id матеріалу
-        body = soup.find("article") or soup.find(class_=re.compile("article|content|news-text")) or soup
-        out = []
-        for a in body.find_all("a", href=True):
-            href = a["href"]
-            if href.startswith("/"):
-                href = BASE_URL + href
-            if "nikvesti.com" not in href:
-                continue
-            out.append(href.split("?")[0].split("#")[0])
-        # порядок збережено, дублі геть
-        seen, uniq = set(), []
-        for h in out:
-            if h not in seen:
-                seen.add(h)
-                uniq.append(h)
-        return uniq, image or None
+        return _our_links(soup, url), image or None
     except Exception as e:
         print(f"impact: сторінка не зчиталась — {e}")
         return [], None
+
+
+def _json_ld_date(soup):
+    """datePublished зі schema.org-розмітки сторінки. Обходимо @graph
+    рекурсивно: у WordPress-сайтів (imi.org.ua) дата лежить не в корені."""
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key in ("datePublished", "dateCreated"):
+                if isinstance(node.get(key), str):
+                    found.append(node[key])
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            walk(json.loads(tag.string or "{}"))
+        except (ValueError, TypeError):
+            continue
+    return found[0] if found else None
+
+
+def _parse_ts(value):
+    """ISO-дата → ts за Києвом. Без дати кейс не падає: він просто стане в
+    архіві без року (і буде видимий за будь-якого фільтра)."""
+    if not value:
+        return 0
+    try:
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=KYIV_TZ)
+    return int(dt.timestamp())
+
+
+def _external_source(url):
+    """Чужа публікація як тригер кейсу: заголовок, текст, дата, картинка і
+    лінки на нас.
+
+    Олег, 14.08: «сделай возможность добавить импакт по внешней ссылке» —
+    ІМІ пише, що суд послався на наші матеріали, і саме ця чужа сторінка є
+    фіксацією впливу. Наших id у ній немає взагалі, тож увесь звичний шлях
+    (нора → БД сайту → автор → донор) тут не працює: сторінку доводиться
+    читати як текст, а нашу передісторію шукати окремо."""
+    from urllib.parse import urlparse
+
+    try:
+        soup = _fetch_soup(url)
+    except Exception as e:
+        raise ValueError(f"Сторінку {url} не вдалось прочитати — {e}")
+
+    def _meta(*keys):
+        for key in keys:
+            tag = (soup.find("meta", property=key)
+                   or soup.find("meta", attrs={"name": key}))
+            if tag and (tag.get("content") or "").strip():
+                return tag["content"].strip()
+        return None
+
+    title = _meta("og:title", "twitter:title")
+    if not title:
+        h1 = soup.find("h1")
+        title = (h1.get_text(" ", strip=True) if h1
+                 else (soup.title.get_text(strip=True) if soup.title else ""))
+    # Чистимо ДО читання тексту й лінків: у прибраних блоках лінки чужі
+    # (кнопки поширення), а нашу передісторію журналіст ставить у самому тексті
+    body = _strip_noise(_body_node(soup))
+    text = re.sub(r"\s+", " ", body.get_text(" ", strip=True))
+    if not (title or "").strip() and not text:
+        raise ValueError("На сторінці не знайшлось ні заголовка, ні тексту")
+    published = _parse_ts(_json_ld_date(soup)
+                          or _meta("article:published_time", "publish-date", "date"))
+    return {
+        "url": url,
+        "title": (title or "").strip(),
+        "text": text[:EXTERNAL_TEXT_CHARS],
+        "image": _meta("og:image", "twitter:image"),
+        "published": published,
+        "site": urlparse(url).netloc.replace("www.", ""),
+        "links": _our_links(soup, url),
+    }
 
 
 def _nora_article(article_id):
@@ -227,6 +368,13 @@ def _site_article(article_id):
         "text_ua": html_to_text(r.get("content_ua")),
         "text_ru": html_to_text(r.get("content")),
     }
+
+
+def _site_of(url):
+    """Домен джерела для підпису «зовнішня публікація · imi.org.ua»."""
+    from urllib.parse import urlparse
+
+    return (urlparse(url or "").netloc or "").replace("www.", "") or None
 
 
 def _nora_url(row):
@@ -273,10 +421,88 @@ def _site_meta(article_ids):
     }
 
 
-def _collect_candidates(source_url):
+def _mark_hinted(candidates, our_url):
+    """Позначити матеріал, який ВКАЗАЛА людина. Для судді це найсильніший
+    сигнал у всій таблиці: пошук може принести сусідній сюжет, беклінк —
+    випадкову згадку, а редактор знає, з чого все почалось."""
+    from handlers.helpers import extract_article_id
+
+    aid = extract_article_id(our_url or "")
+    if not aid:
+        return candidates
+    for c in candidates:
+        if c["id"] == int(aid):
+            c["hinted"] = True
+    return candidates
+
+
+def _candidate_rows(ordered_ids, from_backlink, extra_meta_ids=()):
+    """Кандидати серії як список карток (заголовок, дата, автор, донор,
+    витяг). Спільне для обох входів — нашої новини-фіксації і чужої
+    публікації: далі суддя бачить однакову таблицю незалежно від того,
+    звідки кейс почався."""
+    from handlers.archive_search import get_excerpts
+
+    ordered_ids = ordered_ids[:MAX_CANDIDATES]
+    # get_excerpts віддає список — перекладаємо в мапу за id
+    excerpts = {int(e["id"]): e.get("excerpt") or ""
+                for e in get_excerpts(ordered_ids, max_chars=EXCERPT_CHARS)}
+    meta = _site_meta(list(ordered_ids) + [int(i) for i in extra_meta_ids])
+
+    rows = []
+    for aid in ordered_ids:
+        # беклінки — ручна праця журналістів, їх не кидаємо через дірку в
+        # норі: добираємо з БД сайту (їх мало, ліміти MySQL не страждають)
+        row = _nora_article(aid) or (
+            _site_article(aid) if aid in from_backlink else None)
+        if not row:
+            continue
+        published = int(row.get("published") or 0)
+        rows.append({
+            "id": aid,
+            "title": (row.get("title_ua") or row.get("title_ru") or "").strip(),
+            "url": _nora_url(row),
+            "published": published,
+            "date": datetime.fromtimestamp(published, KYIV_TZ).strftime("%d.%m.%Y") if published else "—",
+            "own": bool(row.get("own_material")),
+            "backlink": aid in from_backlink,
+            "excerpt": excerpts.get(aid)
+                or ((row.get("text_ua") or row.get("text_ru") or "")[:EXCERPT_CHARS]),
+            **(meta.get(aid) or {"authors": None, "project_id": None,
+                                 "project_name": None, "partner_name": None}),
+        })
+    return rows, meta
+
+
+def _search_our_archive(queries):
+    """id матеріалів нори за пошуковими запитами. Запит ЗВУЖУЄТЬСЯ через AND
+    (`_build_tsquery` склеює всі слова), тож довга фраза не знаходить нічого:
+    якщо збігів немає — прибираємо останнє слово і пробуємо коротше. Слова
+    планувальник ставить від найважливішого, тож відпадає хвіст."""
+    from handlers.archive_search import search_items
+
+    out, seen = [], set()
+    for query in (queries or [])[:5]:
+        words = [w for w in (query or "").split() if w]
+        while words:
+            try:
+                items = search_items(" ".join(words), limit=SEARCH_PER_QUERY)
+            except Exception as e:
+                print(f"impact: пошук «{query}» не вдався — {e}")
+                items = []
+            if items:
+                for it in items:
+                    if int(it["id"]) not in seen:
+                        seen.add(int(it["id"]))
+                        out.append(int(it["id"]))
+                break
+            words = words[:-1]
+    return out
+
+
+def _collect_candidates(source_url, our_url=None):
     """(тригерна стаття, кандидати серії). Кандидати: беклінки зі сторінки
     (найцінніші — їх поставили самі журналісти) + FTS нори за заголовком."""
-    from handlers.archive_search import get_excerpts, search_items
     from handlers.helpers import extract_article_id
 
     src_id = extract_article_id(source_url)
@@ -296,6 +522,10 @@ def _collect_candidates(source_url):
             from_backlink.add(int(aid))
             ordered_ids.append(int(aid))
 
+    # Підказаний людиною матеріал іде ПЕРШИМ і рівний беклінку: людина знає
+    # свій сюжет краще за пошук
+    if our_url:
+        _take(our_url)
     for href in links:
         _take(href)
     # Другий рівень: сторінки перших беклінків. Реальний кейс 30.07 — ключова
@@ -312,39 +542,12 @@ def _collect_candidates(source_url):
             _take(href)
 
     title = (src.get("title_ua") or src.get("title_ru") or "").strip()
-    for it in search_items(title, limit=MAX_CANDIDATES):
-        if int(it["id"]) != int(src_id) and int(it["id"]) not in from_backlink:
-            ordered_ids.append(int(it["id"]))
+    for aid in _search_our_archive([title]):
+        if aid != int(src_id) and aid not in from_backlink:
+            ordered_ids.append(aid)
 
-    ordered_ids = ordered_ids[:MAX_CANDIDATES]
-    # get_excerpts віддає список — перекладаємо в мапу за id
-    excerpts = {int(e["id"]): e.get("excerpt") or ""
-                for e in get_excerpts(ordered_ids, max_chars=EXCERPT_CHARS)}
-    meta = _site_meta(ordered_ids + [int(src_id)])
-
-    candidates = []
-    for aid in ordered_ids:
-        # беклінки — ручна праця журналістів, їх не кидаємо через дірку в
-        # норі: добираємо з БД сайту (їх мало, ліміти MySQL не страждають)
-        row = _nora_article(aid) or (
-            _site_article(aid) if aid in from_backlink else None)
-        if not row:
-            continue
-        published = int(row.get("published") or 0)
-        candidates.append({
-            "id": aid,
-            "title": (row.get("title_ua") or row.get("title_ru") or "").strip(),
-            "url": _nora_url(row),
-            "published": published,
-            "date": datetime.fromtimestamp(published, KYIV_TZ).strftime("%d.%m.%Y") if published else "—",
-            "own": bool(row.get("own_material")),
-            "backlink": aid in from_backlink,
-            "excerpt": excerpts.get(aid)
-                or ((row.get("text_ua") or row.get("text_ru") or "")[:EXCERPT_CHARS]),
-            **(meta.get(aid) or {"authors": None, "project_id": None,
-                                 "project_name": None, "partner_name": None}),
-        })
-
+    candidates, meta = _candidate_rows(ordered_ids, from_backlink, [int(src_id)])
+    _mark_hinted(candidates, our_url)
     src_published = int(src.get("published") or 0)
     trigger = {
         "id": int(src_id),
@@ -358,6 +561,144 @@ def _collect_candidates(source_url):
                                      "project_name": None, "partner_name": None}),
     }
     return trigger, candidates
+
+
+def _collect_external(page, our_url=None, queries=None):
+    """(чужа публікація як тригер, кандидати серії з нори).
+
+    Три джерела нашої історії, у порядку надійності:
+    1) підказаний людиною наш матеріал — вона знає сюжет краще за будь-який
+       пошук, і саме для цього поле в формі («дай мені можливість прикласти
+       ссылочку», Олег 14.08);
+    2) лінки на нас із самої чужої сторінки — їх поставив редактор чужого
+       видання, тобто це вже підтверджений зв'язок. У кейсі ІМІ такий лінк
+       рівно один і веде на нашу новину 2019 року — тобто самих беклінків
+       мало: свіжого матеріалу, через який усе сталось, серед них немає;
+    3) пошук по норі за запитами, які склав планувальник (нижче) — саме
+       випадок «на зовнішньому джерелі немає прямої гіперссилки на нас».
+    """
+    from handlers.helpers import extract_article_id
+
+    ordered_ids, from_backlink = [], set()
+
+    def _take(href):
+        aid = extract_article_id(href or "")
+        if aid and int(aid) not in from_backlink:
+            from_backlink.add(int(aid))
+            ordered_ids.append(int(aid))
+
+    if our_url:
+        _take(our_url)
+    for href in page.get("links") or []:
+        _take(href)
+    # Другий рівень — передісторія самих знайдених матеріалів (той самий
+    # обмежувач, що й у внутрішньому зборі: це передісторія, а не павук)
+    for aid in list(ordered_ids)[:5]:
+        row = _nora_article(aid) or _site_article(aid)
+        if not row:
+            continue
+        deeper, _img = _page_scrape(_nora_url(row))
+        for href in deeper:
+            _take(href)
+
+    for aid in _search_our_archive(queries):
+        if aid not in from_backlink:
+            ordered_ids.append(aid)
+
+    candidates, _meta = _candidate_rows(ordered_ids, from_backlink)
+    _mark_hinted(candidates, our_url)
+    published = int(page.get("published") or 0)
+    trigger = {
+        # id немає свідомо: чужа публікація не наш матеріал і в норі її бути
+        # не може. Далі по цьому None і відрізняється зовнішній тригер
+        "id": None,
+        "external": True,
+        "site": page.get("site"),
+        "title": page.get("title") or page.get("url"),
+        "url": page.get("url"),
+        "published": published,
+        "date": (datetime.fromtimestamp(published, KYIV_TZ).strftime("%d.%m.%Y")
+                 if published else "—"),
+        "text": page.get("text") or "",
+        "image": page.get("image"),
+        "authors": None, "project_id": None,
+        "project_name": None, "partner_name": None,
+    }
+    return trigger, candidates
+
+
+# ---------- Планувальник пошуку по норі ----------
+
+_QUERIES_TOOL = {
+    "name": "archive_queries",
+    "description": "Запити для пошуку нашої передісторії в архіві МикВісті",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "queries": {
+                "type": "array", "items": {"type": "string"},
+                "description": "2–5 запитів по 1–4 слова, від найважливішого "
+                               "слова до менш важливого",
+            },
+            "about": {"type": "string", "description":
+                      "Одним реченням: про що має бути наш матеріал"},
+        },
+        "required": ["queries"],
+    },
+}
+
+
+async def _plan_queries(page, essence=None, our_url=None):
+    """Пошукові запити по норі за текстом чужої публікації.
+
+    Навіщо модель, а не заголовок: пошук нори склеює всі слова через AND
+    (`_build_tsquery`), тож заголовок «Суд послався на матеріали Nikcenter і
+    „МикВісті“ в ухвалі щодо земель військових полігонів» не знайде нічого —
+    у ньому половина слів про сам факт цитування, а не про сюжет. Треба
+    вибрати з тексту ВЛАСНІ назви й предмет справи («землі оборони»,
+    «Золотакевич», «Кульбакине»), і саме це модель робить дешево.
+
+    Збій моделі — не привід валити кейс: лишається заголовок як запит."""
+    from handlers.ai_messages import FOX_MODEL_FAST, async_client
+
+    fallback = [(page.get("title") or "").strip()]
+    prompt = f"""Чуже видання ({page.get('site')}) написало про результат, до якого
+причетна редакція МикВісті (Миколаїв). Треба знайти В НАШОМУ архіві матеріали
+цього ж сюжету — ті, що були ДО цієї публікації.
+
+ЧУЖА ПУБЛІКАЦІЯ:
+{page.get('title')}
+{(page.get('text') or '')[:2500]}
+{f'Суть словами редактора: {essence}' if essence else ''}
+{f'Редактор уже вказав наш матеріал: {our_url}' if our_url else ''}
+
+Склади запити для повнотекстового пошуку через archive_queries.
+Правила, без яких пошук не знайде нічого:
+- пошук склеює слова через І, тому кожен запит — 1–4 слова, не речення;
+- бери ВЛАСНІ назви й предмет справи (прізвища, топоніми, назви установ,
+  підприємств, об'єктів), а не слова про сам факт розголосу («суд послався»,
+  «журналісти написали», «розслідування ЗМІ»);
+- назви наших чи чужих медіа («МикВісті», «Nikcenter», «ІМІ») в запити НЕ
+  йдуть: у своєму архіві ми себе не шукаємо;
+- запити мають бути різні за кутом: один про об'єкт, один про людину, один
+  про орган влади — якщо один нічого не дасть, спрацює інший."""
+    try:
+        message = await async_client.messages.create(
+            model=FOX_MODEL_FAST,
+            max_tokens=500,
+            tools=[_QUERIES_TOOL],
+            tool_choice={"type": "tool", "name": "archive_queries"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        _record_usage(FOX_MODEL_FAST, message)
+        for block in message.content:
+            if block.type == "tool_use" and block.name == "archive_queries":
+                queries = [q.strip() for q in (block.input.get("queries") or [])
+                           if (q or "").strip()]
+                return queries or fallback
+    except Exception as e:
+        print(f"impact: планувальник запитів не спрацював — {e}")
+    return fallback
 
 
 # ---------- Суддя-упорядник (Claude) ----------
@@ -379,7 +720,8 @@ _IMPACT_TOOL = {
                            "справді про цей сюжет; сусідні теми не тягнути"},
             "key_article_id": {"type": "integer", "description":
                                "id ОДНОГО тексту з series_ids, який зробив найбільше — зазвичай "
-                               "велике розслідування/стаття, а не новина-фіксація"},
+                               "велике розслідування/стаття, а не новина-фіксація. "
+                               "0, якщо серія порожня"},
             "credits": {"type": "array", "items": {"type": "object", "properties": {
                 "person": {"type": "string"},
                 "note": {"type": "string", "description":
@@ -395,11 +737,15 @@ _IMPACT_TOOL = {
 
 
 def _judge_prompt(trigger, candidates, essence):
+    external = bool(trigger.get("external"))
     lines = []
     for c in candidates:
         marks = []
+        if c.get("hinted"):
+            marks.append("РЕДАКТОР вказав цей матеріал як наш по цій темі")
         if c["backlink"]:
-            marks.append("беклінк із тригерної новини")
+            marks.append("лінк із тригерної публікації" if external
+                         else "беклінк із тригерної новини")
         if c["own"]:
             marks.append("власний матеріал")
         if c["partner_name"]:
@@ -411,21 +757,38 @@ def _judge_prompt(trigger, candidates, essence):
         )
     corpus = "\n".join(lines) or "(кандидатів не знайшлось)"
     essence_line = f"\nСуть імпакту словами редактора: {essence}" if essence else ""
-    return f"""Редакція МикВісті збирає імпакт-кейс для донорського звіту.
-
-ТРИГЕР — новина, що зафіксувала результат ({trigger['date']}, автор: {trigger['authors'] or '—'}):
+    if external:
+        # Тригер — ЧУЖА публікація. Головна пастка: модель бере її як «нашу
+        # новину» і пише кейс про те, що зробило чуже видання, або записує
+        # медальку його авторам. Тому і рамка, і заборони — прямим текстом.
+        head = f"""ТРИГЕР — публікація ЧУЖОГО видання ({trigger.get('site') or 'зовнішнє джерело'},
+{trigger['date']}), у якій зафіксовано результат нашої роботи:
 {trigger['title']}
 {trigger['text']}
+
+Це НЕ наш матеріал: у серію він не входить, його авторів у credits немає."""
+        rules = """- серія — ЛИШЕ матеріали МикВісті з переліку кандидатів, і лише ті, що справді про цей сюжет;
+- якщо серед кандидатів немає матеріалів цього сюжету — поверни порожню серію (series_ids: []) і напиши наратив тільки з чужої публікації; порожньо чесніше, ніж чужий сюжет у кейсі;
+- what_happened має називати, ХТО саме зафіксував результат (видання, суд, орган) і ЯКІ наші тексти цьому передували;
+- credits — тільки наші журналісти, автори матеріалів серії."""
+    else:
+        head = f"""ТРИГЕР — наша новина, що зафіксувала результат ({trigger['date']}, автор: {trigger['authors'] or '—'}):
+{trigger['title']}
+{trigger['text']}"""
+        rules = """- у серію бери ЛИШЕ матеріали цього сюжету; тригер у серію не включай — він додасться сам;
+- credits: усі дотичні журналісти з поміткою ЩО саме зробив кожен; авторів ключового тексту назви першими. Автор тригера потрапляє в credits лише як «зафіксував(ла) результат», якщо не робив більшого."""
+    return f"""Редакція МикВісті збирає імпакт-кейс для донорського звіту.
+
+{head}
 {essence_line}
 
 КАНДИДАТИ в серію (наші матеріали, що можуть бути передісторією):
 {corpus}
 
 Збери кейс через impact_case:
-- у серію бери ЛИШЕ матеріали цього сюжету; тригер у серію не включай — він додасться сам;
+{rules}
 - key_article_id — той ОДИН текст, що зробив найбільше (розслідування, велика стаття, перший викривальний матеріал), не новина-фіксація;
-- what_happened і significance — стримано і фактично, як у звіті донору: без пафосу, без «унікальний», лише те, що є в текстах; хронологія і причинність мають читатись;
-- credits: усі дотичні журналісти з поміткою ЩО саме зробив кожен; авторів ключового тексту назви першими. Автор тригера потрапляє в credits лише як «зафіксував(ла) результат», якщо не робив більшого."""
+- what_happened і significance — стримано і фактично, як у звіті донору: без пафосу, без «унікальний», лише те, що є в текстах; хронологія і причинність мають читатись."""
 
 
 def _split_leak(text):
@@ -455,6 +818,22 @@ def _delouse_verdict(verdict, known_ids):
     return verdict, rescued
 
 
+def _record_usage(model, message):
+    """Токени виклику — в /aicost. Спільне для судді й планувальника запитів:
+    вони з різних моделей, а рахунок один."""
+    try:
+        u = message.usage
+        storage.record_ai_usage(
+            model,
+            input_tokens=getattr(u, "input_tokens", 0) or 0,
+            output_tokens=getattr(u, "output_tokens", 0) or 0,
+            cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
+            cache_creation=getattr(u, "cache_creation_input_tokens", 0) or 0,
+        )
+    except Exception as e:
+        print(f"ai_usage: не записався impact — {e}")
+
+
 async def _run_judge(trigger, candidates, essence):
     from handlers.ai_messages import FOX_MODEL_SMART, async_client
 
@@ -465,17 +844,7 @@ async def _run_judge(trigger, candidates, essence):
         tool_choice={"type": "tool", "name": "impact_case"},
         messages=[{"role": "user", "content": _judge_prompt(trigger, candidates, essence)}],
     )
-    try:
-        u = message.usage
-        storage.record_ai_usage(
-            FOX_MODEL_SMART,
-            input_tokens=getattr(u, "input_tokens", 0) or 0,
-            output_tokens=getattr(u, "output_tokens", 0) or 0,
-            cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
-            cache_creation=getattr(u, "cache_creation_input_tokens", 0) or 0,
-        )
-    except Exception as e:
-        print(f"ai_usage: не записався impact — {e}")
+    _record_usage(FOX_MODEL_SMART, message)
     for block in message.content:
         if block.type == "tool_use" and block.name == "impact_case":
             return block.input
@@ -508,16 +877,29 @@ def _notify_credit(impact_id, impact_title, person, note):
 
 # ---------- Публічне API модуля ----------
 
-def create_impact(actor, source_url, essence):
+def create_impact(actor, source_url, essence, our_url=None):
     """Створює чернетку 'building' і повертає її id — сам збір іде окремо
-    (build_impact), щоб HTTP-запит апки не висів пів хвилини."""
+    (build_impact), щоб HTTP-запит апки не висів пів хвилини.
+
+    our_url — наш матеріал, підказаний людиною. Живе в базі, а не тільки в
+    пам'яті прогону, бо «перезібрати заново» має збирати з тією ж підказкою:
+    інакше друга спроба була б слабшою за першу."""
     ensure_impact_schema()
     rows = bot_db.query(
-        "INSERT INTO impacts (essence, source_url, created_by) "
-        "VALUES (%s, %s, %s) RETURNING id",
-        ((essence or "").strip() or None, source_url.strip(), actor),
+        "INSERT INTO impacts (essence, source_url, our_url, created_by) "
+        "VALUES (%s, %s, %s, %s) RETURNING id",
+        ((essence or "").strip() or None, source_url.strip(),
+         (our_url or "").strip() or None, actor),
     )
     return rows[0]["id"]
+
+
+def is_our_url(url):
+    """Чи це лінк на конкретний матеріал nikvesti.com. Усе інше вважається
+    зовнішнім джерелом і читається як чужа сторінка."""
+    from handlers.helpers import extract_article_id
+
+    return "nikvesti.com" in (url or "") and bool(extract_article_id(url or ""))
 
 
 async def build_impact(impact_id):
@@ -528,7 +910,7 @@ async def build_impact(impact_id):
     def _load():
         with bot_db.session():
             rows = bot_db.query(
-                "SELECT id, source_url, essence FROM impacts WHERE id = %s",
+                "SELECT id, source_url, our_url, essence FROM impacts WHERE id = %s",
                 (int(impact_id),))
             return rows[0] if rows else None
 
@@ -537,8 +919,21 @@ async def build_impact(impact_id):
         return
 
     try:
-        trigger, candidates = await asyncio.to_thread(
-            _collect_candidates, imp["source_url"])
+        source_url = imp["source_url"]
+        our_url = (imp.get("our_url") or "").strip() or None
+        if is_our_url(source_url):
+            trigger, candidates = await asyncio.to_thread(
+                _collect_candidates, source_url, our_url)
+        else:
+            if "nikvesti.com" in source_url:
+                raise ValueError("Це лінк на nikvesti.com, але без номера "
+                                 "матеріалу — дай лінк на саму новину")
+            # Чуже джерело: спершу читаємо сторінку, потім складаємо запити
+            # по норі (мережа й БД — у потоках, модель — асинхронно)
+            page = await asyncio.to_thread(_external_source, source_url)
+            queries = await _plan_queries(page, imp["essence"], our_url)
+            trigger, candidates = await asyncio.to_thread(
+                _collect_external, page, our_url, queries)
         verdict = await _run_judge(trigger, candidates, imp["essence"])
 
         by_id = {c["id"]: c for c in candidates}
@@ -554,6 +949,10 @@ async def build_impact(impact_id):
             # суддя назвав ключовим щось поза серією (буває) — тоді ключовим
             # стає найстарший матеріал серії, а без серії — сам тригер
             key_id = series[0]["id"] if series else trigger["id"]
+        # У зовнішнього тригера id немає, і без серії ключового просто нема:
+        # без цієї перевірки None == None робив би ключовою чужу публікацію
+        if key_id is None:
+            key_id = -1
 
         story = json.dumps({
             "what_happened": (verdict.get("what_happened") or "").strip(),
@@ -729,6 +1128,10 @@ def get_impact(impact_id):
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
         "what_happened": story.get("what_happened") or "",
         "significance": story.get("significance") or "",
+        "our_url": r.get("our_url"),
+        # article_id порожній рівно в одному випадку — це чужа публікація
+        # (наш матеріал без id у базу не потрапляє), тож окремої колонки-
+        # прапорця не заводимо: він був би другим джерелом тієї самої правди
         "articles": [{
             "id": a["id"], "article_id": a["article_id"], "url": a["url"],
             "title": a["title"],
@@ -737,6 +1140,8 @@ def get_impact(impact_id):
             "role": a["role"], "is_key": bool(a.get("is_key")),
             "authors": a["authors"],
             "project_name": a["project_name"], "partner_name": a["partner_name"],
+            "external": not a["article_id"],
+            "source": _site_of(a["url"]) if not a["article_id"] else None,
         } for a in arts],
         "credits": [{"id": c["id"], "person": c["person"], "note": c["note"]}
                     for c in credits],
@@ -899,6 +1304,9 @@ def export_html(impact_id):
     links = "\n".join(
         f'<li><a href="{_esc(a["url"])}">{_esc(a["title"] or a["url"])}</a>'
         f'<span class="m"> — {_esc(a["date"])}'
+        # для донора це найцінніший рядок списку: результат зафіксували не ми
+        # самі, а стороннє видання — тож джерело називається прямо
+        f'{" · публікація " + _esc(a["source"] or "стороннього видання") if a.get("external") else ""}'
         f'{" · " + _esc(a["authors"]) if a["authors"] else ""}'
         f'{" · ключовий матеріал" if a.get("is_key") else ""}'
         f'{" · " + _esc(a["partner_name"]) if a["partner_name"] else ""}</span></li>'
