@@ -642,7 +642,7 @@ def list_impacts():
         SELECT i.id, i.title, i.essence, i.status, i.error, i.source_url,
                i.created_by, i.created_at, i.image,
                COUNT(DISTINCT a.id) AS articles,
-               STRING_AGG(DISTINCT a.partner_name, ' · ') AS partners,
+               ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.partner_name), NULL) AS partners,
                STRING_AGG(DISTINCT c.person, '|') AS people,
                MAX(a.published) FILTER (WHERE a.role = 'fixer') AS fixed_ts
         FROM impacts i
@@ -663,7 +663,10 @@ def list_impacts():
         "date": (datetime.fromtimestamp(int(r["fixed_ts"]), KYIV_TZ)
                  .strftime("%d.%m.%Y") if r["fixed_ts"] else None),
         "articles": int(r["articles"] or 0),
-        "partners": r["partners"] or None,
+        # Донори — СПИСКОМ, а не склеєним рядком: за ними апка фільтрує архів
+        # («покажи все, що зробили для IWPR»), а розбирати назву назад із
+        # роздільника означало б розвалити будь-яку назву, де він трапиться
+        "partners": list(r["partners"] or []),
         "image": r["image"] or None,
         "people": [p for p in (r["people"] or "").split("|") if p],
     } for r in rows]
