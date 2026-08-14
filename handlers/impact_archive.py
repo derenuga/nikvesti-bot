@@ -370,6 +370,106 @@ def _site_article(article_id):
     }
 
 
+# Кирилиця, що трапляється в старих слагах замість латиниці. Реальний лінк
+# зі старого кейсу Олега: «…budinkiv-mikolaєvi-…» — на сайті це «mikolaevi»,
+# і з кирилицею сторінка чесно віддає 404.
+_SLUG_CYR = str.maketrans({
+    "є": "e", "е": "e", "і": "i", "и": "y", "о": "o", "а": "a", "р": "r",
+    "с": "s", "к": "k", "у": "u", "х": "h", "т": "t", "м": "m", "в": "v",
+    "н": "n", "п": "p", "б": "b", "д": "d", "г": "h", "л": "l", "ї": "i",
+})
+
+
+def _id_from_page(url):
+    """id матеріалу з ЖИВОЇ сторінки, коли в URL його немає.
+
+    Старі матеріали (той проміжок, коли в лінках був лише слаг) інакше не
+    резолвляться взагалі. Опора — шлях до власних фото матеріалу:
+    /images/imageeditor/<рррр>/<м>/<д>/<node_id>/… Рахуємо в ТІЛІ статті й
+    беремо найчастіший id: у блоках «читайте також» лежать чужі мініатюри,
+    а всередині тексту — свої (перевірено на п'яти живих сторінках, зокрема
+    двох слагових; там, де id є і в URL, збіг точний)."""
+    from collections import Counter
+
+    try:
+        soup = _fetch_soup(url)
+    except Exception as e:
+        # 404 на кирилицю в слазі лікується транслітерацією — старі лінки в
+        # доках писали руками
+        latin = url.translate(_SLUG_CYR)
+        if latin == url:
+            print(f"impact: сторінка {url} не читається — {e}")
+            return None
+        try:
+            soup = _fetch_soup(latin)
+        except Exception as e2:
+            print(f"impact: сторінка {url} не читається — {e2}")
+            return None
+    ids = re.findall(r"/images/imageeditor/[\d/]+?/(\d{4,})/",
+                     str(_body_node(soup)))
+    if not ids:
+        return None
+    return int(Counter(ids).most_common(1)[0][0])
+
+
+def _id_by_slug(url):
+    """id за слагом з URL — спершу нора, потім БД сайту. Обидві знають слаг
+    (`articles.slug` / `nodes.slug_ua`), і це точна відповідь, на відміну від
+    читання сторінки."""
+    from urllib.parse import unquote
+
+    slug = unquote(url.split("?")[0].split("#")[0].rstrip("/").split("/")[-1])
+    if not slug or slug.isdigit():
+        return None
+    variants = [slug]
+    latin = slug.translate(_SLUG_CYR)
+    if latin != slug:
+        variants.append(latin)
+    for value in variants:
+        try:
+            rows = bot_db.query(
+                "SELECT id FROM articles WHERE lower(slug) = lower(%s) "
+                "ORDER BY id LIMIT 1", (value,))
+            if rows:
+                return int(rows[0]["id"])
+        except Exception as e:
+            print(f"impact: слаг у норі не пошукався — {e}")
+        if db.is_configured():
+            try:
+                rows = db.query(
+                    "SELECT id FROM nodes WHERE (slug_ua = %s OR slug = %s) "
+                    "AND status = 1 ORDER BY id LIMIT 1", (value, value))
+                if rows:
+                    return int(rows[0]["id"])
+            except Exception as e:
+                print(f"impact: слаг у БД сайту не пошукався — {e}")
+    return None
+
+
+def resolve_article_id(url, allow_page=True):
+    """id нашого матеріалу за будь-яким його URL.
+
+    Три сходинки, від дешевої до дорогої: номер у самому лінку → слаг у
+    базах → читання живої сторінки. Остання потрібна саме для старих
+    кейсів: був період, коли в URL клали ЛИШЕ слаг, і такі лінки не
+    резолвились ніяк (Олег, 14.08 — через це в апку не складались уже
+    зафіксовані в доках імпакт-кейси). allow_page=False для гуртових
+    беклінків: там лінків десятки, і ходити по кожному в мережу задорого."""
+    from handlers.helpers import extract_article_id
+
+    if not url or "nikvesti.com" not in url:
+        return None
+    aid = extract_article_id(url)
+    if aid:
+        return int(aid)
+    # Далі йдуть запити в бази, тож спершу відсіюємо все, що матеріалом не є:
+    # на сторінці новини лежать ще й /donate, /author/45, /doc/*.pdf — шукати
+    # їх слаг у двох базах означало б десяток марних запитів на кожен збір
+    if not is_our_url(url):
+        return None
+    return _id_by_slug(url) or (_id_from_page(url) if allow_page else None)
+
+
 def _site_of(url):
     """Домен джерела для підпису «зовнішня публікація · imi.org.ua»."""
     from urllib.parse import urlparse
@@ -425,9 +525,7 @@ def _mark_hinted(candidates, our_url):
     """Позначити матеріал, який ВКАЗАЛА людина. Для судді це найсильніший
     сигнал у всій таблиці: пошук може принести сусідній сюжет, беклінк —
     випадкову згадку, а редактор знає, з чого все почалось."""
-    from handlers.helpers import extract_article_id
-
-    aid = extract_article_id(our_url or "")
+    aid = resolve_article_id(our_url or "")
     if not aid:
         return candidates
     for c in candidates:
@@ -503,9 +601,7 @@ def _search_our_archive(queries):
 def _collect_candidates(source_url, our_url=None):
     """(тригерна стаття, кандидати серії). Кандидати: беклінки зі сторінки
     (найцінніші — їх поставили самі журналісти) + FTS нори за заголовком."""
-    from handlers.helpers import extract_article_id
-
-    src_id = extract_article_id(source_url)
+    src_id = resolve_article_id(source_url)
     if not src_id:
         raise ValueError("Не впізнав URL — треба лінк на матеріал nikvesti.com")
     src = _nora_article(src_id) or _site_article(src_id)
@@ -516,8 +612,8 @@ def _collect_candidates(source_url, our_url=None):
     links, image = _page_scrape(source_url)
     ordered_ids, from_backlink = [], set()
 
-    def _take(href):
-        aid = extract_article_id(href)
+    def _take(href, allow_page=False):
+        aid = resolve_article_id(href, allow_page=allow_page)
         if aid and int(aid) != int(src_id) and int(aid) not in from_backlink:
             from_backlink.add(int(aid))
             ordered_ids.append(int(aid))
@@ -525,7 +621,7 @@ def _collect_candidates(source_url, our_url=None):
     # Підказаний людиною матеріал іде ПЕРШИМ і рівний беклінку: людина знає
     # свій сюжет краще за пошук
     if our_url:
-        _take(our_url)
+        _take(our_url, allow_page=True)
     for href in links:
         _take(href)
     # Другий рівень: сторінки перших беклінків. Реальний кейс 30.07 — ключова
@@ -577,18 +673,16 @@ def _collect_external(page, our_url=None, queries=None):
     3) пошук по норі за запитами, які склав планувальник (нижче) — саме
        випадок «на зовнішньому джерелі немає прямої гіперссилки на нас».
     """
-    from handlers.helpers import extract_article_id
-
     ordered_ids, from_backlink = [], set()
 
-    def _take(href):
-        aid = extract_article_id(href or "")
+    def _take(href, allow_page=False):
+        aid = resolve_article_id(href or "", allow_page=allow_page)
         if aid and int(aid) not in from_backlink:
             from_backlink.add(int(aid))
             ordered_ids.append(int(aid))
 
     if our_url:
-        _take(our_url)
+        _take(our_url, allow_page=True)
     for href in page.get("links") or []:
         _take(href)
     # Другий рівень — передісторія самих знайдених матеріалів (той самий
@@ -895,11 +989,145 @@ def create_impact(actor, source_url, essence, our_url=None):
 
 
 def is_our_url(url):
-    """Чи це лінк на конкретний матеріал nikvesti.com. Усе інше вважається
-    зовнішнім джерелом і читається як чужа сторінка."""
-    from handlers.helpers import extract_article_id
+    """Чи це лінк на НАШ матеріал. Номер у лінку не обов'язковий: був період,
+    коли в URL клали лише слаг, і такі матеріали теж наші — номер до них
+    добуде resolve_article_id уже під час збору."""
+    from urllib.parse import urlparse
 
-    return "nikvesti.com" in (url or "") and bool(extract_article_id(url or ""))
+    parsed = urlparse(url or "")
+    return (parsed.netloc.endswith("nikvesti.com")
+            and bool(re.search(r"/(news|articles)/", parsed.path)))
+
+
+_URL_RE = re.compile(r"https?://\S+")
+# Заголовок блоку «значення та вплив» у старих кейсах писали по-різному
+_SIGNIFICANCE_RE = re.compile(r"^\s*(значенн[яе].{0,20}вплив|вплив)\s*:?\s*$", re.I)
+
+
+def parse_case_text(text):
+    """Старий кейс із дока → (заголовок, «що сталось», «значення та вплив»,
+    лінки). Формат у доках сталий: рядок «Імпакт-кейс: …», абзац опису,
+    заголовок «Значення та вплив:», ще абзац і список лінків.
+
+    Розбір ДЕТЕРМІНОВАНИЙ, без моделі, і це принципово: текст уже написала
+    людина для донора, і переписувати його наново — втратити формулювання,
+    які вже ходили в заявках."""
+    lines = [ln.strip() for ln in (text or "").replace("\r", "").split("\n")]
+    urls, body = [], []
+    for ln in lines:
+        found = _URL_RE.findall(ln)
+        if found and not _URL_RE.sub("", ln).strip():
+            urls.extend(u.rstrip(".,;)") for u in found)
+        else:
+            body.append(ln)
+
+    title, what, significance, bucket = "", [], [], None
+    for ln in body:
+        if not ln:
+            continue
+        if _SIGNIFICANCE_RE.match(ln):
+            bucket = "sig"
+            continue
+        if not title:
+            title = re.sub(r"^\s*[Іi]мпакт[- ]?кейс\s*:?\s*", "", ln).strip()
+            if title:
+                continue
+        (significance if bucket == "sig" else what).append(ln)
+    return title, "\n".join(what).strip(), "\n".join(significance).strip(), urls
+
+
+def import_case(actor, text):
+    """Перенести вже описаний кейс із дока в архів як ГОТОВИЙ — без судді.
+
+    Олег, 14.08: «як нам поскладати старі зафіксовані в доках імпакт-кейси в
+    нову систему». Автозбір тут не потрібен і навіть шкідливий: серія вже
+    названа поіменно, наратив написаний. Бот робить те, що людині рахувати
+    вручну найдовше — резолвить лінки (зокрема старі, де в URL лише слаг),
+    підтягує авторів, проєкти й донорів, ставить дати.
+
+    Повертає (id, звіт по кожному лінку): що не резолвилось — видно одразу,
+    бо мовчки з'їдений лінк у кейсі для донора гірший за помилку."""
+    ensure_impact_schema()
+    title, what, significance, urls = parse_case_text(text)
+    if not urls:
+        return None, None, "У тексті немає жодного посилання на матеріал"
+
+    resolved, report = [], []
+    for url in urls:
+        if not is_our_url(url):
+            report.append({"url": url, "ok": False,
+                           "error": "не наш матеріал — пропущено"})
+            continue
+        aid = resolve_article_id(url)
+        row = (_nora_article(aid) or _site_article(aid)) if aid else None
+        if not row:
+            report.append({"url": url, "ok": False,
+                           "error": "матеріал не знайшовся ні в норі, ні в БД сайту"})
+            continue
+        if any(r["id"] == int(aid) for r in resolved):
+            continue
+        resolved.append({
+            "id": int(aid),
+            "title": (row.get("title_ua") or row.get("title_ru") or "").strip(),
+            "url": _nora_url(row),
+            "published": int(row.get("published") or 0),
+            "kind": row.get("kind") or "news",
+        })
+        report.append({"url": url, "ok": True, "id": int(aid),
+                       "title": resolved[-1]["title"]})
+    if not resolved:
+        return None, report, "Жоден лінк не вдалось розпізнати"
+
+    meta = _site_meta([r["id"] for r in resolved])
+    for r in resolved:
+        r.update(meta.get(r["id"]) or {"authors": None, "project_id": None,
+                                       "project_name": None, "partner_name": None})
+    resolved.sort(key=lambda r: r["published"])
+    # Фіксація — НАЙПІЗНІШИЙ матеріал: саме він зафіксував результат, і з
+    # нього кейс бере свою дату в архіві. Ключовий — стаття, якщо вона в
+    # серії є (велике розслідування важить найбільше), інакше найперший
+    # матеріал: з нього все почалось. Людина перепризначить обидва тапом
+    fixer = resolved[-1]
+    key = next((r for r in resolved if r["kind"] == "article"), resolved[0])
+    _links, image = _page_scrape(fixer["url"])
+
+    story = json.dumps({"what_happened": what, "significance": significance},
+                       ensure_ascii=False)
+    with bot_db.transaction():
+        rows = bot_db.query(
+            "INSERT INTO impacts (title, story, image, status, source_url, "
+            "created_by) VALUES (%s, %s, %s, 'ready', %s, %s) RETURNING id",
+            (title or fixer["title"], story, image, fixer["url"], actor))
+        impact_id = rows[0]["id"]
+        for art in resolved:
+            bot_db.execute(
+                "INSERT INTO impact_articles (impact_id, article_id, url, title, "
+                "published, role, is_key, authors, project_id, project_name, "
+                "partner_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (impact_id, url) DO NOTHING",
+                (impact_id, art["id"], art["url"], art["title"], art["published"],
+                 "fixer" if art["id"] == fixer["id"] else "series",
+                 art["id"] == key["id"], art.get("authors"), art.get("project_id"),
+                 art.get("project_name"), art.get("partner_name")))
+        # Медальки — з авторів серії: саме їх при ручному перенесенні
+        # відновлювати найдовше, а хто писав, БД сайту знає точно. Нотатка
+        # каже РІВНО те, що відомо з даних, — жодних здогадок про внесок.
+        # Людина в серії одна, навіть якщо написала три тексти: автор
+        # ключового ним і лишається (тому він перший у списку)
+        notes = {}
+        for art in [key] + resolved:
+            person = (art.get("authors") or "").strip()
+            if person and person not in notes:
+                notes[person] = ("автор(ка) ключового матеріалу"
+                                 if art["id"] == key["id"]
+                                 else "автор(ка) матеріалу серії")
+        for person, note in notes.items():
+            bot_db.execute(
+                "INSERT INTO impact_credits (impact_id, person, note) "
+                "VALUES (%s, %s, %s) ON CONFLICT (impact_id, person) DO NOTHING",
+                (impact_id, person, note))
+            _notify_credit(impact_id, title or fixer["title"], person, note)
+    return impact_id, report, None
 
 
 async def build_impact(impact_id):
@@ -926,8 +1154,9 @@ async def build_impact(impact_id):
                 _collect_candidates, source_url, our_url)
         else:
             if "nikvesti.com" in source_url:
-                raise ValueError("Це лінк на nikvesti.com, але без номера "
-                                 "матеріалу — дай лінк на саму новину")
+                raise ValueError("Це лінк на nikvesti.com, але не на матеріал "
+                                 "(схоже на розділ чи тег) — дай лінк на саму "
+                                 "новину або статтю")
             # Чуже джерело: спершу читаємо сторінку, потім складаємо запити
             # по норі (мережа й БД — у потоках, модель — асинхронно)
             page = await asyncio.to_thread(_external_source, source_url)
@@ -1180,12 +1409,11 @@ def add_article(impact_id, url):
     текст (стаття поза норою, беклінка немає): людина знає свій ключовий
     матеріал краще за будь-який пошук. Метадані (автор, проєкт, донор) —
     ті самі, що при автозборі."""
-    from handlers.helpers import extract_article_id
-
     ensure_impact_schema()
-    aid = extract_article_id(url or "")
+    aid = resolve_article_id(url or "")
     if not aid:
-        return None, "Не впізнав URL — треба лінк на матеріал nikvesti.com"
+        return None, ("Не впізнав матеріал за цим лінком — перевір адресу "
+                      "(треба лінк на новину чи статтю nikvesti.com)")
     row = _nora_article(aid) or _site_article(aid)
     if not row:
         return None, f"Матеріалу {aid} не знайшов ні в норі, ні в БД сайту"
