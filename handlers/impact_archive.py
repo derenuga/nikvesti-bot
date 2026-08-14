@@ -136,6 +136,11 @@ _SCHEMA_STATEMENTS = [
     # посилань» — у серії старого сюжету їх п'ять, а не одна)
     "ALTER TABLE impacts ADD COLUMN IF NOT EXISTS our_url TEXT",
     "ALTER TABLE impacts ADD COLUMN IF NOT EXISTS our_urls TEXT",
+    # Поправка редактора до ЗІБРАНОГО кейсу: «пропустив будинок на Крилова,
+    # зібрав лише про Адміральську» (Олег, 14.08). Живе в базі поруч із
+    # підказками й діє на кожен наступний перезбір — інакше та сама помилка
+    # поверталась би після кожного «перезібрати заново»
+    "ALTER TABLE impacts ADD COLUMN IF NOT EXISTS feedback TEXT",
 ]
 
 _schema_lock = threading.Lock()
@@ -600,9 +605,11 @@ def _search_our_archive(queries):
     return out
 
 
-def _collect_candidates(source_url, our_urls=None):
+def _collect_candidates(source_url, our_urls=None, queries=None):
     """(тригерна стаття, кандидати серії). Кандидати: беклінки зі сторінки
-    (найцінніші — їх поставили самі журналісти) + FTS нори за заголовком."""
+    (найцінніші — їх поставили самі журналісти) + FTS нори за заголовком і за
+    запитами планувальника (вони з'являються, коли редактор дав поправку —
+    «пропустив будинок на Крилова»: сам заголовок тригера туди не веде)."""
     src_id = resolve_article_id(source_url)
     if not src_id:
         raise ValueError("Не впізнав URL — треба лінк на матеріал nikvesti.com")
@@ -640,7 +647,7 @@ def _collect_candidates(source_url, our_urls=None):
             _take(href)
 
     title = (src.get("title_ua") or src.get("title_ru") or "").strip()
-    for aid in _search_our_archive([title]):
+    for aid in _search_our_archive(list(queries or []) + [title]):
         if aid != int(src_id) and aid not in from_backlink:
             ordered_ids.append(aid)
 
@@ -744,8 +751,9 @@ _QUERIES_TOOL = {
 }
 
 
-async def _plan_queries(page, essence=None, our_urls=None):
-    """Пошукові запити по норі за текстом чужої публікації.
+async def _plan_queries(page, essence=None, our_urls=None, feedback=None):
+    """Пошукові запити по норі за текстом публікації-тригера і поправкою
+    редактора.
 
     Навіщо модель, а не заголовок: пошук нори склеює всі слова через AND
     (`_build_tsquery`), тож заголовок «Суд послався на матеріали Nikcenter і
@@ -754,15 +762,21 @@ async def _plan_queries(page, essence=None, our_urls=None):
     вибрати з тексту ВЛАСНІ назви й предмет справи («землі оборони»,
     «Золотакевич», «Кульбакине»), і саме це модель робить дешево.
 
+    Так само з ПОПРАВКОЮ: «ти пропустив будинок на Крилова» — це речення, а
+    не запит, і сама фраза в пошуку не знайде нічого. Тому поправка теж іде
+    сюди, і вона найважливіша: людина вже подивилась на зібране й назвала,
+    чого бракує.
+
     Збій моделі — не привід валити кейс: лишається заголовок як запит."""
     from handlers.ai_messages import FOX_MODEL_FAST, async_client
 
-    fallback = [(page.get("title") or "").strip()]
-    prompt = f"""Чуже видання ({page.get('site')}) написало про результат, до якого
-причетна редакція МикВісті (Миколаїв). Треба знайти В НАШОМУ архіві матеріали
-цього ж сюжету — ті, що були ДО цієї публікації.
+    fallback = [f for f in [(page.get("title") or "").strip()] if f]
+    prompt = f"""Редакція МикВісті (Миколаїв) збирає імпакт-кейс. Треба знайти В
+НАШОМУ архіві матеріали одного сюжету.
 
-ЧУЖА ПУБЛІКАЦІЯ:
+{('ПОПРАВКА РЕДАКТОРА — найважливіше, саме цього в зібраному бракує: ' + feedback) if feedback else ''}
+
+ПУБЛІКАЦІЯ-ТРИГЕР{f" (чуже видання, {page.get('site')})" if page.get('site') else ''}:
 {page.get('title')}
 {(page.get('text') or '')[:2500]}
 {f'Суть словами редактора: {essence}' if essence else ''}
@@ -832,7 +846,7 @@ _IMPACT_TOOL = {
 }
 
 
-def _judge_prompt(trigger, candidates, essence):
+def _judge_prompt(trigger, candidates, essence, feedback=None):
     external = bool(trigger.get("external"))
     lines = []
     for c in candidates:
@@ -873,8 +887,12 @@ def _judge_prompt(trigger, candidates, essence):
 {trigger['text']}"""
         rules = """- у серію бери ЛИШЕ матеріали цього сюжету; тригер у серію не включай — він додасться сам;
 - credits: усі дотичні журналісти з поміткою ЩО саме зробив кожен; авторів ключового тексту назви першими. Автор тригера потрапляє в credits лише як «зафіксував(ла) результат», якщо не робив більшого."""
+    # Поправка стоїть ПЕРЕД усім: людина вже подивилась на зібране й
+    # назвала, що не так. Це не побажання, а виправлення помилки збору
+    fix = (f"\nПОПРАВКА РЕДАКТОРА до попереднього збору — найвищий пріоритет: "
+           f"це погляд людини на вже зібраний кейс.\n{feedback}\n") if feedback else ""
     return f"""Редакція МикВісті збирає імпакт-кейс для донорського звіту.
-
+{fix}
 {head}
 {essence_line}
 
@@ -930,7 +948,7 @@ def _record_usage(model, message):
         print(f"ai_usage: не записався impact — {e}")
 
 
-async def _run_judge(trigger, candidates, essence):
+async def _run_judge(trigger, candidates, essence, feedback=None):
     from handlers.ai_messages import FOX_MODEL_SMART, async_client
 
     message = await async_client.messages.create(
@@ -938,7 +956,8 @@ async def _run_judge(trigger, candidates, essence):
         max_tokens=STORY_MAX_TOKENS,
         tools=[_IMPACT_TOOL],
         tool_choice={"type": "tool", "name": "impact_case"},
-        messages=[{"role": "user", "content": _judge_prompt(trigger, candidates, essence)}],
+        messages=[{"role": "user", "content":
+                   _judge_prompt(trigger, candidates, essence, feedback)}],
     )
     _record_usage(FOX_MODEL_SMART, message)
     for block in message.content:
@@ -1152,7 +1171,7 @@ async def build_impact(impact_id):
     def _load():
         with bot_db.session():
             rows = bot_db.query(
-                "SELECT id, source_url, our_url, our_urls, essence "
+                "SELECT id, source_url, our_url, our_urls, essence, feedback "
                 "FROM impacts WHERE id = %s",
                 (int(impact_id),))
             return rows[0] if rows else None
@@ -1164,9 +1183,15 @@ async def build_impact(impact_id):
     try:
         source_url = imp["source_url"]
         our_urls = hint_urls(imp)
+        feedback = (imp.get("feedback") or "").strip() or None
         if is_our_url(source_url):
+            # Своя новина-тригер сама себе описує, тож планувальник потрібен
+            # лише з поправкою: без неї шукати нічого нового не треба
+            queries = (await _plan_queries(
+                {"title": "", "text": ""}, imp["essence"], our_urls, feedback)
+                if feedback else None)
             trigger, candidates = await asyncio.to_thread(
-                _collect_candidates, source_url, our_urls)
+                _collect_candidates, source_url, our_urls, queries)
         else:
             if "nikvesti.com" in source_url:
                 raise ValueError("Це лінк на nikvesti.com, але не на матеріал "
@@ -1175,10 +1200,11 @@ async def build_impact(impact_id):
             # Чуже джерело: спершу читаємо сторінку, потім складаємо запити
             # по норі (мережа й БД — у потоках, модель — асинхронно)
             page = await asyncio.to_thread(_external_source, source_url)
-            queries = await _plan_queries(page, imp["essence"], our_urls)
+            queries = await _plan_queries(
+                page, imp["essence"], our_urls, feedback)
             trigger, candidates = await asyncio.to_thread(
                 _collect_external, page, our_urls, queries)
-        verdict = await _run_judge(trigger, candidates, imp["essence"])
+        verdict = await _run_judge(trigger, candidates, imp["essence"], feedback)
 
         by_id = {c["id"]: c for c in candidates}
         verdict, rescued = _delouse_verdict(verdict, set(by_id))
@@ -1256,6 +1282,49 @@ async def build_impact(impact_id):
                     (msg, int(impact_id)))
 
         await asyncio.to_thread(_fail)
+
+
+def save_feedback(impact_id, feedback=None, our_urls=None):
+    """Поправка редактора до зібраного кейсу + оновлений список підказаних
+    матеріалів; кейс одразу йде в перезбір.
+
+    Олег, 14.08: «він пропустив будинок на Крилова і зібрав імпакт тільки
+    про Адміральську — я його поправлю, і він доповнить». Тому поправка
+    ЗБЕРІГАЄТЬСЯ: якщо вона живе лише в одному прогоні, наступне «перезібрати
+    заново» поверне ту саму помилку. І тому ж вона показується в формі для
+    редагування — накопичувати суперечливі записки нема сенсу, людина бачить
+    свій текст і правит його."""
+    ensure_impact_schema()
+    sets = ["status = 'building'", "error = NULL", "updated_at = now()"]
+    params = []
+    if feedback is not None:
+        sets.append("feedback = %s")
+        params.append((feedback or "").strip()[:2000] or None)
+    if our_urls is not None:
+        if isinstance(our_urls, str):
+            our_urls = [our_urls]
+        hints = "\n".join(u.strip() for u in our_urls if u and u.strip())
+        sets.append("our_urls = %s")
+        params.append(hints or None)
+    params.append(int(impact_id))
+    return bot_db.execute(
+        f"UPDATE impacts SET {', '.join(sets)} WHERE id = %s", tuple(params))
+
+
+def add_hint_url(impact_id, url):
+    """Долити лінк до підказок кейсу, не чіпаючи решту. Кличеться, коли
+    матеріал додають руками в картці: інакше перезбір його загубив би —
+    серія пишеться з нуля, а хінти переживають будь-який перезбір."""
+    rows = bot_db.query(
+        "SELECT our_url, our_urls FROM impacts WHERE id = %s", (int(impact_id),))
+    if not rows:
+        return None
+    urls = hint_urls(rows[0])
+    if url in urls:
+        return None
+    urls.append(url)
+    return bot_db.execute("UPDATE impacts SET our_urls = %s WHERE id = %s",
+                          ("\n".join(urls), int(impact_id)))
 
 
 def retry_impact(impact_id):
@@ -1377,6 +1446,7 @@ def get_impact(impact_id):
         "what_happened": story.get("what_happened") or "",
         "significance": story.get("significance") or "",
         "our_urls": hint_urls(r),
+        "feedback": r.get("feedback"),
         # article_id порожній рівно в одному випадку — це чужа публікація
         # (наш матеріал без id у базу не потрапляє), тож окремої колонки-
         # прапорця не заводимо: він був би другим джерелом тієї самої правди
@@ -1448,6 +1518,10 @@ def add_article(impact_id, url):
          meta.get("project_id"), meta.get("project_name"),
          meta.get("partner_name")),
     )
+    # Доданий руками матеріал стає ще й ПІДКАЗКОЮ: серія при перезборі
+    # пишеться з нуля, і без цього людина втрачала б свою правку щоразу,
+    # коли кейс перезбирають (а з поправкою редактора перезбір — звична дія)
+    add_hint_url(impact_id, _nora_url(row))
     return True, None
 
 
