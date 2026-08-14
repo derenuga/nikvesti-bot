@@ -3913,7 +3913,14 @@ function impactCard(im) {
         <span class="imp-meta">${building ? "збирається…"
           : failed ? "не зібрався — відкрий і спробуй ще"
           : `${im.date ? esc(im.date) + " · " : ""}${im.articles} ${
-              plural(im.articles, "матеріал", "матеріали", "матеріалів")}`}</span>
+              plural(im.articles, "матеріал", "матеріали", "матеріалів")}${
+              // сортуємо за датою додавання — її ж і показуємо: інакше
+              // порядок карток нічим не пояснити, на них видно лише дату
+              // імпакту, і список читається як перемішаний
+              STATE.impactSort === "added" && im.created_at
+                ? " · додано " + esc(new Date(im.created_at)
+                    .toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" }))
+                : ""}`}</span>
         ${building || failed ? "" : `<span class="imp-foot">
           ${creditAvatars(im.people)}
           <span class="imp-donors">${partners.slice(0, 2).map(donorChip).join("")}</span>
@@ -3921,6 +3928,39 @@ function impactCard(im) {
       </span>
       ${building ? `<span class="im-spin imp-spin"></span>` : ""}
     </button>`;
+}
+
+/* Порядок кейсів в архіві (Олег, 14.08). Дві дати живуть у кейсі окремо і
+   потрібні для різного: ДАТА ІМПАКТУ (коли зафіксували результат) шикує
+   архів як історію — саме її бачить донор; ДАТА ДОДАВАННЯ показує, що
+   з'явилось у роботі останнім, і потрібна, коли переносиш старі кейси з
+   доків: щойно перенесений імпакт 2023 року інакше провалюється в глибину
+   списку, і не видно, чи він узагалі доїхав. Вибір памʼятається на пристрої:
+   один переносить архів, інша дивиться історію. */
+const IMPACT_SORTS = ["fixed", "added"];
+const IMPACT_SORT_KEY = "team.impactSort";
+
+function setImpactSort(value) {
+  STATE.impactSort = IMPACT_SORTS.includes(value) ? value : "fixed";
+  try { localStorage.setItem(IMPACT_SORT_KEY, STATE.impactSort); } catch (e) {}
+}
+
+try {
+  const saved = localStorage.getItem(IMPACT_SORT_KEY);
+  STATE.impactSort = IMPACT_SORTS.includes(saved) ? saved : "fixed";
+} catch (e) {
+  STATE.impactSort = "fixed";
+}
+
+function sortImpacts(list) {
+  const added = (im) => Date.parse(im.created_at || "") || 0;
+  if (STATE.impactSort === "added") {
+    return [...list].sort((a, b) => added(b) - added(a) || b.id - a.id);
+  }
+  // За датою імпакту: кейси без фіксації (ще збираються чи збились) — згори,
+  // вони чекають дії, а не стоять у хронології
+  return [...list].sort((a, b) =>
+    (b.fixed_ts || Infinity) - (a.fixed_ts || Infinity) || b.id - a.id);
 }
 
 /* Рік кейсу — з дати фіксації «дд.мм.рррр». Без дати (ще збирається/збився)
@@ -3989,9 +4029,14 @@ function paintImpacts() {
       ${years.map((y) => `<button class="chip${STATE.impactYear === y ? " on" : ""}"
         data-imyear="${y}">${y}</button>`).join("")}
     </div>` : "";
-  const shown = STATE.impactYear
+  const shown = sortImpacts(STATE.impactYear
     ? byDonor.filter((im) => !impactYear(im) || impactYear(im) === STATE.impactYear)
-    : byDonor;
+    : byDonor);
+  // Перемикач порядку — під фільтрами: спершу відбір, потім послідовність.
+  // Один кейс сортувати нема чого
+  const sort = list.length > 1 ? segment("data-imsort", [
+    ["fixed", "За датою імпакту"], ["added", "За датою додавання"],
+  ], STATE.impactSort, { sub: true }) : "";
   // Запобіжник: обидва фільтри рахуються так, щоб порожнього екрана не
   // існувало (рік, якого в цього донора немає, скидається сам). Але якщо він
   // якось трапиться — підпис називає ОБИДВА фільтри, бо «кейсів немає»
@@ -3999,9 +4044,13 @@ function paintImpacts() {
   const why = [STATE.impactDonor ? `для «${esc(STATE.impactDonor)}»` : "",
                STATE.impactYear ? `за ${esc(STATE.impactYear)} рік` : ""]
     .filter(Boolean).join(" ");
-  body.innerHTML = sel + chips + (shown.length
+  body.innerHTML = sel + chips + sort + (shown.length
     ? shown.map(impactCard).join("")
     : `<div class="empty-hint">Кейсів ${why} немає.</div>`);
+  body.querySelectorAll("[data-imsort]").forEach((b) => b.onclick = () => {
+    setImpactSort(b.dataset.imsort);
+    paintImpacts();
+  });
   const dsel = $("im-donor");
   if (dsel) dsel.onchange = () => {
     STATE.impactDonor = dsel.value || null;
