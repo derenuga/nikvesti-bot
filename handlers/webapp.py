@@ -1714,10 +1714,17 @@ async def api_impact_create(request):
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
     url = (payload.get("url") or "").strip()
-    if "nikvesti.com" not in url:
-        raise web.HTTPBadRequest(text="Потрібен лінк на матеріал nikvesti.com")
+    # Фіксацією результату може бути і ЧУЖА публікація («суд послався на
+    # матеріали МикВісті»), тому домен більше не перевіряємо — лише те, що
+    # це взагалі посилання. Наш це матеріал чи зовнішній, вирішує is_our_url
+    if not url.lower().startswith(("http://", "https://")):
+        raise web.HTTPBadRequest(text="Потрібен лінк — наш матеріал або зовнішня публікація")
+    our_url = (payload.get("our_url") or "").strip()
+    if our_url and not impact_archive.is_our_url(our_url):
+        raise web.HTTPBadRequest(
+            text="«Наш матеріал» — це лінк на конкретну новину nikvesti.com")
     impact_id = await _in_session(
-        impact_archive.create_impact, person, url, payload.get("essence"))
+        impact_archive.create_impact, person, url, payload.get("essence"), our_url)
     # збір — у фоні того самого event loop; свій try/except усередині
     asyncio.create_task(impact_archive.build_impact(impact_id))
     return web.json_response({"id": impact_id, "status": "building"})

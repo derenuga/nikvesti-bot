@@ -4028,14 +4028,24 @@ function paintImpacts() {
   }
 }
 
+/* Фіксацією результату буває і ЧУЖА публікація: ІМІ пише, що суд послався
+   на наші матеріали (Олег, 14.08). Тому поле лінка приймає будь-яке
+   посилання, а поруч зʼявилось друге — наш матеріал по темі. Воно потрібне
+   рівно тоді, коли на чужій сторінці лінка на нас немає: бот пошукає нашу
+   історію сам, але людина знає її точно. */
 function impactAddSheet() {
   openSheet(`
     <h2>Новий імпакт-кейс</h2>
     <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
-      Кинь лінк новини, де зафіксовано результат. Передісторію, серію і
-      авторів бот збере сам — потім усе можна поправити.</p>
-    <div class="f-label">Лінк на новину-фіксацію</div>
-    <input id="im-url" inputmode="url" placeholder="https://nikvesti.com/news/…">
+      Кинь лінк, де зафіксовано результат: нашу новину або чуже видання, яке
+      написало про наслідки наших текстів. Передісторію, серію і авторів бот
+      збере сам — потім усе можна поправити.</p>
+    <div class="f-label">Лінк на фіксацію результату</div>
+    <input id="im-url" inputmode="url" placeholder="https://nikvesti.com/news/… або imi.org.ua/news/…">
+    <div class="f-label">Наш матеріал по темі (необовʼязково)</div>
+    <input id="im-our" inputmode="url" placeholder="https://nikvesti.com/news/…">
+    <div class="mr-hint" style="margin:-6px 0 12px">якщо на чужій сторінці
+      немає лінка на нас — покажи, з чого все почалось</div>
     <div class="f-label">Суть своїми словами (необовʼязково)</div>
     <input id="im-essence" maxlength="300"
       placeholder="після нас відремонтували, реакція на новину">
@@ -4046,11 +4056,15 @@ function impactAddSheet() {
   $("im-cancel").onclick = closeSheet;
   $("im-save").onclick = async () => {
     const url = $("im-url").value.trim();
-    if (!url.includes("nikvesti.com")) { toast("Потрібен лінк nikvesti.com"); return; }
+    const ourUrl = $("im-our").value.trim();
+    if (!/^https?:\/\//i.test(url)) { toast("Потрібен лінк на сторінку"); return; }
+    if (ourUrl && !ourUrl.includes("nikvesti.com")) {
+      toast("«Наш матеріал» — лінк на nikvesti.com"); return;
+    }
     $("im-save").disabled = true;
     try {
       await api("/api/impacts", { method: "POST", body: JSON.stringify(
-        { url, essence: $("im-essence").value.trim() }) });
+        { url, our_url: ourUrl, essence: $("im-essence").value.trim() }) });
       closeSheet();
       haptic("success");
       renderImpacts();
@@ -4169,7 +4183,10 @@ function paintImpact(im) {
 function impactTimelineItem(a, ro) {
   const badges = [
     a.is_key ? `<span class="itl-badge key">★ ключовий</span>` : "",
-    a.role === "fixer" ? `<span class="itl-badge">фіксація результату</span>` : "",
+    // Чуже видання підписуємо ДОМЕНОМ: у списку серії воно стоїть поруч із
+    // нашими текстами, і без підпису читалось би як наш матеріал
+    a.external ? `<span class="itl-badge">зовнішня публікація · ${esc(a.source || "інше видання")}</span>`
+      : a.role === "fixer" ? `<span class="itl-badge">фіксація результату</span>` : "",
   ].filter(Boolean).join("");
   const inner = `
     <span class="itl-rail"><i class="itl-dot${a.is_key ? " key" : ""}"></i></span>
@@ -4193,7 +4210,8 @@ function impactTimelineItem(a, ro) {
 
 /* Дії над матеріалом серії — шторка зі словами замість іконок-загадок. */
 function impactArticleSheet(im, a, patch) {
-  const meta = [a.date, a.authors, a.partner_name].filter(Boolean).join(" · ");
+  const meta = [a.date, a.external ? a.source : a.authors, a.partner_name]
+    .filter(Boolean).join(" · ");
   openSheet(`
     <h2>${esc(a.title || a.url)}</h2>
     <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">${esc(meta)}${
