@@ -1290,6 +1290,10 @@ def list_impacts():
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
         "date": (datetime.fromtimestamp(int(r["fixed_ts"]), KYIV_TZ)
                  .strftime("%d.%m.%Y") if r["fixed_ts"] else None),
+        # Сам ts, а не лише «дд.мм.рррр»: апка сортує архів двома способами
+        # (за датою імпакту і за датою додавання), і розбирати рядок назад у
+        # дату заради цього безглуздо
+        "fixed_ts": int(r["fixed_ts"] or 0),
         "articles": int(r["articles"] or 0),
         # Донори — СПИСКОМ, а не склеєним рядком: за ними апка фільтрує архів
         # («покажи все, що зробили для IWPR»), а розбирати назву назад із
