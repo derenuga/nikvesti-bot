@@ -337,6 +337,65 @@ def _external_source(url):
     }
 
 
+def _youtube_oembed(url):
+    """Заголовок і превʼю відео через oEmbed. Сторінку YouTube роботам не
+    віддає взагалі (429 і редирект на google.com/sorry — перевірено на
+    лінку Олега 14.08), а oEmbed відкритий і повертає рівно те, що потрібно
+    рядку серії."""
+    if not re.search(r"(youtube\.com|youtu\.be)", url or ""):
+        return None
+    try:
+        import requests
+
+        resp = requests.get("https://www.youtube.com/oembed", timeout=15,
+                            params={"url": url, "format": "json"})
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"impact: oEmbed YouTube не відповів — {e}")
+        return None
+    return {
+        "url": url,
+        "title": (data.get("title") or "").strip(),
+        "text": (data.get("title") or "").strip(),
+        "image": data.get("thumbnail_url"),
+        "published": 0,
+        "site": "youtube.com",
+        "author": (data.get("author_name") or "").strip() or None,
+        "links": [],
+    }
+
+
+def _external_ref(url):
+    """Зовнішній матеріал як рядок серії: заголовок, дата, картинка.
+
+    Головне правило — матеріал, який назвала ЛЮДИНА, не можна відкидати
+    через те, що чужий сайт не любить скрапінг (Олег, 14.08 кинув у поправку
+    лінк на відео, і YouTube віддав роботу 429). Тому три рівні: oEmbed для
+    відео → читання сторінки → сам лінк як назва. Порожнім це не буває."""
+    ref = _youtube_oembed(url)
+    if not ref:
+        try:
+            ref = _external_source(url)
+        except Exception as e:
+            print(f"impact: зовнішній матеріал {url} не прочитався — {e}")
+            ref = {"url": url, "title": url, "published": 0,
+                   "site": _site_of(url), "image": None}
+    return {
+        "id": None,
+        "url": ref["url"],
+        "title": ref.get("title") or url,
+        "published": int(ref.get("published") or 0),
+        "site": ref.get("site"),
+        "authors": None, "project_id": None,
+        "project_name": None, "partner_name": None,
+    }
+
+
+def _external_refs(urls):
+    return [_external_ref(u) for u in (urls or [])]
+
+
 def _nora_article(article_id):
     rows = bot_db.query(
         "SELECT id, published, own_material, owner_id, kind, title_ua, title_ru, "
@@ -751,7 +810,8 @@ _QUERIES_TOOL = {
 }
 
 
-async def _plan_queries(page, essence=None, our_urls=None, feedback=None):
+async def _plan_queries(page, essence=None, our_urls=None, feedback=None,
+                        extras=None):
     """Пошукові запити по норі за текстом публікації-тригера і поправкою
     редактора.
 
@@ -781,6 +841,7 @@ async def _plan_queries(page, essence=None, our_urls=None, feedback=None):
 {(page.get('text') or '')[:2500]}
 {f'Суть словами редактора: {essence}' if essence else ''}
 {('Редактор уже вказав наші матеріали: ' + ', '.join(our_urls)) if our_urls else ''}
+{('Редактор додав ще й такі матеріали: ' + '; '.join(e['title'] for e in extras)) if extras else ''}
 
 Склади запити для повнотекстового пошуку через archive_queries.
 Правила, без яких пошук не знайде нічого:
@@ -846,7 +907,7 @@ _IMPACT_TOOL = {
 }
 
 
-def _judge_prompt(trigger, candidates, essence, feedback=None):
+def _judge_prompt(trigger, candidates, essence, feedback=None, extras=None):
     external = bool(trigger.get("external"))
     lines = []
     for c in candidates:
@@ -866,6 +927,14 @@ def _judge_prompt(trigger, candidates, essence, feedback=None):
             f"  {c['excerpt'][:EXCERPT_CHARS]}"
         )
     corpus = "\n".join(lines) or "(кандидатів не знайшлось)"
+    # Зовнішні матеріали, докинуті людиною руками (відео, чужі публікації):
+    # вони вже в серії — судді їх не обирати, а ЗНАТИ, щоб наратив не
+    # розповідав історію без того, що редакція вважає її частиною
+    extra_block = ("\n\nЩЕ МАТЕРІАЛИ, які редактор додав руками (не з нашого\n"
+                   "архіву — відео, чужі публікації). Вони вже в серії, обирати\n"
+                   "їх не треба; згадай у наративі, якщо вони частина сюжету:\n"
+                   + "\n".join(f"- {e.get('site') or 'зовнішнє'} · {e['title']}"
+                                for e in extras)) if extras else ""
     essence_line = f"\nСуть імпакту словами редактора: {essence}" if essence else ""
     if external:
         # Тригер — ЧУЖА публікація. Головна пастка: модель бере її як «нашу
@@ -897,7 +966,7 @@ def _judge_prompt(trigger, candidates, essence, feedback=None):
 {essence_line}
 
 КАНДИДАТИ в серію (наші матеріали, що можуть бути передісторією):
-{corpus}
+{corpus}{extra_block}
 
 Збери кейс через impact_case:
 {rules}
@@ -948,7 +1017,7 @@ def _record_usage(model, message):
         print(f"ai_usage: не записався impact — {e}")
 
 
-async def _run_judge(trigger, candidates, essence, feedback=None):
+async def _run_judge(trigger, candidates, essence, feedback=None, extras=None):
     from handlers.ai_messages import FOX_MODEL_SMART, async_client
 
     message = await async_client.messages.create(
@@ -957,7 +1026,7 @@ async def _run_judge(trigger, candidates, essence, feedback=None):
         tools=[_IMPACT_TOOL],
         tool_choice={"type": "tool", "name": "impact_case"},
         messages=[{"role": "user", "content":
-                   _judge_prompt(trigger, candidates, essence, feedback)}],
+                   _judge_prompt(trigger, candidates, essence, feedback, extras)}],
     )
     _record_usage(FOX_MODEL_SMART, message)
     for block in message.content:
@@ -1182,14 +1251,22 @@ async def build_impact(impact_id):
 
     try:
         source_url = imp["source_url"]
-        our_urls = hint_urls(imp)
+        hints = hint_urls(imp)
+        # Підказки бувають двох родів, і шлях у них різний: НАШ матеріал іде
+        # в кандидати й проходить суддю, ЗОВНІШНІЙ (відео, чужа публікація)
+        # додається в серію як є — його не з чим зіставляти в норі, а людина
+        # вже вирішила, що він частина сюжету
+        our_urls = [u for u in hints if is_our_url(u)]
+        extras = await asyncio.to_thread(
+            _external_refs, [u for u in hints if not is_our_url(u)])
         feedback = (imp.get("feedback") or "").strip() or None
         if is_our_url(source_url):
             # Своя новина-тригер сама себе описує, тож планувальник потрібен
-            # лише з поправкою: без неї шукати нічого нового не треба
+            # лише тоді, коли з'явилось щось нове: поправка або доданий
+            # руками матеріал (його заголовок дає нові слова для пошуку)
             queries = (await _plan_queries(
-                {"title": "", "text": ""}, imp["essence"], our_urls, feedback)
-                if feedback else None)
+                {"title": "", "text": ""}, imp["essence"], our_urls, feedback,
+                extras) if (feedback or extras) else None)
             trigger, candidates = await asyncio.to_thread(
                 _collect_candidates, source_url, our_urls, queries)
         else:
@@ -1201,10 +1278,11 @@ async def build_impact(impact_id):
             # по норі (мережа й БД — у потоках, модель — асинхронно)
             page = await asyncio.to_thread(_external_source, source_url)
             queries = await _plan_queries(
-                page, imp["essence"], our_urls, feedback)
+                page, imp["essence"], our_urls, feedback, extras)
             trigger, candidates = await asyncio.to_thread(
                 _collect_external, page, our_urls, queries)
-        verdict = await _run_judge(trigger, candidates, imp["essence"], feedback)
+        verdict = await _run_judge(trigger, candidates, imp["essence"],
+                                   feedback, extras)
 
         by_id = {c["id"]: c for c in candidates}
         verdict, rescued = _delouse_verdict(verdict, set(by_id))
@@ -1243,7 +1321,10 @@ async def build_impact(impact_id):
                     "DELETE FROM impact_articles WHERE impact_id = %s", (int(impact_id),))
                 bot_db.execute(
                     "DELETE FROM impact_credits WHERE impact_id = %s", (int(impact_id),))
-                rows = [(trigger, "fixer")] + [(s, "series") for s in series]
+                # Зовнішні матеріали, докинуті людиною, лягають у серію
+                # ЗАВЖДИ: їх не обирає суддя, їх обрала людина
+                rows = ([(trigger, "fixer")] + [(s, "series") for s in series]
+                        + [(e, "series") for e in extras])
                 for art, role in rows:
                     bot_db.execute(
                         "INSERT INTO impact_articles (impact_id, article_id, url, "
@@ -1497,9 +1578,24 @@ def add_article(impact_id, url):
     """Додати матеріал у серію руками. Рятівний вхід, коли збір не побачив
     текст (стаття поза норою, беклінка немає): людина знає свій ключовий
     матеріал краще за будь-який пошук. Метадані (автор, проєкт, донор) —
-    ті самі, що при автозборі."""
+    ті самі, що при автозборі.
+
+    Лінк може бути й ЗОВНІШНІЙ — відео на YouTube, чужа публікація: у кейсі
+    вони теж докази, і відмовляти людині через домен немає підстав."""
     ensure_impact_schema()
-    aid = resolve_article_id(url or "")
+    url = (url or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return None, "Це не схоже на посилання"
+    if not is_our_url(url):
+        ref = _external_ref(url)
+        bot_db.execute(
+            "INSERT INTO impact_articles (impact_id, article_id, url, title, "
+            "published, role) VALUES (%s, NULL, %s, %s, %s, 'series') "
+            "ON CONFLICT (impact_id, url) DO NOTHING",
+            (int(impact_id), ref["url"], ref["title"], ref["published"]))
+        add_hint_url(impact_id, ref["url"])
+        return True, None
+    aid = resolve_article_id(url)
     if not aid:
         return None, ("Не впізнав матеріал за цим лінком — перевір адресу "
                       "(треба лінк на новину чи статтю nikvesti.com)")

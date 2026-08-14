@@ -4091,12 +4091,12 @@ function impactAddSheet() {
       збере сам — потім усе можна поправити.</p>
     <div class="f-label">Лінк на фіксацію результату</div>
     <input id="im-url" inputmode="url" placeholder="https://nikvesti.com/news/… або imi.org.ua/news/…">
-    <div class="f-label">Наші матеріали по темі (необовʼязково)</div>
+    <div class="f-label">Матеріали по темі (необовʼязково)</div>
     <div id="im-our-list"><input class="im-our" inputmode="url"
       placeholder="https://nikvesti.com/news/…"></div>
     <button class="link-btn" id="im-our-add">${icon("plus")} Ще один лінк</button>
-    <div class="mr-hint" style="margin:-2px 0 12px">якщо на чужій сторінці
-      немає лінка на нас — покажи, з чого все почалось</div>
+    <div class="mr-hint" style="margin:-2px 0 12px">наші новини, з яких усе
+      почалось; можна й зовнішній лінк — відео чи чужу публікацію</div>
     <div class="f-label">Суть своїми словами (необовʼязково)</div>
     <input id="im-essence" maxlength="300"
       placeholder="після нас відремонтували, реакція на новину">
@@ -4124,8 +4124,10 @@ function impactAddSheet() {
     const ourUrls = [...document.querySelectorAll(".im-our")]
       .map((i) => i.value.trim()).filter(Boolean);
     if (!/^https?:\/\//i.test(url)) { toast("Потрібен лінк на сторінку"); return; }
-    if (ourUrls.some((u) => !u.includes("nikvesti.com"))) {
-      toast("«Наш матеріал» — лінк на nikvesti.com"); return;
+    // домен не перевіряємо: матеріалом кейсу буває і наше відео на YouTube,
+    // і чужа публікація — бот сам розбере, що наше, а що зовнішнє
+    if (ourUrls.some((u) => !/^https?:\/\//i.test(u))) {
+      toast("Матеріал — це посилання"); return;
     }
     $("im-save").disabled = true;
     try {
@@ -4356,12 +4358,13 @@ function impactFeedbackSheet(im) {
       наративу буде переписано, тому ручні правки абзаців краще внести після.</p>
     <div class="f-label">Що не так</div>
     <textarea id="imf-text" rows="4" placeholder="пропустив будинок на Крилова 54 — кейс має бути про всі три будинки, а не лише про Адміральську">${esc(im.feedback || "")}</textarea>
-    <div class="f-label">Наші матеріали по темі</div>
+    <div class="f-label">Матеріали по темі</div>
     <div id="imf-list">${urls.map((u) => `<input class="imf-url" inputmode="url"
       value="${esc(u)}" placeholder="https://nikvesti.com/news/…">`).join("")}</div>
     <button class="link-btn" id="imf-add">${icon("plus")} Ще один лінк</button>
-    <div class="mr-hint" style="margin:-2px 0 12px">лінки лишаються в кейсі
-      назавжди: кожен наступний перезбір починає з них</div>
+    <div class="mr-hint" style="margin:-2px 0 12px">наші новини або зовнішні
+      лінки (відео, чужа публікація). Лишаються в кейсі назавжди: кожен
+      наступний перезбір починає з них</div>
     <div class="sheet-actions">
       <button class="sbtn" id="imf-cancel">Скасувати</button>
       <button class="sbtn primary" id="imf-save">Дозібрати</button>
@@ -4378,8 +4381,8 @@ function impactFeedbackSheet(im) {
   $("imf-save").onclick = async () => {
     const ourUrls = [...document.querySelectorAll(".imf-url")]
       .map((i) => i.value.trim()).filter(Boolean);
-    if (ourUrls.some((u) => !u.includes("nikvesti.com"))) {
-      toast("«Наш матеріал» — лінк на nikvesti.com"); return;
+    if (ourUrls.some((u) => !/^https?:\/\//i.test(u))) {
+      toast("Матеріал — це посилання"); return;
     }
     $("imf-save").disabled = true;
     $("imf-save").textContent = "Збираю…";
@@ -4460,8 +4463,8 @@ function wireImpactDetail(im) {
     openSheet(`
       <h2>Додати матеріал</h2>
       <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
-        Лінк на матеріал nikvesti.com — автора і проєкт/донора бот
-        підтягне сам.</p>
+        Лінк на наш матеріал — автора і проєкт/донора бот підтягне сам.
+        Можна й зовнішній: відео, чужу публікацію.</p>
       <input id="ia-url" inputmode="url" placeholder="https://nikvesti.com/…">
       <div class="sheet-actions">
         <button class="sbtn" id="ia-add-cancel">Скасувати</button>
@@ -4470,7 +4473,7 @@ function wireImpactDetail(im) {
     $("ia-add-cancel").onclick = closeSheet;
     $("ia-add-save").onclick = async () => {
       const url = $("ia-url").value.trim();
-      if (!url.includes("nikvesti.com")) { toast("Потрібен лінк nikvesti.com"); return; }
+      if (!/^https?:\/\//i.test(url)) { toast("Потрібен лінк на матеріал"); return; }
       $("ia-add-save").disabled = true;
       try {
         const fresh = await api(`/api/impacts/${im.id}`, { method: "PATCH",
