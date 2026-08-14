@@ -1710,6 +1710,18 @@ async def api_impacts_mine(request):
         {"impacts": await _in_session(impact_archive.list_impacts_for, who)})
 
 
+def _links(raw):
+    """Список посилань із форми. Домен НЕ перевіряємо: матеріалом кейсу буває
+    і наше відео на YouTube, і чужа публікація — бот сам розбере, що з чим
+    робити (наше йде в кандидати, зовнішнє — прямо в серію)."""
+    urls = [u.strip() for u in raw if isinstance(u, str) and u.strip()]
+    bad = next((u for u in urls
+                if not u.lower().startswith(("http://", "https://"))), None)
+    if bad:
+        raise web.HTTPBadRequest(text=f"Це не схоже на посилання: {bad}")
+    return urls
+
+
 async def api_impact_create(request):
     person, info, _ = await _require_manager(request)
     payload = await _json(request)
@@ -1724,11 +1736,7 @@ async def api_impact_create(request):
     raw = payload.get("our_urls") or payload.get("our_url") or []
     if isinstance(raw, str):
         raw = [raw]
-    our_urls = [u.strip() for u in raw if isinstance(u, str) and u.strip()]
-    bad = next((u for u in our_urls if not impact_archive.is_our_url(u)), None)
-    if bad:
-        raise web.HTTPBadRequest(
-            text=f"«Наш матеріал» — це лінк на новину nikvesti.com, а не {bad}")
+    our_urls = _links(raw)
     impact_id = await _in_session(
         impact_archive.create_impact, person, url, payload.get("essence"), our_urls)
     # збір — у фоні того самого event loop; свій try/except усередині
@@ -1775,11 +1783,7 @@ async def api_impact_patch(request):
         raw = payload.get("our_urls") or []
         if isinstance(raw, str):
             raw = [raw]
-        our_urls = [u.strip() for u in raw if isinstance(u, str) and u.strip()]
-        bad = next((u for u in our_urls if not impact_archive.is_our_url(u)), None)
-        if bad:
-            raise web.HTTPBadRequest(
-                text=f"«Наш матеріал» — це лінк на новину nikvesti.com, а не {bad}")
+        our_urls = _links(raw)
         await _in_session(impact_archive.save_feedback, impact_id,
                           payload.get("feedback"), our_urls)
         asyncio.create_task(impact_archive.build_impact(impact_id))
