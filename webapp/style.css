@@ -1627,7 +1627,8 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 .im-sel option { background: var(--card); color: var(--ink); }
 /* Список підказаних матеріалів у формі нового кейсу: полів стільки, скільки
    долив плюсик, і між ними той самий проміжок, що між полями форми */
-#im-our-list .im-our + .im-our { margin-top: 8px; }
+#im-our-list .im-our + .im-our,
+#imf-list .imf-url + .imf-url { margin-top: 8px; }
 /* Річні чипи-фільтри над списком кейсів */
 .im-years { margin-bottom: 14px; }
 /* Картка кейсу: фото новини-фіксації зверху, заголовок, метарядок, футер

@@ -4293,6 +4293,9 @@ function paintImpact(im) {
       </form>`}
     </div>
     ${ro ? "" : `<button class="cta" id="imd-send">Надіслати файлом у приват</button>
+    <button class="link-btn" id="imd-fix" style="margin-top:4px">
+      ${icon("edit")} Поправити збір і дозібрати${
+        im.feedback ? " · поправка є" : ""}</button>
     <button class="link-btn" id="imd-rebuild" style="margin-top:4px">
       ${icon("chevron-right")} Перезібрати кейс заново</button>
     <button class="link-btn" id="imd-del" style="margin-top:4px;color:var(--red)">${icon("trash")} Видалити кейс</button>`}`;
@@ -4333,6 +4336,66 @@ function impactTimelineItem(a, ro) {
     ? `<a class="itl-item" href="${esc(a.url)}" data-ext="${esc(a.url)}">${inner}</a>`
     : `<button class="itl-item" data-imart="${a.id}">${inner}
         ${icon("chevron-right", "ic chev itl-chev")}</button>`;
+}
+
+/* ПОПРАВКА до зібраного кейсу (Олег, 14.08: «він пропустив будинок на
+   Крилова і зібрав імпакт тільки про Адміральську — я його поправлю, і він
+   доповнить»). Дві речі в одній шторці, бо це одна дія: сказати словами,
+   чого бракує, і докинути лінки.
+
+   Поправка ЗБЕРІГАЄТЬСЯ і показується наступного разу: якби вона жила один
+   прогін, будь-яке «перезібрати заново» повертало б ту саму помилку. Тому й
+   поле не порожнє, а з попереднім текстом — накопичувати суперечливі
+   записки нема сенсу, людина бачить своє і правит. */
+function impactFeedbackSheet(im) {
+  const urls = (im.our_urls || []).concat([""]);
+  openSheet(`
+    <h2>Поправити збір</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+      Напиши, чого бракує — і кейс збереться заново з поправкою. Текст
+      наративу буде переписано, тому ручні правки абзаців краще внести після.</p>
+    <div class="f-label">Що не так</div>
+    <textarea id="imf-text" rows="4" placeholder="пропустив будинок на Крилова 54 — кейс має бути про всі три будинки, а не лише про Адміральську">${esc(im.feedback || "")}</textarea>
+    <div class="f-label">Наші матеріали по темі</div>
+    <div id="imf-list">${urls.map((u) => `<input class="imf-url" inputmode="url"
+      value="${esc(u)}" placeholder="https://nikvesti.com/news/…">`).join("")}</div>
+    <button class="link-btn" id="imf-add">${icon("plus")} Ще один лінк</button>
+    <div class="mr-hint" style="margin:-2px 0 12px">лінки лишаються в кейсі
+      назавжди: кожен наступний перезбір починає з них</div>
+    <div class="sheet-actions">
+      <button class="sbtn" id="imf-cancel">Скасувати</button>
+      <button class="sbtn primary" id="imf-save">Дозібрати</button>
+    </div>`);
+  $("imf-cancel").onclick = closeSheet;
+  $("imf-add").onclick = () => {
+    const row = document.createElement("input");
+    row.className = "imf-url";
+    row.inputMode = "url";
+    row.placeholder = "https://nikvesti.com/news/…";
+    $("imf-list").appendChild(row);
+    row.focus();
+  };
+  $("imf-save").onclick = async () => {
+    const ourUrls = [...document.querySelectorAll(".imf-url")]
+      .map((i) => i.value.trim()).filter(Boolean);
+    if (ourUrls.some((u) => !u.includes("nikvesti.com"))) {
+      toast("«Наш матеріал» — лінк на nikvesti.com"); return;
+    }
+    $("imf-save").disabled = true;
+    $("imf-save").textContent = "Збираю…";
+    try {
+      await api(`/api/impacts/${im.id}`, { method: "PATCH", body: JSON.stringify(
+        { action: "feedback", feedback: $("imf-text").value.trim(),
+          our_urls: ourUrls }) });
+      closeSheet();
+      haptic("success");
+      renderImpact();          // кейс уже в 'building' — екран покаже збірку
+    } catch (e) {
+      $("imf-save").disabled = false;
+      $("imf-save").textContent = "Дозібрати";
+      toast(e.message);
+    }
+  };
 }
 
 /* Дії над матеріалом серії — шторка зі словами замість іконок-загадок. */
@@ -4422,6 +4485,7 @@ function wireImpactDetail(im) {
     };
   };
   $("imd-edit").onclick = () => impactEditSheet(im);
+  $("imd-fix").onclick = () => impactFeedbackSheet(im);
   // Перезбір готового кейсу: рятує, коли з серії прибрали зайве (назад
   // матеріал інакше не повернути) або сюжет доріс новими текстами. Раніше
   // «спробувати ще» жило тільки на збитих кейсах — і Олег, шукаючи його на
