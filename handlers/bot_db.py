@@ -284,6 +284,10 @@ _MIGRATIONS = [
     "ALTER TABLE articles ADD COLUMN IF NOT EXISTS tags_text TEXT",
     "CREATE INDEX IF NOT EXISTS idx_articles_category ON articles (category)",
     "CREATE INDEX IF NOT EXISTS idx_articles_region ON articles (region)",
+    # Пошук матеріалу ЗА СЛАГОМ (імпакт-архів: був період, коли в URL клали
+    # лише слаг, і старі лінки з доків інакше не резолвляться). Без індексу
+    # це послідовний скан по всіх 17 роках на КОЖЕН лінк кейсу
+    "CREATE INDEX IF NOT EXISTS idx_articles_slug ON articles (lower(slug))",
 ]
 
 # Версійна перебудова fts: у старої таблиці fts був без tags_text і без ваг.
