@@ -128,16 +128,20 @@ last_channel_post_time = {"time": datetime.now()}
 # редакційні команди: службові й дебажні (nora_*, entity_*, roles_*, dbquery,
 # бэкфіли…) сюди не йдуть свідомо — у списку на півтори сотні рядків не видно
 # жодного. Порядок = частота вжитку, Telegram показує як є.
-class _CookieFileFilter(filters.MessageFilter):
-    """Файл кук у приваті — за назвою. Окремий фільтр, бо .txt у приваті вже
-    зайнятий пакетами рішень по ролях, і розрізняти їх треба до обробки."""
+async def private_txt_router(update, context):
+    """Один вхід для .txt у приваті: куки чи пакет рішень — розводимо за
+    ВМІСТОМ.
 
-    def filter(self, message):
-        doc = getattr(message, "document", None)
-        return bool(doc and "cookie" in (doc.file_name or "").lower())
+    Обробник .txt у боті рівно один (другий до файла вже не дійде), і досі
+    його ділили маркери в першому рядку — cards-fix, promises-fix, roles-fix.
+    Куки маркера не мають і мати не можуть: файл віддає розширення браузера,
+    людина його не редагує. Тому спершу питаємо, чи це куки, і лише потім
+    віддаємо файл звичайному розбору пакетів.
+    """
+    if await cookies_document_handler(update, context):
+        return
+    await roles_fix_document(update, context)
 
-
-COOKIE_FILE_FILTER = _CookieFileFilter()
 
 PUBLIC_COMMANDS = [
     ("team", "Апка «Команда»: таски, KPI, проєкти"),
@@ -705,15 +709,10 @@ def main():
     app.add_handler(CommandHandler("budget_snapshot_reset", budget_snapshot_reset_handler))
     # xlsx з підписом /budget_load: CommandHandler бачить лише text, caption — ні
     app.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex(r"^/budget_load"), budget_load_handler))
-    # cookies.txt у приват → куки для сторінки /video. Строго ПЕРЕД пакетами
-    # рішень: вони забирають будь-який .txt у приваті, і кинутий файл кук
-    # поїхав би розбиратись як список злиттів ролей.
-    app.add_handler(MessageHandler(
-        filters.ChatType.PRIVATE & COOKIE_FILE_FILTER, cookies_document_handler))
     # ZIP пакета рішення в приват — без команд: бот сам розбирає і нашаровує
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.Document.FileExtension("txt"),
-        roles_fix_document))
+        private_txt_router))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.Document.ALL, budget_package_handler))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     # Переслана в приват картка контакту → у базу редакції. Ставимо ПЕРЕД

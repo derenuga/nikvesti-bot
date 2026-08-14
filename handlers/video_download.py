@@ -37,10 +37,25 @@ bot» на ВСІХ дев'яти player-клієнтах — тобто одн�
 будь-який сайт читав би вашу пошту. Тому «качати від імені людини» можливе
 рівно в один спосіб: людина сама віддає боту експорт своїх кук.
 
+Рішення Олега 14.08 про те, ЯК саме людина їх віддає: «я не буду просити людей
+кидати щось таке у чат, можна все прямо на сайті? клік-клік». Тому головний
+шлях — сама сторінка (перетягнув файл або вставив текст), приват бота лишається
+запасним входом. І пояснення приходить НЕ інструкцією наперед, а в момент
+відмови: наткнувся на приватне відео → «це відео віддається лише залогіненому,
+дозволь качати від твого імені, це робиться один раз» → майстер із трьох кроків
+→ той самий лінк дозавантажується САМ. Людина прийшла по відео, а не по
+налаштування, тож після дозволу вона має опинитись там, де спіткнулась.
+
+Кнопка «Продовжити» показується лише там, де куки справді допоможуть
+(wants_cookies): DRM і видалене відео її не отримують — пропонувати дію, яка
+не полагодить, гірше, ніж не пропонувати нічого.
+
 Звідси конструкція, максимально близька до задуму:
   • у КОЖНОГО свій вхід (`/video?k=…`, токен видає команда /video) — видно,
     хто качає, і відкликати можна одного, не чіпаючи решту;
-  • хто поклав боту СВОЇ куки — качає під собою; хто ні — під редакційними;
+  • хто дав СВІЙ доступ — качає під собою; хто ні — під редакційними (якщо
+    їх узагалі клали) або взагалі без кук: YouTube і публічні відео сторінок
+    Facebook працюють і так, і саме вони — головне навантаження;
   • сторінка закрита токеном не з любові до замків: із куками вона дістає й
     те, що видно лише залогіненому, тож відкритою в інтернет їй бути не можна.
 
@@ -594,6 +609,31 @@ def probe_cached(url, user_id=""):
 
 # ---------- людські помилки ----------
 
+def wants_cookies(text):
+    """Чи ця відмова лікується куками.
+
+    Потрібне окремим прапорцем, а не розбором тексту на боці сторінки: саме за
+    ним сторінка показує не червону помилку, а пояснення «це відео віддається
+    лише залогіненому» з кнопкою «Продовжити». Помилка, яку людина не може
+    полагодити (DRM, видалене відео), такої кнопки не отримує — пропонувати
+    дію, що не допоможе, гірше, ніж не пропонувати нічого.
+    """
+    low = (text or "").lower()
+    return any(sign in low for sign in (
+        "not a bot", "sign in to confirm", "empty media response",
+        "login required", "log in", "cookies", "rate-limit",
+        "cannot parse data", "http error 400", "private video",
+        "not available on this app", "restricted",
+    ))
+
+
+def error_payload(text, url=""):
+    """Відмова → те, що показує сторінка: речення + чи пропонувати куки."""
+    return {"error": humanize_error(text, url),
+            "needs_cookies": wants_cookies(text),
+            "source": source_name(url)}
+
+
 def humanize_error(text, url=""):
     """Помилка yt-dlp → речення, з якого зрозуміло, що робити.
 
@@ -606,11 +646,13 @@ def humanize_error(text, url=""):
 
     if "not a bot" in low or "sign in to confirm" in low:
         return (f"{who} просить сервер підтвердити, що він не робот. "
-                f"Лікується куками: кинь боту в приват свій cookies.txt.")
+                f"Потрібен доступ від твого імені — сторінка покаже, як це "
+                f"зробити за один раз.")
     if ("empty media response" in low or "login required" in low
             or "log in" in low or "cookies" in low or "rate-limit" in low):
         return (f"{who} показав серверу логін-стіну замість відео. "
-                f"Потрібні куки: кинь боту в приват свій cookies.txt.")
+                f"Потрібен доступ від твого імені — сторінка покаже, як це "
+                f"зробити за один раз.")
     if "private" in low:
         return "Відео приватне — доступу немає навіть у браузері."
     if "unavailable" in low or "removed" in low or "deleted" in low:
@@ -621,8 +663,8 @@ def humanize_error(text, url=""):
         return "Не впізнав лінк. Потрібна адреса самого відео, а не каналу."
     if "cannot parse data" in low or "http error 400" in low:
         return (f"{who} віддав серверу не сторінку відео, а заглушку — так він "
-                f"відповідає незалогіненому. Потрібні куки: кинь боту в приват "
-                f"свій cookies.txt.")
+                f"відповідає незалогіненому. Потрібен доступ від твого імені — "
+                f"сторінка покаже, як це зробити за один раз.")
     if "timed out" in low or "timeout" in low:
         return "Джерело не відповіло вчасно. Спробуй ще раз."
     if "file is larger" in low or "max-filesize" in low:
@@ -707,6 +749,7 @@ async def _run_job(job, url, selector, merge, user_id=""):
     except Exception as e:                      # yt-dlp кидає що завгодно
         job["state"] = "error"
         job["error"] = humanize_error(str(e), url)
+        job["needs_cookies"] = wants_cookies(str(e))
         shutil.rmtree(job.get("dir") or "", ignore_errors=True)
         return
     ext = os.path.splitext(path)[1] or ".mp4"
@@ -747,6 +790,7 @@ def job_state(job):
         "speed": (human_size(job["speed"]) + "/с") if job["speed"] else "",
         "eta": human_duration(job["eta"]),
         "filename": job["filename"], "size": human_size(job["size"]),
+        "needs_cookies": job.get("needs_cookies", False),
     }
 
 
@@ -790,6 +834,47 @@ async def api_state(request):
     })
 
 
+async def api_cookies(request):
+    """POST /api/video/cookies {text} або {off: true} — куки прямо зі сторінки.
+
+    Рішення Олега 14.08: «я не буду просити людей кидати щось таке у чат,
+    можна все прямо на сайті». Тому головний шлях — саме тут: перетягнув файл
+    або вставив текст, готово. Приват бота лишається запасним входом.
+
+    Куки завжди ОСОБИСТІ — за токеном видно, чия це сторінка. Класти чужі
+    (редакційні) звідси не можна свідомо: спільні куки означають, що одна
+    людина мовчки роздала свій доступ усій редакції, і зробити це випадковим
+    тапом не має бути можливо.
+    """
+    who = whois(request.query.get("k", ""))
+    if not who:
+        return web.json_response(_NO_ACCESS, status=403)
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "не JSON"}, status=400)
+
+    user_id = str(who.get("user_id"))
+    if body.get("off"):
+        await asyncio.to_thread(forget_cookies, user_id)
+        return web.json_response({"cookies": cookie_info(user_id)})
+
+    text = body.get("text") or ""
+    if not looks_like_cookies(text):
+        return web.json_response(
+            {"error": "Це не схоже на експорт кук. Потрібен файл cookies.txt "
+                      "із розширення — або весь його текст цілком."}, status=400)
+    try:
+        domains = await asyncio.to_thread(
+            save_cookies, text, user_id, who.get("name") or "")
+    except ValueError as e:
+        return web.json_response({"error": f"Не розібрав: {e}"}, status=400)
+
+    known = sorted({d for d in domains
+                    if any(h in d for h in ("facebook", "instagram", "youtube"))})
+    return web.json_response({"cookies": cookie_info(user_id), "known": known})
+
+
 async def api_probe(request):
     """POST /api/video/probe {url} → картка відео з варіантами якості."""
     if not access_ok(request):
@@ -806,8 +891,7 @@ async def api_probe(request):
     try:
         info = await asyncio.to_thread(probe_cached, url, _user_of(request))
     except Exception as e:
-        return web.json_response(
-            {"error": humanize_error(str(e), url)}, status=502)
+        return web.json_response(error_payload(str(e), url), status=502)
     data = describe(info)
     if not data["options"]:
         return web.json_response(
@@ -835,8 +919,7 @@ async def api_start(request):
     try:
         info = await asyncio.to_thread(probe_cached, url, user_id)
     except Exception as e:
-        return web.json_response(
-            {"error": humanize_error(str(e), url)}, status=502)
+        return web.json_response(error_payload(str(e), url), status=502)
 
     option = next((o for o in curate_formats(info, has_ffmpeg())
                    if o["id"] == choice), None)
@@ -929,11 +1012,9 @@ async def video_handler(update, context):
     elif cookies["shared"] or cookies["env"]:
         lines.append("\n🔑 Качає під редакційними куками.")
     else:
-        lines += ["", "⚠️ Кук немає. YouTube працює і без них, а от Facebook "
-                      "(рілзи) та Instagram — ні: сервер для них незалогінений "
-                      "гість. Щоб качало під тобою — кинь мені в приват файл "
-                      "<code>cookies.txt</code> (експорт із браузера "
-                      "розширенням «Get cookies.txt LOCALLY»)."]
+        lines += ["", "YouTube і публічні відео сторінок Facebook качаються "
+                      "одразу. Рілзи й Instagram віддаються лише залогіненому — "
+                      "сторінка сама запропонує це полагодити, коли натрапиш."]
     lines.append("\n<i>Лінк особистий — він твій вхід, не пересилай його.</i>")
 
     await update.message.reply_text(
@@ -969,53 +1050,75 @@ async def video_cookies_handler(update, context):
         lines.append("Покривають: " + ", ".join(info["domains"][:8]))
     lines += [
         "",
-        "<b>Як покласти свої:</b>",
-        "1. Постав у браузер розширення «Get cookies.txt LOCALLY».",
-        "2. Залогінься у Facebook (або YouTube/Instagram) і натисни експорт.",
-        "3. Кинь файл <code>cookies.txt</code> мені сюди, в приват.",
+        "Налаштовується <b>на самій сторінці</b>: /video → «Дозволити качати "
+        "приватне» (або воно саме запропонує, коли натрапиш на приватне відео). "
+        "Три кроки, робиться раз.",
         "",
-        "Порада: краще з окремого акаунта в інкогніто — куки живуть довше, "
-        "а головний акаунт не ходить із серверної адреси.",
-        "Прибрати свої: <code>/video_cookies off</code>",
+        "Прибрати свій доступ: <code>/video_cookies off</code>",
     ]
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
-async def cookies_document_handler(update, context):
-    """cookies.txt, кинутий у приват → куки цієї людини.
+def looks_like_cookies(text):
+    """Чи це експорт кук — за ВМІСТОМ, а не за назвою файлу.
 
-    Той самий шлях, яким у боті вже ходять пакети рішень і бюджетні ZIP:
-    файл у приваті, де вже стоїть whitelist, — і жодного редеплою заради
-    рядка тексту.
+    Назва тут ненадійна: розширення віддає то «cookies.txt», то
+    «www.facebook.com_cookies.txt», а людина може зберегти як завгодно. Тим
+    часом .txt у приваті боту вже означає пакет рішень по ролях, і файл із
+    чужою назвою поїхав би розбиратись туди — з відповіддю, з якої нічого не
+    зрозуміло. Тому розводимо за першими рядками: або заголовок Netscape,
+    або JSON-масив із полем domain, або кілька рядків із сімома табами.
     """
-    doc = update.message.document
-    user = update.effective_user
-    try:
-        tg_file = await doc.get_file()
-        raw = bytes(await tg_file.download_as_bytearray()).decode(
-            "utf-8", errors="replace")
-    except Exception as e:
-        await update.message.reply_text(f"Не зміг прочитати файл: {e}")
-        return
+    head = (text or "")[:4000]
+    if "netscape http cookie" in head.lower():
+        return True
+    if head.lstrip().startswith("[") and '"domain"' in head:
+        return True
+    tabbed = [ln for ln in head.splitlines()
+              if not ln.startswith("#") and len(ln.split("\t")) >= 7]
+    return len(tabbed) >= 2
 
+
+async def cookies_document_handler(update, context):
+    """Файл кук, кинутий у приват → куки цієї людини. Повертає True, якщо це
+    справді були куки (тоді файл далі нікуди не йде).
+
+    Той самий шлях, яким у боті вже ходять пакети рішень і бюджетні ZIP: кинув
+    файл — і все. Ніякого «зайди на сервер і поправ .txt» тут немає й не буде:
+    людина натискає експорт у браузері й пересилає файл боту.
+    """
+    msg = update.effective_message
+    doc = getattr(msg, "document", None)
+    if not doc:
+        return False
+    try:
+        tg_file = await context.bot.get_file(doc.file_id)
+        raw = bytes(await tg_file.download_as_bytearray()).decode(
+            "utf-8-sig", errors="replace")
+    except Exception as e:
+        print(f"video_download: файл не прочитався — {e}")
+        return False
+    if not looks_like_cookies(raw):
+        return False
+
+    user = update.effective_user
     name = await asyncio.to_thread(_person_name, update)
     try:
         domains = await asyncio.to_thread(save_cookies, raw, user.id, name)
     except ValueError as e:
-        await update.message.reply_text(
-            f"Це не схоже на експорт кук: {e}\n\n"
-            f"Потрібен <code>cookies.txt</code> у форматі Netscape — його дає "
-            f"розширення «Get cookies.txt LOCALLY».", parse_mode="HTML")
-        return
+        await msg.reply_text(
+            f"Це схоже на куки, але розібрати не вийшло: {e}\n"
+            f"Спробуй експорт розширенням «Get cookies.txt LOCALLY».")
+        return True
 
-    known = [d for d in domains
-             if any(h in d for h in ("facebook", "instagram", "youtube"))]
-    lines = ["🔑 Куки прийняв — тепер сторінка качає під тобою.",
-             f"Доменів у файлі: {len(domains)}."]
+    known = sorted({d for d in domains
+                    if any(h in d for h in ("facebook", "instagram", "youtube"))})
+    lines = ["🔑 Куки прийняв — тепер сторінка качає під тобою."]
     if known:
-        lines.append("Серед них: " + ", ".join(sorted(set(known))[:6]))
+        lines.append("Працює для: " + ", ".join(known[:6]))
     else:
         lines.append("⚠️ Але серед них немає ні facebook, ні instagram, ні "
                      "youtube — схоже, експорт зроблено не на тій вкладці.")
-    lines.append("\nПрибрати: /video_cookies off")
-    await update.message.reply_text("\n".join(lines))
+    lines.append("Відкрити сторінку: /video · прибрати куки: /video_cookies off")
+    await msg.reply_text("\n".join(lines))
+    return True

@@ -2131,6 +2131,7 @@ async def start_webapp(application):
         web.get("/api/card/img", card_maker.api_image),
         web.get("/video", video_download.page),
         web.get("/api/video/state", video_download.api_state),
+        web.post("/api/video/cookies", video_download.api_cookies),
         web.post("/api/video/probe", video_download.api_probe),
         web.post("/api/video/start", video_download.api_start),
         web.get("/api/video/status", video_download.api_status),

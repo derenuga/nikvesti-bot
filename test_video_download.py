@@ -182,19 +182,20 @@ def test_hosts():
 
 def test_errors():
     print("\nПомилки людською мовою:")
-    bot = vd.humanize_error(
-        "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use "
-        "--cookies-from-browser or --cookies for the authentication. See "
-        "https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies",
-        "https://youtu.be/abc")
-    check("капча YouTube пояснена куками", "кук" in bot.lower(), bot)
+    capture = ("ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use "
+               "--cookies-from-browser or --cookies for the authentication. See "
+               "https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies")
+    bot = vd.humanize_error(capture, "https://youtu.be/abc")
+    check("капча пояснена як розвʼязна",
+          "від твого імені" in bot and "один раз" in bot, bot)
     check("без посилань на wiki yt-dlp", "github" not in bot.lower(), bot)
+    check("капчі пропонується дозвіл", vd.wants_cookies(capture))
 
-    fb = vd.humanize_error(
-        "ERROR: [facebook] 123: Cannot parse data; please report this issue on "
-        "https://github.com/yt-dlp/yt-dlp/issues", "https://facebook.com/watch/?v=123")
-    check("логін-стіна Facebook названа своїм ім'ям",
-          "Facebook" in fb and "кук" in fb.lower(), fb)
+    fb_raw = ("ERROR: [facebook] 123: Cannot parse data; please report this "
+              "issue on https://github.com/yt-dlp/yt-dlp/issues")
+    fb = vd.humanize_error(fb_raw, "https://facebook.com/watch/?v=123")
+    check("логін-стіна Facebook названа своїм ім'ям", "Facebook" in fb, fb)
+    check("рілзу пропонується дозвіл", vd.wants_cookies(fb_raw))
 
     priv = vd.humanize_error("ERROR: Private video. Sign in if you've been granted access",
                              "https://youtu.be/x")
@@ -208,6 +209,17 @@ def test_errors():
     check("службовий хвіст зрізано",
           "report this issue" not in vd.humanize_error(
               "Weird thing happened; please report this issue on https://x", ""))
+
+    # Кнопка «Продовжити» не має зʼявлятись там, де куки не допоможуть:
+    # запропонувати дію, яка не полагодить, гірше, ніж не пропонувати нічого
+    for name, raw in (
+        ("DRM", "ERROR: [youtube] x: This video is DRM protected"),
+        ("видалене", "ERROR: [youtube] x: This video is unavailable"),
+        ("не той лінк", "ERROR: Unsupported URL: https://facebook.com/x/videos"),
+    ):
+        check(f"{name} — дозволу НЕ пропонуємо", not vd.wants_cookies(raw))
+    check("Instagram — пропонуємо", vd.wants_cookies(
+        "ERROR: [Instagram] x: Instagram sent an empty media response."))
 
 
 def test_human():

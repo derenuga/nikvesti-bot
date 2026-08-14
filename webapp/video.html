@@ -31,6 +31,9 @@
     padding: 13px 20px; cursor: pointer; background: var(--brand); color: #fff; }
   button:disabled { opacity: .55; cursor: default; }
   button:active:not(:disabled) { transform: translateY(1px); }
+  button.ghost { background: transparent; color: var(--brand);
+    box-shadow: inset 0 0 0 1.5px var(--brand); }
+  button.small { padding: 8px 14px; font-size: 14px; }
   .meta { display: flex; gap: 14px; align-items: flex-start; }
   .meta img { width: 132px; height: 76px; object-fit: cover; border-radius: 9px;
     background: var(--line); flex: none; }
@@ -50,13 +53,23 @@
   @keyframes slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
   .note { color: var(--muted); font-size: 13px; }
   .warn { background: var(--warn-bg); color: var(--warn); border-radius: 11px;
-    padding: 12px 14px; font-size: 14px; margin-bottom: 14px; }
-  .warn code { font-size: 13px; }
+    padding: 14px 16px; font-size: 14px; margin-bottom: 14px; }
   .err { color: var(--err); font-size: 14px; }
   .ok { color: var(--ok); font-weight: 600; }
   .hide { display: none !important; }
   .hint { color: var(--muted); font-size: 13px; margin-top: 22px; }
   a { color: var(--brand); }
+  ol.steps { margin: 4px 0 0; padding-left: 22px; }
+  ol.steps li { margin-bottom: 12px; }
+  .drop { border: 2px dashed var(--line); border-radius: 12px; padding: 20px;
+    text-align: center; color: var(--muted); font-size: 14px; cursor: pointer;
+    transition: border-color .15s, background .15s; }
+  .drop.over { border-color: var(--brand); background: rgba(52,120,249,.07); }
+  textarea { width: 100%; min-height: 90px; margin-top: 10px; padding: 11px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+    color: var(--ink); font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .cookieline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    font-size: 13px; color: var(--muted); margin-top: 4px; }
 </style>
 </head><body>
 <div class="wrap">
@@ -66,30 +79,54 @@
 
   <div class="warn hide" id="locked"></div>
 
-  <div class="warn hide" id="warnCookies">
-    <b>Кук немає.</b> YouTube якийсь час працює й так, а от рілзи Facebook та
-    Instagram — ні: для них сервер просто незалогінений гість, і вони віддають
-    йому заглушку. Щоб качало під тобою — кинь боту в приват свій
-    <code>cookies.txt</code> (експорт розширенням «Get cookies.txt LOCALLY»),
-    команда <code>/video_cookies</code> розкаже покроково.
-  </div>
-  <div class="warn hide" id="warnShared">
-    Качає під <b>редакційними</b> куками — тобто бачить рівно те, що видно
-    тому акаунту. Щоб качало під тобою, кинь боту свій <code>cookies.txt</code>
-    (<code>/video_cookies</code>).
-  </div>
-  <div class="warn hide" id="warnFfmpeg">
-    <b>Немає ffmpeg</b> — тому список якостей короткий. Високі якості лежать
-    на YouTube окремо відео й окремо звук, а склеїти їх нічим.
-  </div>
-
-  <div class="card">
+  <div class="card" id="formCard">
     <form class="row" id="form">
       <input type="url" id="url" placeholder="https://youtu.be/… або facebook.com/…"
              autocomplete="off" spellcheck="false" required>
       <button id="go">Розібрати</button>
     </form>
     <p class="err hide" id="probeErr" style="margin:12px 0 0"></p>
+
+    <!-- Пояснення приходить у момент відмови, а не лежить в інструкції:
+         людина бачить його тоді, коли воно їй справді потрібне -->
+    <div class="warn hide" id="askCookies" style="margin:14px 0 0">
+      <b id="askTitle">Це відео віддається лише тому, хто залогінений.</b>
+      <p style="margin:6px 0 12px">Для <span id="askSource">Facebook</span> наш
+         сервер — чужий незалогінений гість, тому відео йому й не показують.
+         Дозволь качати від твого імені: <b>це робиться один раз</b>, далі все
+         качатиметься без цього кроку.</p>
+      <button class="small" id="askGo">Продовжити</button>
+    </div>
+  </div>
+
+  <!-- Майстер: три кроки, з яких лише третій відбувається тут -->
+  <div class="card hide" id="wizard">
+    <h2 style="font-size:17px;margin:0 0 4px">Дозволити качати від твого імені</h2>
+    <p class="note" style="margin:0 0 14px">Робиться один раз. Далі сторінка
+       качає під тобою й нічого не питає.</p>
+    <ol class="steps">
+      <li>Постав розширення <b>Get cookies.txt LOCALLY</b> —
+        <a id="lnkChrome" target="_blank" rel="noopener">для Chrome</a> ·
+        <a id="lnkFirefox" target="_blank" rel="noopener">для Firefox</a>.
+        <div class="note">Воно нічого нікуди не шле, лише зберігає файл на твій компʼютер.</div>
+      </li>
+      <li>Відкрий <b id="stepSite">facebook.com</b> у тому ж браузері (ти там уже
+        залогінений), тапни іконку розширення → <b>Export</b>.
+      </li>
+      <li>Перетягни збережений файл сюди:
+        <div class="drop" id="drop" style="margin-top:8px">
+          Перетягни <b>cookies.txt</b> або тапни, щоб обрати файл
+        </div>
+        <input type="file" id="file" accept=".txt,text/plain" class="hide">
+        <details style="margin-top:10px">
+          <summary class="note">Не виходить із файлом — встав текст</summary>
+          <textarea id="paste" placeholder="Встав сюди вміст cookies.txt"></textarea>
+          <button class="small ghost" id="pasteSave" style="margin-top:8px">Зберегти</button>
+        </details>
+      </li>
+    </ol>
+    <p class="err hide" id="cookieErr"></p>
+    <p style="margin:14px 0 0"><button class="ghost small" id="wizClose">Згорнути</button></p>
   </div>
 
   <div class="card hide" id="info">
@@ -117,6 +154,8 @@
     </div>
   </div>
 
+  <div class="cookieline" id="cookieState"></div>
+
   <p class="hint">Якщо сторінка відкрита всередині Telegram і файл не
      зберігається — відкрий її у звичайному браузері («⋮ → Відкрити в
      браузері»): вбудований переглядач Telegram часто блокує завантаження.</p>
@@ -124,9 +163,9 @@
 
 <script>
 var $ = function (id) { return document.getElementById(id); };
-var current = null;   // {url, options}
-var timer = null;
-var jobId = null;
+var current = null;   // остання розібрана картка {url, options…}
+var lastUrl = '';     // лінк, на якому спіткнулись — щоб повторити після кук
+var timer = null, jobId = null;
 
 // Токен із лінка бота — особистий вхід людини. Дописується до КОЖНОГО
 // запиту: без нього сервер не знає ні хто прийшов, ні чиї куки брати.
@@ -135,23 +174,52 @@ var KEY = params.get('k') || '';
 function api(path) {
   return path + (path.indexOf('?') < 0 ? '?' : '&') + 'k=' + encodeURIComponent(KEY);
 }
+function show(el, on) { el.classList.toggle('hide', !on); }
+
+// Посилання на розширення — пошуком у крамницях, а не за id: id змінюються,
+// а пошук працює завжди
+$('lnkChrome').href = 'https://chromewebstore.google.com/search/get%20cookies.txt%20locally';
+$('lnkFirefox').href = 'https://addons.mozilla.org/uk/firefox/search/?q=get%20cookies.txt';
 
 // ---------- стан сервера ----------
-fetch(api('/api/video/state')).then(function (r) {
-  return r.json().then(function (d) { return {ok: r.ok, d: d}; });
-}).then(function (res) {
-  if (!res.ok) { lockOut(res.d.error); return; }
-  if (res.d.who) $('who').textContent = 'Вхід: ' + res.d.who;
-  var c = res.d.cookies || {};
-  if (!c.ok) $('warnCookies').classList.remove('hide');
-  else if (!c.own) $('warnShared').classList.remove('hide');
-  if (!res.d.ffmpeg) $('warnFfmpeg').classList.remove('hide');
-}).catch(function () {});
+loadState();
+function loadState() {
+  fetch(api('/api/video/state')).then(function (r) {
+    return r.json().then(function (d) { return {ok: r.ok, d: d}; });
+  }).then(function (res) {
+    if (!res.ok) { lockOut(res.d.error); return; }
+    if (res.d.who) $('who').textContent = 'Вхід: ' + res.d.who;
+    renderCookieState(res.d.cookies || {});
+  }).catch(function () {});
+}
+
+function renderCookieState(c) {
+  var box = $('cookieState');
+  box.innerHTML = '';
+  if (!c.own) {
+    var b = document.createElement('button');
+    b.className = 'ghost small';
+    b.textContent = '🔑 Дозволити качати приватне';
+    b.onclick = function () { openWizard(''); };
+    box.appendChild(b);
+    return;
+  }
+  var span = document.createElement('span');
+  span.textContent = '🔑 Качає під тобою · доступ додано ' + (c.at || '').slice(0, 10);
+  var off = document.createElement('button');
+  off.className = 'ghost small';
+  off.textContent = 'Прибрати';
+  off.onclick = function () {
+    sendCookies({off: true}, function () { loadState(); });
+  };
+  box.appendChild(span); box.appendChild(off);
+}
 
 function lockOut(msg) {
-  $('locked').textContent = msg || 'Сторінка відкривається лінком із бота.';
-  $('locked').classList.remove('hide');
-  $('form').classList.add('hide');
+  $('locked').textContent = msg || 'Сторінка відкривається лінком із бота: '
+    + 'набери /video у чаті редакції й тапни кнопку.';
+  show($('locked'), true);
+  show($('formCard'), false);
 }
 
 // Лінк міг приїхати з бота: /video?u=<url> — тоді одразу розбираємо
@@ -164,12 +232,13 @@ $('form').addEventListener('submit', function (e) {
 });
 if (pre) { probe(pre); }
 
-function show(el, on) { el.classList.toggle('hide', !on); }
-
+// ---------- розбір лінка ----------
 function probe(url) {
   if (!url) return;
   stopJob();
-  show($('info'), false); show($('progress'), false); show($('probeErr'), false);
+  lastUrl = url;
+  show($('info'), false); show($('progress'), false);
+  show($('probeErr'), false); show($('askCookies'), false);
   $('go').disabled = true; $('go').textContent = 'Читаю…';
   fetch(api('/api/video/probe'), {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -178,7 +247,7 @@ function probe(url) {
     return r.json().then(function (d) { return {ok: r.ok, d: d}; });
   }).then(function (res) {
     $('go').disabled = false; $('go').textContent = 'Розібрати';
-    if (!res.ok) { $('probeErr').textContent = res.d.error || 'Не вийшло'; show($('probeErr'), true); return; }
+    if (!res.ok) { probeFailed(res.d); return; }
     current = res.d;
     render(res.d);
   }).catch(function (e) {
@@ -188,6 +257,84 @@ function probe(url) {
   });
 }
 
+function probeFailed(d) {
+  if (d.needs_cookies) {
+    // Не червона помилка, а пояснення з виходом: людина може це полагодити
+    $('askSource').textContent = d.source || 'цього сайту';
+    $('stepSite').textContent = (d.source === 'Instagram') ? 'instagram.com'
+      : (d.source === 'YouTube') ? 'youtube.com' : 'facebook.com';
+    show($('askCookies'), true);
+    return;
+  }
+  $('probeErr').textContent = d.error || 'Не вийшло';
+  show($('probeErr'), true);
+}
+
+$('askGo').onclick = function () { openWizard(lastUrl); };
+$('wizClose').onclick = function () { show($('wizard'), false); };
+
+function openWizard() {
+  show($('wizard'), true);
+  show($('askCookies'), false);
+  $('wizard').scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+// ---------- куки: файл або текст ----------
+$('drop').onclick = function () { $('file').click(); };
+$('file').onchange = function () { if (this.files[0]) readFile(this.files[0]); };
+['dragenter', 'dragover'].forEach(function (ev) {
+  $('drop').addEventListener(ev, function (e) {
+    e.preventDefault(); $('drop').classList.add('over');
+  });
+});
+['dragleave', 'drop'].forEach(function (ev) {
+  $('drop').addEventListener(ev, function (e) {
+    e.preventDefault(); $('drop').classList.remove('over');
+  });
+});
+$('drop').addEventListener('drop', function (e) {
+  var f = e.dataTransfer && e.dataTransfer.files[0];
+  if (f) readFile(f);
+});
+$('pasteSave').onclick = function () {
+  var text = $('paste').value.trim();
+  if (text) sendCookies({text: text}, cookiesSaved);
+};
+
+function readFile(file) {
+  var reader = new FileReader();
+  reader.onload = function () { sendCookies({text: reader.result}, cookiesSaved); };
+  reader.onerror = function () { cookieError('Файл не прочитався'); };
+  reader.readAsText(file);
+}
+
+function sendCookies(body, done) {
+  show($('cookieErr'), false);
+  fetch(api('/api/video/cookies'), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  }).then(function (r) {
+    return r.json().then(function (d) { return {ok: r.ok, d: d}; });
+  }).then(function (res) {
+    if (!res.ok) { cookieError(res.d.error || 'Не вийшло зберегти'); return; }
+    done(res.d);
+  }).catch(function (e) { cookieError('Сервер не відповів: ' + e); });
+}
+
+function cookiesSaved(d) {
+  renderCookieState(d.cookies || {});
+  show($('wizard'), false);
+  // Головне: продовжуємо з того місця, де спіткнулись — людина прийшла сюди
+  // по відео, а не по налаштування
+  if (lastUrl) { $('url').value = lastUrl; probe(lastUrl); }
+}
+
+function cookieError(msg) {
+  $('cookieErr').textContent = msg;
+  show($('cookieErr'), true);
+}
+
+// ---------- картка й завантаження ----------
 function render(d) {
   $('title').textContent = d.title;
   $('thumb').src = d.thumbnail || '';
@@ -209,8 +356,7 @@ function render(d) {
     box.appendChild(b);
   });
   $('optNote').textContent = d.is_live
-    ? 'Це прямий ефір — завантажиться те, що вже вийшло в ефір.'
-    : '';
+    ? 'Це прямий ефір — завантажиться те, що вже вийшло в ефір.' : '';
   show($('info'), true);
 }
 
@@ -226,10 +372,10 @@ function start(optionId) {
   }).then(function (r) {
     return r.json().then(function (d) { return {ok: r.ok, d: d}; });
   }).then(function (res) {
-    if (!res.ok) { fail(res.d.error || 'Не вийшло почати'); return; }
+    if (!res.ok) { fail(res.d); return; }
     jobId = res.d.id;
     timer = setInterval(poll, 1000);
-  }).catch(function (e) { fail('Сервер не відповів: ' + e); });
+  }).catch(function (e) { fail({error: 'Сервер не відповів: ' + e}); });
 }
 
 function poll() {
@@ -237,8 +383,8 @@ function poll() {
   fetch(api('/api/video/status?id=' + encodeURIComponent(jobId)))
     .then(function (r) { return r.json(); })
     .then(function (j) {
-      if (j.error && j.state !== 'error') { fail(j.error); return; }
-      if (j.state === 'error') { fail(j.error); return; }
+      if (j.state === 'error') { fail(j); return; }
+      if (j.error) { fail(j); return; }
       if (j.state === 'ready') { done(j); return; }
       $('stage').textContent = (j.stage || 'Качаю') + '…';
       if (j.percent === null || j.percent === undefined) {
@@ -272,12 +418,17 @@ function done(j) {
   location.href = href;
 }
 
-function fail(msg) {
+function fail(d) {
   stopJob();
   $('bar').classList.remove('idle');
   $('stage').textContent = 'Не вийшло';
   $('stat').textContent = '';
-  $('jobErr').textContent = msg;
+  if (d && d.needs_cookies) {
+    show($('progress'), false);
+    probeFailed(d);
+    return;
+  }
+  $('jobErr').textContent = (d && d.error) || 'Не вийшло';
   show($('jobErr'), true);
 }
 
