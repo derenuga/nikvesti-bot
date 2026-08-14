@@ -36,6 +36,28 @@ def _model_cost(model, rec):
     )
 
 
+def models_cost(models):
+    """Вартість набору {model: rec} за прайсом — спільна лінійка для місячного
+    розрізу по людях (/aicost) і денного зрізу (/usage), щоб числа сходились."""
+    return sum(_model_cost(model, rec) for model, rec in (models or {}).items())
+
+
+def models_tokens(models):
+    """Сумарні токени набору {model: rec} (input+output+кеш)."""
+    return sum(
+        rec.get("input", 0) + rec.get("output", 0)
+        + rec.get("cache_read", 0) + rec.get("cache_creation", 0)
+        for rec in (models or {}).values()
+    )
+
+
+def fmt_cost(cost):
+    """«~$0.34», а для копійчаних ненульових — «<$0.01», не оманливе «$0.00»."""
+    if 0 < cost < 0.005:
+        return "<$0.01"
+    return f"~${cost:.2f}"
+
+
 def format_month_report(month):
     """Текст звіту за місяць 'YYYY-MM'. None якщо витрат не було."""
     usage = storage.get_ai_usage(month)
@@ -57,7 +79,28 @@ def format_month_report(month):
 
     lines.append("")
     lines.append(f"Разом: {total_requests} звернень до AI, {total_tokens // 1000} тис. токенів, ~${total_cost:.2f}")
-    lines.append("(оцінка згори; облік запущено з липня 2026)")
+
+    # Розріз по людях: тільки виклики, які ініціювала конкретна людина
+    # (NLQ-питання, беки, /dossier). Решта — автоматика Лиса за розкладом.
+    by_user = storage.get_ai_usage_users(month)
+    if by_user:
+        rows = []
+        users_cost = 0.0
+        for uid, user_rec in by_user.items():
+            models = user_rec.get("models", {})
+            cost = models_cost(models)
+            users_cost += cost
+            requests = sum(m.get("requests", 0) for m in models.values())
+            rows.append((cost, requests, user_rec.get("name") or f"id {uid}"))
+        lines.append("")
+        lines.append("Хто скільки напитав (NLQ, беки, досьє):")
+        for cost, requests, name in sorted(rows, key=lambda r: -r[0]):
+            lines.append(f"  {name}: {requests} звернень, {fmt_cost(cost)}")
+        auto_cost = total_cost - users_cost
+        if auto_cost > 0.005:
+            lines.append(f"  Автоматика Лиса (ранкове, звіти, судді, витяги): ~${auto_cost:.2f}")
+
+    lines.append("(оцінка згори; облік запущено з липня 2026, розріз по людях — із 14.08.2026)")
     return "\n".join(lines)
 
 

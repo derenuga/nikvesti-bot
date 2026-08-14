@@ -18,7 +18,7 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from handlers import storage
+from handlers import ai_usage, storage
 from handlers.notifier import notify_error
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
@@ -66,9 +66,12 @@ def _fmt_counter(counter):
 
 
 def _user_activity(rec):
+    # "ai" рахується теж: якщо від дня лишився тільки AI-слід (бек згенерувався,
+    # а запис беку впав) — людина з витратами не має зникати зі звіту
     return (sum(rec.get("commands", {}).values())
             + rec.get("nlq", 0)
-            + len(rec.get("backs", [])))
+            + len(rec.get("backs", []))
+            + (1 if rec.get("ai") else 0))
 
 
 def format_usage_report(day, exclude_user_id=None):
@@ -85,6 +88,7 @@ def format_usage_report(day, exclude_user_id=None):
     lines = [f"🦊 Хто і як смикав Лиса за {label}:"]
 
     total_cmds = total_nlq = total_backs = 0
+    total_ai_cost = 0.0
     for uid, rec in sorted(data.items(), key=lambda kv: -_user_activity(kv[1])):
         name = rec.get("name") or f"id {uid}"
         marker = " — це ти" if uid == str(ADMIN_USER_ID) else ""
@@ -124,11 +128,22 @@ def format_usage_report(day, exclude_user_id=None):
                 topic = _fmt_clipped(b.get("topic"), b.get("len"))
                 lines.append(f"   📎 {topic}{suffix}")
 
+        # Скільки коштували AI-виклики людини за день (пише record_ai_usage
+        # з user_id; старі дні без ключа "ai" — просто без рядка)
+        ai_models = rec.get("ai")
+        if ai_models:
+            cost = ai_usage.models_cost(ai_models)
+            total_ai_cost += cost
+            tokens = ai_usage.models_tokens(ai_models)
+            tokens_text = f"{tokens // 1000} тис." if tokens >= 1000 else str(tokens)
+            lines.append(f"   💰 AI: {ai_usage.fmt_cost(cost)} ({tokens_text} токенів)")
+
     people = len(data)
     lines.append("")
+    ai_total_text = f", AI {ai_usage.fmt_cost(total_ai_cost)}" if total_ai_cost > 0 else ""
     lines.append(
         f"Разом: {people} " + ("людина" if people == 1 else "людей")
-        + f", {total_cmds} команд, {total_nlq} питань, {total_backs} беків."
+        + f", {total_cmds} команд, {total_nlq} питань, {total_backs} беків{ai_total_text}."
     )
     return "\n".join(lines)
 

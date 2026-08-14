@@ -602,9 +602,10 @@ def _back_prompt(items):
 - Символи & < > у звичайному тексті екрануй як &amp; &lt; &gt;. Крім тегів <a> — жодного іншого HTML."""
 
 
-async def compose_back(items):
+async def compose_back(items, user=None):
     """Один виклик Claude: бек з лідів. Використовується кнопкою «Написати бек»
-    (в NLQ-циклі Лис пише бек сам через tool get_news_leads)."""
+    (в NLQ-циклі Лис пише бек сам через tool get_news_leads).
+    user — хто натиснув кнопку: токени лягають у розріз витрат по людях."""
     message = await async_client.messages.create(
         model=FOX_MODEL_SMART,
         max_tokens=1800,
@@ -613,6 +614,7 @@ async def compose_back(items):
         messages=[{"role": "user", "content": _back_prompt(items)}],
     )
     try:
+        from handlers.usage_report import display_name
         u = message.usage
         storage.record_ai_usage(
             FOX_MODEL_SMART,
@@ -620,6 +622,8 @@ async def compose_back(items):
             output_tokens=getattr(u, "output_tokens", 0) or 0,
             cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
             cache_creation=getattr(u, "cache_creation_input_tokens", 0) or 0,
+            user_id=user.id if user is not None else None,
+            user_name=display_name(user) if user is not None else None,
         )
     except Exception as e:
         print(f"ai_usage: не вдалось записати news_back — {e}")
@@ -694,7 +698,7 @@ async def news_back_callback(update, context):
     msg = await query.message.reply_text(f"🦊 Читаю ліди {which} і складаю бек…")
     try:
         with_leads = await asyncio.to_thread(_fetch_leads, items[:BACK_MAX_ITEMS])
-        text = await compose_back(with_leads)
+        text = await compose_back(with_leads, user=query.from_user)
         if len(items) > BACK_MAX_ITEMS:
             text += f"\n\n(Взяв перші {BACK_MAX_ITEMS} новин — забагато для одного беку.)"
         # Кнопка «для Docs і адмінки»: з Telegram лінки в буфер обміну не

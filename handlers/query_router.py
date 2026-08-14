@@ -2018,10 +2018,17 @@ async def handle_natural_language_query(update, context):
     except Exception as e:
         await placeholder.edit_text(f"❌ Помилка: {e}")
     finally:
-        # Облік вартості — один запис на весь запит (REVIEW в.5)
+        # Облік вартості — один запис на весь запит (REVIEW в.5), із
+        # прив'язкою до людини: «хто скільки коштує» в /aicost і /usage
         if usage_acc["input_tokens"] or usage_acc["output_tokens"]:
             try:
-                storage.record_ai_usage(ROUTER_MODEL, **usage_acc)
+                from handlers.usage_report import display_name
+                user = update.effective_user
+                storage.record_ai_usage(
+                    ROUTER_MODEL, **usage_acc,
+                    user_id=user.id if user else None,
+                    user_name=display_name(user) if user else None,
+                )
             except Exception as e:
                 print(f"ai_usage: не вдалось записати NLQ — {e}")
         # Облік користування (щоденний звіт адміну, usage_report): питання +

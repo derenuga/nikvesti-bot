@@ -341,25 +341,55 @@ def get_all_tenders():
 AI_USAGE_MAX_MONTHS = 13  # тримаємо ~рік історії витрат
 
 
-def record_ai_usage(model, input_tokens=0, output_tokens=0, cache_read=0, cache_creation=0):
+def _add_model_usage(models, model, delta):
+    """Домержити токени одного виклику в {model: rec} (спільний агрегат,
+    розріз по людях і денний зріз пишуться однією лінійкою)."""
+    rec = models.setdefault(
+        model, {"requests": 0, "input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+    )
+    for key, value in delta.items():
+        rec[key] = rec.get(key, 0) + value
+
+
+def record_ai_usage(model, input_tokens=0, output_tokens=0, cache_read=0, cache_creation=0,
+                    user_id=None, user_name=None):
     """Акумулює токени AI-виклику в місячний агрегат по моделях (REVIEW в.5).
-    Викликається раз на запит (для NLQ — сумарно за весь tool-use цикл)."""
+    Викликається раз на запит (для NLQ — сумарно за весь tool-use цикл).
+
+    user_id/user_name — коли виклик ініціювала конкретна людина (NLQ-питання,
+    бек із кнопки, /dossier): токени додатково лягають у місячний розріз по
+    людях (ai_usage_users → «хто скільки коштує» в /aicost) і в сьогоднішній
+    запис людини в bot_usage (→ вартість дня в /usage). Без user_id — лише
+    спільний агрегат (автоматика: ранкове, звіти, судді, батчі, витяги)."""
     month = datetime.now().strftime("%Y-%m")
+    delta = {
+        "requests": 1,
+        "input": input_tokens or 0,
+        "output": output_tokens or 0,
+        "cache_read": cache_read or 0,
+        "cache_creation": cache_creation or 0,
+    }
     with _lock:
         state = _read_state()
         usage = state.setdefault("ai_usage", {})
-        month_rec = usage.setdefault(month, {})
-        rec = month_rec.setdefault(
-            model, {"requests": 0, "input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
-        )
-        rec["requests"] += 1
-        rec["input"] += input_tokens or 0
-        rec["output"] += output_tokens or 0
-        rec["cache_read"] += cache_read or 0
-        rec["cache_creation"] += cache_creation or 0
+        _add_model_usage(usage.setdefault(month, {}), model, delta)
         if len(usage) > AI_USAGE_MAX_MONTHS:
             for old in sorted(usage.keys())[:len(usage) - AI_USAGE_MAX_MONTHS]:
                 del usage[old]
+        if user_id is not None:
+            by_user = state.setdefault("ai_usage_users", {})
+            month_users = by_user.setdefault(month, {})
+            user_rec = month_users.setdefault(str(user_id), {"name": "", "models": {}})
+            if user_name:
+                user_rec["name"] = user_name
+            _add_model_usage(user_rec["models"], model, delta)
+            if len(by_user) > AI_USAGE_MAX_MONTHS:
+                for old in sorted(by_user.keys())[:len(by_user) - AI_USAGE_MAX_MONTHS]:
+                    del by_user[old]
+            # І в сьогоднішній запис користування: щоденний звіт показує
+            # вартість людини за день поруч із її питаннями й беками.
+            day_rec = _usage_day_rec(state, user_id, user_name)
+            _add_model_usage(day_rec.setdefault("ai", {}), model, delta)
         _write_state(state)
 
 
@@ -368,6 +398,12 @@ def get_ai_usage(month=None):
     with _lock:
         usage = _read_state().get("ai_usage", {})
         return dict(usage.get(month, {})) if month else dict(usage)
+
+
+def get_ai_usage_users(month):
+    """Розріз витрат AI по людях за місяць: {user_id(str): {name, models}}."""
+    with _lock:
+        return dict(_read_state().get("ai_usage_users", {}).get(month, {}))
 
 
 def record_viber_post():
