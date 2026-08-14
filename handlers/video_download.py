@@ -207,8 +207,20 @@ def whois(token):
     return (storage.get_video_access() or {}).get(token)
 
 
-def access_ok(request):
-    return bool(whois(request.query.get("k", "")))
+def new_identity(name=""):
+    """Завести особистий ключ для браузера, який ще не має свого.
+
+    Народжується мовчки й ЛИШЕ тоді, коли людина вперше дозволяє качати
+    приватне: доти сторінка працює зовсім без ключів, як /card і /back.
+    Через це випадковий відвідувач не заводить запису в стані взагалі.
+    """
+    import secrets
+    token = secrets.token_urlsafe(12)
+    access = storage.get_video_access() or {}
+    access[token] = {"user_id": f"anon:{token[:8]}", "name": name,
+                     "at": datetime.now().isoformat(timespec="seconds")}
+    storage.save_video_access(access)
+    return token
 
 
 def _user_of(request):
@@ -667,6 +679,10 @@ def humanize_error(text, url=""):
                 f"сторінка покаже, як це зробити за один раз.")
     if "timed out" in low or "timeout" in low:
         return "Джерело не відповіло вчасно. Спробуй ще раз."
+    if "403" in low or "forbidden" in low:
+        return (f"{who} відмовився віддати файл навіть після повтору — так він "
+                f"часом поводиться із серверними адресами. Спробуй ще раз "
+                f"за хвилину або візьми іншу якість.")
     if "file is larger" in low or "max-filesize" in low:
         return (f"Файл більший за стелю {MAX_BYTES // (1024 * 1024)} МБ — "
                 f"візьми нижчу якість.")
@@ -742,11 +758,36 @@ def _download_blocking(job, url, selector, merge, user_id=""):
     return path, os.path.getsize(path)
 
 
+def _worth_retry(text):
+    """Чи має сенс просто спробувати ще раз.
+
+    Заміряно 14.08: те саме завантаження, яке щойно двічі пройшло, дало
+    «HTTP Error 403: Forbidden» — і одразу після цього свіжий прогін пройшов
+    з першого разу. Тобто це не поламаний лінк і не потрібні куки, а
+    примхливість джерела до серверних адрес. Людині нема чого про це знати:
+    один тихий повтор дешевший за повідомлення «спробуй ще раз».
+    """
+    low = (text or "").lower()
+    return any(sign in low for sign in (
+        "403", "forbidden", "unable to download video data",
+        "expired", "connection reset", "incomplete", "timed out",
+    ))
+
+
 async def _run_job(job, url, selector, merge, user_id=""):
     try:
         path, size = await asyncio.to_thread(
             _download_blocking, job, url, selector, merge, user_id)
     except Exception as e:                      # yt-dlp кидає що завгодно
+        if _worth_retry(str(e)) and not job.get("retried"):
+            job.update(retried=True, stage="Пробую ще раз", percent=None,
+                       done_bytes=0, total_bytes=0)
+            _PROBE_CACHE.pop((url, str(user_id)), None)   # свіжий розбір
+            shutil.rmtree(job["dir"], ignore_errors=True)
+            os.makedirs(job["dir"], exist_ok=True)
+            await asyncio.sleep(2)
+            await _run_job(job, url, selector, merge, user_id)
+            return
         job["state"] = "error"
         job["error"] = humanize_error(str(e), url)
         job["needs_cookies"] = wants_cookies(str(e))
@@ -799,8 +840,8 @@ def job_state(job):
 _STATIC_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webapp")
 
-_NO_ACCESS = {"error": "Сторінка відкривається лінком із бота: набери /video "
-                       "у чаті редакції й тапни кнопку."}
+_NO_KEY = {"error": "Цей браузер ще не має свого ключа — тапни «Дозволити "
+                    "качати приватне» на сторінці."}
 
 
 async def page(request):
@@ -822,16 +863,25 @@ async def api_state(request):
     Сторінка питає це першою: якщо кук немає, вона має сказати про це ДО того,
     як людина вставить лінк і зачекає п'ять секунд на відмову.
     """
-    who = whois(request.query.get("k", ""))
-    if not who:
-        return web.json_response({"access": False, **_NO_ACCESS}, status=403)
+    who = whois(request.query.get("k", "")) or {}
     return web.json_response({
-        "access": True,
         "who": who.get("name") or "",
-        "cookies": cookie_info(who.get("user_id")),
+        "cookies": cookie_info(who.get("user_id", "")),
         "ffmpeg": has_ffmpeg(),
         "max_mb": MAX_BYTES // (1024 * 1024),
     })
+
+
+async def api_identity(request):
+    """POST /api/video/identity — завести ключ для цього браузера.
+
+    Сторінка кличе це рівно один раз і сама, коли людина вперше дозволяє
+    качати приватне. Ключ вона кладе собі в localStorage, тобто «вхід» ніде
+    не треба ні вводити, ні пересилати; на інший пристрій він переноситься
+    лінком, який показує сама сторінка.
+    """
+    token = await asyncio.to_thread(new_identity)
+    return web.json_response({"key": token})
 
 
 async def api_cookies(request):
@@ -848,7 +898,7 @@ async def api_cookies(request):
     """
     who = whois(request.query.get("k", ""))
     if not who:
-        return web.json_response(_NO_ACCESS, status=403)
+        return web.json_response(_NO_KEY, status=403)
     try:
         body = await request.json()
     except ValueError:
@@ -877,8 +927,6 @@ async def api_cookies(request):
 
 async def api_probe(request):
     """POST /api/video/probe {url} → картка відео з варіантами якості."""
-    if not access_ok(request):
-        return web.json_response(_NO_ACCESS, status=403)
     try:
         body = await request.json()
     except ValueError:
@@ -903,8 +951,6 @@ async def api_probe(request):
 
 async def api_start(request):
     """POST /api/video/start {url, option} → id фонової задачі."""
-    if not access_ok(request):
-        return web.json_response(_NO_ACCESS, status=403)
     try:
         body = await request.json()
     except ValueError:
@@ -936,8 +982,6 @@ async def api_start(request):
 
 
 async def api_status(request):
-    if not access_ok(request):
-        return web.json_response(_NO_ACCESS, status=403)
     job = _JOBS.get(request.query.get("id", ""))
     if not job:
         return web.json_response(
@@ -948,8 +992,6 @@ async def api_status(request):
 
 async def api_file(request):
     """GET /api/video/file?id=… — готовий файл вкладенням."""
-    if not access_ok(request):
-        return web.json_response(_NO_ACCESS, status=403)
     job = _JOBS.get(request.query.get("id", ""))
     if not job or job["state"] != "ready" or not os.path.exists(job["path"]):
         return web.json_response(

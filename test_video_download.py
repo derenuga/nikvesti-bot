@@ -222,6 +222,31 @@ def test_errors():
         "ERROR: [Instagram] x: Instagram sent an empty media response."))
 
 
+def test_retry():
+    """Примхливість джерела бот переживає сам, не турбуючи людину.
+
+    Заміряно 14.08: те саме завантаження, яке щойно двічі пройшло, дало
+    «HTTP Error 403: Forbidden», а одразу наступний свіжий прогін пройшов з
+    першого разу. Отже 403 — не привід ні для помилки, ні для питання про
+    куки, а привід тихо спробувати ще раз.
+    """
+    print("\nКоли варто просто спробувати ще раз:")
+    for name, raw, want in (
+        ("403 від YouTube", "ERROR: unable to download video data: HTTP Error 403: Forbidden", True),
+        ("обірваний звʼязок", "ERROR: [Errno 104] Connection reset by peer", True),
+        ("таймаут", "ERROR: The read operation timed out", True),
+        ("видалене відео", "ERROR: [youtube] x: This video is unavailable", False),
+        ("DRM", "ERROR: [youtube] x: This video is DRM protected", False),
+        ("капча", "ERROR: [youtube] x: Sign in to confirm you’re not a bot", False),
+    ):
+        check(f"{name} — {'повторюємо' if want else 'не повторюємо'}",
+              vd._worth_retry(raw) == want, raw[:50])
+
+    # 403 не має тягти за собою пропозицію дати куки: доступ тут ні до чого
+    check("403 не просить кук", not vd.wants_cookies(
+        "unable to download video data: HTTP Error 403: Forbidden"))
+
+
 def test_human():
     print("\nЧисла людською мовою:")
     check("байти", vd.human_size(1536) == "2 КБ", vd.human_size(1536))
@@ -328,6 +353,7 @@ def main():
     test_describe()
     test_hosts()
     test_errors()
+    test_retry()
     test_human()
     test_cookies_parsing()
     test_cookies_priority()

@@ -77,8 +77,6 @@
   <p class="sub">YouTube, Facebook, Instagram. Встав лінк — отримаєш файл, без
      реклами й «встановіть наш застосунок». <span id="who"></span></p>
 
-  <div class="warn hide" id="locked"></div>
-
   <div class="card" id="formCard">
     <form class="row" id="form">
       <input type="url" id="url" placeholder="https://youtu.be/… або facebook.com/…"
@@ -109,6 +107,10 @@
         <a id="lnkChrome" target="_blank" rel="noopener">для Chrome</a> ·
         <a id="lnkFirefox" target="_blank" rel="noopener">для Firefox</a>.
         <div class="note">Воно нічого нікуди не шле, лише зберігає файл на твій компʼютер.</div>
+        <div class="note" style="margin-top:6px">У <b>Safari</b> такого розширення
+          немає — ні на Mac, ні на iPhone. Постав Chrome або Firefox рівно на цей
+          один раз: доступ далі живе на сервері, тож качати можна буде і з Safari,
+          і з телефона (кнопка «Відкрити на телефоні» внизу).</div>
       </li>
       <li>Відкрий <b id="stepSite">facebook.com</b> у тому ж браузері (ти там уже
         залогінений), тапни іконку розширення → <b>Export</b>.
@@ -155,6 +157,15 @@
   </div>
 
   <div class="cookieline" id="cookieState"></div>
+  <div class="card hide" id="moveBox">
+    <b style="font-size:15px">Той самий доступ на іншому пристрої</b>
+    <p class="note" style="margin:6px 0 8px">Відкрий це посилання на телефоні —
+       і там теж качатиметься приватне. Посилання особисте, не пересилай його.</p>
+    <input type="url" id="moveLink" readonly
+           style="width:100%;padding:10px;border:1px solid var(--line);
+                  border-radius:9px;background:var(--card);color:var(--ink);
+                  font-size:13px">
+  </div>
 
   <p class="hint">Якщо сторінка відкрита всередині Telegram і файл не
      зберігається — відкрий її у звичайному браузері («⋮ → Відкрити в
@@ -170,9 +181,25 @@ var timer = null, jobId = null;
 // Токен із лінка бота — особистий вхід людини. Дописується до КОЖНОГО
 // запиту: без нього сервер не знає ні хто прийшов, ні чиї куки брати.
 var params = new URLSearchParams(location.search);
-var KEY = params.get('k') || '';
+// Ключ потрібен НЕ для входу — сторінка відкрита, як /card і /back, — а лише
+// щоб знати, чий доступ брати для приватних відео. Тому джерела три: лінк
+// (із бота або з «відкрити на іншому пристрої»), памʼять браузера, і ніякого.
+var KEY = params.get('k') || localStorage.getItem('videoKey') || '';
+if (params.get('k')) { localStorage.setItem('videoKey', params.get('k')); }
 function api(path) {
-  return path + (path.indexOf('?') < 0 ? '?' : '&') + 'k=' + encodeURIComponent(KEY);
+  var sep = path.indexOf('?') < 0 ? '?' : '&';
+  return KEY ? path + sep + 'k=' + encodeURIComponent(KEY) : path;
+}
+// Ключ народжується мовчки й лише перед першим збереженням кук
+function ensureKey() {
+  if (KEY) return Promise.resolve(KEY);
+  return fetch('/api/video/identity', {method: 'POST'})
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      KEY = d.key || '';
+      if (KEY) localStorage.setItem('videoKey', KEY);
+      return KEY;
+    });
 }
 function show(el, on) { el.classList.toggle('hide', !on); }
 
@@ -187,7 +214,7 @@ function loadState() {
   fetch(api('/api/video/state')).then(function (r) {
     return r.json().then(function (d) { return {ok: r.ok, d: d}; });
   }).then(function (res) {
-    if (!res.ok) { lockOut(res.d.error); return; }
+    if (!res.ok) return;
     if (res.d.who) $('who').textContent = 'Вхід: ' + res.d.who;
     renderCookieState(res.d.cookies || {});
   }).catch(function () {});
@@ -206,20 +233,22 @@ function renderCookieState(c) {
   }
   var span = document.createElement('span');
   span.textContent = '🔑 Качає під тобою · доступ додано ' + (c.at || '').slice(0, 10);
+  var move = document.createElement('button');
+  move.className = 'ghost small';
+  move.textContent = 'Відкрити на телефоні';
+  move.onclick = function () {
+    var link = location.origin + '/video?k=' + encodeURIComponent(KEY);
+    $('moveLink').value = link;
+    show($('moveBox'), true);
+    $('moveLink').select();
+  };
   var off = document.createElement('button');
   off.className = 'ghost small';
   off.textContent = 'Прибрати';
   off.onclick = function () {
     sendCookies({off: true}, function () { loadState(); });
   };
-  box.appendChild(span); box.appendChild(off);
-}
-
-function lockOut(msg) {
-  $('locked').textContent = msg || 'Сторінка відкривається лінком із бота: '
-    + 'набери /video у чаті редакції й тапни кнопку.';
-  show($('locked'), true);
-  show($('formCard'), false);
+  box.appendChild(span); box.appendChild(move); box.appendChild(off);
 }
 
 // Лінк міг приїхати з бота: /video?u=<url> — тоді одразу розбираємо
@@ -310,6 +339,11 @@ function readFile(file) {
 
 function sendCookies(body, done) {
   show($('cookieErr'), false);
+  ensureKey().then(function () { postCookies(body, done); })
+             .catch(function (e) { cookieError('Не вийшло: ' + e); });
+}
+
+function postCookies(body, done) {
   fetch(api('/api/video/cookies'), {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body)
