@@ -4049,11 +4049,14 @@ function impactAddSheet() {
     <div class="f-label">Суть своїми словами (необовʼязково)</div>
     <input id="im-essence" maxlength="300"
       placeholder="після нас відремонтували, реакція на новину">
+    <button class="link-btn" id="im-import">${icon("file-text")}
+      Перенести старий кейс із доків</button>
     <div class="sheet-actions">
       <button class="sbtn" id="im-cancel">Скасувати</button>
       <button class="sbtn primary" id="im-save">Зібрати кейс</button>
     </div>`);
   $("im-cancel").onclick = closeSheet;
+  $("im-import").onclick = impactImportSheet;
   $("im-save").onclick = async () => {
     const url = $("im-url").value.trim();
     const ourUrl = $("im-our").value.trim();
@@ -4070,6 +4073,67 @@ function impactAddSheet() {
       renderImpacts();
     } catch (e) {
       $("im-save").disabled = false;
+      toast(e.message);
+    }
+  };
+}
+
+/* Перенесення СТАРОГО кейсу, уже описаного в доку (Олег, 14.08: «як нам
+   поскладати старі зафіксовані в доках імпакт-кейси в нову систему»).
+   Суддя тут не потрібен: наратив написала людина, серія названа поіменно.
+   Бот робить те, що руками найдовше — резолвить лінки (зокрема старі, де в
+   URL лише слаг), підтягує авторів, проєкти й донорів. Що не резолвилось —
+   показуємо списком: мовчки з'їдений лінк у кейсі для донора гірший за
+   помилку. */
+function impactImportSheet() {
+  openSheet(`
+    <h2>Старий кейс із дока</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+      Встав текст як є: заголовок, опис, «Значення та вплив» і лінки на
+      матеріали окремими рядками. Авторів, проєкти й донорів бот підтягне сам,
+      текст лишить твій.</p>
+    <textarea id="im-text" rows="10" placeholder="Імпакт-кейс: Зміна підходу до…
+
+Матеріал висвітлив…
+
+Значення та вплив:
+Публікація не лише…
+
+https://nikvesti.com/articles/279936
+https://nikvesti.com/news/public/…"></textarea>
+    <div class="sheet-actions">
+      <button class="sbtn" id="imi-cancel">Скасувати</button>
+      <button class="sbtn primary" id="imi-save">Перенести</button>
+    </div>`);
+  $("imi-cancel").onclick = closeSheet;
+  $("imi-save").onclick = async () => {
+    const text = $("im-text").value.trim();
+    if (text.length < 20) { toast("Встав текст кейсу разом із лінками"); return; }
+    $("imi-save").disabled = true;
+    $("imi-save").textContent = "Переношу…";
+    try {
+      const res = await api("/api/impacts/import", { method: "POST",
+        body: JSON.stringify({ text }) });
+      haptic("success");
+      const bad = (res.report || []).filter((r) => !r.ok);
+      STATE.currentImpact = res.id;
+      if (!bad.length) { closeSheet(); nav("impact"); return; }
+      // Є що не доїхало — спершу показуємо ЩО, і лише потім пускаємо в кейс
+      openSheet(`
+        <h2>Перенесено</h2>
+        <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+          ${(res.report || []).length - bad.length} матеріалів у серії.
+          Ці лінки не впізнались — додай їх у кейсі кнопкою «Додати матеріал
+          за лінком» або встав виправлені:</p>
+        ${bad.map((r) => `<div class="td-note">${esc(r.url)}<br>
+          <span style="color:var(--muted)">${esc(r.error || "не вдалось")}</span></div>`).join("")}
+        <div class="sheet-actions">
+          <button class="sbtn primary" id="imi-open">Відкрити кейс</button>
+        </div>`);
+      $("imi-open").onclick = () => { closeSheet(); nav("impact"); };
+    } catch (e) {
+      $("imi-save").disabled = false;
+      $("imi-save").textContent = "Перенести";
       toast(e.message);
     }
   };

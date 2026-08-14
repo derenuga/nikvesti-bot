@@ -1730,6 +1730,22 @@ async def api_impact_create(request):
     return web.json_response({"id": impact_id, "status": "building"})
 
 
+async def api_impact_import(request):
+    """Перенести старий кейс із дока: текст як є, без судді. Синхронно —
+    резолв лінків це запити в бази плюс одне читання сторінки за фото,
+    секунди; статус одразу 'ready', тож апці нема чого політи."""
+    person, info, _ = await _require_manager(request)
+    payload = await _json(request)
+    text = (payload.get("text") or "").strip()
+    if len(text) < 20:
+        raise web.HTTPBadRequest(text="Встав текст кейсу разом із лінками")
+    impact_id, report, err = await _in_session(
+        impact_archive.import_case, person, text)
+    if err:
+        raise web.HTTPBadRequest(text=err)
+    return web.json_response({"id": impact_id, "report": report or []})
+
+
 async def api_impact_retry(request):
     person, info, _ = await _require_manager(request)
     impact_id = int(request.match_info["impact_id"])
@@ -2054,6 +2070,7 @@ async def start_webapp(application):
         web.get("/api/impacts", api_impacts),
         web.get("/api/impacts/mine", api_impacts_mine),
         web.post("/api/impacts", api_impact_create),
+        web.post("/api/impacts/import", api_impact_import),
         web.get("/api/impacts/{impact_id:\\d+}", api_impact_get),
         web.patch("/api/impacts/{impact_id:\\d+}", api_impact_patch),
         web.delete("/api/impacts/{impact_id:\\d+}", api_impact_delete),
