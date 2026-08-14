@@ -1719,12 +1719,18 @@ async def api_impact_create(request):
     # це взагалі посилання. Наш це матеріал чи зовнішній, вирішує is_our_url
     if not url.lower().startswith(("http://", "https://")):
         raise web.HTTPBadRequest(text="Потрібен лінк — наш матеріал або зовнішня публікація")
-    our_url = (payload.get("our_url") or "").strip()
-    if our_url and not impact_archive.is_our_url(our_url):
+    # Підказок буває кілька: у старого сюжету серія з п'яти текстів, і людина
+    # знає їх усі. Приймаємо і одиничне our_url — на випадок старого клієнта
+    raw = payload.get("our_urls") or payload.get("our_url") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    our_urls = [u.strip() for u in raw if isinstance(u, str) and u.strip()]
+    bad = next((u for u in our_urls if not impact_archive.is_our_url(u)), None)
+    if bad:
         raise web.HTTPBadRequest(
-            text="«Наш матеріал» — це лінк на конкретну новину nikvesti.com")
+            text=f"«Наш матеріал» — це лінк на новину nikvesti.com, а не {bad}")
     impact_id = await _in_session(
-        impact_archive.create_impact, person, url, payload.get("essence"), our_url)
+        impact_archive.create_impact, person, url, payload.get("essence"), our_urls)
     # збір — у фоні того самого event loop; свій try/except усередині
     asyncio.create_task(impact_archive.build_impact(impact_id))
     return web.json_response({"id": impact_id, "status": "building"})

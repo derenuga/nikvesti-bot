@@ -4091,9 +4091,11 @@ function impactAddSheet() {
       збере сам — потім усе можна поправити.</p>
     <div class="f-label">Лінк на фіксацію результату</div>
     <input id="im-url" inputmode="url" placeholder="https://nikvesti.com/news/… або imi.org.ua/news/…">
-    <div class="f-label">Наш матеріал по темі (необовʼязково)</div>
-    <input id="im-our" inputmode="url" placeholder="https://nikvesti.com/news/…">
-    <div class="mr-hint" style="margin:-6px 0 12px">якщо на чужій сторінці
+    <div class="f-label">Наші матеріали по темі (необовʼязково)</div>
+    <div id="im-our-list"><input class="im-our" inputmode="url"
+      placeholder="https://nikvesti.com/news/…"></div>
+    <button class="link-btn" id="im-our-add">${icon("plus")} Ще один лінк</button>
+    <div class="mr-hint" style="margin:-2px 0 12px">якщо на чужій сторінці
       немає лінка на нас — покажи, з чого все почалось</div>
     <div class="f-label">Суть своїми словами (необовʼязково)</div>
     <input id="im-essence" maxlength="300"
@@ -4106,17 +4108,29 @@ function impactAddSheet() {
     </div>`);
   $("im-cancel").onclick = closeSheet;
   $("im-import").onclick = impactImportSheet;
+  // Плюсик доливає ще одне поле (Олег, 14.08). Порожні поля просто ігноруються
+  // при збереженні, тож кнопки «прибрати рядок» тут немає — зайвий рядок ні на
+  // що не впливає, а зайва кнопка на кожному полі захаращує форму
+  $("im-our-add").onclick = () => {
+    const row = document.createElement("input");
+    row.className = "im-our";
+    row.inputMode = "url";
+    row.placeholder = "https://nikvesti.com/news/…";
+    $("im-our-list").appendChild(row);
+    row.focus();
+  };
   $("im-save").onclick = async () => {
     const url = $("im-url").value.trim();
-    const ourUrl = $("im-our").value.trim();
+    const ourUrls = [...document.querySelectorAll(".im-our")]
+      .map((i) => i.value.trim()).filter(Boolean);
     if (!/^https?:\/\//i.test(url)) { toast("Потрібен лінк на сторінку"); return; }
-    if (ourUrl && !ourUrl.includes("nikvesti.com")) {
+    if (ourUrls.some((u) => !u.includes("nikvesti.com"))) {
       toast("«Наш матеріал» — лінк на nikvesti.com"); return;
     }
     $("im-save").disabled = true;
     try {
       await api("/api/impacts", { method: "POST", body: JSON.stringify(
-        { url, our_url: ourUrl, essence: $("im-essence").value.trim() }) });
+        { url, our_urls: ourUrls, essence: $("im-essence").value.trim() }) });
       closeSheet();
       haptic("success");
       renderImpacts();
