@@ -4313,17 +4313,30 @@ function paintImpact(im) {
    У читанні пункт — лінк на матеріал; у редакторському режимі відкриває
    шторку з підписаними діями (іконки-загадки провалились першого ж дня). */
 function impactTimelineItem(a, ro) {
+  // Значок сайту в бейджі зовнішнього матеріалу: рядок «зовнішня публікація ·
+  // youtu.be» сам по собі виглядав голо (Олег, 14.08). Ланцюжок як у решти
+  // картинок апки: свій favicon сайту → сервіс Google → нічого. Другий крок
+  // потрібен, бо чимало сайтів на /favicon.ico віддають свою HTML-сторінку
+  // (imi.org.ua — цілих 147 КБ), і така «картинка» просто не намалюється
+  const fav = a.external && a.source
+    ? imgHtml(`https://${a.source}/favicon.ico`,
+              `https://www.google.com/s2/favicons?domain=${encodeURIComponent(a.source)}&sz=64`,
+              'class="itl-fav"')
+    : "";
   const badges = [
     a.is_key ? `<span class="itl-badge key">★ ключовий</span>` : "",
     // Чуже видання підписуємо ДОМЕНОМ: у списку серії воно стоїть поруч із
     // нашими текстами, і без підпису читалось би як наш матеріал
-    a.external ? `<span class="itl-badge">зовнішня публікація · ${esc(a.source || "інше видання")}</span>`
+    a.external ? `<span class="itl-badge">${fav}зовнішня публікація · ${esc(a.source || "інше видання")}</span>`
       : a.role === "fixer" ? `<span class="itl-badge">фіксація результату</span>` : "",
   ].filter(Boolean).join("");
+  // Дати може не бути (у відео чи чужої сторінки її не завжди видно) — тоді
+  // рядок просто не малюємо: прочерк над заголовком читається як помилка
+  const date = a.date && a.date !== "—" ? a.date : "";
   const inner = `
     <span class="itl-rail"><i class="itl-dot${a.is_key ? " key" : ""}"></i></span>
     <span class="itl-body">
-      <span class="itl-date">${esc(a.date)}</span>
+      ${date ? `<span class="itl-date">${esc(date)}</span>` : ""}
       <span class="itl-title">${esc(a.title || a.url)}</span>
       ${badges ? `<span class="itl-badges">${badges}</span>` : ""}
       ${a.authors || a.partner_name ? `<span class="itl-foot">
