@@ -539,6 +539,46 @@ def save_news_search(dialog_id, entry):
         _write_state(state)
 
 
+# Сторінка завантаження відео (video_download): токен доступу і куки.
+#
+# Куки лежать тут, а не у змінній середовища, з двох причин. Перша: вони
+# помирають тижнями, а заміна через Railway означає редеплой бота заради
+# рядка тексту. Друга: покласти їх має ЛЮДИНА зі свого браузера — файл
+# приходить у приват боту, де вже стоїть whitelist ALLOWED_USER_IDS.
+# Токен доступу — тому, що з чужими куками сторінка качає ВІД ІМЕНІ людини,
+# і відкритою в інтернет їй бути не можна.
+
+
+def get_video_access():
+    """Токен сторінки /video або None (ще не видавали)."""
+    with _lock:
+        return _read_state().get("video_access")
+
+
+def save_video_access(token):
+    with _lock:
+        state = _read_state()
+        state["video_access"] = token
+        _write_state(state)
+
+
+def get_video_cookies():
+    """{"text": ..., "at": iso, "by": "Олег", "domains": [...]} або None."""
+    with _lock:
+        return _read_state().get("video_cookies")
+
+
+def save_video_cookies(entry):
+    """Кладе куки (або None — прибрати)."""
+    with _lock:
+        state = _read_state()
+        if entry is None:
+            state.pop("video_cookies", None)
+        else:
+            state["video_cookies"] = entry
+        _write_state(state)
+
+
 # Беки, віддані на сторінку /back для копіювання з лінками (back_export).
 # Живуть рівно доти, доки текст не вставили в статтю; кап — щоб стан не ріс.
 BACK_EXPORTS_MAX = 40

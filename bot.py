@@ -99,6 +99,8 @@ from handlers.news_archive import news_back_callback, news_select_callback, BACK
 from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, viber_test_handler
 from handlers.webapp import (setup_menu_button, start_webapp, team_handler,
                             todo_handler, todo_today_callback)
+from handlers.video_download import (video_handler, video_cookies_handler,
+                                     cookies_document_handler)
 from handlers.team_matching import (
     match_test_handler, match_scan_handler, match_estimate_handler,
     match_backfill_handler, match_tg_handler, match_cards_handler,
@@ -126,10 +128,26 @@ last_channel_post_time = {"time": datetime.now()}
 # редакційні команди: службові й дебажні (nora_*, entity_*, roles_*, dbquery,
 # бэкфіли…) сюди не йдуть свідомо — у списку на півтори сотні рядків не видно
 # жодного. Порядок = частота вжитку, Telegram показує як є.
+async def private_txt_router(update, context):
+    """Один вхід для .txt у приваті: куки чи пакет рішень — розводимо за
+    ВМІСТОМ.
+
+    Обробник .txt у боті рівно один (другий до файла вже не дійде), і досі
+    його ділили маркери в першому рядку — cards-fix, promises-fix, roles-fix.
+    Куки маркера не мають і мати не можуть: файл віддає розширення браузера,
+    людина його не редагує. Тому спершу питаємо, чи це куки, і лише потім
+    віддаємо файл звичайному розбору пакетів.
+    """
+    if await cookies_document_handler(update, context):
+        return
+    await roles_fix_document(update, context)
+
+
 PUBLIC_COMMANDS = [
     ("team", "Апка «Команда»: таски, KPI, проєкти"),
     ("stat", "Статистика матеріалу за лінком"),
     ("todo", "Записати справу в блокнот"),
+    ("video", "Завантажити відео з YouTube чи Facebook"),
     ("promises", "Банк тем: що горить сьогодні"),
     ("dossier", "Історія питання з 17-річного архіву"),
     ("analytics", "Трафік сайту за вчора + топ-5"),
@@ -644,6 +662,8 @@ def main():
     app.add_handler(CommandHandler("tiktok_auth", tiktok_auth_handler))
     app.add_handler(CommandHandler("team", team_handler))
     app.add_handler(CommandHandler("todo", todo_handler))
+    app.add_handler(CommandHandler("video", video_handler))
+    app.add_handler(CommandHandler("video_cookies", video_cookies_handler))
     app.add_handler(CommandHandler("match_test", match_test_handler))
     app.add_handler(CommandHandler("match_scan", match_scan_handler))
     app.add_handler(CommandHandler("match_estimate", match_estimate_handler))
@@ -692,7 +712,7 @@ def main():
     # ZIP пакета рішення в приват — без команд: бот сам розбирає і нашаровує
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.Document.FileExtension("txt"),
-        roles_fix_document))
+        private_txt_router))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.Document.ALL, budget_package_handler))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     # Переслана в приват картка контакту → у базу редакції. Ставимо ПЕРЕД

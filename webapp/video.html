@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="uk"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Завантажити відео — МикВісті</title>
+<style>
+  :root {
+    --brand: #3478F9; --bg: #f4f6fb; --card: #fff; --ink: #16181d;
+    --muted: #6b7280; --line: #e3e7ef; --warn: #b45309; --warn-bg: #fef3c7;
+    --err: #dc2626; --ok: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14161a; --card: #1c1f26; --ink: #e9ecf2; --muted: #9aa3b2;
+            --line: #2b303a; --warn: #fbbf24; --warn-bg: #2a2313; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 22px 16px 60px; background: var(--bg); color: var(--ink);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 680px; margin: 0 auto; }
+  h1 { font-size: 21px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
+  .card { background: var(--card); border: 1px solid var(--line);
+    border-radius: 14px; padding: 18px; margin-bottom: 14px; }
+  .row { display: flex; gap: 10px; }
+  input[type=url] { flex: 1; min-width: 0; font: inherit; padding: 13px 14px;
+    border: 1px solid var(--line); border-radius: 11px; background: var(--card);
+    color: var(--ink); }
+  input[type=url]:focus { outline: 2px solid var(--brand); outline-offset: -1px; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 11px;
+    padding: 13px 20px; cursor: pointer; background: var(--brand); color: #fff; }
+  button:disabled { opacity: .55; cursor: default; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button.ghost { background: transparent; color: var(--brand);
+    box-shadow: inset 0 0 0 1.5px var(--brand); }
+  button.small { padding: 8px 14px; font-size: 14px; }
+  .meta { display: flex; gap: 14px; align-items: flex-start; }
+  .meta img { width: 132px; height: 76px; object-fit: cover; border-radius: 9px;
+    background: var(--line); flex: none; }
+  .meta h2 { font-size: 16px; margin: 0 0 4px; line-height: 1.35; }
+  .meta .dim { color: var(--muted); font-size: 13px; }
+  .opts { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+  .opt { background: transparent; color: var(--ink); border: 1.5px solid var(--line);
+    padding: 10px 15px; text-align: left; line-height: 1.25; }
+  .opt:hover:not(:disabled) { border-color: var(--brand); }
+  .opt b { display: block; font-size: 15px; }
+  .opt span { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .bar { height: 8px; border-radius: 5px; background: var(--line); overflow: hidden;
+    margin: 12px 0 8px; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--brand);
+    border-radius: 5px; transition: width .3s; }
+  .bar.idle i { width: 35% !important; animation: slide 1.2s infinite ease-in-out; }
+  @keyframes slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+  .note { color: var(--muted); font-size: 13px; }
+  .warn { background: var(--warn-bg); color: var(--warn); border-radius: 11px;
+    padding: 14px 16px; font-size: 14px; margin-bottom: 14px; }
+  .err { color: var(--err); font-size: 14px; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .hide { display: none !important; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 22px; }
+  a { color: var(--brand); }
+  ol.steps { margin: 4px 0 0; padding-left: 22px; }
+  ol.steps li { margin-bottom: 12px; }
+  .drop { border: 2px dashed var(--line); border-radius: 12px; padding: 20px;
+    text-align: center; color: var(--muted); font-size: 14px; cursor: pointer;
+    transition: border-color .15s, background .15s; }
+  .drop.over { border-color: var(--brand); background: rgba(52,120,249,.07); }
+  textarea { width: 100%; min-height: 90px; margin-top: 10px; padding: 11px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+    color: var(--ink); font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .cookieline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    font-size: 13px; color: var(--muted); margin-top: 4px; }
+</style>
+</head><body>
+<div class="wrap">
+  <h1>🦊 Завантажити відео</h1>
+  <p class="sub">YouTube, Facebook, Instagram. Встав лінк — отримаєш файл, без
+     реклами й «встановіть наш застосунок». <span id="who"></span></p>
+
+  <div class="warn hide" id="locked"></div>
+
+  <div class="card" id="formCard">
+    <form class="row" id="form">
+      <input type="url" id="url" placeholder="https://youtu.be/… або facebook.com/…"
+             autocomplete="off" spellcheck="false" required>
+      <button id="go">Розібрати</button>
+    </form>
+    <p class="err hide" id="probeErr" style="margin:12px 0 0"></p>
+
+    <!-- Пояснення приходить у момент відмови, а не лежить в інструкції:
+         людина бачить його тоді, коли воно їй справді потрібне -->
+    <div class="warn hide" id="askCookies" style="margin:14px 0 0">
+      <b id="askTitle">Це відео віддається лише тому, хто залогінений.</b>
+      <p style="margin:6px 0 12px">Для <span id="askSource">Facebook</span> наш
+         сервер — чужий незалогінений гість, тому відео йому й не показують.
+         Дозволь качати від твого імені: <b>це робиться один раз</b>, далі все
+         качатиметься без цього кроку.</p>
+      <button class="small" id="askGo">Продовжити</button>
+    </div>
+  </div>
+
+  <!-- Майстер: три кроки, з яких лише третій відбувається тут -->
+  <div class="card hide" id="wizard">
+    <h2 style="font-size:17px;margin:0 0 4px">Дозволити качати від твого імені</h2>
+    <p class="note" style="margin:0 0 14px">Робиться один раз. Далі сторінка
+       качає під тобою й нічого не питає.</p>
+    <ol class="steps">
+      <li>Постав розширення <b>Get cookies.txt LOCALLY</b> —
+        <a id="lnkChrome" target="_blank" rel="noopener">для Chrome</a> ·
+        <a id="lnkFirefox" target="_blank" rel="noopener">для Firefox</a>.
+        <div class="note">Воно нічого нікуди не шле, лише зберігає файл на твій компʼютер.</div>
+      </li>
+      <li>Відкрий <b id="stepSite">facebook.com</b> у тому ж браузері (ти там уже
+        залогінений), тапни іконку розширення → <b>Export</b>.
+      </li>
+      <li>Перетягни збережений файл сюди:
+        <div class="drop" id="drop" style="margin-top:8px">
+          Перетягни <b>cookies.txt</b> або тапни, щоб обрати файл
+        </div>
+        <input type="file" id="file" accept=".txt,text/plain" class="hide">
+        <details style="margin-top:10px">
+          <summary class="note">Не виходить із файлом — встав текст</summary>
+          <textarea id="paste" placeholder="Встав сюди вміст cookies.txt"></textarea>
+          <button class="small ghost" id="pasteSave" style="margin-top:8px">Зберегти</button>
+        </details>
+      </li>
+    </ol>
+    <p class="err hide" id="cookieErr"></p>
+    <p style="margin:14px 0 0"><button class="ghost small" id="wizClose">Згорнути</button></p>
+  </div>
+
+  <div class="card hide" id="info">
+    <div class="meta">
+      <img id="thumb" alt="">
+      <div>
+        <h2 id="title"></h2>
+        <div class="dim" id="dim"></div>
+      </div>
+    </div>
+    <div class="opts" id="opts"></div>
+    <p class="note" id="optNote" style="margin:14px 0 0"></p>
+  </div>
+
+  <div class="card hide" id="progress">
+    <div id="stage" style="font-weight:600"></div>
+    <div class="bar" id="bar"><i></i></div>
+    <div class="note" id="stat"></div>
+    <p class="err hide" id="jobErr" style="margin:10px 0 0"></p>
+    <div class="hide" id="doneBox" style="margin-top:14px">
+      <div class="ok" id="doneText"></div>
+      <p style="margin:12px 0 0"><button id="save">⬇️ Зберегти файл</button></p>
+      <p class="note" style="margin:10px 0 0">Файл живе на сервері пів години,
+         далі прибирається сам.</p>
+    </div>
+  </div>
+
+  <div class="cookieline" id="cookieState"></div>
+
+  <p class="hint">Якщо сторінка відкрита всередині Telegram і файл не
+     зберігається — відкрий її у звичайному браузері («⋮ → Відкрити в
+     браузері»): вбудований переглядач Telegram часто блокує завантаження.</p>
+</div>
+
+<script>
+var $ = function (id) { return document.getElementById(id); };
+var current = null;   // остання розібрана картка {url, options…}
+var lastUrl = '';     // лінк, на якому спіткнулись — щоб повторити після кук
+var timer = null, jobId = null;
+
+// Токен із лінка бота — особистий вхід людини. Дописується до КОЖНОГО
+// запиту: без нього сервер не знає ні хто прийшов, ні чиї куки брати.
+var params = new URLSearchParams(location.search);
+var KEY = params.get('k') || '';
+function api(path) {
+  return path + (path.indexOf('?') < 0 ? '?' : '&') + 'k=' + encodeURIComponent(KEY);
+}
+function show(el, on) { el.classList.toggle('hide', !on); }
+
+// Посилання на розширення — пошуком у крамницях, а не за id: id змінюються,
+// а пошук працює завжди
+$('lnkChrome').href = 'https://chromewebstore.google.com/search/get%20cookies.txt%20locally';
+$('lnkFirefox').href = 'https://addons.mozilla.org/uk/firefox/search/?q=get%20cookies.txt';
+
+// ---------- стан сервера ----------
+loadState();
+function loadState() {
+  fetch(api('/api/video/state')).then(function (r) {
+    return r.json().then(function (d) { return {ok: r.ok, d: d}; });
+  }).then(function (res) {
+    if (!res.ok) { lockOut(res.d.error); return; }
+    if (res.d.who) $('who').textContent = 'Вхід: ' + res.d.who;
+    renderCookieState(res.d.cookies || {});
+  }).catch(function () {});
+}
+
+function renderCookieState(c) {
+  var box = $('cookieState');
+  box.innerHTML = '';
+  if (!c.own) {
+    var b = document.createElement('button');
+    b.className = 'ghost small';
+    b.textContent = '🔑 Дозволити качати приватне';
+    b.onclick = function () { openWizard(''); };
+    box.appendChild(b);
+    return;
+  }
+  var span = document.createElement('span');
+  span.textContent = '🔑 Качає під тобою · доступ додано ' + (c.at || '').slice(0, 10);
+  var off = document.createElement('button');
+  off.className = 'ghost small';
+  off.textContent = 'Прибрати';
+  off.onclick = function () {
+    sendCookies({off: true}, function () { loadState(); });
+  };
+  box.appendChild(span); box.appendChild(off);
+}
+
+function lockOut(msg) {
+  $('locked').textContent = msg || 'Сторінка відкривається лінком із бота: '
+    + 'набери /video у чаті редакції й тапни кнопку.';
+  show($('locked'), true);
+  show($('formCard'), false);
+}
+
+// Лінк міг приїхати з бота: /video?u=<url> — тоді одразу розбираємо
+var pre = params.get('u');
+if (pre) { $('url').value = pre; }
+
+$('form').addEventListener('submit', function (e) {
+  e.preventDefault();
+  probe($('url').value.trim());
+});
+if (pre) { probe(pre); }
+
+// ---------- розбір лінка ----------
+function probe(url) {
+  if (!url) return;
+  stopJob();
+  lastUrl = url;
+  show($('info'), false); show($('progress'), false);
+  show($('probeErr'), false); show($('askCookies'), false);
+  $('go').disabled = true; $('go').textContent = 'Читаю…';
+  fetch(api('/api/video/probe'), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({url: url})
+  }).then(function (r) {
+    return r.json().then(function (d) { return {ok: r.ok, d: d}; });
+  }).then(function (res) {
+    $('go').disabled = false; $('go').textContent = 'Розібрати';
+    if (!res.ok) { probeFailed(res.d); return; }
+    current = res.d;
+    render(res.d);
+  }).catch(function (e) {
+    $('go').disabled = false; $('go').textContent = 'Розібрати';
+    $('probeErr').textContent = 'Сервер не відповів: ' + e;
+    show($('probeErr'), true);
+  });
+}
+
+function probeFailed(d) {
+  if (d.needs_cookies) {
+    // Не червона помилка, а пояснення з виходом: людина може це полагодити
+    $('askSource').textContent = d.source || 'цього сайту';
+    $('stepSite').textContent = (d.source === 'Instagram') ? 'instagram.com'
+      : (d.source === 'YouTube') ? 'youtube.com' : 'facebook.com';
+    show($('askCookies'), true);
+    return;
+  }
+  $('probeErr').textContent = d.error || 'Не вийшло';
+  show($('probeErr'), true);
+}
+
+$('askGo').onclick = function () { openWizard(lastUrl); };
+$('wizClose').onclick = function () { show($('wizard'), false); };
+
+function openWizard() {
+  show($('wizard'), true);
+  show($('askCookies'), false);
+  $('wizard').scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+// ---------- куки: файл або текст ----------
+$('drop').onclick = function () { $('file').click(); };
+$('file').onchange = function () { if (this.files[0]) readFile(this.files[0]); };
+['dragenter', 'dragover'].forEach(function (ev) {
+  $('drop').addEventListener(ev, function (e) {
+    e.preventDefault(); $('drop').classList.add('over');
+  });
+});
+['dragleave', 'drop'].forEach(function (ev) {
+  $('drop').addEventListener(ev, function (e) {
+    e.preventDefault(); $('drop').classList.remove('over');
+  });
+});
+$('drop').addEventListener('drop', function (e) {
+  var f = e.dataTransfer && e.dataTransfer.files[0];
+  if (f) readFile(f);
+});
+$('pasteSave').onclick = function () {
+  var text = $('paste').value.trim();
+  if (text) sendCookies({text: text}, cookiesSaved);
+};
+
+function readFile(file) {
+  var reader = new FileReader();
+  reader.onload = function () { sendCookies({text: reader.result}, cookiesSaved); };
+  reader.onerror = function () { cookieError('Файл не прочитався'); };
+  reader.readAsText(file);
+}
+
+function sendCookies(body, done) {
+  show($('cookieErr'), false);
+  fetch(api('/api/video/cookies'), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  }).then(function (r) {
+    return r.json().then(function (d) { return {ok: r.ok, d: d}; });
+  }).then(function (res) {
+    if (!res.ok) { cookieError(res.d.error || 'Не вийшло зберегти'); return; }
+    done(res.d);
+  }).catch(function (e) { cookieError('Сервер не відповів: ' + e); });
+}
+
+function cookiesSaved(d) {
+  renderCookieState(d.cookies || {});
+  show($('wizard'), false);
+  // Головне: продовжуємо з того місця, де спіткнулись — людина прийшла сюди
+  // по відео, а не по налаштування
+  if (lastUrl) { $('url').value = lastUrl; probe(lastUrl); }
+}
+
+function cookieError(msg) {
+  $('cookieErr').textContent = msg;
+  show($('cookieErr'), true);
+}
+
+// ---------- картка й завантаження ----------
+function render(d) {
+  $('title').textContent = d.title;
+  $('thumb').src = d.thumbnail || '';
+  show($('thumb'), !!d.thumbnail);
+  var bits = [];
+  if (d.uploader) bits.push(d.uploader);
+  if (d.duration_text) bits.push(d.duration_text);
+  if (d.source) bits.push(d.source);
+  $('dim').textContent = bits.join(' · ');
+  var box = $('opts');
+  box.innerHTML = '';
+  d.options.forEach(function (o) {
+    var b = document.createElement('button');
+    b.className = 'opt';
+    b.innerHTML = '<b></b><span></span>';
+    b.querySelector('b').textContent = o.label;
+    b.querySelector('span').textContent = o.note ? '≈ ' + o.note : 'розмір невідомий';
+    b.onclick = function () { start(o.id); };
+    box.appendChild(b);
+  });
+  $('optNote').textContent = d.is_live
+    ? 'Це прямий ефір — завантажиться те, що вже вийшло в ефір.' : '';
+  show($('info'), true);
+}
+
+function start(optionId) {
+  stopJob();
+  show($('progress'), true); show($('jobErr'), false); show($('doneBox'), false);
+  $('bar').classList.add('idle');
+  $('stage').textContent = 'Починаю…';
+  $('stat').textContent = '';
+  fetch(api('/api/video/start'), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({url: current.url, option: optionId})
+  }).then(function (r) {
+    return r.json().then(function (d) { return {ok: r.ok, d: d}; });
+  }).then(function (res) {
+    if (!res.ok) { fail(res.d); return; }
+    jobId = res.d.id;
+    timer = setInterval(poll, 1000);
+  }).catch(function (e) { fail({error: 'Сервер не відповів: ' + e}); });
+}
+
+function poll() {
+  if (!jobId) return;
+  fetch(api('/api/video/status?id=' + encodeURIComponent(jobId)))
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (j.state === 'error') { fail(j); return; }
+      if (j.error) { fail(j); return; }
+      if (j.state === 'ready') { done(j); return; }
+      $('stage').textContent = (j.stage || 'Качаю') + '…';
+      if (j.percent === null || j.percent === undefined) {
+        $('bar').classList.add('idle');
+      } else {
+        $('bar').classList.remove('idle');
+        $('bar').firstElementChild.style.width = j.percent + '%';
+      }
+      var parts = [];
+      if (j.percent !== null && j.percent !== undefined) parts.push(j.percent + '%');
+      if (j.done) parts.push(j.done + (j.total ? ' з ' + j.total : ''));
+      if (j.speed) parts.push(j.speed);
+      if (j.eta) parts.push('лишилось ' + j.eta);
+      $('stat').textContent = parts.join(' · ');
+    })
+    .catch(function () { /* мережа моргнула — наступний тик добере */ });
+}
+
+function done(j) {
+  stopJob();
+  $('bar').classList.remove('idle');
+  $('bar').firstElementChild.style.width = '100%';
+  $('stage').textContent = 'Готово';
+  $('stat').textContent = '';
+  $('doneText').textContent = j.filename + (j.size ? ' · ' + j.size : '');
+  show($('doneBox'), true);
+  var href = api('/api/video/file?id=' + encodeURIComponent(j.id));
+  $('save').onclick = function () { location.href = href; };
+  // Пробуємо віддати одразу — але кнопка лишається, бо автозавантаження
+  // блокують і Safari, і вбудований переглядач Telegram
+  location.href = href;
+}
+
+function fail(d) {
+  stopJob();
+  $('bar').classList.remove('idle');
+  $('stage').textContent = 'Не вийшло';
+  $('stat').textContent = '';
+  if (d && d.needs_cookies) {
+    show($('progress'), false);
+    probeFailed(d);
+    return;
+  }
+  $('jobErr').textContent = (d && d.error) || 'Не вийшло';
+  show($('jobErr'), true);
+}
+
+function stopJob() {
+  if (timer) { clearInterval(timer); timer = null; }
+  jobId = null;
+}
+</script>
+</body></html>

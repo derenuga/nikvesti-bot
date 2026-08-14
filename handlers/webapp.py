@@ -55,7 +55,7 @@ from handlers import (
     back_export, bot_db, card_maker, content_report, impact_archive, team_analytics,
     team_conditions, team_contacts, team_director, team_kpi, team_matches,
     team_notifications, team_publications, team_projects, team_reviews,
-    team_roster, team_tasks, team_todos,
+    team_roster, team_tasks, team_todos, video_download,
 )
 from handlers.helpers import normalize_https_url
 
@@ -2129,6 +2129,13 @@ async def start_webapp(application):
         web.get("/card", card_maker.page),
         web.post("/api/card/scrape", card_maker.api_scrape),
         web.get("/api/card/img", card_maker.api_image),
+        web.get("/video", video_download.page),
+        web.get("/api/video/state", video_download.api_state),
+        web.post("/api/video/cookies", video_download.api_cookies),
+        web.post("/api/video/probe", video_download.api_probe),
+        web.post("/api/video/start", video_download.api_start),
+        web.get("/api/video/status", video_download.api_status),
+        web.get("/api/video/file", video_download.api_file),
         web.static("/static", _STATIC_DIR),
     ])
     runner = web.AppRunner(app)
