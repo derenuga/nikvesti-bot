@@ -99,6 +99,8 @@ from handlers.news_archive import news_back_callback, news_select_callback, BACK
 from handlers.viber_mirror import mirror_channel_post, viber_setup_handler, viber_test_handler
 from handlers.webapp import (setup_menu_button, start_webapp, team_handler,
                             todo_handler, todo_today_callback)
+from handlers.video_download import (video_handler, video_cookies_handler,
+                                     cookies_document_handler)
 from handlers.team_matching import (
     match_test_handler, match_scan_handler, match_estimate_handler,
     match_backfill_handler, match_tg_handler, match_cards_handler,
@@ -126,10 +128,22 @@ last_channel_post_time = {"time": datetime.now()}
 # редакційні команди: службові й дебажні (nora_*, entity_*, roles_*, dbquery,
 # бэкфіли…) сюди не йдуть свідомо — у списку на півтори сотні рядків не видно
 # жодного. Порядок = частота вжитку, Telegram показує як є.
+class _CookieFileFilter(filters.MessageFilter):
+    """Файл кук у приваті — за назвою. Окремий фільтр, бо .txt у приваті вже
+    зайнятий пакетами рішень по ролях, і розрізняти їх треба до обробки."""
+
+    def filter(self, message):
+        doc = getattr(message, "document", None)
+        return bool(doc and "cookie" in (doc.file_name or "").lower())
+
+
+COOKIE_FILE_FILTER = _CookieFileFilter()
+
 PUBLIC_COMMANDS = [
     ("team", "Апка «Команда»: таски, KPI, проєкти"),
     ("stat", "Статистика матеріалу за лінком"),
     ("todo", "Записати справу в блокнот"),
+    ("video", "Завантажити відео з YouTube чи Facebook"),
     ("promises", "Банк тем: що горить сьогодні"),
     ("dossier", "Історія питання з 17-річного архіву"),
     ("analytics", "Трафік сайту за вчора + топ-5"),
@@ -644,6 +658,8 @@ def main():
     app.add_handler(CommandHandler("tiktok_auth", tiktok_auth_handler))
     app.add_handler(CommandHandler("team", team_handler))
     app.add_handler(CommandHandler("todo", todo_handler))
+    app.add_handler(CommandHandler("video", video_handler))
+    app.add_handler(CommandHandler("video_cookies", video_cookies_handler))
     app.add_handler(CommandHandler("match_test", match_test_handler))
     app.add_handler(CommandHandler("match_scan", match_scan_handler))
     app.add_handler(CommandHandler("match_estimate", match_estimate_handler))
@@ -689,6 +705,11 @@ def main():
     app.add_handler(CommandHandler("budget_snapshot_reset", budget_snapshot_reset_handler))
     # xlsx з підписом /budget_load: CommandHandler бачить лише text, caption — ні
     app.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex(r"^/budget_load"), budget_load_handler))
+    # cookies.txt у приват → куки для сторінки /video. Строго ПЕРЕД пакетами
+    # рішень: вони забирають будь-який .txt у приваті, і кинутий файл кук
+    # поїхав би розбиратись як список злиттів ролей.
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & COOKIE_FILE_FILTER, cookies_document_handler))
     # ZIP пакета рішення в приват — без команд: бот сам розбирає і нашаровує
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.Document.FileExtension("txt"),
