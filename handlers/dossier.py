@@ -140,7 +140,7 @@ def _dossier_prompt(topic, articles):
 - Обсяг: до 3300 символів. Чиста українська, без емодзі (крім першого рядка), без Markdown. Символи & < > у звичайному тексті екрануй як &amp; &lt; &gt; (крім тегів <a> і <b>)."""
 
 
-async def _compose_dossier(topic, articles):
+async def _compose_dossier(topic, articles, user=None):
     message = await async_client.messages.create(
         model=FOX_MODEL_SMART,
         max_tokens=DOSSIER_MAX_TOKENS,
@@ -149,6 +149,7 @@ async def _compose_dossier(topic, articles):
         messages=[{"role": "user", "content": _dossier_prompt(topic, articles)}],
     )
     try:
+        from handlers.usage_report import display_name
         u = message.usage
         storage.record_ai_usage(
             FOX_MODEL_SMART,
@@ -156,6 +157,8 @@ async def _compose_dossier(topic, articles):
             output_tokens=getattr(u, "output_tokens", 0) or 0,
             cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
             cache_creation=getattr(u, "cache_creation_input_tokens", 0) or 0,
+            user_id=user.id if user is not None else None,
+            user_name=display_name(user) if user is not None else None,
         )
     except Exception as e:
         print(f"ai_usage: не вдалось записати dossier — {e}")
@@ -204,7 +207,7 @@ async def dossier_handler(update, context):
         with_excerpts = await asyncio.to_thread(
             archive_search.get_excerpts, [it["id"] for it in selected], EXCERPT_CHARS
         )
-        text = await _compose_dossier(topic, with_excerpts)
+        text = await _compose_dossier(topic, with_excerpts, user=update.effective_user)
         if len(text) > 4000:
             # Ліміт Telegram 4096; ріжемо по останньому цілому рядку
             text = text[:4000].rsplit("\n", 1)[0] + "\n\n(обрізано — тема надто багата, звузь період)"
