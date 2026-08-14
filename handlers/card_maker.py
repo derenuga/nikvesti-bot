@@ -31,6 +31,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from handlers.helpers import normalize_https_url
+
 try:
     from aiohttp import web
 except ImportError:  # локальний dev без aiohttp — модуль неактивний
@@ -38,6 +40,11 @@ except ImportError:  # локальний dev без aiohttp — модуль н
 
 # Хости, які можна скрапити і проксювати. Не відкритий проксі.
 ALLOWED_HOSTS = {"nikvesti.com", "www.nikvesti.com"}
+
+# Домен Mini App, на якому живе сторінка /card. Тут же — конвенція лінка на
+# неї, щоб її не переписували в кожного споживача (fb_missing, NLQ-роутер):
+# сторінка сама скрапить новину за id, тож у лінк іде рівно id.
+WEBAPP_URL = normalize_https_url(os.environ.get("WEBAPP_URL"))
 
 FETCH_TIMEOUT = 15
 # Ліміт відповіді проксі: оригінали фото ~1–3 МБ, 20 МБ — запас із головою.
@@ -47,6 +54,27 @@ _UA = "Mozilla/5.0 (compatible; MykVistiCardMaker/1.0; +https://nikvesti.com)"
 
 _STATIC_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webapp")
+
+
+def card_url(article_id):
+    """Лінк у генератор карток одразу з цією новиною. None, якщо WEBAPP_URL не
+    налаштований або id порожній — краще повідомлення без кнопки, ніж кнопка
+    в нікуди."""
+    article_id = str(article_id or "").strip()
+    if not WEBAPP_URL or not article_id:
+        return None
+    return f"{WEBAPP_URL}/card?url={article_id}"
+
+
+def card_button(article_id, text="🎨 Зробити картку"):
+    """Готова інлайн-клавіатура з однією кнопкою в генератор карток (або None).
+    Спільна для всіх, хто пропонує зробити картку: монітор новин без ФБ і
+    NLQ-роутер, коли Лис написав пост для соцмереж."""
+    url = card_url(article_id)
+    if not url:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    return InlineKeyboardMarkup([[InlineKeyboardButton(text, url=url)]])
 
 
 def _host_allowed(url):

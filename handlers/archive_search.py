@@ -153,7 +153,18 @@ def _filter_conditions(own_material=None, category=None, region=None, tag=None):
     return conds, params
 
 
+def _day_ts(value, field):
+    """'YYYY-MM-DD' → timestamp початку дня. Помилка формату — ValueError із
+    людським текстом: він доїде до моделі як error і вона перепитає правильно,
+    а не тихо шукатиме по всіх 17 роках, думаючи, що вікно застосувалось."""
+    try:
+        return int(datetime.strptime(str(value).strip(), "%Y-%m-%d").timestamp())
+    except (ValueError, TypeError):
+        raise ValueError(f"{field} має бути датою у форматі YYYY-MM-DD (напр. 2026-06-01)")
+
+
 def search_items(query, limit=10, year_from=None, year_to=None,
+                 date_from=None, date_to=None,
                  spread_years=False, per_year=3,
                  own_material=None, category=None, region=None, tag=None,
                  with_context=False):
@@ -162,6 +173,13 @@ def search_items(query, limit=10, year_from=None, year_to=None,
     Без spread_years видача — FRESH_SLOTS найсвіжіших збігів + добір до limit
     за релевантністю (ts_rank); показ у будь-якому разі хронологічний.
     Фільтри: own_material (тільки власні), category (слаг), region (код), tag (назва).
+
+    Вікно дат: year_from/year_to — роками, date_from/date_to ('YYYY-MM-DD') —
+    точними датами. Роками «свіже» не висловити: бек до сьогоднішньої новини
+    просять за липень-серпень, а year_from=2026 тягне і травень — саме на цьому
+    журналістка воювала з Лисом трьома уточненнями (ресьорч запитів 14.08).
+    date_to включний по день. Обидві пари можна комбінувати — умови AND.
+
     with_context — додати до кожного збігу excerpt (речення навколо збігу):
     ts_headline рахується ЛИШЕ для відібраних limit рядків, а не для всіх
     збігів, яких на «Миколаїв» десятки тисяч."""
@@ -179,6 +197,12 @@ def search_items(query, limit=10, year_from=None, year_to=None,
     if year_to:
         conds.append("a.published < %s")
         params.append(int(datetime(int(year_to) + 1, 1, 1).timestamp()))
+    if date_from:
+        conds.append("a.published >= %s")
+        params.append(_day_ts(date_from, "date_from"))
+    if date_to:
+        conds.append("a.published < %s")
+        params.append(_day_ts(date_to, "date_to") + 86400)  # включно по цей день
     fconds, fparams = _filter_conditions(own_material, category, region, tag)
     conds += fconds
     params += fparams
@@ -255,6 +279,7 @@ def search_items(query, limit=10, year_from=None, year_to=None,
 
 
 def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
+                   date_from=None, date_to=None,
                    spread_years=False, per_year=3,
                    own_material=None, category=None, region=None, tag=None,
                    turn_id=None):
@@ -282,6 +307,7 @@ def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
     try:
         items = search_items(
             query, limit=limit, year_from=year_from, year_to=year_to,
+            date_from=date_from, date_to=date_to,
             spread_years=spread_years, per_year=per_year,
             own_material=own_material, category=category, region=region, tag=tag,
             # Витяг тексту навколо збігу — завжди, а не за прапорцем: питання
@@ -331,7 +357,21 @@ def search_archive(dialog_key, query, limit=10, year_from=None, year_to=None,
           "в списку новин (список — рядок на новину). "
         + "Якщо результатів мало — спробуй синоніми або російське написання (старі матеріали російською)."
     )
-    return {"query": query, "found": len(items), "note": note, "items": all_items}
+    # Вікно дат називаємо ВГОЛОС: інакше модель не відрізняє «за цей місяць
+    # більше нічого не було» від «я шукав по всьому архіву». І коли вікно
+    # виявилось тонким — прямо кажемо, що робити (розширити і зізнатись).
+    window = None
+    if date_from or date_to:
+        window = f"{date_from or 'початок архіву'} … {date_to or 'сьогодні'}"
+        note += f" ПОШУК ОБМЕЖЕНО ВІКНОМ {window} — за його межами не дивився."
+        if len(items) < 3:
+            note += (" У цьому вікні збігів мало: або розшир вікно (пів року, рік) "
+                     "і ОДНИМ рядком скажи це людині, або чесно назви межі. "
+                     "Мовчки видавати старіші матеріали за свіжі не можна.")
+    result = {"query": query, "found": len(items), "note": note, "items": all_items}
+    if window:
+        result["window"] = window
+    return result
 
 
 _MONTHS_UK = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер",

@@ -58,15 +58,13 @@ import requests
 from bs4 import BeautifulSoup
 
 from handlers import db, storage
-from handlers.helpers import normalize_https_url
 from handlers.stat import get_fb_stats, known_fb_post_alive
 
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 CHAT_ID = os.environ.get("CHAT_ID")
 BASE_URL = "https://nikvesti.com"
-# Домен Mini App: там же живе генератор карток (/card). Без нього кнопки
-# «Зробити картку» просто не буде — модуль від цього не ламається.
-WEBAPP_URL = normalize_https_url(os.environ.get("WEBAPP_URL"))
+# Кнопка «Зробити картку» живе в card_maker (там же домен Mini App і сама
+# сторінка /card). Без WEBAPP_URL кнопки просто не буде — модуль не ламається.
 
 MIN_AGE_HOURS = 3      # грейс: не чіпати новину молодшу за це (SMM постить не миттєво)
 MAX_AGE_HOURS = 24     # «свіжі» — старіше не піднімаємо
@@ -362,17 +360,10 @@ def _author_html(row):
 
 
 def _card_markup(row):
-    """Кнопка «Зробити картку» — /card?url=<id> генератора карток одразу з
-    цією новиною (сторінка сама скрапить її по id). Без WEBAPP_URL кнопки
-    немає: краще повідомлення без кнопки, ніж кнопка в нікуди."""
-    if not WEBAPP_URL:
-        return None
-    article_id = str(row.get("id") or "").strip()
-    if not article_id:
-        return None
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    return InlineKeyboardMarkup([[InlineKeyboardButton(
-        "🎨 Зробити картку", url=f"{WEBAPP_URL}/card?url={article_id}")]])
+    """Кнопка «Зробити картку» — генератор карток одразу з цією новиною.
+    Сама конвенція лінка живе в card_maker (спільна з NLQ-роутером)."""
+    from handlers.card_maker import card_button
+    return card_button(row.get("id"))
 
 
 async def _send_alert(bot, chat_id, row, note=None, page_html=None):
