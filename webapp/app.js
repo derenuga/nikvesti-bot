@@ -3893,10 +3893,16 @@ function creditAvatars(people) {
    новини, окремо заголовок, кружечки авторів, кружечок донора, дату,
    кількість публікацій»). Фото — og:image новини-фіксації; зникне на
    сайті — картка тихо стає текстовою (onerror ховає блок). */
+/* Донори кейсу — партнери проєктів, у яких виходили тексти серії. Їх буває
+   кілька: серія збирається роками, і за цей час проєкт міг змінитись. */
+function impactDonors(im) {
+  return Array.isArray(im.partners) ? im.partners.filter(Boolean) : [];
+}
+
 function impactCard(im) {
   const building = im.status === "building";
   const failed = im.status === "failed";
-  const partners = (im.partners || "").split(" · ").filter(Boolean);
+  const partners = impactDonors(im);
   return `
     <button class="imp-card" data-impact="${im.id}">
       ${im.image && !building && !failed ? `<span class="imp-img">
@@ -3933,9 +3939,48 @@ function paintImpacts() {
       «повернули») — решту серії бот збере сам.</div>`;
     return;
   }
+  /* Фільтр по ДОНОРУ (Олег, 14.08: «выбрать донора и увидеть все импакты,
+     которые были для этого донора») — саме так їх і питають у заявці: не «що
+     ми зробили торік», а «що ми зробили за ваші гроші». Селектом, а не
+     чипами, як роки: донорів десятки, чипами вони з'їдять пів екрана, і
+     потрібен не перегляд усіх, а прицільний вибір одного.
+     Кейс може бути «для» кількох донорів одразу — тексти серії виходили в
+     різних проєктах, і кожному з них цей імпакт можна показати чесно.
+     Кейси, що ще збираються, донора не мають і під фільтром зникають: це
+     правда — поки серія не зібрана, невідомо, чиї це гроші. */
+  const counts = new Map();
+  list.forEach((im) => impactDonors(im).forEach(
+    (d) => counts.set(d, (counts.get(d) || 0) + 1)));
+  const donors = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "uk"));
+  if (STATE.impactDonor && !counts.has(STATE.impactDonor)) STATE.impactDonor = null;
+  // Один донор на весь архів фільтрувати нема чого — хіба що поруч є кейси
+  // без донора, і тоді вибір ще щось означає
+  const showSel = donors.length > 1
+    || (donors.length === 1 && list.some((im) => !impactDonors(im).length));
+  // Лого обраного донора ліворуч — але тільки НАСПРАВДІ лого: ініціали тут
+  // були б кружечком з однією літерою поруч із повною назвою в селекті
+  const logo = STATE.impactDonor && (STATE.projects || [])
+    .some((p) => p.partner === STATE.impactDonor && p.logo);
+  const sel = showSel ? `
+    <div class="im-filter">
+      ${logo ? donorChip(STATE.impactDonor)
+        : `<span class="im-filter-lb">Донор</span>`}
+      <select class="im-sel" id="im-donor" aria-label="Донор">
+        <option value="">Усі донори · ${list.length}</option>
+        ${donors.map(([name, n]) => `<option value="${esc(name)}"${
+          name === STATE.impactDonor ? " selected" : ""}>${esc(name)} · ${n}</option>`).join("")}
+      </select>
+    </div>` : "";
+  const byDonor = STATE.impactDonor
+    ? list.filter((im) => impactDonors(im).includes(STATE.impactDonor))
+    : list;
+
   // Фільтр по роках (Олег, 30.07: «поставил 2024 — видишь импакты за 2024»).
-  // Роки — лише ті, за які кейси Є; один рік — фільтр не потрібен, не малюємо
-  const years = [...new Set(list.map(impactYear).filter(Boolean))]
+  // Роки рахуються ВЖЕ по відібраному донору: інакше чип «2024» вів би в
+  // порожній екран, коли саме в цього донора 2024-го кейсів немає.
+  // Один рік — фільтр не потрібен, не малюємо
+  const years = [...new Set(byDonor.map(impactYear).filter(Boolean))]
     .sort((a, b) => b.localeCompare(a));
   if (STATE.impactYear && !years.includes(STATE.impactYear)) STATE.impactYear = null;
   const chips = years.length > 1 ? `
@@ -3945,11 +3990,23 @@ function paintImpacts() {
         data-imyear="${y}">${y}</button>`).join("")}
     </div>` : "";
   const shown = STATE.impactYear
-    ? list.filter((im) => !impactYear(im) || impactYear(im) === STATE.impactYear)
-    : list;
-  body.innerHTML = chips + (shown.length
+    ? byDonor.filter((im) => !impactYear(im) || impactYear(im) === STATE.impactYear)
+    : byDonor;
+  // Запобіжник: обидва фільтри рахуються так, щоб порожнього екрана не
+  // існувало (рік, якого в цього донора немає, скидається сам). Але якщо він
+  // якось трапиться — підпис називає ОБИДВА фільтри, бо «кейсів немає»
+  // читається як «архів порожній», хоч поруч стоїть обраний донор
+  const why = [STATE.impactDonor ? `для «${esc(STATE.impactDonor)}»` : "",
+               STATE.impactYear ? `за ${esc(STATE.impactYear)} рік` : ""]
+    .filter(Boolean).join(" ");
+  body.innerHTML = sel + chips + (shown.length
     ? shown.map(impactCard).join("")
-    : `<div class="empty-hint">За ${esc(STATE.impactYear)} рік кейсів немає.</div>`);
+    : `<div class="empty-hint">Кейсів ${why} немає.</div>`);
+  const dsel = $("im-donor");
+  if (dsel) dsel.onchange = () => {
+    STATE.impactDonor = dsel.value || null;
+    paintImpacts();
+  };
   body.querySelectorAll("[data-imyear]").forEach((b) => b.onclick = () => {
     STATE.impactYear = b.dataset.imyear || null;
     paintImpacts();
