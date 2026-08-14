@@ -680,6 +680,13 @@ def get_usage_day(day):
         return dict(_read_state().get("bot_usage", {}).get(day, {}))
 
 
+def get_usage_all():
+    """Уся збережена історія користування: {day: {user_id(str): rec}} —
+    для зведення по одній людині (/usage <імʼя>). Живе USAGE_MAX_DAYS днів."""
+    with _lock:
+        return {day: dict(users) for day, users in _read_state().get("bot_usage", {}).items()}
+
+
 # ---------- Кеш зіставлення тегів із Wikidata (/tags_wiki) ----------
 #
 # Дороге в прогоні — пошук у Wikidata і рішення Claude. Кешуємо їх за tag_id,
