@@ -128,11 +128,14 @@ _SCHEMA_STATEMENTS = [
     # прикол?» — прикол був у моделі). Міграція нижче переносить старі кейси.
     "ALTER TABLE impact_articles ADD COLUMN IF NOT EXISTS is_key BOOLEAN NOT NULL DEFAULT FALSE",
     "UPDATE impact_articles SET is_key = TRUE, role = 'series' WHERE role = 'key'",
-    # Наш матеріал, підказаний людиною при заведенні кейсу з ЧУЖОГО джерела:
-    # на сторонній сторінці лінка на нас може не бути взагалі, а зв'язок
-    # людина знає. Живе в базі, бо «перезібрати заново» має бачити ту саму
-    # підказку — інакше друга спроба слабша за першу.
+    # Наші матеріали, підказані людиною при заведенні кейсу: на сторонній
+    # сторінці лінка на нас може не бути взагалі, а зв'язок людина знає.
+    # Живуть у базі, бо «перезібрати заново» має бачити ті самі підказки —
+    # інакше друга спроба слабша за першу. Один рядок = один лінк: підказок
+    # буває кілька (Олег, 14.08: «зроби можливість плюсиком додавати більше
+    # посилань» — у серії старого сюжету їх п'ять, а не одна)
     "ALTER TABLE impacts ADD COLUMN IF NOT EXISTS our_url TEXT",
+    "ALTER TABLE impacts ADD COLUMN IF NOT EXISTS our_urls TEXT",
 ]
 
 _schema_lock = threading.Lock()
@@ -521,15 +524,14 @@ def _site_meta(article_ids):
     }
 
 
-def _mark_hinted(candidates, our_url):
-    """Позначити матеріал, який ВКАЗАЛА людина. Для судді це найсильніший
+def _mark_hinted(candidates, our_urls):
+    """Позначити матеріали, які ВКАЗАЛА людина. Для судді це найсильніший
     сигнал у всій таблиці: пошук може принести сусідній сюжет, беклінк —
     випадкову згадку, а редактор знає, з чого все почалось."""
-    aid = resolve_article_id(our_url or "")
-    if not aid:
-        return candidates
+    hinted = {aid for aid in (resolve_article_id(u) for u in (our_urls or []))
+              if aid}
     for c in candidates:
-        if c["id"] == int(aid):
+        if c["id"] in hinted:
             c["hinted"] = True
     return candidates
 
@@ -598,7 +600,7 @@ def _search_our_archive(queries):
     return out
 
 
-def _collect_candidates(source_url, our_url=None):
+def _collect_candidates(source_url, our_urls=None):
     """(тригерна стаття, кандидати серії). Кандидати: беклінки зі сторінки
     (найцінніші — їх поставили самі журналісти) + FTS нори за заголовком."""
     src_id = resolve_article_id(source_url)
@@ -618,10 +620,10 @@ def _collect_candidates(source_url, our_url=None):
             from_backlink.add(int(aid))
             ordered_ids.append(int(aid))
 
-    # Підказаний людиною матеріал іде ПЕРШИМ і рівний беклінку: людина знає
-    # свій сюжет краще за пошук
-    if our_url:
-        _take(our_url, allow_page=True)
+    # Підказані людиною матеріали йдуть ПЕРШИМИ і рівні беклінкам: людина
+    # знає свій сюжет краще за пошук
+    for hint in our_urls or []:
+        _take(hint, allow_page=True)
     for href in links:
         _take(href)
     # Другий рівень: сторінки перших беклінків. Реальний кейс 30.07 — ключова
@@ -643,7 +645,7 @@ def _collect_candidates(source_url, our_url=None):
             ordered_ids.append(aid)
 
     candidates, meta = _candidate_rows(ordered_ids, from_backlink, [int(src_id)])
-    _mark_hinted(candidates, our_url)
+    _mark_hinted(candidates, our_urls)
     src_published = int(src.get("published") or 0)
     trigger = {
         "id": int(src_id),
@@ -659,7 +661,7 @@ def _collect_candidates(source_url, our_url=None):
     return trigger, candidates
 
 
-def _collect_external(page, our_url=None, queries=None):
+def _collect_external(page, our_urls=None, queries=None):
     """(чужа публікація як тригер, кандидати серії з нори).
 
     Три джерела нашої історії, у порядку надійності:
@@ -681,8 +683,8 @@ def _collect_external(page, our_url=None, queries=None):
             from_backlink.add(int(aid))
             ordered_ids.append(int(aid))
 
-    if our_url:
-        _take(our_url, allow_page=True)
+    for hint in our_urls or []:
+        _take(hint, allow_page=True)
     for href in page.get("links") or []:
         _take(href)
     # Другий рівень — передісторія самих знайдених матеріалів (той самий
@@ -700,7 +702,7 @@ def _collect_external(page, our_url=None, queries=None):
             ordered_ids.append(aid)
 
     candidates, _meta = _candidate_rows(ordered_ids, from_backlink)
-    _mark_hinted(candidates, our_url)
+    _mark_hinted(candidates, our_urls)
     published = int(page.get("published") or 0)
     trigger = {
         # id немає свідомо: чужа публікація не наш матеріал і в норі її бути
@@ -742,7 +744,7 @@ _QUERIES_TOOL = {
 }
 
 
-async def _plan_queries(page, essence=None, our_url=None):
+async def _plan_queries(page, essence=None, our_urls=None):
     """Пошукові запити по норі за текстом чужої публікації.
 
     Навіщо модель, а не заголовок: пошук нори склеює всі слова через AND
@@ -764,7 +766,7 @@ async def _plan_queries(page, essence=None, our_url=None):
 {page.get('title')}
 {(page.get('text') or '')[:2500]}
 {f'Суть словами редактора: {essence}' if essence else ''}
-{f'Редактор уже вказав наш матеріал: {our_url}' if our_url else ''}
+{('Редактор уже вказав наші матеріали: ' + ', '.join(our_urls)) if our_urls else ''}
 
 Склади запити для повнотекстового пошуку через archive_queries.
 Правила, без яких пошук не знайде нічого:
@@ -971,19 +973,31 @@ def _notify_credit(impact_id, impact_title, person, note):
 
 # ---------- Публічне API модуля ----------
 
-def create_impact(actor, source_url, essence, our_url=None):
+def hint_urls(row):
+    """Підказані людиною матеріали кейсу списком. У базі вони рядками в
+    одному полі: список підказок — це той самий факт «людина показала, з чого
+    все почалось», і розносити його по таблиці нема чого. `our_url` читається
+    як запасний — там лежать кейси, заведені до появи плюсика."""
+    raw = (row.get("our_urls") or row.get("our_url") or "")
+    return [u.strip() for u in raw.split("\n") if u.strip()]
+
+
+def create_impact(actor, source_url, essence, our_urls=None):
     """Створює чернетку 'building' і повертає її id — сам збір іде окремо
     (build_impact), щоб HTTP-запит апки не висів пів хвилини.
 
-    our_url — наш матеріал, підказаний людиною. Живе в базі, а не тільки в
-    пам'яті прогону, бо «перезібрати заново» має збирати з тією ж підказкою:
-    інакше друга спроба була б слабшою за першу."""
+    our_urls — наші матеріали, підказані людиною. Живуть у базі, а не тільки
+    в пам'яті прогону, бо «перезібрати заново» має збирати з тими самими
+    підказками: інакше друга спроба була б слабшою за першу."""
     ensure_impact_schema()
+    if isinstance(our_urls, str):
+        our_urls = [our_urls]
+    hints = "\n".join(u.strip() for u in (our_urls or []) if u and u.strip())
     rows = bot_db.query(
-        "INSERT INTO impacts (essence, source_url, our_url, created_by) "
+        "INSERT INTO impacts (essence, source_url, our_urls, created_by) "
         "VALUES (%s, %s, %s, %s) RETURNING id",
         ((essence or "").strip() or None, source_url.strip(),
-         (our_url or "").strip() or None, actor),
+         hints or None, actor),
     )
     return rows[0]["id"]
 
@@ -1138,7 +1152,8 @@ async def build_impact(impact_id):
     def _load():
         with bot_db.session():
             rows = bot_db.query(
-                "SELECT id, source_url, our_url, essence FROM impacts WHERE id = %s",
+                "SELECT id, source_url, our_url, our_urls, essence "
+                "FROM impacts WHERE id = %s",
                 (int(impact_id),))
             return rows[0] if rows else None
 
@@ -1148,10 +1163,10 @@ async def build_impact(impact_id):
 
     try:
         source_url = imp["source_url"]
-        our_url = (imp.get("our_url") or "").strip() or None
+        our_urls = hint_urls(imp)
         if is_our_url(source_url):
             trigger, candidates = await asyncio.to_thread(
-                _collect_candidates, source_url, our_url)
+                _collect_candidates, source_url, our_urls)
         else:
             if "nikvesti.com" in source_url:
                 raise ValueError("Це лінк на nikvesti.com, але не на матеріал "
@@ -1160,9 +1175,9 @@ async def build_impact(impact_id):
             # Чуже джерело: спершу читаємо сторінку, потім складаємо запити
             # по норі (мережа й БД — у потоках, модель — асинхронно)
             page = await asyncio.to_thread(_external_source, source_url)
-            queries = await _plan_queries(page, imp["essence"], our_url)
+            queries = await _plan_queries(page, imp["essence"], our_urls)
             trigger, candidates = await asyncio.to_thread(
-                _collect_external, page, our_url, queries)
+                _collect_external, page, our_urls, queries)
         verdict = await _run_judge(trigger, candidates, imp["essence"])
 
         by_id = {c["id"]: c for c in candidates}
@@ -1361,7 +1376,7 @@ def get_impact(impact_id):
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
         "what_happened": story.get("what_happened") or "",
         "significance": story.get("significance") or "",
-        "our_url": r.get("our_url"),
+        "our_urls": hint_urls(r),
         # article_id порожній рівно в одному випадку — це чужа публікація
         # (наш матеріал без id у базу не потрапляє), тож окремої колонки-
         # прапорця не заводимо: він був би другим джерелом тієї самої правди
