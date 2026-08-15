@@ -99,6 +99,21 @@ async def _open_app(pw):
     return browser, page
 
 
+async def _reopen(page):
+    """Перезапустити апку так, як її бачить людина, що зайшла ЗАНОВО.
+
+    З 11.08 апка памʼятає останній екран і після перезапуску повертає саме
+    його (rememberView/restoreView у app.js): Telegram піднімає WebView сам —
+    зміна теми, повернення з фону, «Reload» у меню, — і доти будь-що з цього
+    викидало з картки людини на Головну. Тест же користується reload як
+    скиданням стану, тому памʼять треба знести явно; інакше після reload ми
+    лишаємось у трекері Аліни, Головної не бачимо, і тест падає на пошуку
+    рядка людини — не полагодивши нічого й нічого не зламавши."""
+    await page.evaluate("try { localStorage.removeItem('team.lastView'); } catch (e) {}")
+    await page.reload()
+    await page.wait_for_selector("#screen-main:not(.hidden)")
+
+
 async def test_sheet_listener_leak(page, opens):
     """Відкриваємо/закриваємо картку таска 101 `opens` разів, потім у картці
     таска 202 тиснемо «Виконано». Має полетіти РІВНО один PATCH — на 202."""
@@ -156,11 +171,9 @@ async def main():
         browser, page = await _open_app(pw)
         try:
             results.append(await test_sheet_listener_leak(page, opens=1))
-            await page.reload()
-            await page.wait_for_selector("#screen-main:not(.hidden)")
+            await _reopen(page)
             results.append(await test_sheet_listener_leak(page, opens=4))
-            await page.reload()
-            await page.wait_for_selector("#screen-main:not(.hidden)")
+            await _reopen(page)
             results.append(await test_project_picker_after_stray_tap(page))
         finally:
             await browser.close()

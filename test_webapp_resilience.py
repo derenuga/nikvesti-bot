@@ -172,7 +172,11 @@ async def test_destructive_needs_confirm(pw, results):
         sent = await page.evaluate("window.__patches")
         results.append(("після згоди запит полетів", sent == ["PATCH /api/tasks/101"]))
 
-        # 3. «Виконано» — не деструктивне, без діалогу
+        # 3. «Виконано» — не деструктивне, без діалогу.
+        # Перезапуск має бути «як зайшли заново»: з 11.08 апка памʼятає
+        # останній екран (rememberView/restoreView), тож голий reload лишив би
+        # нас у трекері Аліни й Головної ми б не побачили.
+        await page.evaluate("try { localStorage.removeItem('team.lastView'); } catch (e) {}")
         await page.reload()
         await page.wait_for_selector("#screen-main:not(.hidden)")
         await page.click("[data-tracker]")

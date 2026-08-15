@@ -232,15 +232,25 @@ async def main():
         browser, page = await _open(pw, BOOT_JOURNALIST)
         try:
             await page.wait_for_timeout(700)
+            # Динаміка живе за дверима «KPI по місяцях», а не на самій
+            # Головній: графік займав екран, і робота, заради якої апку
+            # відкривають, їхала вниз. На дверях лишився підпис «як іде
+            # місяць до місяця» — по ньому й заходимо.
+            check("на Головній є двері «KPI по місяцях»",
+                  "як іде місяць до місяця" in await page.inner_text("#content"))
+            await page.click('.door[data-nav="myhist"]')
+            await page.wait_for_selector("#my-hist-chart", timeout=5000)
             body = await page.inner_text("#content")
-            check("журналістка бачить блок динаміки", "Як іде місяць до місяця" in body)
             check("стовпчиків — 12", await page.locator("#my-hist-chart .hb-col").count() == 12)
             check("і вони підписані відсотками", "%" in body)
             calls = await page.evaluate("window.__personCalls")
             check("апка не підставляє чуже ім'я в запит",
                   calls and "person=" not in calls[0])
 
-            # кільце KPI у шапці: завжди зелене і за ПОТОЧНИЙ МІСЯЦЬ
+            # кільце KPI у шапці: завжди зелене і за ПОТОЧНИЙ МІСЯЦЬ.
+            # Воно на Головній, тож спершу повертаємось із дверей динаміки
+            await page.click('.back[data-nav="home"]')
+            await page.wait_for_selector("#me-ring", timeout=5000)
             ring = await page.inner_html("#me-ring")
             check("у шапці є кільце з фото", 'class="avaring"' in ring)
             check("смуга кільця зелена, а не за рівнем виконання",

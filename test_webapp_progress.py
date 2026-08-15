@@ -335,7 +335,14 @@ async def main():
             doors = await page.locator(".door").all_inner_texts()
             check("двері «Виконані» з числом",
                   any("Виконані" in d and "1" in d for d in doors))
-            check("двері «Події»", any("Події" in d for d in doors))
+            # «Події» переїхали в нижнє меню журналістки: там живе регулярне,
+            # а на Головній лишились двері, які без числа не мають сенсу.
+            # Стережемо обидва боки, інакше пункт міг би зникнути з меню
+            # й водночас не повернутись на Головну — і цього ніхто б не помітив.
+            check("дверей «Події» на Головній більше немає",
+                  not any("Події" in d for d in doors))
+            check("«Події» стоять у нижньому меню журналістки",
+                  await page.locator('#bottomnav [data-view="myfeed"]').count() == 1)
             check("двері «KPI по місяцях»",
                   any("KPI по місяцях" in d for d in doors))
             check("графік на головній більше не займає екран",
@@ -349,8 +356,13 @@ async def main():
             await page.click('.back[data-nav="home"]')
             await page.wait_for_selector(".door", timeout=3000)
 
-            # --- за дверима «Події»: стрічка двома названими блоками ---
-            await page.click('.door[data-nav="myfeed"]')
+            # --- «Події»: стрічка двома названими блоками ---
+            # Вхід саме з НИЖНЬОГО МЕНЮ, а не дверима з Головної: у журналістки
+            # своє меню (Головна · Публікації · Блокнот · Контакти · Події), і
+            # регулярне живе там. На Головній лишились двері, які без числа не
+            # мають сенсу («Виконані ×3», «KPI по місяцях», «Не буду на роботі»),
+            # а «Події» з них пішли.
+            await page.click('#bottomnav [data-view="myfeed"]')
             await page.wait_for_selector(".nt-row", timeout=3000)
             feed = await page.inner_text("#content")
             check("замість «Що нового» — «Нещодавно зараховані»",
@@ -360,7 +372,8 @@ async def main():
             check("подія зарахування пішла у свій блок",
                   feed.index("Нещодавно зараховані") < feed.index("Голоси Миколаєва")
                   < feed.index("Нові завдання"))
-            await page.click('.back[data-nav="home"]')
+            # Назад теж меню: тап у нижнє меню — єдине, що скидає історію
+            await page.click('#bottomnav [data-view="home"]')
             await page.wait_for_selector(".door", timeout=3000)
 
             # --- за дверима «KPI по місяцях»: графік цілим екраном ---
