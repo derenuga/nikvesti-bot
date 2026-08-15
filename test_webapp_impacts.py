@@ -431,6 +431,10 @@ async def main():
         # не вантажило взагалі, хоча правило «я хочу бачити все, що у неї»
         browser = await pw.chromium.launch(**launch)
         page = await browser.new_page(viewport={"width": 390, "height": 844})
+        # telegram.org глушимо і тут: у цьому файлі три різні входи в апку
+        # (менеджер, журналістка, окремий сценарій), і заглушка потрібна кожному
+        await page.route("https://telegram.org/**", lambda r: asyncio.ensure_future(
+            r.fulfill(status=200, content_type="application/javascript", body="")))
         await page.route("**/static/*", lambda r: asyncio.ensure_future(
             r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
         await page.route("https://app.local/", lambda r: asyncio.ensure_future(
@@ -459,6 +463,10 @@ async def main():
         # ---------- журналістка: двері, список, read-only ----------
         browser = await pw.chromium.launch(**launch)
         page = await browser.new_page(viewport={"width": 390, "height": 844})
+        # telegram.org глушимо і тут: у цьому файлі три різні входи в апку
+        # (менеджер, журналістка, окремий сценарій), і заглушка потрібна кожному
+        await page.route("https://telegram.org/**", lambda r: asyncio.ensure_future(
+            r.fulfill(status=200, content_type="application/javascript", body="")))
         await page.route("**/static/*", lambda r: asyncio.ensure_future(
             r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
         await page.route("https://app.local/", lambda r: asyncio.ensure_future(

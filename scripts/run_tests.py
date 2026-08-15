@@ -169,7 +169,18 @@ def main(argv):
         print(f"\n{'=' * 70}\nВивід тих, що впали:\n")
         for name, out in failed:
             print(f"----- {name} " + "-" * (64 - len(name)))
-            print("\n".join(out.strip().splitlines()[-30:]))
+            lines = out.strip().splitlines()
+            # Спершу САМІ червоні рядки, і тільки потім хвіст. Інакше тест на
+            # 85 перевірок, де впала одна, показує в CI лише останні тридцять
+            # зелених і підсумок «84/85» — тобто вимагає окремого заходу, щоб
+            # дізнатись, ЩО не так (перший же прогін у GitHub, 15.08).
+            bad = [ln for ln in lines if "❌" in ln or ln.strip().startswith("✗")]
+            if bad:
+                print("Червоні перевірки:")
+                for ln in bad[:20]:
+                    print(f"  {ln.strip()}")
+                print()
+            print("\n".join(lines[-30:]))
             print()
 
     print(f"\nПройшло {len(passed)}, впало {len(failed)}, пропущено {len(skipped)}")

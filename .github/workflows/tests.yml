@@ -54,7 +54,11 @@ jobs:
       # щоразу — це хвилини на кожен пуш заради байт-у-байт того самого файла
       - name: Версія playwright для ключа кешу
         id: pw
-        run: echo "v=$(python -c 'import importlib.metadata as m; print(m.version(\"playwright\"))')" >> $GITHUB_OUTPUT
+        # Через pip show, а не python -c: лапки всередині YAML-команди
+        # доводилось екранувати, і перший варіант мовчки впав із SyntaxError —
+        # ключ вийшов «pw-Linux--chromium», тобто БЕЗ версії. Кеш при цьому
+        # працював, і оновлення playwright тихо підхопило б старий браузер.
+        run: pip show playwright | awk '/^Version:/ {print "v=" $2}' >> $GITHUB_OUTPUT
 
       - uses: actions/cache@v4
         id: pw-cache
