@@ -1,14 +1,25 @@
 # Службовий workflow вигрузки статей з нори для скіла deep-dossier.
 # Раннер має відкриту мережу до Railway (пісочниця Claude Code — ні).
 #
-# Тригер: пуш файлу dossier_export/REQUEST у будь-яку гілку. Формат REQUEST:
-#   TSQUERY=Кім:* | Ким:*
-#   DB_URL=postgresql://...          # публічний Railway URL; ротувати після
-#   OUT_PREFIX=dossier_export/topic  # опційно
-# Після прогону скіл видаляє REQUEST (ключ лишається в історії 1 коміту → ротація).
+# КЛЮЧ ЖИВЕ В СЕКРЕТІ РЕПО, а не у файлі. Раніше публічний URL нори (це живий
+# пароль до бази з 17-річним архівом) вписувався в dossier_export/REQUEST,
+# комітився й лишався в історії назавжди — тож ритуал «ротувати після прогону»
+# був не обережністю, а обов'язком, і тримався на памʼяті людини. Тепер URL
+# лежить у секреті FOXHOLE_DB_URL, у git не потрапляє ніколи й ротації не
+# потребує.
 #
-# Альтернатива (коли workflow на гілці за замовчуванням): workflow_dispatch
-# з інпутами tsquery/db_url — тоді ключ не комітиться, лише в логах прогону.
+# Завести секрет (один раз, Олег):
+#   Settings → Secrets and variables → Actions → New repository secret
+#   Ім'я: FOXHOLE_DB_URL
+#   Значення: DATABASE_PUBLIC_URL з Railway (Postgres → Variables)
+#
+# Тригер: пуш файлу dossier_export/REQUEST у будь-яку гілку. У ньому лишається
+# тільки те, що не є таємницею:
+#   TSQUERY=Кім:* | Ким:*
+#   OUT_PREFIX=dossier_export/topic  # опційно
+#
+# Або workflow_dispatch із тими самими двома полями — інпута під ключ немає
+# свідомо: він потрапляв би в логи прогону.
 name: foxhole-export
 
 on:
@@ -19,9 +30,6 @@ on:
     inputs:
       tsquery:
         description: "to_tsquery('simple', ...) вираз"
-        required: true
-      db_url:
-        description: "Публічний connection string Railway Postgres"
         required: true
       out_prefix:
         description: "Префікс вихідних файлів"
@@ -42,16 +50,30 @@ jobs:
       - run: pip install psycopg2-binary
       - name: Export from foxhole
         env:
+          SECRET_DBURL: ${{ secrets.FOXHOLE_DB_URL }}
           IN_TSQUERY: ${{ github.event.inputs.tsquery }}
-          IN_DBURL: ${{ github.event.inputs.db_url }}
           IN_PREFIX: ${{ github.event.inputs.out_prefix }}
         run: |
           if [ -f dossier_export/REQUEST ]; then set -a; . dossier_export/REQUEST; set +a; fi
-          export FOXHOLE_DB_URL="${DB_URL:-$IN_DBURL}"
+          # Секрет — головне джерело. DB_URL із REQUEST лишається прийнятним
+          # лише як пережиток старого шляху: працюємо, але кажемо вголос, що
+          # ключ уже в історії й потребує ротації.
+          if [ -n "$SECRET_DBURL" ]; then
+            export FOXHOLE_DB_URL="$SECRET_DBURL"
+          elif [ -n "$DB_URL" ]; then
+            export FOXHOLE_DB_URL="$DB_URL"
+            echo "::warning::DB_URL узято з файла REQUEST — він потрапив у git."
+            echo "::warning::Заведи секрет FOXHOLE_DB_URL і ротуй цей URL."
+          fi
           export TOPIC_TSQUERY="${TSQUERY:-$IN_TSQUERY}"
           export OUT_PREFIX="${OUT_PREFIX:-${IN_PREFIX:-dossier_export/topic}}"
-          test -n "$FOXHOLE_DB_URL" || { echo "немає DB_URL"; exit 1; }
-          test -n "$TOPIC_TSQUERY" || { echo "немає TSQUERY"; exit 1; }
+          if [ -z "$FOXHOLE_DB_URL" ]; then
+            echo "::error::Немає доступу до нори. Заведи секрет FOXHOLE_DB_URL:"
+            echo "::error::Settings → Secrets and variables → Actions →"
+            echo "::error::New repository secret, значення — DATABASE_PUBLIC_URL з Railway."
+            exit 1
+          fi
+          test -n "$TOPIC_TSQUERY" || { echo "::error::немає TSQUERY"; exit 1; }
           mkdir -p "$(dirname "$OUT_PREFIX")"
           python scripts/dossier/export_foxhole.py
       - name: Commit export

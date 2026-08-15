@@ -116,6 +116,14 @@ async def _open(pw, boot):
         launch["executable_path"] = path
     browser = await pw.chromium.launch(**launch)
     page = await browser.new_page(viewport={"width": 390, "height": 844})
+    # Справжній telegram-web-app.js із telegram.org НЕ вантажимо: він затирає
+    # нашу заглушку window.Telegram, апка бачить, що вона не в Телеграмі, і
+    # показує екран помилки замість головного. Локально це не спливало (у
+    # пісочниці немає мережі, скрипт просто не діставався) — і всі 18 тестів
+    # апки чесно падали в CI, де мережа є. Тест не має залежати від того,
+    # дотягнувся браузер до чужого сайту чи ні.
+    await page.route("https://telegram.org/**", lambda r: asyncio.ensure_future(
+        r.fulfill(status=200, content_type="application/javascript", body="")))
     await page.route("**/static/*", lambda r: asyncio.ensure_future(
         r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
     await page.route("https://app.local/", lambda r: asyncio.ensure_future(
@@ -232,15 +240,25 @@ async def main():
         browser, page = await _open(pw, BOOT_JOURNALIST)
         try:
             await page.wait_for_timeout(700)
+            # Динаміка живе за дверима «KPI по місяцях», а не на самій
+            # Головній: графік займав екран, і робота, заради якої апку
+            # відкривають, їхала вниз. На дверях лишився підпис «як іде
+            # місяць до місяця» — по ньому й заходимо.
+            check("на Головній є двері «KPI по місяцях»",
+                  "як іде місяць до місяця" in await page.inner_text("#content"))
+            await page.click('.door[data-nav="myhist"]')
+            await page.wait_for_selector("#my-hist-chart", timeout=5000)
             body = await page.inner_text("#content")
-            check("журналістка бачить блок динаміки", "Як іде місяць до місяця" in body)
             check("стовпчиків — 12", await page.locator("#my-hist-chart .hb-col").count() == 12)
             check("і вони підписані відсотками", "%" in body)
             calls = await page.evaluate("window.__personCalls")
             check("апка не підставляє чуже ім'я в запит",
                   calls and "person=" not in calls[0])
 
-            # кільце KPI у шапці: завжди зелене і за ПОТОЧНИЙ МІСЯЦЬ
+            # кільце KPI у шапці: завжди зелене і за ПОТОЧНИЙ МІСЯЦЬ.
+            # Воно на Головній, тож спершу повертаємось із дверей динаміки
+            await page.click('.back[data-nav="home"]')
+            await page.wait_for_selector("#me-ring", timeout=5000)
             ring = await page.inner_html("#me-ring")
             check("у шапці є кільце з фото", 'class="avaring"' in ring)
             check("смуга кільця зелена, а не за рівнем виконання",

@@ -146,14 +146,18 @@ MINE = [{"id": 7, "title": READY["title"],
 
 LIST = [
     {"id": 7, "title": READY["title"], "essence": READY["essence"],
-     "status": "ready", "error": None, "articles": 3, "partners": "IMS",
+     # partners — СПИСОК, як його віддає сервер (ARRAY_AGG у impact_archive):
+     # серія збирається роками, і за цей час проєкт міг змінитись, тож донорів
+     # у кейсі буває кілька. Тут лежав рядок "IMS" з часів одного донора, і
+     # картка мовчки лишалась без кружечка — Array.isArray(рядок) це false
+     "status": "ready", "error": None, "articles": 3, "partners": ["IMS"],
      "date": "28.07.2026",
      "image": "https://nikvesti.com/img/impact-300001.webp",
      "people": ["Аліна Квітко", "Світлана Іванченко"],
      "source_url": READY["source_url"]},
     {"id": 6, "title": "Ремонт дороги до Матвіївки після серії публікацій",
      "essence": None, "status": "ready", "error": None, "articles": 4,
-     "partners": "IMS", "date": "16.07.2024", "image": None,
+     "partners": ["IMS"], "date": "16.07.2024", "image": None,
      "people": ["Альона Коханчук"], "source_url": "y"},
     {"id": 8, "title": None, "essence": "тест", "status": "failed",
      "error": "Матеріалу 123 немає в норі", "articles": 0, "partners": None,
@@ -187,6 +191,14 @@ async def main():
             launch["executable_path"] = path
         browser = await pw.chromium.launch(**launch)
         page = await browser.new_page(viewport={"width": 390, "height": 844})
+        # Справжній telegram-web-app.js із telegram.org НЕ вантажимо: він затирає
+        # нашу заглушку window.Telegram, апка бачить, що вона не в Телеграмі, і
+        # показує екран помилки замість головного. Локально це не спливало (у
+        # пісочниці немає мережі, скрипт просто не діставався) — і всі 18 тестів
+        # апки чесно падали в CI, де мережа є. Тест не має залежати від того,
+        # дотягнувся браузер до чужого сайту чи ні.
+        await page.route("https://telegram.org/**", lambda r: asyncio.ensure_future(
+            r.fulfill(status=200, content_type="application/javascript", body="")))
         await page.route("**/static/*", lambda r: asyncio.ensure_future(
             r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
         await page.route("https://app.local/", lambda r: asyncio.ensure_future(
@@ -249,8 +261,14 @@ async def main():
             await page.click("#im-add")
             await page.wait_for_selector("#im-url", timeout=3000)
             sheet = await page.inner_text("#sheet")
-            check("форма просить лише лінк і суть — полів-анкет немає",
-                  "фіксац" in sheet and await page.locator("#sheet input").count() == 2)
+            # Полів рівно три і всі три — лінки й суть: сама фіксація, наш
+            # матеріал підказкою (з 14.08, коли фіксацією стала чужа
+            # публікація — на сторінці ІМІ лінка на нас може не бути взагалі)
+            # і суть своїми словами. Анкети як не було, так і немає.
+            check("форма просить лише лінки й суть — полів-анкет немає",
+                  "фіксац" in sheet and await page.locator("#sheet input").count() == 3)
+            check("є поле «наш матеріал» — підказка для збору",
+                  await page.locator("#sheet .im-our").count() == 1)
             await page.fill("#im-url", "https://nikvesti.com/news/public/321200-remont")
             await page.fill("#im-essence", "після нас відремонтували")
             await page.click("#im-save")
@@ -413,6 +431,10 @@ async def main():
         # не вантажило взагалі, хоча правило «я хочу бачити все, що у неї»
         browser = await pw.chromium.launch(**launch)
         page = await browser.new_page(viewport={"width": 390, "height": 844})
+        # telegram.org глушимо і тут: у цьому файлі три різні входи в апку
+        # (менеджер, журналістка, окремий сценарій), і заглушка потрібна кожному
+        await page.route("https://telegram.org/**", lambda r: asyncio.ensure_future(
+            r.fulfill(status=200, content_type="application/javascript", body="")))
         await page.route("**/static/*", lambda r: asyncio.ensure_future(
             r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
         await page.route("https://app.local/", lambda r: asyncio.ensure_future(
@@ -441,6 +463,10 @@ async def main():
         # ---------- журналістка: двері, список, read-only ----------
         browser = await pw.chromium.launch(**launch)
         page = await browser.new_page(viewport={"width": 390, "height": 844})
+        # telegram.org глушимо і тут: у цьому файлі три різні входи в апку
+        # (менеджер, журналістка, окремий сценарій), і заглушка потрібна кожному
+        await page.route("https://telegram.org/**", lambda r: asyncio.ensure_future(
+            r.fulfill(status=200, content_type="application/javascript", body="")))
         await page.route("**/static/*", lambda r: asyncio.ensure_future(
             r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
         await page.route("https://app.local/", lambda r: asyncio.ensure_future(

@@ -27,12 +27,19 @@
 """
 
 import asyncio
+import base64
 import json
 import os
 import pathlib
 import sys
 
 WEBAPP = pathlib.Path(__file__).resolve().parent / "webapp"
+
+# Найменша валідна картинка — 1×1 прозорий PNG. Нею відповідаємо на будь-який
+# запит зображення, щоб мініатюри у фікстурах завантажувались завжди
+PIXEL_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+    "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
 CHROMIUM_CANDIDATES = [
     os.environ.get("CHROMIUM_PATH"),
@@ -255,6 +262,26 @@ async def _open(pw):
         launch["executable_path"] = path
     browser = await pw.chromium.launch(**launch)
     page = await browser.new_page(viewport={"width": 390, "height": 844})
+    # Справжній telegram-web-app.js із telegram.org НЕ вантажимо: він затирає
+    # нашу заглушку window.Telegram, апка бачить, що вона не в Телеграмі, і
+    # показує екран помилки замість головного. Локально це не спливало (у
+    # пісочниці немає мережі, скрипт просто не діставався) — і всі 18 тестів
+    # апки чесно падали в CI, де мережа є. Тест не має залежати від того,
+    # дотягнувся браузер до чужого сайту чи ні.
+    await page.route("https://telegram.org/**", lambda r: asyncio.ensure_future(
+        r.fulfill(status=200, content_type="application/javascript", body="")))
+    # Картинки з nikvesti.com теж не ходять у мережу. Адреси у фікстурі
+    # вигадані, а `imgHtml` за задумом ПРИБИРАЄ картинку, яка не завантажилась
+    # (onerror → this.remove()). У пісочниці без мережі запит просто висить,
+    # елемент лишається і перевірка мініатюри проходить; у CI приходить чесний
+    # 404, картинка зникає — і та сама перевірка падає. Віддаємо валідний
+    # піксель, щоб перевірявся МАКЕТ, а не доступність чужого сервера.
+    # Телеграмний CDN — те саме: мініатюра поста каналу в черзі спірних.
+    # Ця перевірка в CI ще проходила, але лише тому, що встигала спрацювати
+    # ДО того, як картинка встигла не завантажитись — тобто трималась на гонці.
+    for host in ("https://nikvesti.com/**", "https://cdn4.telegram-cdn.org/**"):
+        await page.route(host, lambda r: asyncio.ensure_future(
+            r.fulfill(status=200, content_type="image/png", body=PIXEL_PNG)))
     await page.route("**/static/*", lambda r: asyncio.ensure_future(
         r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
     await page.route("https://app.local/", lambda r: asyncio.ensure_future(

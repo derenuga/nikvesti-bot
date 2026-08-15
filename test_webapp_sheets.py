@@ -89,6 +89,14 @@ async def _open_app(pw):
         launch["executable_path"] = path
     browser = await pw.chromium.launch(**launch)
     page = await browser.new_page(viewport={"width": 390, "height": 844})
+    # Справжній telegram-web-app.js із telegram.org НЕ вантажимо: він затирає
+    # нашу заглушку window.Telegram, апка бачить, що вона не в Телеграмі, і
+    # показує екран помилки замість головного. Локально це не спливало (у
+    # пісочниці немає мережі, скрипт просто не діставався) — і всі 18 тестів
+    # апки чесно падали в CI, де мережа є. Тест не має залежати від того,
+    # дотягнувся браузер до чужого сайту чи ні.
+    await page.route("https://telegram.org/**", lambda r: asyncio.ensure_future(
+        r.fulfill(status=200, content_type="application/javascript", body="")))
     await page.route("**/static/*", lambda r: asyncio.ensure_future(
         r.fulfill(path=str(WEBAPP / r.request.url.split("/")[-1].split("?")[0]))))
     await page.route("https://app.local/", lambda r: asyncio.ensure_future(
@@ -97,6 +105,21 @@ async def _open_app(pw):
     await page.goto("https://app.local/")
     await page.wait_for_selector("#screen-main:not(.hidden)", timeout=10000)
     return browser, page
+
+
+async def _reopen(page):
+    """Перезапустити апку так, як її бачить людина, що зайшла ЗАНОВО.
+
+    З 11.08 апка памʼятає останній екран і після перезапуску повертає саме
+    його (rememberView/restoreView у app.js): Telegram піднімає WebView сам —
+    зміна теми, повернення з фону, «Reload» у меню, — і доти будь-що з цього
+    викидало з картки людини на Головну. Тест же користується reload як
+    скиданням стану, тому памʼять треба знести явно; інакше після reload ми
+    лишаємось у трекері Аліни, Головної не бачимо, і тест падає на пошуку
+    рядка людини — не полагодивши нічого й нічого не зламавши."""
+    await page.evaluate("try { localStorage.removeItem('team.lastView'); } catch (e) {}")
+    await page.reload()
+    await page.wait_for_selector("#screen-main:not(.hidden)")
 
 
 async def test_sheet_listener_leak(page, opens):
@@ -156,11 +179,9 @@ async def main():
         browser, page = await _open_app(pw)
         try:
             results.append(await test_sheet_listener_leak(page, opens=1))
-            await page.reload()
-            await page.wait_for_selector("#screen-main:not(.hidden)")
+            await _reopen(page)
             results.append(await test_sheet_listener_leak(page, opens=4))
-            await page.reload()
-            await page.wait_for_selector("#screen-main:not(.hidden)")
+            await _reopen(page)
             results.append(await test_project_picker_after_stray_tap(page))
         finally:
             await browser.close()
