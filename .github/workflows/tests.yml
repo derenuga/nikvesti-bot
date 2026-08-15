@@ -47,14 +47,35 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Playwright
+        run: pip install playwright
+
+      # Сам браузер (~150 МБ) кешується за версією playwright: качати його
+      # щоразу — це хвилини на кожен пуш заради байт-у-байт того самого файла
+      - name: Версія playwright для ключа кешу
+        id: pw
+        run: echo "v=$(python -c 'import importlib.metadata as m; print(m.version(\"playwright\"))')" >> $GITHUB_OUTPUT
+
+      - uses: actions/cache@v4
+        id: pw-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ steps.pw.outputs.v }}-chromium
+
       - name: Браузер для тестів Mini App
-        run: |
-          pip install playwright
-          playwright install --with-deps chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        # БЕЗ --with-deps свідомо: на ubuntu-latest потрібні для chromium
+        # бібліотеки вже стоять, а apt-крок у першому ж прогоні завис на
+        # чверть години й зʼїв би весь бюджет job'а. Якщо колись у образі
+        # раннера чогось забракне — це не сховається: наступний крок
+        # запускає браузер по-справжньому і впаде з назвою бібліотеки.
+        timeout-minutes: 8
+        run: playwright install chromium
 
       - name: Переконатись, що браузер справді є
         # Без цього кроку тести апки мовчки «пропустились» би, а прогін
         # лишився зеленим — саме та дірка, від якої ми тут і лікуємось
+        timeout-minutes: 3
         run: |
           python - <<'PY'
           import sys
