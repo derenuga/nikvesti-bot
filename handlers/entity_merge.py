@@ -29,7 +29,7 @@ import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from handlers import bot_db, entity_links as el, entity_roles
+from handlers import bot_db, entity_roles
 import entity_pipeline as ep
 
 _ALLOWED_USER_IDS = {
@@ -125,10 +125,6 @@ def record_merge(cur, winner_id, loser_id, decided_by=None, run=None):
         canons = [r[0] for r in cur.fetchall()]
 
     promises = _repoint_commitments(cur, loser_id, winner_id)
-    # Структура органу (entity_links) — те саме правило, що для правил, канонів
-    # і банку тем: картка зникає, тож посилання на неї має переїхати, інакше
-    # «окружна прокуратура в обласній» перетвориться на посилання в нікуди.
-    structure = el.repoint_links(cur, loser_id, winner_id)
 
     snapshot = {
         "card": card,
@@ -136,7 +132,6 @@ def record_merge(cur, winner_id, loser_id, decided_by=None, run=None):
         "run": run,          # мітка пакета — щоб відкотити всю купу одразу
         "canons_repointed": canons,
         "promises": promises,
-        "structure_links": structure,
         "winner": {"id": w[0] if w else winner_id,
                    "name_ua": w[1] if w else None,
                    "name_ru": w[2] if w else None,
@@ -473,8 +468,6 @@ def restore_merge(merge_id):
     # Банк тем повертаємо після основного відкату: картка вже існує, тож
     # посиланням є на що вказувати
     _restore_commitments(snap.get("promises"), card["id"], winner_id)
-    # Структура повертається туди ж і з тієї ж причини: картка знову існує
-    el.restore_links(snap.get("structure_links"), card["id"])
     return {"winner_id": winner_id, "loser_id": card["id"],
             "name": card["name_ua"] or card["name_ru"], "links": len(links)}
 

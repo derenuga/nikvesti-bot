@@ -601,7 +601,7 @@ def test_cards_fix_package():
           actions == [("merge", 7401, 7402), ("merge", 7403, 7404)], str(actions))
     check("сміттєвий рядок іде в помилки", len(errors) == 1, str(errors))
 
-    rows, _dropped, _links = ej.describe_cards_fix(actions)
+    rows, _dropped = ej.describe_cards_fix(actions)
     by = {(r["winner"], r["loser"]): r for r in rows}
     check("прев'ю рахує СПІЛЬНІ СТАТТІ кожної пари — це і є підстава",
           by[(7401, 7402)]["shared"] == 1 and by[(7403, 7404)]["shared"] == 0,
