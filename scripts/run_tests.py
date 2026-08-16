@@ -47,6 +47,7 @@ NEEDS_NORA = {
     "test_entity_backfill_filter": "відбір статей для батчів — запит у нору",
     "test_entity_increment": "самозаліковність інкремента перевіряється на даних",
     "test_entity_junk": "масштаб сміття рахується в норі",
+    "test_entity_merge_promises": "злиття й відкат перевіряються на живих таблицях",
     "test_entity_roles": "нормалізація ролі звіряється SQL-функцією і Python",
     "test_matching_retro": "ретро-прогін матчера ходить у team_task_matches",
     "test_matching_scan": "щогодинна звірка ходить у team_task_matches",
