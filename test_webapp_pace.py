@@ -38,6 +38,7 @@
 """
 
 import asyncio
+import datetime
 import json
 import re
 import os
@@ -45,6 +46,14 @@ import pathlib
 import sys
 
 WEBAPP = pathlib.Path(__file__).resolve().parent / "webapp"
+
+# Дати у фікстурах рахуються ВІД СЬОГОДНІ. Вписана числом майбутня дата — це
+# міна з відомим запалом: 15.08 вона ще майбутня, 16.08 вже минула, і
+# перевірка «найближчий звіт» падає без жодної правки коду (реальний випадок
+# 16.08.2026, прогін на main).
+def _in(days):
+    return (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
+
 
 CHROMIUM_CANDIDATES = [
     os.environ.get("CHROMIUM_PATH"),
@@ -58,7 +67,7 @@ TASKS = [{
     "id": 1, "person": "Аліна Квітко", "creator": "Катерина Середа",
     "project_id": 1, "project_name": "Голоси Миколаєва", "partner_name": "IMS",
     "platform": None, "type": "news", "theme_id": 1, "theme_name": "Тендери",
-    "qty": 2, "note": "", "deadline": "2026-08-14", "status": "open",
+    "qty": 2, "note": "", "deadline": _in(-2), "status": "open",
     "auto_done": False, "created_at": "2026-08-01T10:00:00+03:00",
     "done_at": None, "done_count": 0, "matches": [],
 }]
@@ -320,15 +329,15 @@ async def main():
             kinds = await page.locator("[data-ak]").all_inner_texts()
             check(f"у шторці всі три типи ({', '.join(kinds)})",
                   set(kinds) == {"Відпустка", "Лікарняна", "Відрядження"})
-            await page.fill("#ar-start", "2026-08-10")
-            await page.fill("#ar-end", "2026-08-17")
+            await page.fill("#ar-start", _in(-6))
+            await page.fill("#ar-end", _in(1))
             await page.fill("#ar-note", "давно планувала")
             await page.click("#ar-send")
             await page.wait_for_timeout(400)
             req = await page.evaluate("window.__askedAbsence")
             check("запит пішов із датами і типом",
-                  bool(req) and req["start"] == "2026-08-10"
-                  and req["end"] == "2026-08-17" and req["kind"] == "vacation")
+                  bool(req) and req["start"] == _in(-6)
+                  and req["end"] == _in(1) and req["kind"] == "vacation")
             check("і з коментарем", req and req["note"] == "давно планувала")
 
             # --- довідка «?»: пояснює саме те, що щойно ввели ---

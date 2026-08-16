@@ -124,11 +124,14 @@ def record_merge(cur, winner_id, loser_id, decided_by=None, run=None):
                     "WHERE org_entity_id = %s RETURNING id", (winner_id, loser_id))
         canons = [r[0] for r in cur.fetchall()]
 
+    promises = _repoint_commitments(cur, loser_id, winner_id)
+
     snapshot = {
         "card": card,
         "links": links,
         "run": run,          # мітка пакета — щоб відкотити всю купу одразу
         "canons_repointed": canons,
+        "promises": promises,
         "winner": {"id": w[0] if w else winner_id,
                    "name_ua": w[1] if w else None,
                    "name_ru": w[2] if w else None,
@@ -174,6 +177,117 @@ def record_merge(cur, winner_id, loser_id, decided_by=None, run=None):
 PURGE_WINNER = 0
 
 
+# ---------- Банк тем теж дивиться на картки ----------------------------------
+#
+# Знайдено 16.08.2026, ревізією протоколу дедупу. Злиття перевішує зв'язки зі
+# статтями, правила зіставлення й орган канону ролей — але не банк тем, якого
+# на момент написання злиття ще не існувало. А він тримає ТРИ посилання на
+# картки:
+#     commitments.subject_entity_id — предмет обіцянки
+#     commitments.owner_entity_id   — обіцяльник
+#     commitment_objects.entity_id  — об'єкти обіцянки
+#
+# Програшна картка при злитті ВИДАЛЯЄТЬСЯ. Тобто обіцянка лишалась із
+# посиланням у нікуди: зникала з пошуку `/promises` по сутності, а детектор
+# виконання переставав знаходити для неї новини-докази — його пре-фільтр
+# шукає саме за СПІЛЬНОЮ КАРТКОЮ предмета. І все це мовчки, без жодної
+# помилки на екрані: обіцянка просто переставала перевірятись.
+#
+# Таблиці банку створюються ліниво у своєму модулі, тож перед кожним дотиком
+# перевіряємо, що вони взагалі є — інакше злиття падало б на норі, де банк ще
+# не заводили.
+def _has_promises(cur):
+    cur.execute("SELECT to_regclass('commitments'), to_regclass('commitment_objects')")
+    row = cur.fetchone() or (None, None)
+    return bool(row[0] and row[1])
+
+
+def _repoint_commitments(cur, loser_id, winner_id):
+    """Перевісити посилання банку тем із програшної картки на переможця.
+
+    Повертає знімок для журналу: що саме переїхало, щоб відкат повернув рівно
+    це й не зачепив чужого. Для об'єктів окремо запам'ятовуємо, де переможець
+    СТОЯВ І ДО злиття — інакше відкат зняв би його власне посилання (та сама
+    логіка, що зі статтями переможця вище)."""
+    if not _has_promises(cur):
+        return {}
+    cur.execute("UPDATE commitments SET subject_entity_id = %s "
+                "WHERE subject_entity_id = %s RETURNING id", (winner_id, loser_id))
+    subjects = [r[0] for r in cur.fetchall()]
+    cur.execute("UPDATE commitments SET owner_entity_id = %s "
+                "WHERE owner_entity_id = %s RETURNING id", (winner_id, loser_id))
+    owners = [r[0] for r in cur.fetchall()]
+
+    cur.execute("SELECT commitment_id FROM commitment_objects WHERE entity_id = %s",
+                (winner_id,))
+    winner_before = [r[0] for r in cur.fetchall()]
+    cur.execute("SELECT commitment_id FROM commitment_objects WHERE entity_id = %s",
+                (loser_id,))
+    objects = [r[0] for r in cur.fetchall()]
+    if objects:
+        # Ключ таблиці — (commitment_id, entity_id), тож там, де об'єктами були
+        # ОБИДВІ картки, вставка впала б на конфлікті: пропускаємо і просто
+        # прибираємо рядок програшної.
+        cur.execute(
+            "INSERT INTO commitment_objects (commitment_id, entity_id) "
+            "SELECT unnest(%s::bigint[]), %s ON CONFLICT DO NOTHING",
+            (objects, winner_id))
+        cur.execute("DELETE FROM commitment_objects WHERE entity_id = %s", (loser_id,))
+    return {"subjects": subjects, "owners": owners,
+            "objects": objects, "winner_objects_before": winner_before}
+
+
+def _detach_commitments(cur, entity_id):
+    """Те саме для ВИДАЛЕННЯ картки (сміття): переможця немає, тому посилання
+    не переїжджають, а знімаються — інакше вони вказували б у нікуди. Знімок
+    той самий, відкат поверне їх на місце."""
+    if not _has_promises(cur):
+        return {}
+    cur.execute("UPDATE commitments SET subject_entity_id = NULL "
+                "WHERE subject_entity_id = %s RETURNING id", (entity_id,))
+    subjects = [r[0] for r in cur.fetchall()]
+    cur.execute("UPDATE commitments SET owner_entity_id = NULL "
+                "WHERE owner_entity_id = %s RETURNING id", (entity_id,))
+    owners = [r[0] for r in cur.fetchall()]
+    cur.execute("DELETE FROM commitment_objects WHERE entity_id = %s RETURNING commitment_id",
+                (entity_id,))
+    objects = [r[0] for r in cur.fetchall()]
+    return {"subjects": subjects, "owners": owners, "objects": objects,
+            "winner_objects_before": []}
+
+
+def _restore_commitments(promises, entity_id, winner_id):
+    """Відкат: повернути посилання банку тем на картку, яка ожила.
+
+    winner_id = 0 (відкат ВИДАЛЕННЯ) означає, що переможця не було — тоді
+    нічого ні з кого знімати не треба, лише повернути своє."""
+    if not promises:
+        return
+    with bot_db.transaction():
+        if not (bot_db.query("SELECT to_regclass('commitments') AS t")[0] or {}).get("t"):
+            return
+        for cid in (promises.get("subjects") or []):
+            bot_db.execute("UPDATE commitments SET subject_entity_id = %s WHERE id = %s",
+                           (entity_id, cid))
+        for cid in (promises.get("owners") or []):
+            bot_db.execute("UPDATE commitments SET owner_entity_id = %s WHERE id = %s",
+                           (entity_id, cid))
+        objects = promises.get("objects") or []
+        if objects:
+            bot_db.execute(
+                "INSERT INTO commitment_objects (commitment_id, entity_id) "
+                "SELECT unnest(%s::bigint[]), %s ON CONFLICT DO NOTHING",
+                (objects, entity_id))
+        if winner_id:
+            # З переможця знімаємо ЛИШЕ те, що принесло це злиття
+            before = set(promises.get("winner_objects_before") or [])
+            strangers = [c for c in objects if c not in before]
+            if strangers:
+                bot_db.execute(
+                    "DELETE FROM commitment_objects WHERE entity_id = %s "
+                    "AND commitment_id = ANY(%s)", (winner_id, strangers))
+
+
 def record_purge(cur, entity_id, reason, run, decided_by=None):
     """Знімок ПЕРЕД видаленням картки. Працює на переданому курсорі — прогін
     веде одну транзакцію, і журнал має комітитись рівно з тим видаленням, яке
@@ -192,8 +306,9 @@ def record_purge(cur, entity_id, reason, run, decided_by=None):
         "SELECT article_id, role_at_time, salience FROM article_entities "
         "WHERE entity_id = %s ORDER BY article_id", (entity_id,))
     links = [[r[0], r[1], r[2]] for r in cur.fetchall()]
+    promises = _detach_commitments(cur, entity_id)
     snapshot = {"op": "purge", "reason": reason, "run": run,
-                "card": card, "links": links}
+                "card": card, "links": links, "promises": promises}
     cur.execute(
         "INSERT INTO entity_merges (winner_id, loser_id, loser_snapshot, "
         "decided_by, created) VALUES (%s, %s, %s, %s, %s) RETURNING id",
@@ -224,7 +339,7 @@ WHERE e.id = sub.entity_id
 """
 
 
-def _restore_purge(merge_id, card, links):
+def _restore_purge(merge_id, card, links, promises=None):
     """Відкат ВИДАЛЕННЯ картки: повертаємо її з тим самим id і всі її зв'язки
     разом із role_at_time та salience. Переможця тут не було, тож і знімати з
     когось аліаси чи чужі статті не треба — картка просто повертається на
@@ -253,6 +368,9 @@ def _restore_purge(merge_id, card, links):
         bot_db.execute(RECALC_ROLE_SQL, ([card["id"]],))
         bot_db.execute("UPDATE entity_merges SET undone = %s WHERE id = %s",
                        (int(time.time()), merge_id))
+    # Банк тем: посилання, зняті при видаленні, повертаємо на картку,
+    # яка щойно ожила (winner_id=0 — переможця не було, знімати ні з кого)
+    _restore_commitments(promises, card["id"], 0)
     return {"winner_id": None, "loser_id": card["id"],
             "name": card["name_ua"] or card["name_ru"], "links": len(links),
             "purge": True}
@@ -275,7 +393,7 @@ def restore_merge(merge_id):
         snap = json.loads(snap)
     card, links = snap["card"], snap["links"]
     if snap.get("op") == "purge" or rec["winner_id"] == PURGE_WINNER:
-        return _restore_purge(merge_id, card, links)
+        return _restore_purge(merge_id, card, links, snap.get("promises"))
     winner = snap.get("winner") or {}
     winner_id = rec["winner_id"]
     w_articles = set(winner.get("articles") or [])
@@ -347,6 +465,9 @@ def restore_merge(merge_id):
                            (card["id"], cid))
         bot_db.execute("UPDATE entity_merges SET undone = %s WHERE id = %s",
                        (int(time.time()), merge_id))
+    # Банк тем повертаємо після основного відкату: картка вже існує, тож
+    # посиланням є на що вказувати
+    _restore_commitments(snap.get("promises"), card["id"], winner_id)
     return {"winner_id": winner_id, "loser_id": card["id"],
             "name": card["name_ua"] or card["name_ru"], "links": len(links)}
 
