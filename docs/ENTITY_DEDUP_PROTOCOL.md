@@ -53,11 +53,16 @@
 
 ```sql
 SELECT ae.entity_id, a.id, a.published,
-       coalesce(a.title_ua, a.title_ru) AS zagolovok
+       coalesce(a.title_ua, a.title_ru) AS title
   FROM article_entities ae JOIN articles a ON a.id = ae.article_id
  WHERE ae.entity_id IN (…)
  ORDER BY ae.entity_id, a.published
 ```
+
+Назви колонок — англійські або українські в лапках, **ніколи транслітом**.
+Тут довго стояло `AS zagolovok`, і звідси воно розповзлось по всіх запитах
+сесії (Олег, 16.08). `zagolovok` — це ні англійська, ні українська: читати
+однаково незручно всім, а Postgres приймає і `AS title`, і `AS "заголовок"`.
 
 Заголовки називають область, місто й предмет — тобто відповідають на питання,
 на яке сама назва картки відповісти не може. Живий приклад того ж дня:
