@@ -48,7 +48,8 @@ import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from handlers import bot_db, entity_merge as em, entity_roles as er
+from handlers import (bot_db, entity_merge as em, entity_pairs as epair,
+                      entity_roles as er)
 import entity_pipeline as ep
 
 _ALLOWED_USER_IDS = {
@@ -943,6 +944,9 @@ def parse_cards_fix(text):
             actions.append(("merge", int(bits[1]), int(bits[2])))
         elif op in ("drop", "purge") and len(bits) >= 2 and bits[1].isdigit():
             actions.append(("drop", int(bits[1])))
+        elif op == "keep" and len(bits) >= 3 and bits[1].isdigit() and bits[2].isdigit():
+            actions.append(("keep", int(bits[1]), int(bits[2]),
+                            " ".join(bits[3:]) or "різні картки"))
         else:
             errors.append(f"не розібрав: {line[:60]}")
     return actions, errors
@@ -964,6 +968,9 @@ def describe_cards_fix(actions):
         finally:
             cur.close()
             conn.close()
+    known_diff = epair.load_different()
+    for r in rows:
+        r["was_different"] = epair.is_different(r["winner"], r["loser"], known_diff)
     drops = [a[1] for a in actions if a[0] == "drop"]
     dropped = bot_db.query(
         "SELECT id, coalesce(name_ua, name_ru) AS name, coalesce(mentions, 0) AS m "
@@ -983,6 +990,11 @@ def format_cards_fix(rows, dropped, errors):
             lines.append(f"❌ {r['wname']} / {r['lname']} — різні типи, не зіллю")
             continue
         mark = "⚠️ " if not r["shared"] else ""
+        if r.get("was_different"):
+            # Не забороняємо: людина має право передумати, побачивши нові
+            # докази. Але мовчки перекреслювати старе рішення не можна.
+            lines.append(f"❗ цю пару вже розводили як РІЗНІ: "
+                         f"{r['wname']} / {r['lname']}")
         if not r["shared"]:
             risky += 1
         lines.append(f"{mark}{r['lname']} ({r['lm']}) → {r['wname']} ({r['wm']}) "
@@ -1016,6 +1028,8 @@ def apply_cards_fix(actions, decided_by=None, only_shared=False, run=None):
                     skipped += 1
                     continue
                 em.merge_cards(a[1], a[2], decided_by, run)
+            elif a[0] == "keep":
+                epair.mark_different(a[1], a[2], a[3], decided_by)
             else:
                 purge_cards([a[1]], "cards-fix", decided_by, run)
             done += 1
@@ -1157,6 +1171,9 @@ def find_org_dupes(threshold=ORG_SIM_THRESHOLD, limit=ORG_DUPES_LIMIT):
     установи назавжди. Їм місце в іншій купі (/entity_junk), а не тут."""
     _ensure()
     positions = {p["id"] for p in scan_positions()}
+    # Пари, про які людина вже сказала «різні», у список не повертаються
+    # (§5.1 протоколу): інакше кожен прогін приносив би ті самі Кличко/Клочко.
+    known_diff = epair.load_different()
     with bot_db.session():
         bot_db.execute(f"SET pg_trgm.similarity_threshold = {threshold}")
         rows = bot_db.query(ORG_PAIRS_SQL, (ORG_PAIRS_SCAN,))
@@ -1167,6 +1184,8 @@ def find_org_dupes(threshold=ORG_SIM_THRESHOLD, limit=ORG_DUPES_LIMIT):
             continue
         if r["aid"] in positions or r["bid"] in positions:
             skipped += 1
+            continue
+        if epair.is_different(r["aid"], r["bid"], known_diff):
             continue
         cls, detail = er.classify_pair(a, b)
         if cls not in ORG_DUPE_CLASSES:
@@ -1241,6 +1260,7 @@ def find_acronym_dupes():
             acro.setdefault(toks[0], []).append(r)
         elif len(toks) >= 2:
             byini.setdefault("".join(t[0] for t in toks), []).append(r)
+    known_diff = epair.load_different()
     out = []
     for key, shorts in acro.items():
         for full in byini.get(key, []):
@@ -1253,6 +1273,8 @@ def find_acronym_dupes():
                       if er._is_region_word(t)}
                 if pa and pb and pa != pb:
                     continue          # різні міста — не пара
+                if epair.is_different(short["id"], full["id"], known_diff):
+                    continue          # людина вже сказала «різні» (§5.1)
                 w, l = ((full, short) if full["m"] >= short["m"]
                         else (short, full))
                 out.append({"winner": (w["id"], w["name"], w["m"]),
