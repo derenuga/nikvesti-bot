@@ -20,6 +20,7 @@ STATE сама.
 """
 
 import asyncio
+import datetime
 import copy
 import json
 import os
@@ -27,6 +28,14 @@ import pathlib
 import sys
 
 WEBAPP = pathlib.Path(__file__).resolve().parent / "webapp"
+
+# Дати у фікстурах рахуються ВІД СЬОГОДНІ. Вписана числом майбутня дата — це
+# міна з відомим запалом: 15.08 вона ще майбутня, 16.08 вже минула, і
+# перевірка «найближчий звіт» падає без жодної правки коду (реальний випадок
+# 16.08.2026, прогін на main).
+def _in(days):
+    return (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
+
 
 CHROMIUM_CANDIDATES = [
     os.environ.get("CHROMIUM_PATH"),
@@ -40,7 +49,7 @@ PROJECT = {
     "kpi_news": 60, "kpi_articles": 10,
     "themes": [{"id": 1, "name": "Репортажі з сесій", "planned": 20, "format": "news"}],
     "deadlines": [{"id": 1, "project_id": 7, "kind": "narrative", "stage": "interim",
-                   "title": "", "due": "2026-09-30"}],
+                   "title": "", "due": _in(45)}],
     "drive_url": None,
 }
 

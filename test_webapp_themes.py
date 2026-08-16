@@ -25,12 +25,21 @@
 """
 
 import asyncio
+import datetime
 import json
 import os
 import pathlib
 import sys
 
 WEBAPP = pathlib.Path(__file__).resolve().parent / "webapp"
+
+# Дати у фікстурах рахуються ВІД СЬОГОДНІ. Вписана числом майбутня дата — це
+# міна з відомим запалом: 15.08 вона ще майбутня, 16.08 вже минула, і
+# перевірка «найближчий звіт» падає без жодної правки коду (реальний випадок
+# 16.08.2026, прогін на main).
+def _in(days):
+    return (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
+
 OUT = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/theme-shots")
 
 CHROMIUM_CANDIDATES = [
@@ -51,7 +60,7 @@ TASKS = [
     {"id": 1, "person": "Аліна Квітко", "creator": "Катерина Середа",
      "project_id": 1, "project_name": "Голоси Миколаєва", "partner_name": "IMS",
      "platform": None, "type": "news", "theme_id": 1, "theme_name": "Тендери",
-     "qty": 2, "note": "Хто виграв тендери на укриття шкіл", "deadline": "2026-08-14",
+     "qty": 2, "note": "Хто виграв тендери на укриття шкіл", "deadline": _in(-2),
      "status": "open", "auto_done": False, "created_at": "2026-08-01T10:00:00+03:00",
      "done_at": None, "done_count": 1, "matches": [
          {"id": 11, "title": "Тендер на укриття виграла фірма з Одеси",
@@ -61,7 +70,7 @@ TASKS = [
      "project_id": 1, "project_name": "Голоси Миколаєва", "partner_name": "IWPR",
      "platform": None, "type": "article", "theme_id": 2,
      "theme_name": "Критичні інформаційні потреби", "qty": 1, "note": "",
-     "deadline": "2026-08-31", "status": "open", "auto_done": False,
+     "deadline": _in(15), "status": "open", "auto_done": False,
      "created_at": "2026-08-01T10:00:00+03:00", "done_at": None,
      "done_count": 0, "matches": []},
 ]

@@ -94,6 +94,34 @@ def chromium_path():
     return None
 
 
+def future_dates(horizon=120):
+    """Майбутні дати, вписані у фікстури ЧИСЛОМ, — з відліком до спрацювання.
+
+    Це не педантизм. 16.08.2026 прогін на main упав однією перевіркою: у
+    фікстурі стояв строк звіту «2026-08-15», і за ніч він з майбутнього став
+    минулим. Код при цьому ніхто не чіпав. Такі дати видно ЗАЗДАЛЕГІДЬ — тож
+    хай runner каже про них до вибуху, а не після.
+    """
+    import datetime
+    import re
+
+    today = datetime.date.today()
+    found = []
+    for path in sorted(ROOT.glob("test_*.py")):
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for m in re.finditer(r'"(20\d\d)-(\d\d)-(\d\d)"', line):
+                try:
+                    d = datetime.date(*map(int, m.groups()))
+                except ValueError:
+                    continue
+                days = (d - today).days
+                if 0 <= days <= horizon:
+                    found.append((path.name, n, d.isoformat(), days))
+    return sorted(found, key=lambda x: x[3])
+
+
 def run_one(path):
     started = time.monotonic()
     try:
@@ -164,6 +192,14 @@ def main(argv):
         print(f"\nНе запускались ({len(skipped)}) — доступів немає, це не падіння:")
         for name, why in skipped:
             print(f"  ∅ {name:32} {why}")
+
+    mines = future_dates()
+    if mines:
+        print(f"\nМіни ({len(mines)}) — майбутні дати, вписані числом. Спрацюють, "
+              f"коли настануть:")
+        for name, line, when, days in mines[:10]:
+            print(f"  ⏳ {name}:{line} {when} — через {days} дн.")
+        print("  Лікується так само: рахувати від сьогодні, а не вписувати число.")
 
     if failed:
         print(f"\n{'=' * 70}\nВивід тих, що впали:\n")
