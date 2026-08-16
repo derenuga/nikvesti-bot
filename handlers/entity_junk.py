@@ -38,7 +38,9 @@
   • картка, в яку людина щось зливала (журнал, не відкочений);
   • картка, вказана органом канону посади (`role_canon.org_entity_id`) —
     видалення лишило б афіліацію посилатись у нікуди. Такі рахуються окремо
-    й показуються числом: лікуються через /roles_org, а не тут.
+    й показуються числом: лікуються через /roles_org, а не тут;
+  • картка, вписана людиною в структуру органу (`entity_links`) — якщо їй
+    знайшлось місце в ієрархії, вона точно не переказ сюжету.
 """
 
 import asyncio
@@ -48,7 +50,8 @@ import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from handlers import bot_db, entity_merge as em, entity_roles as er
+from handlers import (bot_db, entity_links as el, entity_merge as em,
+                      entity_roles as er)
 import entity_pipeline as ep
 
 _ALLOWED_USER_IDS = {
@@ -73,9 +76,12 @@ def _allowed(update):
 
 def _ensure():
     """Схеми, від яких залежать запити нижче: журнал (він же адреса відкату),
-    правила злиття і довідник ролей (role_canon + SQL-функція role_norm)."""
+    правила злиття, довідник ролей (role_canon + SQL-функція role_norm) і
+    структура органів (entity_links — вона в PROTECTED_SQL, тож без таблиці
+    впав би сам відбір сміття)."""
     em.ensure_schema()
     er.ensure_schema()
+    el.ensure_schema()
     bot_db.execute(ep.MERGE_RULES_DDL)
 
 
@@ -86,7 +92,9 @@ PROTECTED_SQL = """
   (EXISTS (SELECT 1 FROM entity_merge_rules r WHERE r.entity_id = e.id)
    OR EXISTS (SELECT 1 FROM entity_merges m
               WHERE m.winner_id = e.id AND m.undone IS NULL)
-   OR EXISTS (SELECT 1 FROM role_canon rc WHERE rc.org_entity_id = e.id))
+   OR EXISTS (SELECT 1 FROM role_canon rc WHERE rc.org_entity_id = e.id)
+   OR EXISTS (SELECT 1 FROM entity_links el
+              WHERE el.parent_id = e.id OR el.child_id = e.id))
 """
 
 ONEOFF_SQL = f"""
@@ -929,7 +937,14 @@ LEFT JOIN entities l ON l.id = p.loser
 
 
 def parse_cards_fix(text):
-    """Текст пакета → (дії, помилки). merge <лишається> <дубль> · drop <id>."""
+    """Текст пакета → (дії, помилки).
+
+    merge <лишається> <дубль> · drop <id> ·
+    link <старша> <молодша> [тип] [нотатка] · unlink <id> <id>.
+
+    Рядки `link` тут не випадково: структуру органу людина встановлює РАЗОМ із
+    розбором його дублів («окружна прокуратура міста — не дубль районної, а
+    підрозділ обласної»), і доти це знання вмирало в коментарях пакета."""
     actions, errors = [], []
     for raw in (text or "").splitlines():
         line = raw.split("#")[0].strip() if not raw.strip().startswith("#") else ""
@@ -943,6 +958,23 @@ def parse_cards_fix(text):
             actions.append(("merge", int(bits[1]), int(bits[2])))
         elif op in ("drop", "purge") and len(bits) >= 2 and bits[1].isdigit():
             actions.append(("drop", int(bits[1])))
+        elif op == "link" and len(bits) >= 3 and bits[1].isdigit() and bits[2].isdigit():
+            kind, rest = el.DEFAULT_KIND, bits[3:]
+            if rest:
+                maybe = el.normalize_kind(rest[0])
+                if maybe:
+                    kind, rest = maybe, rest[1:]
+                elif len(rest[0]) > 2 and not rest[0][0].isdigit():
+                    # Слово на місці типу, якого ми не знаємо, — майже завжди
+                    # одруківка в назві типу, а не початок нотатки. Мовчки
+                    # поставити «підрозділ» означало б записати не той зв'язок.
+                    errors.append(f"невідомий тип зв'язку: {rest[0]} "
+                                  f"(є: {', '.join(el.KINDS)})")
+                    continue
+            actions.append(("link", int(bits[1]), int(bits[2]), kind,
+                            " ".join(rest) or None))
+        elif op == "unlink" and len(bits) >= 3 and bits[1].isdigit() and bits[2].isdigit():
+            actions.append(("unlink", int(bits[1]), int(bits[2])))
         else:
             errors.append(f"не розібрав: {line[:60]}")
     return actions, errors
@@ -968,12 +1000,14 @@ def describe_cards_fix(actions):
     dropped = bot_db.query(
         "SELECT id, coalesce(name_ua, name_ru) AS name, coalesce(mentions, 0) AS m "
         "FROM entities WHERE id = ANY(%s)", (drops,)) if drops else []
-    return rows, dropped
+    linked = [a for a in actions if a[0] in ("link", "unlink")]
+    return rows, dropped, (el.describe_link_actions(linked) if linked else [])
 
 
-def format_cards_fix(rows, dropped, errors):
+def format_cards_fix(rows, dropped, errors, links=()):
     lines = [f"🦊 Пакет по картках: звести {len(rows)} пар"
-             + (f" · прибрати {len(dropped)}" if dropped else "") + "\n"]
+             + (f" · прибрати {len(dropped)}" if dropped else "")
+             + (f" · зв'язків {len(links)}" if links else "") + "\n"]
     risky = 0
     for r in rows[:25]:
         if r["wname"] is None or r["lname"] is None:
@@ -991,6 +1025,14 @@ def format_cards_fix(rows, dropped, errors):
         lines.append(f"…і ще {len(rows) - 25} пар")
     for d in dropped[:10]:
         lines.append(f"🗑 {d['name']} ({d['m']})")
+    if links:
+        # Зв'язок показуємо РЕЧЕННЯМ: переплутаний напрямок видно лише так —
+        # «обласна входить до окружної» ріже око, «3271 → 2866» ні.
+        lines.append("\nСтруктура:")
+        for s in links[:15]:
+            lines.append(f"🔗 {s}")
+        if len(links) > 15:
+            lines.append(f"…і ще {len(links) - 15}")
     if errors:
         lines.append("\n⚠️ не розібрав:\n" + "\n".join(errors[:4]))
     if risky:
@@ -1006,7 +1048,7 @@ def apply_cards_fix(actions, decided_by=None, only_shared=False, run=None):
     """Виконати пакет. Кожна дія окремо: збійна не валить решту."""
     _ensure()
     run = run or f"cards-{int(time.time())}"
-    rows, _ = describe_cards_fix(actions)
+    rows, _, _ = describe_cards_fix(actions)
     shared = {(r["winner"], r["loser"]): r["shared"] for r in rows}
     done, failed, skipped = 0, [], 0
     for a in actions:
@@ -1016,6 +1058,12 @@ def apply_cards_fix(actions, decided_by=None, only_shared=False, run=None):
                     skipped += 1
                     continue
                 em.merge_cards(a[1], a[2], decided_by, run)
+            elif a[0] in ("link", "unlink"):
+                # Дії йдуть у порядку файла. Зв'язок, поставлений ДО злиття
+                # своєї картки, переїде на переможця сам (repoint_links), а
+                # зв'язок на вже злиту картку впаде з людською причиною
+                # «немає картки N» — і це чесніше за тихий пропуск.
+                el.apply_link_action(a, decided_by)
             else:
                 purge_cards([a[1]], "cards-fix", decided_by, run)
             done += 1
@@ -1036,7 +1084,7 @@ async def cards_fix_document(msg, text):
                              + "\n".join(errors[:5]))
         return
     try:
-        rows, dropped = await asyncio.to_thread(describe_cards_fix, actions)
+        rows, dropped, links = await asyncio.to_thread(describe_cards_fix, actions)
     except Exception as e:
         await msg.reply_text(f"❌ Не змалював пакет: {type(e).__name__}: {e}")
         return
@@ -1047,7 +1095,7 @@ async def cards_fix_document(msg, text):
         buttons.append([InlineKeyboardButton(
             f"✅ Лише з перетином ({len(rows) - risky})", callback_data="cfx:shared")])
     buttons.append([InlineKeyboardButton("❌ Ні", callback_data="cfx:no")])
-    sent = await msg.reply_text(format_cards_fix(rows, dropped, errors),
+    sent = await msg.reply_text(format_cards_fix(rows, dropped, errors, links),
                                 reply_markup=InlineKeyboardMarkup(buttons))
     await asyncio.to_thread(
         bot_db.set_state, f"{CARDS_STATE_PREFIX}{sent.chat_id}:{sent.message_id}",
@@ -1206,7 +1254,7 @@ def export_org_dupes_csv():
     seen = {frozenset((p["winner"][0], p["loser"][0])) for p in pairs}
     pairs += [p for p in find_acronym_dupes()
               if frozenset((p["winner"][0], p["loser"][0])) not in seen]
-    rows, _ = describe_cards_fix(
+    rows, _, _ = describe_cards_fix(
         [("merge", p["winner"][0], p["loser"][0]) for p in pairs])
     shared = {(r["winner"], r["loser"]): r["shared"] for r in rows}
     buf = io.StringIO()
