@@ -1,5 +1,11 @@
 __pycache__/
 *.pyc
+
+# Залежності MCP-сервера нори: ставляться `npm ci` із package-lock.json —
+# і локально, і на Railway при білді. У репо їм робити нічого: 4022 файли,
+# які з'являються після кожного `npm install` у сесії
+node_modules/
+mcp_nora/dist/
 nominatim_cache.json
 streets_with_mikroraion.json
 queue_clusters_with_mikroraion.json
