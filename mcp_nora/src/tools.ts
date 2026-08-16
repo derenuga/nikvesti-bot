@@ -104,7 +104,12 @@ export function buildServer(auth: AuthInfo | undefined): McpServer {
          SELECT h.*, ts_headline('simple',
                   left(coalesce(nullif(a2.text_ua, ''), a2.text_ru, ''), 20000),
                   q.query,
-                  'StartSel=,StopSel=,MaxWords=45,MinWords=20,MaxFragments=1') AS excerpt
+                  -- Маркери виділення ПОРОЖНІ й обовʼязково в лапках: без них
+                  -- Postgres читає «StartSel=,StopSel=» як одне значення і
+                  -- лишає в тексті свій дефолтний <b>, а цитата з тегами
+                  -- всередині їде далі в бек (той самий рядок у
+                  -- handlers/archive_search.py має лапки саме тому).
+                  'StartSel="", StopSel="", MaxWords=45, MinWords=20, MaxFragments=1') AS excerpt
            FROM hits h JOIN articles a2 ON a2.id = h.id::bigint, q`,
         [
           q,
