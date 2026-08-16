@@ -510,7 +510,7 @@ def autodedup_groups(kind="org"):
     buckets = {}
     for r in rows:
         for nm in (r["name_ua"], r["name_ru"]):
-            k = ep.loose_key(r["kind"], nm, strict=True)
+            k = ep.loose_key(r["kind"], nm)
             if k and len(k) >= AUTODEDUP_MIN_KEY:
                 buckets.setdefault(k, []).append(r)
                 break
