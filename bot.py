@@ -47,6 +47,7 @@ from handlers.entity_merge import (
     entity_scale_handler, entity_classes_handler, entity_find_handler,
     entity_merge_handler, entity_merge_callback, entity_find_callback,
     entity_merge_log_handler, entity_unmerge_handler,
+    entity_autodedup_handler,
 )
 from handlers.entity_pairs import entity_notdupe_handler
 from handlers.entity_junk import (
@@ -588,6 +589,7 @@ def main():
     app.add_handler(CommandHandler("entity_merge_log", entity_merge_log_handler))
     app.add_handler(CommandHandler("entity_unmerge", entity_unmerge_handler))
     app.add_handler(CommandHandler("entity_notdupe", entity_notdupe_handler))
+    app.add_handler(CommandHandler("entity_autodedup", entity_autodedup_handler))
     app.add_handler(CommandHandler("entity_junk", entity_junk_handler))
     app.add_handler(CommandHandler("entity_junk_undo", entity_junk_undo_handler))
     app.add_handler(CommandHandler("entity_org_dupes", entity_org_dupes_handler))

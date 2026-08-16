@@ -500,8 +500,16 @@ def _org_stem(w):
     return w
 
 
-def org_key(name):
+def org_key(name, strict=False):
     """Ключ зіставлення організації, або None.
+
+    `strict=True` — режим для МАСОВОГО злиття: слово «України» лишається
+    значущим. Різниця не косметична. При записі нового написання ключ лише
+    ЧІПЛЯЄ згадку до наявної картки, і «Міністерство внутрішніх справ» у
+    миколаївській статті майже напевно наше. А масовий прохід ВИДАЛЯЄ картку,
+    і та сама пара стає рішенням «бездомна загальна назва — це український
+    орган», якого ми весь день не дозволяли собі робити руками (11451, 8122,
+    26684 у ДСНС і поліції). Тому автоматика бачить їх різними.
 
     Рахується для БУДЬ-ЯКОЇ назви, а не лише для тієї, що має форму: картка
     «Миколаївводоканал» мусить знаходитись написанням «КП
@@ -520,12 +528,13 @@ def org_key(name):
     s = re.sub(r"[^\w\s-]", " ", s)
     for rx, repl in ORG_PHRASES:
         s = rx.sub(repl, s)
+    stop = ORG_STOP - {"україни", "україна"} if strict else ORG_STOP
     words = []
     for w in s.split():
         w = ORG_ABBR.get(w, w)
         for part in w.split():
             part = ORG_TOPONYMS.get(part, part)
-            if not part or part in ORG_STOP:
+            if not part or part in stop:
                 continue
             words.append(_org_stem(part))
     if not words:
@@ -566,10 +575,10 @@ def place_key(name):
     return s or None
 
 
-def loose_key(kind, name):
+def loose_key(kind, name, strict=False):
     """Другий ключ зіставлення для тих видів, де він визначений механічно."""
     if kind == "org":
-        return org_key(name)
+        return org_key(name, strict=strict)
     if kind == "place":
         return place_key(name)
     return None
