@@ -1676,6 +1676,20 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 }
 .imp-note .ic { width: 14px; height: 14px; }
 .imp-spin { position: absolute; top: 14px; right: 14px; }
+/* Дії під кейсом. Раніше вони були інлайновими і «Перезібрати заново» з
+   «Видалити кейс» ставали в ОДИН рядок упритул — промахнутись пальцем легко,
+   а ціна промаху різна: перезбір переживеш, видалення ні (Олег, 14.08).
+   Тому кожна дія — окремий рядок на всю ширину, а видалення відсунуте
+   ВІДСТАННЮ: підтвердження в нього і так є, але захищає саме відстань */
+.im-acts { display: flex; flex-direction: column; align-items: flex-start; }
+/* Вертикальні падінги — щоб рядок був НОРМАЛЬНОЮ мішенню для пальця: сам
+   текст 16 px заввишки, у це не цілиться ніхто */
+.im-acts .link-btn, .im-danger { padding: 9px 0; width: 100%; }
+.im-acts .link-btn { margin-top: 6px; }
+.im-danger { color: var(--red); margin-top: 24px; }
+/* Останню дію не має підпирати нижнє меню з «плюсом» */
+#imd-body { padding-bottom: 24px; }
+
 /* Фото в детальці кейсу */
 .imp-hero {
   border-radius: var(--radius); overflow: hidden; margin-bottom: 14px;
