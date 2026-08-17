@@ -210,6 +210,32 @@ def fetch_page(url, timeout=20):
     return resp, "browser"
 
 
+def wayback_url(url):
+    """Лінк на копію сторінки у Web Archive або None.
+
+    Третій захід за заголовком — для сайтів, які не пускають наш сервер
+    ЖОДНИМИ заголовками: president.gov.ua віддає 403 і з Railway (перевірено
+    /impact_probe 14.08), бо ріже запити з дата-центрів. Архів тим часом має
+    ту саму сторінку і роздає її всім. У кейс іде оригінальний лінк —
+    архівом ми лише читаємо заголовок."""
+    import requests
+
+    try:
+        resp = requests.get("https://archive.org/wayback/available", timeout=20,
+                            params={"url": url},
+                            headers={"User-Agent": _BOT_UA})
+        snap = ((resp.json().get("archived_snapshots") or {})
+                .get("closest") or {})
+    except Exception as e:
+        print(f"impact: веб-архів не відповів — {e}")
+        return None
+    if not snap.get("available") or not snap.get("url"):
+        return None
+    # id_ віддає збережену сторінку БЕЗ панелі архіву — так її розбирати
+    # чистіше, ніж копію з дописаним зверху інтерфейсом
+    return re.sub(r"/web/(\d+)/", r"/web/\1id_/", snap["url"], count=1)
+
+
 def _fetch_soup(url):
     """BeautifulSoup живої сторінки. Читаємо БАЙТИ, а не resp.text: у
     imi.org.ua Content-Type приходить без charset, і requests за RFC вважає
@@ -259,6 +285,8 @@ def _our_links(soup, page_url):
     out, seen = [], set()
     for a in _body_node(soup).find_all("a", href=True):
         href = urljoin(page_url, a["href"]).split("?")[0].split("#")[0]
+        # у копії з веб-архіву кожен лінк загорнутий у web.archive.org/web/…
+        href = re.sub(r"^https?://web\.archive\.org/web/[^/]+/", "", href)
         if not urlparse(href).netloc.endswith("nikvesti.com"):
             continue
         if href not in seen:
@@ -333,7 +361,15 @@ def _external_source(url):
     try:
         soup = _fetch_soup(url)
     except Exception as e:
-        raise ValueError(f"Сторінку {url} не вдалось прочитати — {e}")
+        # Сайт не пустив (403 з дата-центру) — читаємо копію з веб-архіву.
+        # Лінк у кейсі лишається оригінальний: архівом ми лише читаємо
+        snapshot = wayback_url(url)
+        if not snapshot:
+            raise ValueError(f"Сторінку {url} не вдалось прочитати — {e}")
+        try:
+            soup = _fetch_soup(snapshot)
+        except Exception as e2:
+            raise ValueError(f"Сторінку {url} не вдалось прочитати — {e2}")
 
     def _meta(*keys):
         for key in keys:
@@ -414,8 +450,17 @@ def probe_external(url):
     lines.append(f"HTTP {resp.status_code} · заходом «{how}» · "
                  f"{len(resp.content)} байт")
     if not resp.ok:
-        lines.append("Сайт не пускає наш сервер. Назву матеріалу можна "
-                     "вписати руками: тап по ньому в кейсі → «Перейменувати».")
+        lines.append("Сайт не пускає наш сервер — пробую веб-архів…")
+        snapshot = wayback_url(url)
+        if not snapshot:
+            lines.append("Копії в архіві теж немає. Назву матеріалу можна "
+                         "вписати руками: тап по ньому в кейсі → «Перейменувати».")
+            return "\n".join(lines)
+        try:
+            page = _external_source(url)      # сам піде в архів тим же шляхом
+            lines.append(f"Архів: ✅ <i>{_esc(page['title'] or '—')}</i>")
+        except Exception as e:
+            lines.append(f"Архів не допоміг: {_esc(str(e)[:200])}")
         return "\n".join(lines)
     try:
         page = _external_source(url)
