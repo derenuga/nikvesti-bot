@@ -168,6 +168,99 @@ def parse_article(html_text):
     return result
 
 
+# Тіло статті. Прямі діти цього контейнера — і тільки вони: усередині лежить
+# промо-вставка Клубу МикВісті (noindex > div.donation-box), і селектор
+# «div p» без «>» затягує її абзаци в «текст статті». Заміряно 17.08.2026 на
+# статті 322389: 10 справжніх абзаців проти 14 разом із промо.
+BODY_SELECTOR = "div.main-post-content-text"
+
+# Максимальний розмір, який віддає ресайзер аватарок. Більший (510x510 тощо)
+# відповідає 200 з ПОРОЖНІМ тілом і content-type text/html — тобто «успіх» за
+# кодом відповіді тут брехня, перевіряти треба тип (див. probe_image).
+AUTHOR_PHOTO_SIZE = "255x255"
+
+
+def parse_article_body(html_text):
+    """Повний текст статті, цитати по порядку і картка автора.
+
+    Потрібне генератору каруселей: JSON-LD дає заголовок, опис і фото, але
+    articleBody у ньому НЕМАЄ — агенту нема з чого складати слайди.
+
+    Повертає {"paragraphs": [...], "quotes": [...], "author": {...} | None}.
+    quotes — саме список у порядку появи в тексті: агент повертає лише НОМЕР
+    цитати, а текст бере сервер, тож порядок тут є частиною контракту й
+    рахується з того самого контейнера, що й абзаци.
+    """
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    result = {"paragraphs": [], "quotes": [], "author": None}
+
+    box = soup.select_one(BODY_SELECTOR)
+    if box:
+        for node in box.find_all(["p", "blockquote"], recursive=False):
+            text = node.get_text(" ", strip=True)
+            if not text:
+                continue
+            if node.name == "blockquote":
+                result["quotes"].append(text)
+            else:
+                result["paragraphs"].append(text)
+
+    name = soup.select_one("div.article-author__name")
+    if name:
+        position = soup.select_one("div.article-author__position")
+        photo = soup.select_one("img.article-author__photo")
+        result["author"] = {
+            "name": name.get_text(" ", strip=True),
+            "position": position.get_text(" ", strip=True) if position else "",
+            "photo": _absolute(photo.get("src")) if photo and photo.get("src") else "",
+        }
+
+    return result
+
+
+def _absolute(src):
+    """Відносний шлях сайту → повний URL (порожньо для чужих хостів)."""
+    src = (src or "").strip()
+    if not src:
+        return ""
+    if src.startswith("//"):
+        src = "https:" + src
+    elif src.startswith("/"):
+        src = "https://nikvesti.com" + src
+    return src if _host_allowed(src) else ""
+
+
+def author_photo_url(src, size=AUTHOR_PHOTO_SIZE):
+    """Аватарка автора більшого розміру: /96x96/ → /255x255/.
+
+    Для кола ~460 px на слайді 1080 px завширшки 255 впритул, але це стеля
+    ресайзера — більший розмір він не малює, а мовчки віддає порожнечу."""
+    src = _absolute(src)
+    if not src:
+        return ""
+    return re.sub(r"/\d+x\d+/", f"/{size}/", src, count=1)
+
+
+def probe_image(url):
+    """Чи віддає URL справжню картинку. Саме картинку, а не «200 OK»:
+    ресайзер сайту на неіснуючий розмір відповідає 200 з порожнім тілом і
+    content-type text/html, тож перевірка за кодом відповіді пропустила б
+    биту аватарку в слайд."""
+    if not _host_allowed(url):
+        return False
+    try:
+        resp = requests.get(url, timeout=FETCH_TIMEOUT, stream=True,
+                            headers={"User-Agent": _UA})
+        ctype = resp.headers.get("Content-Type", "")
+        ok = resp.ok and ctype.split(";")[0].strip().startswith("image/")
+        resp.close()
+        return ok
+    except requests.RequestException:
+        return False
+
+
 def _img_key(url):
     """Базове ім'я кадру без розмірного префікса (/600x315/), суфікса _1500
     і розширення — той самий кадр у різних розмірах дає один ключ."""

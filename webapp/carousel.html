@@ -1,0 +1,1568 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Карусель для Instagram — МикВісті</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Commissioner:wght@300;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --brand: #3478f9;
+    --ink: #16233f;
+    --muted: #6b7a99;
+    --line: #dde4f2;
+    --bg: #f3f6fc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: Commissioner, system-ui, sans-serif; font-size: 15px;
+  }
+  header {
+    background: #fff; border-bottom: 1px solid var(--line);
+    padding: 14px 20px; display: flex; align-items: center; gap: 10px;
+    position: sticky; top: 0; z-index: 20;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 700; }
+  header .fox { font-size: 20px; }
+  header .who { margin-left: auto; font-size: 13px; color: var(--muted); }
+
+  .wrap {
+    max-width: 1280px; margin: 0 auto; padding: 20px 20px 190px;
+    display: grid; grid-template-columns: minmax(340px, 1fr) minmax(320px, 440px);
+    gap: 24px; align-items: start;
+  }
+  /* display:grid перебиває атрибут hidden рівно так само, як flex — без
+     цього рядка редактор світився під екраном «потрібен лінк» (спіймано
+     тестом, 17.08) */
+  .wrap[hidden] { display: none; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+
+  .panel { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  .panel + .panel { margin-top: 16px; }
+  .panel[hidden] { display: none; }
+  .panel h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 0 0 12px;
+  }
+  .panel h2 .sub { text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+  .urlrow { display: flex; gap: 8px; }
+  .urlrow input {
+    flex: 1; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px;
+    font: inherit; font-size: 14px; min-width: 0;
+  }
+  button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 10px;
+    padding: 11px 16px; cursor: pointer; background: var(--brand); color: #fff;
+  }
+  button.ghost { background: #eef2fb; color: var(--brand); }
+  button.tiny { padding: 7px 11px; font-size: 12.5px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .error { color: #c0392b; font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
+  .error[hidden], .hint[hidden], .note[hidden] { display: none; }
+  .note {
+    margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+    background: #fff7e6; color: #8a5a00; font-size: 13px; line-height: 1.5;
+  }
+
+  label.row { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 14px; }
+  .field { margin-top: 12px; }
+  .field:first-child { margin-top: 0; }
+  .field label {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 13px; color: var(--muted); margin-bottom: 6px;
+  }
+  .field .count { font-variant-numeric: tabular-nums; font-size: 12px; }
+  .field .count.over { color: #c0392b; font-weight: 700; }
+  input[type="text"], textarea {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+    font: inherit; font-size: 15px; line-height: 1.45; background: #fff; color: var(--ink);
+    resize: vertical;
+  }
+  textarea { min-height: 84px; }
+  textarea.tall { min-height: 120px; }
+
+  .seg { display: inline-flex; background: #eef2fb; border-radius: 10px; padding: 3px; gap: 3px; flex-wrap: wrap; }
+  /* inline-flex перебиває атрибут hidden — класика, на якій уже сідали */
+  .seg[hidden], .swatches[hidden], .chips[hidden] { display: none; }
+  .seg button { padding: 7px 13px; background: transparent; color: var(--ink); font-size: 13px; }
+  .seg button.on { background: #fff; color: var(--brand); box-shadow: 0 1px 3px rgba(20,40,90,.15); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; user-select: none; }
+  .chip {
+    padding: 5px 9px; border-radius: 8px; background: #eef2fb; color: var(--ink);
+    font-size: 13px; font-weight: 600; cursor: pointer; touch-action: none;
+  }
+  .chip.hl { background: var(--brand); color: #fff; }
+  .chip.br { background: transparent; width: 100%; padding: 0; height: 2px; cursor: default; }
+
+  .thumbs { display: flex; flex-wrap: wrap; gap: 10px; }
+  .thumb { width: 104px; cursor: pointer; }
+  .thumb img {
+    width: 104px; height: 78px; object-fit: cover; border-radius: 10px;
+    border: 3px solid transparent; display: block; background: #eef2fb;
+  }
+  .thumb.sel img { border-color: var(--brand); }
+  .thumb .cap {
+    font-size: 11px; line-height: 1.3; color: var(--muted); margin-top: 4px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .thumb .cap.doc { color: #b45309; }
+  .thumb-add {
+    width: 104px; height: 78px; border-radius: 10px; border: 2px dashed #b9c6e2;
+    background: #f8faff; color: var(--muted); display: flex; align-items: center;
+    justify-content: center; cursor: pointer; padding: 0;
+  }
+  .thumb-add:hover { color: var(--brand); border-color: var(--brand); }
+  .thumb-add svg { width: 24px; height: 24px; }
+
+  .bq {
+    border-left: 3px solid var(--brand); padding: 8px 12px; margin: 0 0 10px;
+    font-size: 13.5px; line-height: 1.5; background: #f8faff; border-radius: 0 10px 10px 0;
+  }
+  .bq:last-child { margin-bottom: 0; }
+  .bq button { margin-top: 8px; }
+  .para {
+    padding: 7px 10px; margin-bottom: 6px; font-size: 13.5px; line-height: 1.5;
+    background: #f8faff; border-radius: 8px; cursor: pointer;
+  }
+  .para:hover { background: #eef2fb; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+
+  .swatches { display: inline-flex; gap: 8px; align-items: center; }
+  .swatch { width: 30px; height: 30px; border-radius: 50%; cursor: pointer; border: 1px solid var(--line); padding: 0; }
+  .swatch.on { outline: 3px solid var(--brand); outline-offset: 2px; }
+  .sliders { display: grid; grid-template-columns: auto 1fr auto; gap: 8px 12px; align-items: center; margin-top: 12px; }
+  .sliders label { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .sliders output { font-size: 12px; color: var(--muted); min-width: 42px; text-align: right; }
+  input[type="range"] { width: 100%; accent-color: var(--brand); }
+  .toolrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+
+  .preview { position: sticky; top: 78px; }
+  .canvas-wrap { position: relative; }
+  #canvas {
+    width: 100%; height: auto; border-radius: 14px; display: block;
+    box-shadow: 0 8px 30px rgba(20, 40, 90, .18); cursor: grab; touch-action: none;
+    background: #fff;
+  }
+  #canvas.dragging { cursor: grabbing; }
+  .fab {
+    position: absolute; bottom: 14px; right: 14px; display: flex; align-items: center;
+    gap: 8px; padding: 10px 14px; border-radius: 999px; font-size: 13px;
+    background: rgba(12, 20, 40, .72); color: #fff; backdrop-filter: blur(6px);
+    box-shadow: 0 4px 16px rgba(0,0,0,.28);
+  }
+  .fab[hidden] { display: none; }
+  .fab svg { width: 16px; height: 16px; }
+  .dl { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .dl button { flex: 1; padding: 13px; font-size: 14.5px; min-width: 130px; }
+  .stage-hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; text-align: center; }
+
+  /* Стрічка слайдів */
+  .strip {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 15;
+    background: #fff; border-top: 1px solid var(--line); padding: 12px 16px;
+    box-shadow: 0 -4px 20px rgba(20,40,90,.08);
+  }
+  .strip[hidden] { display: none; }
+  .strip-inner {
+    max-width: 1280px; margin: 0 auto; display: flex; gap: 10px;
+    align-items: flex-start; overflow-x: auto; padding-bottom: 4px;
+  }
+  .slidecard {
+    position: relative; flex: 0 0 auto; width: 92px; cursor: pointer;
+    border-radius: 10px; padding: 4px; background: transparent;
+  }
+  .slidecard.on { background: #eef2fb; }
+  .slidecard.drag { opacity: .4; }
+  .slidecard.over { background: #dbe6ff; }
+  .slidecard canvas {
+    width: 84px; height: 112px; border-radius: 7px; display: block;
+    border: 2px solid var(--line); background: #fff;
+  }
+  .slidecard.on canvas { border-color: var(--brand); }
+  .slidecard .n {
+    font-size: 11px; color: var(--muted); text-align: center; margin-top: 3px;
+  }
+  .slidecard .x {
+    position: absolute; top: 0; right: 0; width: 20px; height: 20px; padding: 0;
+    border-radius: 50%; background: rgba(12,20,40,.7); color: #fff; font-size: 12px;
+    line-height: 1; display: none;
+  }
+  .slidecard:hover .x { display: block; }
+  .addslide {
+    flex: 0 0 auto; width: 84px; height: 112px; margin-top: 4px; border-radius: 7px;
+    border: 2px dashed #b9c6e2; background: #f8faff; color: var(--muted);
+    display: flex; align-items: center; justify-content: center; font-size: 26px; padding: 0;
+  }
+
+  /* Прев'ю каруселі «як в Instagram» */
+  .viewer {
+    position: fixed; inset: 0; z-index: 70; background: rgba(6,10,20,.92);
+    display: flex; align-items: center; justify-content: center; gap: 18px; padding: 20px;
+  }
+  .viewer[hidden] { display: none; }
+  .viewer canvas {
+    max-height: 82vh; max-width: min(72vw, 520px); width: auto; height: auto;
+    border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+  .viewer .nav {
+    width: 52px; height: 52px; border-radius: 50%; background: rgba(255,255,255,.14);
+    color: #fff; font-size: 22px; padding: 0; flex: 0 0 auto;
+  }
+  .viewer .nav:disabled { opacity: .25; }
+  .viewer .close {
+    position: absolute; top: 18px; right: 18px; background: rgba(255,255,255,.14);
+    color: #fff; padding: 8px 14px;
+  }
+  .viewer .dots {
+    position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px;
+  }
+  .viewer .dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,.35); }
+  .viewer .dot.on { background: #fff; }
+
+  /* Екран без токена */
+  .gate { max-width: 560px; margin: 60px auto; text-align: center; padding: 0 20px; }
+  .gate[hidden] { display: none; }
+  .gate .big { font-size: 40px; }
+  .gate h2 { font-size: 20px; margin: 14px 0 8px; }
+  .gate p { color: var(--muted); line-height: 1.6; }
+  .gate code {
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    padding: 2px 8px; font-size: 14px;
+  }
+
+  .dropzone {
+    position: fixed; inset: 0; z-index: 80; background: rgba(52,120,249,.9); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-size: 22px;
+    font-weight: 700; pointer-events: none;
+  }
+  .dropzone[hidden] { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <span class="fox">🦊</span><h1>Карусель для Instagram</h1>
+  <span class="who" id="who"></span>
+</header>
+
+<div class="gate" id="gate" hidden>
+  <div class="big">🔒</div>
+  <h2 id="gateTitle">Потрібен свіжий лінк</h2>
+  <p id="gateText">
+    Ця сторінка іменна — вона читає статті й витрачає гроші на агента, тому
+    відкрита всім бути не може. Напиши боту <code>/carousel</code>, і він
+    надішле кнопку з твоїм входом.
+  </p>
+</div>
+
+<div class="wrap" id="app" hidden>
+  <div>
+    <div class="panel">
+      <h2>1 · Посилання на матеріал</h2>
+      <div class="urlrow">
+        <input id="url" type="url" placeholder="https://nikvesti.com/news/… або 322371" autocomplete="off">
+        <button id="go">Запропонувати слайди</button>
+      </div>
+      <div class="hint" id="scrapeHint">Прочитаю статтю цілком і складу чернетку каруселі. Далі все правиш ти.</div>
+      <div class="error" id="err" hidden></div>
+      <div class="note" id="planNote" hidden></div>
+      <div class="toolrow" id="replanRow" hidden>
+        <button class="ghost tiny" id="replan">Запропонувати інакше</button>
+        <span class="hint" style="margin:0" id="planSource"></span>
+      </div>
+    </div>
+
+    <div class="panel" id="slidePanel" hidden>
+      <h2>2 · Слайд <span class="sub" id="slideWhich"></span></h2>
+      <div class="seg" id="typeSeg">
+        <button data-type="cover">Обкладинка</button>
+        <button data-type="text">Текст</button>
+        <button data-type="quote">Цитата</button>
+        <button data-type="photo">Фото</button>
+      </div>
+      <div id="fields"></div>
+      <div class="chips" id="chips" hidden></div>
+      <div class="hint" id="chipsHint" hidden>Тапни слово, щоб виділити його плашкою (ще раз — зняти).</div>
+    </div>
+
+    <div class="panel" id="photoPanel" hidden>
+      <h2>3 · Фото слайда</h2>
+      <div class="thumbs" id="thumbs"></div>
+      <input type="file" id="photoFile" accept="image/*" multiple hidden>
+      <div class="hint" id="docHint" hidden>
+        Фото, підписані як скриншот чи документ, позначені бурштиновим — на весь
+        екран у стрічці вони не читаються. Кинь свої кадри об'єкта прямо на
+        сторінку (перетягуванням) або тисни «+».
+      </div>
+      <div class="toolrow">
+        <button class="ghost tiny" id="noPhoto">Без фото (кольоровий слайд)</button>
+        <button class="ghost tiny" id="resetCrop">Скинути кадр</button>
+      </div>
+      <div class="sliders">
+        <label>Зум фото</label>
+        <input type="range" id="zoom" min="100" max="300" value="100">
+        <output id="zoomOut">100%</output>
+      </div>
+    </div>
+
+    <div class="panel" id="stylePanel" hidden>
+      <h2>4 · Вигляд</h2>
+      <div class="toolrow">
+        <div class="swatches" id="swatches"></div>
+        <span class="hint" style="margin:0" id="schemeHint"></span>
+      </div>
+    </div>
+
+    <div class="panel" id="ctaPanel" hidden>
+      <h2>5 · Фінальний слайд</h2>
+      <label class="row">
+        <input type="checkbox" id="ctaOn">
+        Додати слайд-заклик у кінець
+      </label>
+      <div id="ctaBody" hidden>
+        <div class="seg" id="ctaPresets" style="margin-top:10px"></div>
+        <div class="field" style="margin-top:12px">
+          <label for="ctaText">Текст заклику</label>
+          <textarea id="ctaText"></textarea>
+        </div>
+        <div class="hint">Фото й підпис автора беруться зі статті. Лічильник і
+          стрілки перерахуються самі.</div>
+      </div>
+    </div>
+
+    <div class="panel" id="quotesPanel" hidden>
+      <h2>Цитати статті</h2>
+      <div id="quotesList"></div>
+      <div class="hint">Текст цитати береться зі статті дослівно — ні агент, ні
+        сторінка його не переписують.</div>
+    </div>
+
+    <div class="panel" id="textPanel" hidden>
+      <h2>Текст статті</h2>
+      <details>
+        <summary id="parasSummary">Показати абзаци</summary>
+        <div id="parasList" style="margin-top:10px"></div>
+      </details>
+      <div class="hint">Тап по абзацу вставляє його в поточний слайд.</div>
+    </div>
+  </div>
+
+  <div class="preview">
+    <div class="canvas-wrap">
+      <canvas id="canvas" width="1620" height="2160"></canvas>
+      <button id="adjOpen" class="fab" hidden title="Обробка фото: яскравість, контраст, фільтри">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+        <span>Обробка фото</span>
+      </button>
+    </div>
+    <div class="stage-hint" id="stageHint">Тягни фото мишкою, зум — коліщатком</div>
+    <div class="dl">
+      <button id="dlAll" disabled>Завантажити все</button>
+      <button class="ghost" id="dlOne" disabled>Тільки цей слайд</button>
+      <button class="ghost" id="openViewer" disabled>Прев'ю каруселі</button>
+    </div>
+  </div>
+</div>
+
+<div class="strip" id="strip" hidden>
+  <div class="strip-inner" id="stripInner"></div>
+</div>
+
+<div class="viewer" id="viewer" hidden>
+  <button class="close" id="viewerClose">Закрити</button>
+  <button class="nav" id="viewerPrev">‹</button>
+  <canvas id="viewerCanvas" width="540" height="720"></canvas>
+  <button class="nav" id="viewerNext">›</button>
+  <div class="dots" id="viewerDots"></div>
+</div>
+
+<div class="dropzone" id="dropzone" hidden>Відпусти — додам фото в набір</div>
+
+<script src="/static/cardkit.js"></script>
+<script>
+"use strict";
+(() => {
+  const CK = window.CardKit;
+  const $ = (id) => document.getElementById(id);
+
+  // ---------- Формат ----------
+  // 3:4 = 1080×1440 — нативний формат Instagram із травня 2025; перший слайд
+  // задає пропорцію всій каруселі. Малюємо ЗАВЖДИ в логічних 1080×1440, а
+  // прев'ю просто масштабується (PREVIEW_K) — тоді експорт і те, що на екрані,
+  // не можуть розійтись.
+  const W = 1080, H = 1440, PREVIEW_K = 1.5;
+  const PAD = 84;
+  const JPEG_Q = 0.9;
+
+  const S = {
+    token: "", person: "",
+    article: null,
+    images: [],          // бібліотека фото: {url, caption, local, doc_like}
+    slides: [],
+    active: 0,
+    cta: { on: false, preset: "subscribe", text: "" },
+    presets: {}, limits: { title: 70, kicker: 28, body: 280, quote: 320, caption: 120 },
+    maxSlides: 10,
+    logo: null,
+    authorPhoto: null,
+  };
+
+  const imgCache = new Map();   // індекс у S.images → завантажений Image
+  const SAME_ORIGIN = /(^|\.)nikvesti\.com$/.test(location.hostname);
+  const proxied = (u) => SAME_ORIGIN ? u : "/api/card/img?u=" + encodeURIComponent(u);
+
+  // ---------- Токен ----------
+  const qp = new URLSearchParams(location.search);
+  S.token = (qp.get("k") || localStorage.getItem("carouselKey") || "").trim();
+  if (qp.get("k")) localStorage.setItem("carouselKey", qp.get("k"));
+
+  const api = (path, opts = {}) => fetch(path, {
+    ...opts,
+    headers: { ...(opts.headers || {}), "X-Carousel-Key": S.token,
+               ...(opts.body ? { "Content-Type": "application/json" } : {}) },
+  });
+
+  // ---------- Слайди ----------
+  function newSlide(type = "text") {
+    return {
+      type,
+      kicker: "", title: "", body: "", quote: "", attribution: "", caption: "",
+      quote_index: null,
+      scheme: 0,
+      words: [],
+      slot: { photoIdx: null, photo: null, zoom: 1, offX: 0, offY: 0,
+              adj: CK.newAdj(), preset: "none" },
+    };
+  }
+
+  /** Головний текст слайда — той, у якому працюють плашки виділення. */
+  function mainField(slide) {
+    return slide.type === "quote" ? "quote"
+         : slide.type === "photo" ? "caption"
+         : "title";
+  }
+  const mainText = (slide) => slide[mainField(slide)] || "";
+
+  function syncWords(slide) {
+    slide.words = CK.tokenize(mainText(slide), slide.words);
+  }
+
+  const cur = () => S.slides[S.active];
+  const total = () => S.slides.length;
+  const isLast = (i) => i === S.slides.length - 1;
+
+  // ---------- Завантаження статті і плану ----------
+  $("go").addEventListener("click", () => loadPlan(false));
+  $("replan").addEventListener("click", () => loadPlan(true));
+  $("url").addEventListener("keydown", (e) => { if (e.key === "Enter") loadPlan(false); });
+
+  async function loadPlan(force) {
+    const url = $("url").value.trim();
+    if (!url) return;
+    $("err").hidden = true;
+    $("planNote").hidden = true;
+    const btn = force ? $("replan") : $("go");
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = force ? "Думаю…" : "Читаю статтю…";
+    try {
+      const resp = await api("/api/carousel/plan", {
+        method: "POST", body: JSON.stringify({ url, force }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || resp.statusText);
+      applyArticle(data.article);
+      if (data.plan) applyPlan(data.plan);
+      else if (!S.slides.length) S.slides = [newSlide("cover")];
+      if (data.error) showNote(data.error);
+      $("planSource").textContent =
+        data.source === "cache" ? "план із памʼяті — грошей не витратив"
+        : data.source === "live" ? "щойно склав агент"
+        : data.source === "nokey" ? "агент вимкнений (немає ключа) — чернетка з тексту статті"
+        : data.source === "fake" ? "тестовий план"
+        : "";
+      $("replanRow").hidden = false;
+      afterLoad();
+    } catch (e) {
+      $("err").textContent = String(e.message || e);
+      $("err").hidden = false;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
+  function showNote(text) {
+    $("planNote").textContent = text;
+    $("planNote").hidden = false;
+  }
+
+  function applyArticle(article) {
+    S.article = article;
+    S.images = (article.images || []).slice();
+    imgCache.clear();
+    $("url").value = article.url || $("url").value;
+    renderQuotes();
+    renderParas();
+    S.authorPhoto = null;
+    const author = article.author;
+    if (author && (author.photo_big || author.photo)) {
+      CK.loadImage(proxied(author.photo_big || author.photo))
+        .then((img) => { S.authorPhoto = img; render(); renderStrip(); })
+        .catch(() => {
+          // 255×255 буває не намальований — ресайзер тоді віддає 200 з
+          // порожнім тілом, і картинка просто не декодується. Пробуємо 96×96.
+          if (author.photo && author.photo_big !== author.photo) {
+            CK.loadImage(proxied(author.photo))
+              .then((img) => { S.authorPhoto = img; render(); renderStrip(); })
+              .catch(() => {});
+          }
+        });
+    }
+    if (!S.cta.text) setCtaPreset(S.cta.preset);
+  }
+
+  function applyPlan(plan) {
+    S.slides = (plan.slides || []).map((raw) => {
+      const s = newSlide(raw.type || "text");
+      s.kicker = raw.kicker || "";
+      s.title = raw.title || "";
+      s.body = raw.body || "";
+      s.quote = raw.quote || "";
+      s.quote_index = Number.isInteger(raw.quote_index) ? raw.quote_index : null;
+      s.attribution = raw.attribution || "";
+      s.caption = raw.caption || "";
+      s.slot.photoIdx = Number.isInteger(raw.photo_index) ? raw.photo_index : null;
+      syncWords(s);
+      return s;
+    });
+    if (!S.slides.length) S.slides = [newSlide("cover")];
+    S.active = 0;
+    if (plan.cta_suggestion) {
+      S.cta.preset = plan.cta_suggestion;
+      setCtaPreset(plan.cta_suggestion);
+    }
+    if ((plan.notes || []).length) showNote(plan.notes.join("\n"));
+  }
+
+  function afterLoad() {
+    S.slides.forEach((s) => ensurePhoto(s));
+    ["slidePanel", "photoPanel", "stylePanel", "ctaPanel"].forEach((id) => { $(id).hidden = false; });
+    $("strip").hidden = false;
+    $("dlAll").disabled = false;
+    $("dlOne").disabled = false;
+    $("openViewer").disabled = false;
+    $("docHint").hidden = !S.images.some((im) => im.doc_like);
+    buildThumbs();
+    selectSlide(0);
+  }
+
+  // ---------- Фото ----------
+  function ensurePhoto(slide) {
+    const i = slide.slot.photoIdx;
+    if (i === null || i === undefined || !S.images[i]) {
+      slide.slot.photo = null;
+      return;
+    }
+    if (imgCache.has(i)) {
+      slide.slot.photo = imgCache.get(i);
+      return;
+    }
+    const im = S.images[i];
+    CK.loadImage(im.local ? im.url : proxied(im.url))
+      .then((img) => {
+        imgCache.set(i, img);
+        S.slides.forEach((s) => { if (s.slot.photoIdx === i) s.slot.photo = img; });
+        render(); renderStrip();
+      })
+      .catch(() => {
+        $("err").textContent = "Фото не завантажилось: " + (im.caption || im.url);
+        $("err").hidden = false;
+      });
+  }
+
+  function buildThumbs() {
+    const box = $("thumbs");
+    box.textContent = "";
+    S.images.forEach((im, i) => {
+      const cell = document.createElement("div");
+      cell.className = "thumb";
+      const img = document.createElement("img");
+      img.src = im.local ? im.url : proxied(im.url);
+      img.alt = "";
+      const cap = document.createElement("div");
+      cap.className = "cap" + (im.doc_like ? " doc" : "");
+      cap.textContent = im.local ? "своє фото" : (im.caption || "без підпису");
+      cell.append(img, cap);
+      cell.addEventListener("click", () => pickPhoto(i));
+      box.appendChild(cell);
+    });
+    const add = document.createElement("button");
+    add.className = "thumb-add";
+    add.title = "Додати свої фото";
+    add.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+    add.addEventListener("click", () => $("photoFile").click());
+    box.appendChild(add);
+    markThumbs();
+  }
+
+  function markThumbs() {
+    const idx = cur() ? cur().slot.photoIdx : null;
+    [...$("thumbs").querySelectorAll(".thumb")].forEach((el, i) =>
+      el.classList.toggle("sel", i === idx));
+  }
+
+  function pickPhoto(i) {
+    const slide = cur();
+    if (!slide) return;
+    slide.slot.photoIdx = i;
+    slide.slot.zoom = 1; slide.slot.offX = 0; slide.slot.offY = 0;
+    ensurePhoto(slide);
+    markThumbs(); syncZoom(); render(); renderStrip();
+  }
+
+  // Свої фото — головний шлях, коли стаття ілюстрована скриншотами документів
+  // (Олег, 17.08: «в таких випадках потрібна ручна підгрузка ілюстративних
+  // фото об'єкта»). Тому і мультивибір, і перетягування файлів на сторінку.
+  function addLocalFiles(files) {
+    const added = [...files].filter((f) => f.type.startsWith("image/"));
+    if (!added.length) return;
+    added.forEach((f) => S.images.push({
+      url: URL.createObjectURL(f), caption: f.name, local: true, doc_like: false,
+    }));
+    buildThumbs();
+    if (cur()) pickPhoto(S.images.length - 1);
+  }
+
+  $("photoFile").addEventListener("change", (e) => {
+    addLocalFiles(e.target.files);
+    e.target.value = "";
+  });
+
+  let dragDepth = 0;
+  window.addEventListener("dragenter", (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes("Files")) return;
+    dragDepth++; $("dropzone").hidden = false;
+  });
+  window.addEventListener("dragover", (e) => { e.preventDefault(); });
+  window.addEventListener("dragleave", () => {
+    if (--dragDepth <= 0) { dragDepth = 0; $("dropzone").hidden = true; }
+  });
+  window.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dragDepth = 0; $("dropzone").hidden = true;
+    if (e.dataTransfer?.files?.length) addLocalFiles(e.dataTransfer.files);
+  });
+
+  $("noPhoto").addEventListener("click", () => {
+    const slide = cur();
+    if (!slide) return;
+    slide.slot.photoIdx = null; slide.slot.photo = null;
+    markThumbs(); render(); renderStrip(); syncPanels();
+  });
+  $("resetCrop").addEventListener("click", () => {
+    const slide = cur();
+    if (!slide) return;
+    slide.slot.zoom = 1; slide.slot.offX = 0; slide.slot.offY = 0;
+    syncZoom(); render(); renderStrip();
+  });
+  $("zoom").addEventListener("input", (e) => {
+    const slide = cur();
+    if (!slide) return;
+    slide.slot.zoom = +e.target.value / 100;
+    $("zoomOut").textContent = e.target.value + "%";
+    CK.clampSlot(slide.slot, photoRect(slide));
+    render(); renderStrip();
+  });
+  function syncZoom() {
+    const z = Math.round((cur()?.slot.zoom || 1) * 100);
+    $("zoom").value = z;
+    $("zoomOut").textContent = z + "%";
+  }
+
+  // ---------- Панель полів слайда ----------
+  const FIELDS = {
+    cover:  [["kicker", "Кікер (2–4 слова, необов'язково)", "input"],
+             ["title", "Заголовок обкладинки", "textarea"]],
+    text:   [["kicker", "Кікер (необов'язково)", "input"],
+             ["title", "Заголовок слайда (необов'язково)", "input"],
+             ["body", "Текст", "textarea tall"]],
+    quote:  [["quote", "Цитата", "textarea tall"],
+             ["attribution", "Хто сказав", "input"]],
+    photo:  [["caption", "Підпис до фото", "textarea"]],
+    cta:    [],
+  };
+  const LIMIT_OF = { title: "title", kicker: "kicker", body: "body",
+                     quote: "quote", caption: "caption", attribution: "kicker" };
+
+  function buildFields() {
+    const slide = cur();
+    const box = $("fields");
+    box.textContent = "";
+    if (!slide) return;
+    (FIELDS[slide.type] || []).forEach(([key, label, kind]) => {
+      const wrap = document.createElement("div");
+      wrap.className = "field";
+      const lab = document.createElement("label");
+      lab.textContent = label;
+      const count = document.createElement("span");
+      count.className = "count";
+      lab.appendChild(count);
+      const input = kind.startsWith("textarea")
+        ? document.createElement("textarea") : document.createElement("input");
+      if (kind.includes("tall")) input.className = "tall";
+      if (input.tagName === "INPUT") input.type = "text";
+      input.value = slide[key] || "";
+      input.spellcheck = false;
+      const limit = S.limits[LIMIT_OF[key]] || 300;
+      const paint = () => {
+        count.textContent = `${input.value.length}/${limit}`;
+        count.classList.toggle("over", input.value.length > limit);
+      };
+      input.addEventListener("input", () => {
+        slide[key] = input.value;
+        if (key === mainField(slide)) { syncWords(slide); buildChips(); }
+        paint(); render(); renderStrip();
+      });
+      paint();
+      wrap.append(lab, input);
+      box.appendChild(wrap);
+    });
+    buildChips();
+  }
+
+  let dragHl = null;
+  function buildChips() {
+    const slide = cur();
+    const box = $("chips");
+    box.textContent = "";
+    const has = slide && slide.type !== "cta" && slide.words.length;
+    box.hidden = !has;
+    $("chipsHint").hidden = !has;
+    if (!has) return;
+    slide.words.forEach((t) => {
+      const el = document.createElement("span");
+      el.className = "chip" + (t.br ? " br" : t.hl ? " hl" : "");
+      if (!t.br) {
+        el.textContent = t.text;
+        el.addEventListener("pointerdown", (e) => {
+          e.preventDefault();
+          t.hl = !t.hl; dragHl = t.hl;
+          el.classList.toggle("hl", t.hl);
+          render(); renderStrip();
+        });
+        el.addEventListener("pointerenter", () => {
+          if (dragHl === null) return;
+          t.hl = dragHl;
+          el.classList.toggle("hl", t.hl);
+          render(); renderStrip();
+        });
+      }
+      box.appendChild(el);
+    });
+  }
+  window.addEventListener("pointerup", () => { dragHl = null; });
+
+  $("typeSeg").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    const slide = cur();
+    if (!b || !slide || slide.type === "cta") return;
+    slide.type = b.dataset.type;
+    syncWords(slide);
+    selectSlide(S.active);
+  });
+
+  // ---------- Схеми ----------
+  CK.SCHEMES.forEach((sc, i) => {
+    const b = document.createElement("button");
+    b.className = "swatch";
+    b.style.background = sc.bg;
+    b.title = sc.name;
+    b.addEventListener("click", () => {
+      const slide = cur();
+      if (!slide) return;
+      slide.scheme = i;
+      [...$("swatches").children].forEach((el, j) => el.classList.toggle("on", j === i));
+      render(); renderStrip();
+    });
+    $("swatches").appendChild(b);
+  });
+
+  // ---------- CTA ----------
+  $("ctaOn").addEventListener("change", (e) => {
+    S.cta.on = e.target.checked;
+    $("ctaBody").hidden = !S.cta.on;
+    if (S.cta.on) {
+      if (S.slides.length >= S.maxSlides) {
+        S.cta.on = false; e.target.checked = false; $("ctaBody").hidden = true;
+        showNote(`Уже ${S.slides.length} слайдів — це стеля. Прибери один, щоб додати заклик.`);
+        return;
+      }
+      const s = newSlide("cta");
+      s.scheme = 0;
+      S.slides.push(s);
+      selectSlide(S.slides.length - 1);
+    } else {
+      const i = S.slides.findIndex((s) => s.type === "cta");
+      if (i >= 0) S.slides.splice(i, 1);
+      selectSlide(Math.min(S.active, S.slides.length - 1));
+    }
+  });
+
+  function setCtaPreset(key) {
+    const preset = S.presets[key];
+    if (!preset) return;
+    S.cta.preset = key;
+    S.cta.text = preset.text;
+    $("ctaText").value = preset.text;
+    [...$("ctaPresets").children].forEach((el) =>
+      el.classList.toggle("on", el.dataset.preset === key));
+  }
+  $("ctaText").addEventListener("input", (e) => {
+    S.cta.text = e.target.value; render(); renderStrip();
+  });
+
+  // ---------- Цитати й абзаци ----------
+  function renderQuotes() {
+    const list = $("quotesList");
+    list.textContent = "";
+    const quotes = S.article?.quotes || [];
+    $("quotesPanel").hidden = !quotes.length;
+    quotes.forEach((q, i) => {
+      const el = document.createElement("div");
+      el.className = "bq";
+      el.textContent = q;
+      const b = document.createElement("button");
+      b.className = "ghost tiny";
+      b.textContent = "Поставити в цей слайд";
+      b.addEventListener("click", () => {
+        const slide = cur();
+        if (!slide) return;
+        slide.type = "quote";
+        slide.quote = q;
+        slide.quote_index = i;
+        syncWords(slide);
+        selectSlide(S.active);
+      });
+      el.appendChild(document.createElement("br"));
+      el.appendChild(b);
+      list.appendChild(el);
+    });
+  }
+
+  function renderParas() {
+    const list = $("parasList");
+    list.textContent = "";
+    const paras = S.article?.paragraphs || [];
+    $("textPanel").hidden = !paras.length;
+    $("parasSummary").textContent = `Показати абзаци (${paras.length})`;
+    paras.forEach((p) => {
+      const el = document.createElement("div");
+      el.className = "para";
+      el.textContent = p;
+      el.title = "Вставити в слайд";
+      el.addEventListener("click", () => {
+        const slide = cur();
+        if (!slide) return;
+        if (slide.type === "quote" || slide.type === "cta") slide.type = "text";
+        const key = slide.type === "photo" ? "caption"
+                  : slide.type === "cover" ? "title" : "body";
+        slide[key] = p;
+        syncWords(slide);
+        selectSlide(S.active);
+      });
+      list.appendChild(el);
+    });
+  }
+
+  // ---------- Стрічка слайдів ----------
+  function renderStrip() {
+    const box = $("stripInner");
+    box.textContent = "";
+    S.slides.forEach((slide, i) => {
+      const card = document.createElement("div");
+      card.className = "slidecard" + (i === S.active ? " on" : "");
+      card.draggable = slide.type !== "cta";
+      card.dataset.i = i;
+      const c = document.createElement("canvas");
+      c.width = 84 * 2; c.height = 112 * 2;
+      drawSlide(c.getContext("2d"), i, (84 * 2) / W);
+      const n = document.createElement("div");
+      n.className = "n";
+      n.textContent = slide.type === "cta" ? "заклик" : `${i + 1}`;
+      const x = document.createElement("button");
+      x.className = "x";
+      x.textContent = "✕";
+      x.title = "Видалити слайд";
+      x.addEventListener("click", (e) => { e.stopPropagation(); removeSlide(i); });
+      card.append(c, n, x);
+      card.addEventListener("click", () => selectSlide(i));
+      card.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", String(i));
+        card.classList.add("drag");
+      });
+      card.addEventListener("dragend", () => card.classList.remove("drag"));
+      card.addEventListener("dragover", (e) => { e.preventDefault(); card.classList.add("over"); });
+      card.addEventListener("dragleave", () => card.classList.remove("over"));
+      card.addEventListener("drop", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        card.classList.remove("over");
+        moveSlide(+e.dataTransfer.getData("text/plain"), i);
+      });
+      box.appendChild(card);
+    });
+    const add = document.createElement("button");
+    add.className = "addslide";
+    add.textContent = "+";
+    add.title = "Додати слайд";
+    add.addEventListener("click", addSlide);
+    box.appendChild(add);
+  }
+
+  function addSlide() {
+    if (S.slides.length >= S.maxSlides) {
+      showNote(`Стеля — ${S.maxSlides} слайдів. Довшу карусель не догортують.`);
+      return;
+    }
+    const ctaAt = S.slides.findIndex((s) => s.type === "cta");
+    const at = ctaAt >= 0 ? ctaAt : S.slides.length;  // заклик лишається останнім
+    S.slides.splice(at, 0, newSlide("text"));
+    selectSlide(at);
+  }
+
+  function removeSlide(i) {
+    if (S.slides.length <= 1) return;
+    if (S.slides[i].type === "cta") {
+      S.cta.on = false;
+      $("ctaOn").checked = false;
+      $("ctaBody").hidden = true;
+    }
+    S.slides.splice(i, 1);
+    selectSlide(Math.min(S.active, S.slides.length - 1));
+  }
+
+  function moveSlide(from, to) {
+    if (from === to || !S.slides[from]) return;
+    const [s] = S.slides.splice(from, 1);
+    S.slides.splice(to, 0, s);
+    // Заклик за визначенням фінальний: перетягнути слайд «за нього» не можна,
+    // інакше лічильник показував би заклик посеред каруселі.
+    const ctaAt = S.slides.findIndex((x) => x.type === "cta");
+    if (ctaAt >= 0 && ctaAt !== S.slides.length - 1) {
+      S.slides.push(S.slides.splice(ctaAt, 1)[0]);
+    }
+    selectSlide(S.slides.indexOf(s));
+  }
+
+  function selectSlide(i) {
+    S.active = Math.max(0, Math.min(i, S.slides.length - 1));
+    const slide = cur();
+    if (!slide) return;
+    $("slideWhich").textContent =
+      slide.type === "cta" ? "· заклик" : `· ${S.active + 1} з ${total()}`;
+    [...$("typeSeg").children].forEach((b) =>
+      b.classList.toggle("on", b.dataset.type === slide.type));
+    $("typeSeg").hidden = slide.type === "cta";
+    buildFields();
+    syncPanels();
+    markThumbs();
+    syncZoom();
+    render();
+    renderStrip();
+  }
+
+  function syncPanels() {
+    const slide = cur();
+    if (!slide) return;
+    const photoSlide = slide.type !== "cta";
+    $("photoPanel").hidden = !photoSlide;
+    $("stylePanel").hidden = false;
+    [...$("swatches").children].forEach((el, j) => el.classList.toggle("on", j === slide.scheme));
+    $("schemeHint").textContent = slide.slot.photo
+      ? "На слайді з фото колір задає лише плашку — фон тримає фото."
+      : "Слайд без фото — суцільний колір.";
+    $("adjOpen").hidden = !slide.slot.photo;
+    adjuster.sync();
+  }
+
+  // ---------- Рендер слайда ----------
+  const canvas = $("canvas"), ctx = canvas.getContext("2d");
+  canvas.width = Math.round(W * PREVIEW_K);
+  canvas.height = Math.round(H * PREVIEW_K);
+
+  let fontsReady = false;
+  Promise.all([
+    document.fonts.load("700 78px Commissioner"),
+    document.fonts.load("500 44px Commissioner"),
+    document.fonts.load("300 40px Commissioner"),
+    document.fonts.load("600 30px Commissioner"),
+  ]).then(() => { fontsReady = true; render(); renderStrip(); })
+    .catch(() => { fontsReady = true; });
+
+  CK.loadImage(proxied(CK.LOGO_URL))
+    .then((img) => { S.logo = img; render(); renderStrip(); })
+    .catch(() => {});
+
+  function photoRect() { return { x: 0, y: 0, w: W, h: H }; }
+
+  /** Підбір кегля: зменшуємо, доки блок не влізе у відведену висоту. */
+  function fitLines(c, words, o) {
+    let size = o.start;
+    let lines = [], lh = 0;
+    for (;;) {
+      lines = CK.wrap(c, words, size, o.maxW, o.weight, o.spaceMul);
+      lh = size * (o.lhMul || 1.32);
+      if (lines.length * lh <= o.maxH || size <= o.min) break;
+      size -= 2;
+    }
+    return { size, lines, lh, height: lines.length * lh };
+  }
+
+  /**
+   * Куди поставити блок тексту. Внизу — коли під ним фото (там градієнтна
+   * підложка й туди дивиться око у стрічці), інакше по центру. Верхня межа
+   * не дає довгому заголовку заїхати під лого й лічильник.
+   */
+  function anchorTop(blockH, bottomAnchored) {
+    const top = bottomAnchored ? H - 150 - blockH : (H - blockH) / 2;
+    return Math.max(200, top);
+  }
+
+  function paintBlock(c, lines, o) {
+    c.textBaseline = "middle";
+    CK.setFont(c, o.size, o.weight);
+    let y = o.top + o.lh / 2;
+    for (const line of lines) {
+      const { total } = CK.layoutLine(c, line, o.size, o.spaceMul);
+      const x0 = o.align === "center" ? (W - total) / 2 : PAD;
+      CK.paintLine(c, line, {
+        x0, y, size: o.size, spaceMul: o.spaceMul,
+        boxBg: o.boxBg, boxText: o.boxText, color: o.color,
+      });
+      y += o.lh;
+    }
+  }
+
+  /** Малює слайд i у контекст c, масштабуючи логічні 1080×1440 у k. */
+  function drawSlide(c, i, k) {
+    const slide = S.slides[i];
+    c.setTransform(k, 0, 0, k, 0, 0);
+    c.clearRect(0, 0, W, H);
+    if (!slide) { c.setTransform(1, 0, 0, 1, 0, 0); return; }
+
+    const sc = CK.SCHEMES[slide.scheme] || CK.SCHEMES[0];
+    const photo = slide.slot.photo;
+
+    // Фон
+    c.fillStyle = sc.bg;
+    c.fillRect(0, 0, W, H);
+    if (photo) {
+      c.save();
+      c.beginPath(); c.rect(0, 0, W, H); c.clip();
+      CK.paintPhoto(c, slide.slot, photoRect());
+      c.restore();
+    }
+
+    // Кольори тексту: на фото завжди білий по темній підложці, на суцільному
+    // фоні — за схемою.
+    const onPhoto = !!photo;
+    const color = onPhoto ? "#ffffff" : sc.text;
+    const boxBg = onPhoto ? CK.BRAND : sc.boxBg;
+    const boxText = onPhoto ? "#ffffff" : sc.boxText;
+
+    if (slide.type === "cta") drawCta(c, slide, sc);
+    else if (slide.type === "quote") drawQuote(c, slide, { color, boxBg, boxText, onPhoto });
+    else if (slide.type === "photo") drawPhotoSlide(c, slide, { color, boxBg, boxText, onPhoto });
+    else drawTextSlide(c, slide, { color, boxBg, boxText, onPhoto });
+
+    drawChrome(c, i, slide, onPhoto || (slide.type === "cta"), sc);
+    c.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  /** Темна підложка знизу — читабельність тексту на будь-якому фото. */
+  function bottomScrim(c, fromY, strength = 0.82) {
+    const g = c.createLinearGradient(0, fromY, 0, H);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(0.45, `rgba(0,0,0,${(strength * 0.62).toFixed(2)})`);
+    g.addColorStop(1, `rgba(0,0,0,${strength})`);
+    c.fillStyle = g;
+    c.fillRect(0, fromY, W, H - fromY);
+  }
+
+  function topScrim(c) {
+    const g = c.createLinearGradient(0, 0, 0, 260);
+    g.addColorStop(0, "rgba(0,0,0,.55)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    c.fillStyle = g;
+    c.fillRect(0, 0, W, 260);
+  }
+
+  function drawKicker(c, text, y, opts) {
+    if (!text.trim()) return 0;
+    const size = 30;
+    CK.setFont(c, size, 600);
+    c.letterSpacing = "2.4px";
+    const label = text.trim().toUpperCase();
+    const tw = c.measureText(label).width;
+    const padX = 22, h = 54;
+    c.fillStyle = opts.onPhoto ? CK.BRAND : (opts.boxBg || CK.BRAND);
+    c.beginPath();
+    c.roundRect(PAD, y, tw + padX * 2, h, 12);
+    c.fill();
+    c.fillStyle = opts.onPhoto ? "#ffffff" : (opts.boxText || "#ffffff");
+    c.textBaseline = "middle";
+    c.fillText(label, PAD + padX, y + h / 2 + 1);
+    c.letterSpacing = "0px";
+    return h;
+  }
+
+  function drawTextSlide(c, slide, st) {
+    const isCover = slide.type === "cover";
+    const words = slide.words;
+    const bodyWords = CK.tokenizePlain(slide.body);
+    const hasKicker = !!slide.kicker.trim();
+    const maxW = W - PAD * 2;
+
+    const titleStart = isCover ? 96 : 72;
+    const titleMin = isCover ? 52 : 40;
+    const title = words.length
+      ? fitLines(c, words, { start: titleStart, min: titleMin, maxW,
+                             maxH: isCover ? H * 0.52 : H * 0.36,
+                             weight: 700, spaceMul: 1.10, lhMul: 1.22 })
+      : { size: titleStart, lines: [], lh: 0, height: 0 };
+    const bodySize = isCover ? 40 : 42;
+    const body = bodyWords.length
+      ? fitLines(c, bodyWords, { start: bodySize, min: 28, maxW,
+                                 maxH: H * 0.34, weight: 300,
+                                 spaceMul: 0.95, lhMul: 1.45 })
+      : { size: bodySize, lines: [], lh: 0, height: 0 };
+
+    const kickerH = hasKicker ? 54 + 26 : 0;
+    const gap = title.height && body.height ? 34 : 0;
+    const blockH = kickerH + title.height + gap + body.height;
+
+    // Обкладинка тримає текст унизу (там його шукає око у стрічці), звичайний
+    // слайд без фото — по центру, з фото — теж унизу, над підложкою.
+    const bottomAnchored = isCover || st.onPhoto;
+    const top = anchorTop(blockH, bottomAnchored);
+
+    if (st.onPhoto) {
+      topScrim(c);
+      bottomScrim(c, Math.max(0, top - 300));
+    }
+
+    let y = top;
+    if (hasKicker) y += drawKicker(c, slide.kicker, y, st) + 26;
+    if (title.lines.length) {
+      paintBlock(c, title.lines, {
+        top: y, size: title.size, lh: title.lh, weight: 700, spaceMul: 1.10,
+        color: st.color, boxBg: st.boxBg, boxText: st.boxText,
+      });
+      y += title.height + gap;
+    }
+    if (body.lines.length) {
+      paintBlock(c, body.lines, {
+        top: y, size: body.size, lh: body.lh, weight: 300, spaceMul: 0.95,
+        color: st.color, boxBg: st.boxBg, boxText: st.boxText,
+      });
+    }
+  }
+
+  function drawQuote(c, slide, st) {
+    const words = slide.words;
+    const who = slide.attribution.trim();
+    const maxW = W - PAD * 2;
+    const quote = words.length
+      ? fitLines(c, words, { start: 62, min: 34, maxW, maxH: H * 0.46,
+                             weight: 500, spaceMul: 0.95, lhMul: 1.38 })
+      : { size: 62, lines: [], lh: 0, height: 0 };
+    const whoSize = 34;
+    const ruleH = who ? 4 : 0;
+    const whoBlock = who ? 40 + ruleH + whoSize * 1.4 : 0;
+    const blockH = quote.height + whoBlock;
+    // З фото цитата тримається низу (там її не з'їдає обличчя і там лежить
+    // підложка), без фото — по центру: на суцільному кольорі текст, притиснутий
+    // донизу, лишає порожню верхню третину слайда.
+    const top = anchorTop(blockH, st.onPhoto);
+
+    if (st.onPhoto) { topScrim(c); bottomScrim(c, Math.max(0, top - 300)); }
+
+    if (quote.lines.length) {
+      paintBlock(c, quote.lines, {
+        top, size: quote.size, lh: quote.lh, weight: 500, spaceMul: 0.95,
+        color: st.color, boxBg: st.boxBg, boxText: st.boxText,
+      });
+    }
+    if (who) {
+      // Коротка брендова риска над іменем: відділяє слова того, хто говорить,
+      // від самої цитати без зайвих лапок (цитати сайту вже в «ялинках»).
+      const y = top + quote.height + 40;
+      c.fillStyle = st.onPhoto ? CK.BRAND : st.boxBg;
+      c.fillRect(PAD, y, 96, ruleH);
+      CK.setFont(c, whoSize, 600);
+      c.textBaseline = "middle";
+      c.fillStyle = st.color;
+      c.globalAlpha = 0.95;
+      c.fillText(who, PAD, y + ruleH + whoSize * 0.86);
+      c.globalAlpha = 1;
+    }
+  }
+
+  function drawPhotoSlide(c, slide, st) {
+    const words = CK.tokenizePlain(slide.caption);
+    if (!words.length) return;
+    const maxW = W - PAD * 2;
+    const cap = fitLines(c, words, { start: 40, min: 28, maxW, maxH: H * 0.24,
+                                     weight: 500, spaceMul: 0.95, lhMul: 1.4 });
+    const top = anchorTop(cap.height, true);
+    if (st.onPhoto) { topScrim(c); bottomScrim(c, Math.max(0, top - 260)); }
+    paintBlock(c, cap.lines, {
+      top, size: cap.size, lh: cap.lh, weight: 500, spaceMul: 0.95,
+      color: st.color, boxBg: st.boxBg, boxText: st.boxText,
+    });
+  }
+
+  function drawCta(c, slide, sc) {
+    const r = 230;
+    const cx = W / 2, cy = 470;
+    c.save();
+    c.beginPath();
+    c.arc(cx, cy, r, 0, Math.PI * 2);
+    c.clip();
+    if (S.authorPhoto) {
+      CK.paintPhoto(c, { photo: S.authorPhoto, zoom: 1, offX: 0, offY: 0, adj: CK.newAdj() },
+                    { x: cx - r, y: cy - r, w: r * 2, h: r * 2 });
+    } else {
+      c.fillStyle = sc.dark ? "rgba(255,255,255,.16)" : "rgba(0,0,0,.08)";
+      c.fillRect(cx - r, cy - r, r * 2, r * 2);
+    }
+    c.restore();
+    c.beginPath();
+    c.arc(cx, cy, r + 6, 0, Math.PI * 2);
+    c.strokeStyle = sc.dark ? "#ffffff" : CK.BRAND;
+    c.lineWidth = 12;
+    c.stroke();
+
+    const author = S.article?.author;
+    let y = cy + r + 84;
+    c.textBaseline = "middle";
+    if (author?.name) {
+      CK.setFont(c, 52, 700);
+      c.fillStyle = sc.text;
+      c.fillText(author.name, (W - c.measureText(author.name).width) / 2, y);
+      y += 68;
+    }
+    if (author?.position) {
+      CK.setFont(c, 34, 300);
+      c.fillStyle = sc.text;
+      c.globalAlpha = 0.85;
+      c.fillText(author.position, (W - c.measureText(author.position).width) / 2, y);
+      c.globalAlpha = 1;
+      y += 74;
+    }
+    const words = CK.tokenizePlain(S.cta.text);
+    if (words.length) {
+      const fit = fitLines(c, words, { start: 44, min: 28, maxW: W - PAD * 2,
+                                       maxH: H - y - 170, weight: 500,
+                                       spaceMul: 0.95, lhMul: 1.42 });
+      paintBlock(c, fit.lines, {
+        top: y, size: fit.size, lh: fit.lh, weight: 500, spaceMul: 0.95,
+        align: "center", color: sc.text, boxBg: sc.boxBg, boxText: sc.boxText,
+      });
+    }
+  }
+
+  /**
+   * Уся арифметика системних елементів в ОДНІЙ функції — і рендер, і тест
+   * питають саме її. Додала людина шостий слайд: «3/5» стало «3/6», стрілка
+   * з'явилась на п'ятому. Жодного ручного нумерування ніде.
+   *
+   * Заклик не нумеруємо: у стрічці Instagram він читається як хвіст, а не як
+   * «слайд 6 із 6», тому й зі знаменника випадає.
+   */
+  function chromeOf(i) {
+    const slide = S.slides[i];
+    const nums = S.slides.filter((s) => s.type !== "cta").length;
+    return {
+      counter: slide && slide.type !== "cta" ? `${i + 1}/${nums}` : null,
+      chevron: !isLast(i),
+    };
+  }
+
+  function drawChrome(c, i, slide, darkBg, sc) {
+    const light = darkBg || sc.dark;
+    const tint = light ? "#ffffff" : "#16233f";
+    const chrome = chromeOf(i);
+
+    if (S.logo) {
+      const lw = 210, lh = lw * (S.logo.naturalHeight / S.logo.naturalWidth || 0.454);
+      const img = light ? S.logo : CK.logoTinted(S.logo, tint);
+      c.save();
+      if (light) { c.shadowColor = "rgba(0,0,0,.45)"; c.shadowBlur = 12; }
+      c.drawImage(img, PAD, 64, lw, lh);
+      c.restore();
+    }
+
+    if (chrome.counter) {
+      const label = chrome.counter;
+      CK.setFont(c, 32, 600);
+      c.textBaseline = "middle";
+      const tw = c.measureText(label).width;
+      c.save();
+      if (light) { c.shadowColor = "rgba(0,0,0,.5)"; c.shadowBlur = 10; }
+      c.fillStyle = tint;
+      c.globalAlpha = 0.92;
+      c.fillText(label, W - PAD - tw, 64 + 46);
+      c.restore();
+      c.globalAlpha = 1;
+    }
+
+    if (chrome.chevron) drawChevron(c, tint, slide.type === "cover");
+  }
+
+  function drawChevron(c, tint, withHint) {
+    const x = W - PAD, y = H - 78, s = 17;
+    c.save();
+    c.shadowColor = "rgba(0,0,0,.45)";
+    c.shadowBlur = 10;
+    if (withHint) {
+      CK.setFont(c, 28, 500);
+      c.textBaseline = "middle";
+      c.fillStyle = tint;
+      c.globalAlpha = 0.9;
+      const t = "гортайте";
+      c.fillText(t, x - s * 2 - 18 - c.measureText(t).width, y);
+      c.globalAlpha = 1;
+    }
+    c.strokeStyle = tint;
+    c.lineWidth = 6;
+    c.lineCap = "round";
+    c.lineJoin = "round";
+    c.beginPath();
+    c.moveTo(x - s * 2, y - s);
+    c.lineTo(x - s * 0.6, y);
+    c.lineTo(x - s * 2, y + s);
+    c.stroke();
+    c.restore();
+  }
+
+  function render() {
+    if (!S.slides.length) return;
+    drawSlide(ctx, S.active, PREVIEW_K);
+  }
+
+  // ---------- Пан/зум фото прямо на прев'ю ----------
+  let drag = null;
+  const toCanvas = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (W / r.width),
+             y: (e.clientY - r.top) * (H / r.height) };
+  };
+  canvas.addEventListener("pointerdown", (e) => {
+    const slide = cur();
+    if (!slide || !slide.slot.photo) return;
+    const p = toCanvas(e);
+    drag = { x: p.x, y: p.y, offX: slide.slot.offX, offY: slide.slot.offY };
+    canvas.classList.add("dragging");
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const slide = cur();
+    const p = toCanvas(e);
+    slide.slot.offX = drag.offX + (p.x - drag.x);
+    slide.slot.offY = drag.offY + (p.y - drag.y);
+    CK.clampSlot(slide.slot, photoRect());
+    render();
+  });
+  canvas.addEventListener("pointerup", (e) => {
+    if (drag) {
+      const p = toCanvas(e);
+      if (Math.hypot(p.x - drag.x, p.y - drag.y) < 6) adjuster.open();
+      renderStrip();
+    }
+    drag = null;
+    canvas.classList.remove("dragging");
+  });
+  canvas.addEventListener("wheel", (e) => {
+    const slide = cur();
+    if (!slide || !slide.slot.photo) return;
+    e.preventDefault();
+    slide.slot.zoom = Math.min(3, Math.max(1, slide.slot.zoom * (e.deltaY < 0 ? 1.06 : 0.94)));
+    CK.clampSlot(slide.slot, photoRect());
+    syncZoom(); render(); renderStrip();
+  }, { passive: false });
+
+  const adjuster = CK.createAdjuster({
+    getSlot: () => cur()?.slot,
+    getRect: () => photoRect(),
+    onChange: () => { render(); renderStrip(); },
+    onZoom: () => syncZoom(),
+  });
+  $("adjOpen").addEventListener("click", () => adjuster.open());
+
+  // ---------- Експорт ----------
+  //
+  // Малюємо в ОФСКРІН рівно 1080×1440, а не масштабуємо прев'ю: Instagram
+  // ресайзить до 1080 по ширині сам, більший файл нічого не покращує, а
+  // менший псує.
+  function slideBlob(i) {
+    const off = document.createElement("canvas");
+    off.width = W; off.height = H;
+    drawSlide(off.getContext("2d"), i, 1);
+    return new Promise((res) => off.toBlob(res, "image/jpeg", JPEG_Q));
+  }
+
+  const baseName = () => "mykvisti_" + (S.article?.article_id || "carousel");
+
+  $("dlOne").addEventListener("click", async () => {
+    const blob = await slideBlob(S.active);
+    CK.download(blob, `${baseName()}_${String(S.active + 1).padStart(2, "0")}.jpg`);
+  });
+
+  $("dlAll").addEventListener("click", async () => {
+    const btn = $("dlAll");
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = "Збираю…";
+    try {
+      const files = [];
+      for (let i = 0; i < S.slides.length; i++) {
+        const blob = await slideBlob(i);
+        files.push({
+          name: `${String(i + 1).padStart(2, "0")}.jpg`,
+          bytes: new Uint8Array(await blob.arrayBuffer()),
+        });
+      }
+      CK.download(CK.zipStore(files), `${baseName()}.zip`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  });
+
+  // ---------- Прев'ю каруселі ----------
+  const viewer = $("viewer"), vCanvas = $("viewerCanvas");
+  let vIndex = 0;
+  function openViewer(at) {
+    vIndex = at;
+    viewer.hidden = false;
+    drawViewer();
+  }
+  function drawViewer() {
+    const k = 540 / W;
+    vCanvas.width = Math.round(W * k);
+    vCanvas.height = Math.round(H * k);
+    drawSlide(vCanvas.getContext("2d"), vIndex, k);
+    $("viewerPrev").disabled = vIndex === 0;
+    $("viewerNext").disabled = vIndex >= S.slides.length - 1;
+    const dots = $("viewerDots");
+    dots.textContent = "";
+    S.slides.forEach((_, i) => {
+      const d = document.createElement("span");
+      d.className = "dot" + (i === vIndex ? " on" : "");
+      dots.appendChild(d);
+    });
+  }
+  $("openViewer").addEventListener("click", () => openViewer(0));
+  $("viewerPrev").addEventListener("click", () => { if (vIndex > 0) { vIndex--; drawViewer(); } });
+  $("viewerNext").addEventListener("click", () => {
+    if (vIndex < S.slides.length - 1) { vIndex++; drawViewer(); }
+  });
+  $("viewerClose").addEventListener("click", () => { viewer.hidden = true; });
+  window.addEventListener("keydown", (e) => {
+    if (viewer.hidden) return;
+    if (e.key === "Escape") viewer.hidden = true;
+    if (e.key === "ArrowLeft" && vIndex > 0) { vIndex--; drawViewer(); }
+    if (e.key === "ArrowRight" && vIndex < S.slides.length - 1) { vIndex++; drawViewer(); }
+  });
+
+  // ---------- Старт ----------
+  async function boot() {
+    let state = null;
+    try {
+      const resp = await api("/api/carousel/state");
+      state = await resp.json();
+      if (!resp.ok) throw new Error(state.hint || "немає доступу");
+    } catch (e) {
+      $("gate").hidden = false;
+      if (!S.token) {
+        $("gateTitle").textContent = "Потрібен лінк від бота";
+      }
+      return;
+    }
+    S.person = state.person || "";
+    S.presets = state.cta_presets || {};
+    S.limits = state.limits || S.limits;
+    S.maxSlides = state.max_slides || S.maxSlides;
+    S.cta.preset = state.default_cta || "subscribe";
+    $("who").textContent = S.person;
+    $("app").hidden = false;
+
+    Object.entries(S.presets).forEach(([key, preset]) => {
+      const b = document.createElement("button");
+      b.dataset.preset = key;
+      b.textContent = preset.label;
+      b.addEventListener("click", () => setCtaPreset(key));
+      $("ctaPresets").appendChild(b);
+    });
+    setCtaPreset(S.cta.preset);
+
+    const pre = qp.get("url");
+    if (pre) {
+      $("url").value = /^\d+$/.test(pre.trim()) ? pre.trim() : pre;
+      loadPlan(false);
+    }
+  }
+
+  boot();
+
+  // Для тестів: дає прогону дістатись стану й арифметики без клацання по
+  // інтерфейсу. chromeOf тут не «для тесту продубльовано», а та сама функція,
+  // якою малює рендер, — інакше перевірявся б не той код, що працює.
+  window.__carousel = {
+    S, drawSlide, slideBlob, selectSlide, addSlide, moveSlide, chromeOf,
+    supportsFilter: () => CK.SUPPORTS_FILTER,
+    async zipBase64() {
+      const files = [];
+      for (let i = 0; i < S.slides.length; i++) {
+        const blob = await slideBlob(i);
+        files.push({
+          name: `${String(i + 1).padStart(2, "0")}.jpg`,
+          bytes: new Uint8Array(await blob.arrayBuffer()),
+        });
+      }
+      const buf = await CK.zipStore(files).arrayBuffer();
+      let s = "";
+      new Uint8Array(buf).forEach((b) => { s += String.fromCharCode(b); });
+      return btoa(s);
+    },
+    async slideSize(i) {
+      const blob = await slideBlob(i);
+      const bmp = await createImageBitmap(blob);
+      return { w: bmp.width, h: bmp.height, bytes: blob.size };
+    },
+    /** Середній колір ділянки слайда — так видно, чи спрацювала обробка. */
+    async sample(i, x, y, w, h) {
+      const off = document.createElement("canvas");
+      off.width = W; off.height = H;
+      const c = off.getContext("2d", { willReadFrequently: true });
+      drawSlide(c, i, 1);
+      const d = c.getImageData(x, y, w, h).data;
+      let r = 0, g = 0, b = 0;
+      for (let p = 0; p < d.length; p += 4) { r += d[p]; g += d[p + 1]; b += d[p + 2]; }
+      const n = d.length / 4;
+      return { r: r / n, g: g / n, b: b / n };
+    },
+  };
+})();
+</script>
+</body>
+</html>

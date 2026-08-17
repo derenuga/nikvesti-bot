@@ -352,7 +352,7 @@ def _add_model_usage(models, model, delta):
 
 
 def record_ai_usage(model, input_tokens=0, output_tokens=0, cache_read=0, cache_creation=0,
-                    user_id=None, user_name=None):
+                    user_id=None, user_name=None, feature=None):
     """Акумулює токени AI-виклику в місячний агрегат по моделях (REVIEW в.5).
     Викликається раз на запит (для NLQ — сумарно за весь tool-use цикл).
 
@@ -360,7 +360,13 @@ def record_ai_usage(model, input_tokens=0, output_tokens=0, cache_read=0, cache_
     бек із кнопки, /dossier): токени додатково лягають у місячний розріз по
     людях (ai_usage_users → «хто скільки коштує» в /aicost) і в сьогоднішній
     запис людини в bot_usage (→ вартість дня в /usage). Без user_id — лише
-    спільний агрегат (автоматика: ранкове, звіти, судді, батчі, витяги)."""
+    спільний агрегат (автоматика: ранкове, звіти, судді, батчі, витяги).
+
+    feature — НА ЩО пішли гроші («carousel», «dossier»…). Третя вісь поруч із
+    моделлю і людиною, і питання в неї своє: «хто напитав» не відповідає на
+    «скільки з'їв конкретний інструмент», бо той самий Лис у тієї самої
+    людини і відповідає на питання, і малює каруселі. Позначку ставить сам
+    виклик; непозначені лягають у «решта» — див. ai_usage.format_month_report."""
     month = datetime.now().strftime("%Y-%m")
     delta = {
         "requests": 1,
@@ -376,6 +382,13 @@ def record_ai_usage(model, input_tokens=0, output_tokens=0, cache_read=0, cache_
         if len(usage) > AI_USAGE_MAX_MONTHS:
             for old in sorted(usage.keys())[:len(usage) - AI_USAGE_MAX_MONTHS]:
                 del usage[old]
+        if feature:
+            by_feature = state.setdefault("ai_usage_features", {})
+            month_features = by_feature.setdefault(month, {})
+            _add_model_usage(month_features.setdefault(feature, {}), model, delta)
+            if len(by_feature) > AI_USAGE_MAX_MONTHS:
+                for old in sorted(by_feature.keys())[:len(by_feature) - AI_USAGE_MAX_MONTHS]:
+                    del by_feature[old]
         if user_id is not None:
             by_user = state.setdefault("ai_usage_users", {})
             month_users = by_user.setdefault(month, {})
@@ -404,6 +417,12 @@ def get_ai_usage_users(month):
     """Розріз витрат AI по людях за місяць: {user_id(str): {name, models}}."""
     with _lock:
         return dict(_read_state().get("ai_usage_users", {}).get(month, {}))
+
+
+def get_ai_usage_features(month):
+    """Розріз витрат AI по інструментах за місяць: {feature: {model: rec}}."""
+    with _lock:
+        return dict(_read_state().get("ai_usage_features", {}).get(month, {}))
 
 
 def record_viber_post():
@@ -600,6 +619,53 @@ def save_back_export(token, entry):
             oldest = sorted(exports, key=lambda k: exports[k].get("at", ""))
             for key in oldest[:len(exports) - BACK_EXPORTS_MAX]:
                 del exports[key]
+        _write_state(state)
+
+
+# Генератор каруселей (carousel.py): персональні токени сторінки і кеш планів.
+#
+# Токен тут, а не в норі, з тієї ж причини, що й у сторінки відео: сторінку
+# відкривають звичайним браузером, де initData Telegram узяти нізвідки, а
+# генерація плану коштує грошей — значить, вхід має бути іменний.
+# Кеш планів — щоб повторне відкриття тієї самої новини не платило вдруге.
+CAROUSEL_TOKENS_MAX = 30
+CAROUSEL_PLANS_MAX = 30
+
+
+def get_carousel_tokens():
+    """{token: {"person", "tg_id", "at"}} — видані входи на сторінку каруселей."""
+    with _lock:
+        return dict(_read_state().get("carousel_tokens", {}))
+
+
+def save_carousel_tokens(tokens):
+    """Перезаписує весь реєстр токенів (виклик уже обрізав протухлі)."""
+    with _lock:
+        state = _read_state()
+        if len(tokens) > CAROUSEL_TOKENS_MAX:
+            oldest = sorted(tokens, key=lambda k: tokens[k].get("at", ""))
+            for key in oldest[:len(tokens) - CAROUSEL_TOKENS_MAX]:
+                del tokens[key]
+        state["carousel_tokens"] = tokens
+        _write_state(state)
+
+
+def get_carousel_plan(article_id):
+    """Збережений план каруселі за id новини або None."""
+    with _lock:
+        return _read_state().get("carousel_plans", {}).get(str(article_id))
+
+
+def save_carousel_plan(article_id, entry):
+    """Кладе {"plan": ..., "at": iso, ...} під id новини (кап найстарішими)."""
+    with _lock:
+        state = _read_state()
+        plans = state.setdefault("carousel_plans", {})
+        plans[str(article_id)] = entry
+        if len(plans) > CAROUSEL_PLANS_MAX:
+            oldest = sorted(plans, key=lambda k: plans[k].get("at", ""))
+            for key in oldest[:len(plans) - CAROUSEL_PLANS_MAX]:
+                del plans[key]
         _write_state(state)
 
 

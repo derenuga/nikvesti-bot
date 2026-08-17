@@ -102,6 +102,7 @@ from handlers.webapp import (setup_menu_button, start_webapp, team_handler,
                             todo_handler, todo_today_callback)
 from handlers.video_download import (video_handler, video_cookies_handler,
                                      cookies_document_handler)
+from handlers.carousel import carousel_handler
 from handlers.team_matching import (
     match_test_handler, match_scan_handler, match_estimate_handler,
     match_backfill_handler, match_tg_handler, match_cards_handler,
@@ -149,6 +150,7 @@ PUBLIC_COMMANDS = [
     ("stat", "Статистика матеріалу за лінком"),
     ("todo", "Записати справу в блокнот"),
     ("video", "Завантажити відео з YouTube чи Facebook"),
+    ("carousel", "Карусель для Instagram із новини"),
     ("promises", "Банк тем: що горить сьогодні"),
     ("dossier", "Історія питання з 17-річного архіву"),
     ("analytics", "Трафік сайту за вчора + топ-5"),
@@ -666,6 +668,7 @@ def main():
     app.add_handler(CommandHandler("todo", todo_handler))
     app.add_handler(CommandHandler("video", video_handler))
     app.add_handler(CommandHandler("video_cookies", video_cookies_handler))
+    app.add_handler(CommandHandler("carousel", carousel_handler))
     app.add_handler(CommandHandler("match_test", match_test_handler))
     app.add_handler(CommandHandler("match_scan", match_scan_handler))
     app.add_handler(CommandHandler("match_estimate", match_estimate_handler))
