@@ -1004,6 +1004,26 @@ DUPE_SIM = 0.4
 # базовому 0.4 не можна («відремонтувати» ~ «освітити» ту саму вулицю), тому
 # для таких пар назва мусить збігатись сильніше. Рішення однаково за суддею.
 DUPE_SIM_STRONG = 0.55
+# Пара з ОДНІЄЇ СТАТТІ з ТІЄЮ САМОЮ ДІЄЮ. Це шов проти дроблення рішення за
+# об'єктами, і обидві умови в ньому обов'язкові.
+#
+# Замір 17.08 на живому банку: «Затвердити блакитно-чорний прапор «Між небом
+# та землею»» / «Затвердити біло-чорний прапор Надії» — одна ухвала про два
+# прапори, similarity 0.39, тобто базовий поріг 0.4 програно на ОДНУ СОТУ.
+# Просто знизити поріг не можна: у тій самій статті законно живуть РІЗНІ дії
+# щодо одного об'єкта («організувати прибирання» і «встановити освітлення» на
+# майданчику «Казка»), і на 0.30 вони злипаються — це впіймав тест.
+#
+# Розрізняє їх перше слово назви. Витяг пише `title` ДІЄЮ в інфінітиві
+# («Затвердити…», «Встановити…»), тож однакове перше слово означає ту саму
+# дію, а різні об'єкти після нього — саме той випадок, коли одне рішення
+# розрізали за переліком. Це не здогад про суть: рішення однаково ухвалює
+# суддя, а тут лише питання до нього.
+DUPE_SIM_SAME_ART = 0.30
+# Перше слово назви = дія. Порівнюємо без регістру й без хвостової пунктуації.
+def _act_sql(col):
+    """SQL-вираз «перша дія назви»: перше слово, без регістру й пунктуації."""
+    return f"lower(btrim(split_part(btrim({col}), ' ', 1), '«»\"'',.:;'))"
 
 # Спроба розвести детектор і пре-фільтр РІЗНИМИ порогами (03.08) провалилась,
 # і це варте запису, щоб не пробувати вдруге. Задум був: у екрана дублів ціна
@@ -1755,14 +1775,35 @@ _TRIAGE_PENDING = """c.status = 'expected' AND c.triage IS NULL
        OR coalesce(c.micro, false))"""
 
 
-def triage_pending(cur, limit=30, offset=0):
-    """Колода розбору: приховане моделлю, ще не переглянуте людиною."""
+def dupe_ids(cur, limit=400, sim=DUPE_SIM):
+    """id усіх записів, що стоять у НЕВИРІШЕНИХ парах дублів.
+
+    Потрібне колоді розбору: свайпати запис, який за годину зіллється з
+    сусідом, — подвійна робота, і рішення на ньому все одно пропаде разом із
+    самим записом. Олег, 17.08, на другій же картці: «я не хотел бы делать
+    двойную работу и сначала минимизировать дюпы, а уже потом свайпать».
+    """
+    pairs = dupe_pairs(cur, limit=limit, sim=sim)
+    return {p["a"] for p in pairs} | {p["b"] for p in pairs}
+
+
+def triage_pending(cur, limit=30, offset=0, skip_ids=None):
+    """Колода розбору: приховане моделлю, ще не переглянуте людиною.
+
+    `skip_ids` — записи, доля яких ще вирішується в дублях: їх не питаємо, бо
+    після злиття один із пари зникне разом зі свайпом.
+    """
+    skip = [int(i) for i in (skip_ids or [])]
+    where = _TRIAGE_PENDING + (" AND NOT c.id = ANY(%s)" if skip else "")
+    params = [list(WORKING_KINDS), list(WORKING_KINDS)]
+    if skip:
+        params.append(skip)
     cur.execute(
         f"SELECT {COMMITMENT_COLS} FROM commitments c "
-        f"WHERE {_TRIAGE_PENDING} "
+        f"WHERE {where} "
         f"ORDER BY {_TRIAGE_BUCKET}, c.last_seen DESC NULLS LAST, c.id "
         "LIMIT %s OFFSET %s",
-        (list(WORKING_KINDS), list(WORKING_KINDS), int(limit), int(offset)))
+        params + [int(limit), int(offset)])
     rows = _rows(cur)
     now = int(time.time())
     for r in rows:
@@ -1772,12 +1813,25 @@ def triage_pending(cur, limit=30, offset=0):
     return rows
 
 
-def triage_counts(cur):
+def triage_counts(cur, skip_ids=None):
     """Числа для шапки колоди й для /promise_status: скільки в тіні, скільки
-    ще не дивились, скільки вже вирішено свайпами."""
+    ще не дивились, скільки вже вирішено свайпами.
+
+    `skip_ids` — відкладені через невирішені дублі: показуємо їх ОКРЕМИМ
+    числом, а не мовчки віднімаємо. Інакше колода просто «схудла» б без
+    пояснення, і це читалось би як втрата карток.
+    """
+    skip = [int(i) for i in (skip_ids or [])]
     cur.execute(f"SELECT count(*) FROM commitments c WHERE {_TRIAGE_PENDING}",
                 (list(WORKING_KINDS),))
     pending = cur.fetchone()[0]
+    held = 0
+    if skip:
+        cur.execute(
+            f"SELECT count(*) FROM commitments c WHERE {_TRIAGE_PENDING} "
+            "AND c.id = ANY(%s)", (list(WORKING_KINDS), skip))
+        held = cur.fetchone()[0]
+        pending -= held
     cur.execute(
         "SELECT coalesce(triage, ''), count(*) FROM commitments c "
         "WHERE c.status = 'expected' AND c.triage IS NOT NULL GROUP BY 1")
@@ -1787,7 +1841,8 @@ def triage_counts(cur):
         "WHERE c.status = 'expected' GROUP BY 1")
     by_kind = {k: n for k, n in cur.fetchall()}
     return {"pending": pending, "noise": decided.get("noise", 0),
-            "good": decided.get("good", 0), "by_kind": by_kind}
+            "good": decided.get("good", 0), "by_kind": by_kind,
+            "held_dupes": held}
 
 
 def set_triage(cur, commitment_id, verdict, who=None):
@@ -1953,16 +2008,18 @@ def restore(cur, purge_id):
 # СПІЛЬНА СТАТТЯ-джерело (дроблення одного рішення живе в одній статті).
 # Спільна стаття рахується і за «спільний сигнал» унизу: у шматків однієї
 # ухвали предмет якраз різний — бо його різали.
-_DUPE_WHERE = """
+_DUPE_WHERE = f"""
         WHERE a.status = 'expected' AND b.status = 'expected'
-          AND similarity(a.title, b.title) >= %s
-          AND (coalesce(a.deadline, 0) = coalesce(b.deadline, 0)
-               OR similarity(a.title, b.title) >= %s
-               OR EXISTS (SELECT 1 FROM commitment_revisions ra
-                          JOIN commitment_revisions rb
-                            ON rb.article_id = ra.article_id
-                          WHERE ra.commitment_id = a.id
-                            AND rb.commitment_id = b.id))
+          AND ((similarity(a.title, b.title) >= %s
+                AND (coalesce(a.deadline, 0) = coalesce(b.deadline, 0)
+                     OR similarity(a.title, b.title) >= %s))
+               OR (similarity(a.title, b.title) >= %s
+                   AND {_act_sql('a.title')} = {_act_sql('b.title')}
+                   AND EXISTS (SELECT 1 FROM commitment_revisions ra
+                               JOIN commitment_revisions rb
+                                 ON rb.article_id = ra.article_id
+                               WHERE ra.commitment_id = a.id
+                                 AND rb.commitment_id = b.id)))
           AND (a.subject_entity_id IS NOT DISTINCT FROM b.subject_entity_id
                    AND a.subject_entity_id IS NOT NULL
                OR coalesce(a.subject_key, '') = coalesce(b.subject_key, '')
@@ -1996,7 +2053,7 @@ def dupe_pairs(cur, limit=40, sim=DUPE_SIM):
         "       coalesce(a.owner_text, ''), a.deadline "
         "FROM commitments a JOIN commitments b ON b.id > a.id "
         + _DUPE_WHERE + " ORDER BY sim DESC, a.id LIMIT %s",
-        (sim, DUPE_SIM_STRONG, limit))
+        (sim, DUPE_SIM_STRONG, DUPE_SIM_SAME_ART, limit))
     return [{"a": a, "b": b, "sim": round(float(s), 2),
              "title_a": ta, "title_b": tb, "rev_a": ra, "rev_b": rb,
              "owner": owner, "deadline": dl}
@@ -2108,7 +2165,7 @@ def auto_merge_pairs(cur, who="Лис", limit=200, run=None):
 def dupe_count(cur, sim=DUPE_SIM):
     cur.execute("SELECT count(*) FROM commitments a "
                 "JOIN commitments b ON b.id > a.id" + _DUPE_WHERE,
-                (sim, DUPE_SIM_STRONG))
+                (sim, DUPE_SIM_STRONG, DUPE_SIM_SAME_ART))
     return cur.fetchone()[0]
 
 

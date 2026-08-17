@@ -661,8 +661,13 @@ def triage_deck(offset=0, limit=TRIAGE_PAGE):
     try:
         pp.ensure_schema(conn)
         with conn.cursor() as cur:
-            rows = pp.triage_pending(cur, limit=limit, offset=offset)
-            counts = pp.triage_counts(cur)
+            # Записи, що стоять у невирішених дублях, колода не питає:
+            # після злиття один із пари зникне разом зі свайпом, тобто це
+            # подвійна робота (Олег, 17.08, на другій же картці).
+            held = pp.dupe_ids(cur)
+            rows = pp.triage_pending(cur, limit=limit, offset=offset,
+                                     skip_ids=held)
+            counts = pp.triage_counts(cur, skip_ids=held)
             revs = _first_revisions(cur, [r["id"] for r in rows])
             art_ids = [(revs.get(r["id"]) or {}).get("article_id") for r in rows]
             links = {}
