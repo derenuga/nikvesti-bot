@@ -4231,9 +4231,32 @@ function paintImpact(im) {
   const body = $("imd-body");
   if (!body) return;
   if (im.status === "building") {
+    // Скільки вже триває. Збір укладається в пів хвилини, тож коли минуло
+    // помітно більше — це не «довго думає», а обірваний прогін (найчастіше
+    // бот перезапустився на деплої). Тоді екран має не крутити спінер, а
+    // сказати це вголос і дати кнопки (Олег, 14.08: «крутиться, і я не бачу,
+    // як зупинити й запустити заново»)
+    const since = Date.parse(im.updated_at || im.created_at || "") || Date.now();
+    const mins = Math.floor((Date.now() - since) / 60000);
+    const stuck = mins >= 2;
     body.innerHTML = `<div class="h-big" style="font-size:20px">${esc(im.essence || "Кейс")}</div>
-      <div class="empty-hint">Збираю серію: беклінки, нора, автори, донори…<br>
-        Це пів хвилини — можна вийти, кейс добудується сам.</div>`;
+      <div class="empty-hint">${stuck
+        ? `Збір триває ${mins < 60
+              ? "вже " + mins + " " + plural(mins, "хвилину", "хвилини", "хвилин")
+              : "надто довго"} — найімовірніше, він обірвався
+           (бот перезапустився).<br>Запусти заново — усе вказане збережено.`
+        : `Збираю серію: беклінки, нора, автори, донори…<br>
+           Це пів хвилини — можна вийти, кейс добудується сам.`}</div>
+      <button class="cta" id="im-again">Запустити збір заново</button>
+      <button class="link-btn im-danger" id="im-drop">${icon("trash")} Видалити чернетку</button>`;
+    $("im-again").onclick = async () => {
+      $("im-again").disabled = true;
+      try {
+        await api(`/api/impacts/${im.id}/retry`, { method: "POST" });
+        renderImpact();
+      } catch (e) { $("im-again").disabled = false; toast(e.message); }
+    };
+    $("im-drop").onclick = () => impactDelete(im.id);
     clearTimeout(STATE.impactPollT);
     STATE.impactPollT = setTimeout(async () => {
       if (STATE.view !== "impact" || STATE.currentImpact !== im.id) return;

@@ -1654,12 +1654,34 @@ def _story(row):
     return story
 
 
+# Скільки збір має право тривати. Реально він укладається в пів хвилини; усе
+# понад — це не «довго думає», а обірваний прогін
+BUILD_TIMEOUT_MIN = 5
+
+
+def expire_stale_builds():
+    """Кейси, що «збираються» довше за розумне, позначити збитими.
+
+    Найчастіша причина — редеплой: збір живе в задачі процесу, процес
+    перезапустився, задача померла, а рядок лишився в 'building' назавжди.
+    Олег, 14.08: «деплой пройшов, а кейс досі крутиться, і я не бачу, як його
+    зупинити». Тепер він не крутиться вічно, а стає збитим — а збитий кейс
+    уже має і кнопку «Спробувати ще», і зрозумілий підпис у списку."""
+    return bot_db.execute(
+        "UPDATE impacts SET status = 'failed', error = %s, updated_at = now() "
+        "WHERE status = 'building' "
+        f"AND updated_at < now() - interval '{BUILD_TIMEOUT_MIN} minutes'",
+        ("Збір обірвався — найімовірніше, бот перезапустився під час нього. "
+         "Тисни «Спробувати ще».",))
+
+
 def list_impacts():
     """Сортування — за ДАТОЮ ІМПАКТУ (published новини-фіксації), не за
     порядком заведення: архів наповнюється старими кейсами впереміш, і
     «створено вчора» для імпакту дворічної давності перемішувало б історію.
     Кейси, що ще збираються (фіксації немає), — згори: вони чекають дії."""
     ensure_impact_schema()
+    expire_stale_builds()
     rows = bot_db.query(
         """
         SELECT i.id, i.title, i.essence, i.status, i.error, i.source_url,
@@ -1734,6 +1756,7 @@ def person_credited(impact_id, person):
 
 def get_impact(impact_id):
     ensure_impact_schema()
+    expire_stale_builds()
     rows = bot_db.query("SELECT * FROM impacts WHERE id = %s", (int(impact_id),))
     if not rows:
         return None
@@ -1749,6 +1772,7 @@ def get_impact(impact_id):
         "id": r["id"],
         "title": use_current_brand(r["title"]),
         "essence": r["essence"],
+        "updated_at": r["updated_at"].isoformat() if r.get("updated_at") else None,
         "status": r["status"],
         "error": r["error"],
         "source_url": r["source_url"],
