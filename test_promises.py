@@ -228,12 +228,17 @@ PREFILTER_TEXTS = {
 
 
 def setup():
+    # ПОРЯДОК ВАЖЛИВИЙ: канон ролей будує індекси ПОВЕРХ article_entities,
+    # тож сутнісна схема має існувати до нього. Доти обидва тести могли
+    # стартувати лише в базі, де сутнісний шар уже хтось створив, — на
+    # чистій вони падали «relation article_entities does not exist».
     bot_db.ensure_schema()
-    er.ensure_schema(force=True)
     conn = ep.connect()
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute(ep.DDL)
+    er.ensure_schema(force=True)
+    with conn.cursor() as cur:
         cur.execute(pp.DDL)
         cur.execute("DELETE FROM commitment_revisions")
         cur.execute("DELETE FROM commitment_objects")

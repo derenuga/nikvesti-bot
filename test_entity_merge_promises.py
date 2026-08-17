@@ -191,6 +191,20 @@ def main():
                            (c1,))
     check("відкат повернув посилання на картку", row["subject_entity_id"] == lose)
 
+    # ПРИБИРАЄМО ЗА СОБОЮ. Тест кладе СВОЇ обрізані `commitments`,
+    # `entities` тощо — рівно ті колонки, які йому потрібні. Лишена на місці,
+    # така заглушка мовчки ламає наступний тест: `pp.DDL` створює таблиці
+    # через IF NOT EXISTS, бачить наявну і падає на індексі по колонці, якої
+    # в заглушці немає («column subject_key does not exist»). Помилка при
+    # цьому вказує не на винуватця, а на потерпілого.
+    try:
+        bot_db.execute(
+            "DROP TABLE IF EXISTS commitment_objects, commitments, "
+            "article_entities, entity_merges, entity_merge_rules, "
+            "entities CASCADE")
+    except Exception as e:
+        print(f"прибирання заглушок: {type(e).__name__}: {e}")
+
     bad = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(bad)}/{len(results)} перевірок пройдено")
     return 1 if bad else 0
