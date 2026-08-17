@@ -109,6 +109,7 @@ from handlers.team_matching import (
     match_requeue_handler,
 )
 from handlers.team_kpi import kpi_debug, set_user_link
+from handlers import team_roster
 from handlers import team_contacts, team_roster, team_tasks
 from handlers.helpers import escape_html
 from handlers.notifier import notify_error
@@ -162,15 +163,52 @@ PUBLIC_COMMANDS = [
 ]
 
 async def check_allowed(update, context):
-    """Захист від спаму через глобальний пошук Telegram: блокує приватні повідомлення
-    від користувачів поза ALLOWED_USER_IDS. Якщо змінна не задана — пускає всіх (дефолт)."""
+    """Хто може писати боту в приват.
+
+    Захист тут від ОДНОГО: бота видно глобальним пошуком Telegram, тож у
+    приват може написати будь-хто. Але до 17.08.2026 фільтр різав не лише
+    чужих: у приваті жили тільки Олег, Катя й Ліза, а вся решта редакції
+    впиралась у глухе «Доступ заборонено» — навіть на `/team`, тобто на
+    власну апку, куди ростер її пускає. Іміра (SMM, Instagram) не могла
+    відкрити ні апку, ні `/carousel`, хоч обидва інструменти зроблені саме
+    для неї; обхід був один — кликати команди з групового чату, і про нього
+    треба було знати.
+
+    Тому межа тепер проходить не по трьох людях, а по РОСТЕРУ — тому самому,
+    яким ріже доступ апка (webapp._authenticate). Чужа людина як не могла
+    нічого, так і не може.
+
+    Але пускаємо не все, а КОМАНДИ Й КНОПКИ. Вільний текст у приваті — це
+    NLQ, тобто звернення до моделі за гроші, і він лишається за
+    ALLOWED_USER_IDS: розширювати коло тих, хто витрачає, — рішення Олега, а
+    не побічний ефект полагодженого доступу до апки. Редакція питає Лиса
+    реплаєм у чаті, як і питала.
+    """
     if not ALLOWED_USER_IDS:
         return
-    if update.effective_chat and update.effective_chat.type == "private":
-        if update.effective_user and update.effective_user.id not in ALLOWED_USER_IDS:
-            if update.message:
-                await update.message.reply_text("⛔ Доступ заборонено.")
-            raise ApplicationHandlerStop
+    chat, user = update.effective_chat, update.effective_user
+    if not chat or chat.type != "private" or not user:
+        return
+    if user.id in ALLOWED_USER_IDS:
+        return
+
+    msg = update.message
+    if team_roster.in_roster_fast(user.id, user.username):
+        if update.callback_query:
+            return                      # тап по кнопці — продовження команди
+        text = (msg.text or msg.caption or "") if msg else ""
+        if text.startswith("/"):
+            return
+        if msg:
+            await msg.reply_text(
+                "🦊 Команди тут працюють — почни з «/».\n\n"
+                "А запитати мене словами можна в чаті редакції: "
+                "відповідай реплаєм на будь-яке моє повідомлення.")
+        raise ApplicationHandlerStop
+
+    if msg:
+        await msg.reply_text("⛔ Доступ заборонено.")
+    raise ApplicationHandlerStop
 
 async def track_usage(update, context):
     """Тихий облік користування ботом для щоденного звіту адміну

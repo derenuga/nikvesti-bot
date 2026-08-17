@@ -167,6 +167,26 @@ def resolve_person(tg_id, username):
     return None
 
 
+def in_roster_fast(tg_id, username):
+    """Чи це людина з редакції — БЕЗ походу в базу.
+
+    Окремо від resolve_person саме через відсутність БД: цю перевірку робить
+    приватний фільтр бота на КОЖНЕ повідомлення, зокрема на спам від чужих
+    людей, які знайшли бота глобальним пошуком Telegram. Якби вона ходила в
+    Нору, кожен спамер оплачувався б з'єднанням, а сам захист став би
+    підсилювачем навантаження.
+
+    Ціна дешевизни: людина з ростера, яка змінила username і ще жодного разу
+    не заходила в апку (тобто її tg_id ніде не записано), тут не впізнається.
+    Лікується тим самим рядком у ROSTER, що й для Таміли — `tg_id`.
+    """
+    if tg_id in _BY_KNOWN_ID:
+        return True
+    if username and username.lower().lstrip("@") in _BY_USERNAME:
+        return True
+    return False
+
+
 def remember_user(tg_id, username, person, force=False):
     """Кешує tg_id ↔ людина при вході в апку — далі пінги від Лиса
     знаходять її без повторного матчингу по username.
