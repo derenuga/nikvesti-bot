@@ -1086,6 +1086,35 @@ def test_dupes_and_merge():
             check("…і пара повертається в детектор",
                   (min(a, b), max(a, b)) in {(p["a"], p["b"]) for p in pp.dupe_pairs(cur)})
 
+            # ГРУПОВИЙ вердикт не має ПОНИЖУВАТИ вже ухвалений. Регрес
+            # 17.08: прохід по статті писав парам поза групами «різні,
+            # medium» поверх «різні, high», а екран ховає лише high — і в
+            # список дублів повернулись прапори та укриття різних шкіл,
+            # які суддя вже відхилив.
+            pp.save_verdict(cur, a, other, {"same": False, "confidence": "high",
+                                            "why": "різні дії"})
+            pp.save_group_verdicts(cur, [a, b, other], [])
+            keep = pp.load_verdicts(cur, [{"a": a, "b": other}])
+            got = keep.get(tuple(sorted((a, other)))) or {}
+            check("груповий прохід не понижує чужий вердикт",
+                  got.get("confidence") == "high", str(got))
+            check("…але свою позначку про непитану пару ставить",
+                  (pp.load_verdicts(cur, [{"a": b, "b": other}])
+                   .get(tuple(sorted((b, other)))) or {}).get("why")
+                  == pp.GROUP_APART)
+            check("груповий «так» сильніший за свою ж стару позначку",
+                  pp.save_group_verdicts(
+                      cur, [b, other],
+                      [{"ids": [b, other], "confidence": "high",
+                        "why": "одне доручення"}]) >= 1
+                  and (pp.load_verdicts(cur, [{"a": b, "b": other}])
+                       .get(tuple(sorted((b, other)))) or {}).get("same") is True)
+            check("ремонт знімає лише позначки групового проходу",
+                  pp.drop_group_downgrades(cur) >= 0
+                  and (pp.load_verdicts(cur, [{"a": a, "b": other}])
+                       .get(tuple(sorted((a, other)))) or {}).get("confidence")
+                      == "high")
+
             res = pp.merge_commitments(cur, a, b, who="тест")
             check("злиття переносить ревізії, а не видаляє докази",
                   res and res["revisions"] == 1, str(res))
