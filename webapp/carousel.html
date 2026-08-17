@@ -15,6 +15,10 @@
     --muted: #6b7a99;
     --line: #dde4f2;
     --bg: #f3f6fc;
+    /* Висота липкої шапки і нижньої стрічки слайдів. Обидві перекривають
+       контент, тож усе, що має лишатись видимим, рахується від них. */
+    --head-h: 60px;
+    --strip-h: 168px;
   }
   * { box-sizing: border-box; }
   body {
@@ -31,7 +35,8 @@
   header .who { margin-left: auto; font-size: 13px; color: var(--muted); }
 
   .wrap {
-    max-width: 1280px; margin: 0 auto; padding: 20px 20px 190px;
+    max-width: 1280px; margin: 0 auto;
+    padding: 20px 20px calc(var(--strip-h) + 28px);
     display: grid; grid-template-columns: minmax(340px, 1fr) minmax(320px, 440px);
     gap: 24px; align-items: start;
   }
@@ -143,10 +148,17 @@
   input[type="range"] { width: 100%; accent-color: var(--brand); }
   .toolrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
 
-  .preview { position: sticky; top: 78px; }
+  .preview { position: sticky; top: calc(var(--head-h) + 18px); }
   .canvas-wrap { position: relative; }
+  /* Канвас 3:4 високий, і на ноутбуці колонка прев'ю не влазила у вікно —
+     кнопки завантаження опинялись під стрічкою слайдів, і їх було видно лише
+     після зменшення масштабу браузера (Олег, 17.08). Тому висота кадру
+     обмежена ВІКНОМ: усе, що нижче, лишається на екрані завжди. */
   #canvas {
-    width: 100%; height: auto; border-radius: 14px; display: block;
+    width: auto; height: auto; max-width: 100%;
+    max-height: calc(100vh - var(--head-h) - var(--strip-h) - 150px);
+    min-height: 240px; margin: 0 auto;
+    border-radius: 14px; display: block;
     box-shadow: 0 8px 30px rgba(20, 40, 90, .18); cursor: grab; touch-action: none;
     background: #fff;
   }

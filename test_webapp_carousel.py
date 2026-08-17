@@ -446,6 +446,28 @@ async def main():
                       logo_dark["r"] > logo_light["r"],
                       f"синій {logo_dark['r']:.0f} проти білого {logo_light['r']:.0f}")
 
+                # Кнопки завантаження мусять бути видимі БЕЗ зменшення
+                # масштабу браузера: колонка прев'ю липка, а знизу її накриває
+                # стрічка слайдів (Олег, 17.08 — «кнопок не видно, поки не
+                # зменшу вікно до 90%»). Міряємо на типовому ноутбуці.
+                await page.set_viewport_size({"width": 1440, "height": 900})
+                await page.wait_for_timeout(400)
+                geom = await page.evaluate("""() => {
+                  const b = document.getElementById('dlAll').getBoundingClientRect();
+                  const s = document.getElementById('strip').getBoundingClientRect();
+                  return { btnBottom: b.bottom, stripTop: s.top,
+                           viewport: window.innerHeight };
+                }""")
+                check("кнопка «Завантажити все» не ховається під стрічкою",
+                      geom["btnBottom"] <= geom["stripTop"] + 1,
+                      f"низ кнопки {geom['btnBottom']:.0f}, "
+                      f"верх стрічки {geom['stripTop']:.0f}")
+                check("і не з'їжджає за нижній край вікна",
+                      geom["btnBottom"] <= geom["viewport"],
+                      f"{geom['btnBottom']:.0f} проти {geom['viewport']}")
+                await page.set_viewport_size({"width": 1400, "height": 1000})
+                await page.wait_for_timeout(300)
+
                 # ---------- 5. Скриншоти документів ----------
                 docs = await page.evaluate("__carousel.S.images.map(i => !!i.doc_like)")
                 check("скриншоти акта позначені в бібліотеці фото",
