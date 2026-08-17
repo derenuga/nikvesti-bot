@@ -2537,9 +2537,21 @@ _CITY_FORMS = ("миколаїв", "миколаєв", "миколаєм", "мі
                "громад")
 
 
+# Гроші називають і сумою, і словом «кошти», і одне під список не підвести:
+# «виділити кошти на ремонт» ловиться словом, «виділити 60 млн гривень» —
+# ні. Тому суму ловимо окремо: дієслово виділення + одиниця грошей.
+_MONEY_VERBS = ("виділити", "виділять", "передбачити", "закласти",
+                "спрямувати", "перерахувати", "профінансувати")
+_MONEY_UNITS = ("грн", "гривен", "гривн", "млн", "мільйон", "мiльйон",
+                "тис", "мільярд")
+
+
 def _title_is_step(title):
     t = (title or "").lower()
-    return any(w in t for w in _STEP_WORDS)
+    if any(w in t for w in _STEP_WORDS):
+        return True
+    return (any(v in t for v in _MONEY_VERBS)
+            and any(u in t for u in _MONEY_UNITS))
 
 
 def _title_is_citywide(title):
