@@ -51,20 +51,20 @@ window.CardKit = (() => {
 
   // ---------- Обробка фото ----------
   function newAdj() {
-    return { bright: 100, contrast: 100, sat: 100, warm: 0, vivid: 0 };
+    return { bright: 100, contrast: 100, sat: 100, warm: 0, vivid: 0, blur: 0 };
   }
 
   // Пресети — не «інстаграмні», а те, що реально рятує газетне фото:
   // темний кадр, плаский пасмурний, ч/б для важких тем
   const PRESETS = {
-    none:     { label: "Оригінал",   adj: { bright: 100, contrast: 100, sat: 100, warm: 0, vivid: 0 } },
-    pop:      { label: "Соковитий",  adj: { bright: 103, contrast: 112, sat: 125, warm: 6, vivid: 20 } },
-    light:    { label: "Освітлити",  adj: { bright: 118, contrast: 104, sat: 105, warm: 4, vivid: 10 } },
-    contrast: { label: "Контраст",   adj: { bright: 98,  contrast: 130, sat: 105, warm: 0, vivid: 25 } },
-    warm:     { label: "Теплий",     adj: { bright: 104, contrast: 104, sat: 110, warm: 34, vivid: 8 } },
-    cool:     { label: "Холодний",   adj: { bright: 102, contrast: 106, sat: 100, warm: -32, vivid: 8 } },
-    mute:     { label: "Приглушений",adj: { bright: 102, contrast: 96,  sat: 72,  warm: 8, vivid: 0 } },
-    bw:       { label: "Чорно-біле", adj: { bright: 102, contrast: 112, sat: 0,   warm: 0, vivid: 12 } },
+    none:     { label: "Оригінал",   adj: { bright: 100, contrast: 100, sat: 100, warm: 0, vivid: 0, blur: 0 } },
+    pop:      { label: "Соковитий",  adj: { bright: 103, contrast: 112, sat: 125, warm: 6, vivid: 20, blur: 0 } },
+    light:    { label: "Освітлити",  adj: { bright: 118, contrast: 104, sat: 105, warm: 4, vivid: 10, blur: 0 } },
+    contrast: { label: "Контраст",   adj: { bright: 98,  contrast: 130, sat: 105, warm: 0, vivid: 25, blur: 0 } },
+    warm:     { label: "Теплий",     adj: { bright: 104, contrast: 104, sat: 110, warm: 34, vivid: 8, blur: 0 } },
+    cool:     { label: "Холодний",   adj: { bright: 102, contrast: 106, sat: 100, warm: -32, vivid: 8, blur: 0 } },
+    mute:     { label: "Приглушений",adj: { bright: 102, contrast: 96,  sat: 72,  warm: 8, vivid: 0, blur: 0 } },
+    bw:       { label: "Чорно-біле", adj: { bright: 102, contrast: 112, sat: 0,   warm: 0, vivid: 12, blur: 0 } },
   };
 
   const ADJ_KEYS = [
@@ -73,11 +73,12 @@ window.CardKit = (() => {
     { key: "sat",      label: "Насиченість", min: 0,  max: 200, base: 100 },
     { key: "warm",     label: "Тепло",       min: -60, max: 60, base: 0 },
     { key: "vivid",    label: "Виразність",  min: 0,  max: 60,  base: 0 },
+    { key: "blur",     label: "Розмиття",    min: 0,  max: 40,  base: 0 },
   ];
 
   function isNeutral(a) {
     return a.bright === 100 && a.contrast === 100 && a.sat === 100
-      && !a.warm && !a.vivid;
+      && !a.warm && !a.vivid && !a.blur;
   }
 
   // Safari приймає ctx.filter (записав — прочитав те саме) і мовчки не
@@ -123,6 +124,50 @@ window.CardKit = (() => {
     c.putImageData(img, 0, 0);
   }
 
+  // Розмиття для Safari, де ctx.filter не діє. Зменшуємо кадр у стільки
+  // разів, скільки просять радіуса, і повертаємо назад: інтерполяція
+  // браузера дає ту саму мильну пляму, тільки без фільтра. Той самий прийом,
+  // що добудовує обрізаний край кадру в carousel.html.
+  const _blurScratch = document.createElement("canvas");
+  const _blurScratchX = _blurScratch.getContext("2d");
+
+  const _blurScratch2 = document.createElement("canvas");
+  const _blurScratch2X = _blurScratch2.getContext("2d");
+
+  /**
+   * Розмиття для Safari, де ctx.filter не діє.
+   *
+   * ПОЕТАПНЕ зменшення вдвічі, а не одне різке. Одноразовий стрибок «зменшити
+   * у 20 разів і повернути» дає не розмиття, а квадрати: браузер бере
+   * поодинокі пікселі, і на екрані видно мозаїку (спіймано Олегом 17.08 —
+   * «що це за колхозний блюр з пікселями?»). Кожне ж халвання усереднює
+   * чотири сусідні пікселі, тобто працює як мipmap: п'ять кроків поспіль
+   * дають плавну пляму, близьку до гаусової.
+   */
+  function manualBlur(c, w, h, radius) {
+    let sw = Math.max(1, Math.round(w)), sh = Math.max(1, Math.round(h));
+    const target = Math.max(1, w / Math.max(2, radius));
+    let src = c.canvas, srcW = sw, srcH = sh;
+    let a = [_blurScratch, _blurScratchX], b = [_blurScratch2, _blurScratch2X];
+
+    while (sw > target && sw > 2) {
+      sw = Math.max(1, Math.round(sw / 2));
+      sh = Math.max(1, Math.round(sh / 2));
+      a[0].width = sw; a[0].height = sh;
+      a[1].setTransform(1, 0, 0, 1, 0, 0);
+      a[1].imageSmoothingEnabled = true;
+      a[1].clearRect(0, 0, sw, sh);
+      a[1].drawImage(src, 0, 0, srcW, srcH, 0, 0, sw, sh);
+      src = a[0]; srcW = sw; srcH = sh;
+      [a, b] = [b, a];        // канваси чергуються, щоб не читати й писати в один
+    }
+
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, w, h);
+    c.imageSmoothingEnabled = true;
+    c.drawImage(src, 0, 0, srcW, srcH, 0, 0, w, h);
+  }
+
   /**
    * Де саме ляже кадр у слоті (координати канваса). Потрібне не лише
    * рендеру: коли фото зсунуте за межі слота, той, хто малює, має знати, яку
@@ -160,15 +205,23 @@ window.CardKit = (() => {
     _octx.setTransform(1, 0, 0, 1, 0, 0);
     _octx.clearRect(0, 0, _off.width, _off.height);
 
+    // Розмиття «з'їдає» край кадру: фільтр підмішує туди прозорість, і в
+    // слоті з'явилась би світла кайма. Тому при розмитті малюємо кадр із
+    // запасом на кілька радіусів у кожен бік — кайма лишається за кліпом.
+    const blur = a.blur || 0;
+    const pad = blur * 3;
+
     if (SUPPORTS_FILTER) {
-      _octx.filter = `brightness(${a.bright}%) contrast(${a.contrast}%) saturate(${a.sat}%)`;
-      _octx.drawImage(st.photo, dx, dy, dw, dh);
+      _octx.filter = `brightness(${a.bright}%) contrast(${a.contrast}%) `
+        + `saturate(${a.sat}%)` + (blur ? ` blur(${blur}px)` : "");
+      _octx.drawImage(st.photo, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2);
       _octx.filter = "none";
     } else {
-      _octx.drawImage(st.photo, dx, dy, dw, dh);
+      _octx.drawImage(st.photo, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2);
       if (a.bright !== 100 || a.contrast !== 100 || a.sat !== 100) {
         applyPixelAdjust(_octx, _off.width, _off.height, a);
       }
+      if (blur) manualBlur(_octx, _off.width, _off.height, blur);
     }
 
     if (a.warm) {
