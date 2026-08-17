@@ -160,6 +160,38 @@ COMMITMENT_ITEM = {
         "framed_as_promise": {"type": "boolean"},
         "based_on_document": {"type": ["string", "null"]},
         "amount": {"type": ["number", "null"]},
+        # Тип мовленнєвого акту — ВЛАСТИВІСТЬ тексту, як modality, а не оцінка
+        # важливості. Від нього залежить, чи потрапить запис у робочу чергу
+        # редакції (commitment/rhetoric — так, решта — у тінь до розбору),
+        # тому словник продубльовано тут: модель читає description поля
+        # уважніше за загальний текст промпту (той самий урок, що criterion).
+        "kind": {
+            "type": "string", "enum": list(pp.KIND),
+            "description": "commitment — зобов'язання влади чи підзвітного "
+                           "місту актора про РЕЗУЛЬТАТ (збудувати, "
+                           "відремонтувати, не допустити; сюди ж «має "
+                           "розробити» робочої групи з документом-підставою). "
+                           "rhetoric — публічна заява-обіцянка без критерію "
+                           "(«повернемо краще, ніж було»). process — "
+                           "процедурний крок: винести на розгляд, подати "
+                           "пропозиції, розглянути на комісії, провести "
+                           "засідання. routine — планова операційна "
+                           "діяльність: прибирання, опалювальний сезон, "
+                           "чергові виплати, «інспектори перевірятимуть». "
+                           "offtopic — приватні плани приватних акторів, "
+                           "обіцянки з судових справ (хабар), "
+                           "загальнонаціональне без миколаївського предмета. "
+                           "Публічне зобов'язання приватника МІСТУ "
+                           "(демонтувати огорожу) — commitment.",
+        },
+        "micro": {
+            "type": "boolean",
+            "description": "true, коли предмет дрібніший за об'єкт: один "
+                           "під'їзд, одна лавка, одне дерево, одна виплата "
+                           "одній людині. Цілий будинок, вулиця, сквер, "
+                           "школа — false. Це про МАСШТАБ предмета, не про "
+                           "суму й не про важливість.",
+        },
         "quote": {"type": "string"},
     },
     "required": ["title", "subject", "objects", "promiser", "promiser_role",
@@ -167,7 +199,7 @@ COMMITMENT_ITEM = {
                  "source_type", "deadline", "deadline_precision", "criterion",
                  "verification_method", "condition", "condition_self_judged",
                  "trigger_event", "actor_hidden", "framed_as_promise",
-                 "based_on_document", "amount", "quote"],
+                 "based_on_document", "amount", "kind", "micro", "quote"],
     "additionalProperties": False,
 }
 

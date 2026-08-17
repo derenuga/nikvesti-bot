@@ -454,6 +454,7 @@ function backTarget() {
     case "promises":
     case "contacts": return ["home"];
     case "promise":
+    case "triage":
     case "dupes": return ["promises"];
     case "dircard": return ["director"];
     case "preview": return ["personhist", STATE.previewPerson];
@@ -614,6 +615,10 @@ function nav(view, arg, back, opts = {}) {
   // чи злити дублі, а показувати вчорашній список немає сенсу
   if (view === "promises") { STATE.promises = null; STATE.promiseFacet = STATE.promiseFacet || "all"; }
   if (view === "dupes") STATE.dupes = null;
+  // Колода розбору набирається наново при кожному вході: свайпи колеги вже
+  // забрали свої картки, і показувати їх удруге означало б питати про
+  // вирішене.
+  if (view === "triage") STATE.triage = null;
   if (view === "mypubs") STATE.pubsOffset = 0;   // входимо завжди в поточний місяць
   // Блокнот перечитуємо при кожному вході: запис міг прилетіти з /todo у чаті
   if (view === "todo") STATE.todos = null;
@@ -676,6 +681,7 @@ function render() {
   else if (v === "promises") renderPromises();
   else if (v === "promise") renderPromise();
   else if (v === "dupes") renderDupes();
+  else if (v === "triage") renderTriage();
   else if (v === "impacts") renderImpacts();
   else if (v === "myimpacts") renderMyImpacts();
   else if (v === "impact") renderImpact();
@@ -3365,6 +3371,12 @@ function paintPromises() {
         ${icon("link")} <span>Схоже на дублі — <b>${d.dupes}</b></span>
         <span class="pr-dupes-m">та сама обіцянка з двох статей</span>
         ${icon("chevron-right", "ic chev")}</button>` : ""}
+    ${STATE.me.manager && d.shadow && d.shadow.pending ? `
+      <button class="pr-dupes tri" data-nav="triage">
+        ${icon("layers")} <span>Розбір — <b>${d.shadow.pending}</b></span>
+        <span class="pr-dupes-m">що Лис прибрав із черги: свайп ліворуч —
+          шум, праворуч — лишити</span>
+        ${icon("chevron-right", "ic chev")}</button>` : ""}
     ${d.items.length ? d.items.map(promiseCard).join("")
       : `<div class="empty-hint">${esc(mineEmpty(d, facet)
           || PROMISE_EMPTY[facet] || PROMISE_EMPTY.all)}</div>`}
@@ -3838,6 +3850,275 @@ function wireDupes() {
       renderDupes();
     } catch (e) { toast(e.message); b.disabled = false; }
   });
+}
+
+/* ---------- Розбір: колода свайпів ----------
+
+   Навіщо. Ревізія 17.08 показала, що в банку значуще тонуло в процедурних
+   кроках і рутині ~1:4. Модель тепер розкладає записи за типом акту й ховає
+   тінь із черги сама, але межа «значущий процес / шум» людська: «розглянути
+   на комісії» буває і кроком до справжньої справи. Розбирають її двоє, кому
+   банк належить, і робити це має бути приємно — інакше екран не відкриють
+   жодного разу (пряма вимога Олега: «щоб я знаходив 5 хвилин за кавою
+   посвайпати»).
+
+   Свайп ліворуч — «шум, прибрати з очей», праворуч — «лишити в черзі».
+   Обидва вічні й обидва скасовуються: нічого не видаляється, міняється один
+   прапорець. Не свайпнути теж можна — модель уже сховала тінь, і черга
+   працює без жодного свайпа.
+
+   Механіка. Колода з трьох карток: верхня ловить палець, дві під нею
+   створюють глибину. Нова картка ПАДАЄ ЗВЕРХУ (анімація tdrop), картка під
+   пальцем їде за ним із поворотом, кольорова печатка проявляється за
+   напрямком, відпустив за порогом — картка вилітає. Вирішення застосовується
+   ОПТИМІСТИЧНО: рука вже пішла далі, і чекати відповіді сервера означало б
+   рвати ритм; помилка мережі повертає картку назад у колоду з тостом. */
+
+const TRIAGE_SWIPE = 96;      // px, після яких відпускання = рішення
+const TRIAGE_REFILL = 4;      // коли лишається стільки — тягнемо наступну порцію
+
+async function renderTriage() {
+  $("content").innerHTML = `
+    <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
+    ${skeleton("rows", 2)}`;
+  let d;
+  try {
+    d = await api("/api/promises/triage");
+  } catch (e) {
+    $("content").innerHTML = `
+      <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
+      <div class="empty-hint">${esc(e.message)}</div>`;
+    return;
+  }
+  if (STATE.view !== "triage") return;
+  STATE.triage = {
+    items: d.items || [], counts: d.counts || {},
+    offset: (d.items || []).length, done: 0, undo: null, loading: false,
+  };
+  paintTriage();
+}
+
+function triageDone() {
+  const t = STATE.triage;
+  return `
+    <div class="tr-empty">
+      <div class="tr-empty-ic">${icon("check")}</div>
+      <div class="tr-empty-t">Тінь розібрана</div>
+      <div class="tr-empty-m">${t.done
+        ? `За цей захід — ${t.done} ${plural(t.done, "картка", "картки", "карток")}.
+           Нове з'явиться саме: витяг щодня приносить свіже.`
+        : `Записів, які модель прибрала з черги, а людина ще не дивилась,
+           немає. Нове з'явиться саме.`}</div>
+      <button class="sbtn" data-nav="promises">До черги банку</button>
+    </div>`;
+}
+
+function paintTriage() {
+  const t = STATE.triage;
+  if (!t) return;
+  const c = t.counts || {};
+  const left = Math.max(0, (c.pending || 0) - t.done);
+  $("content").innerHTML = `
+    <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
+    <div class="head-row">
+      <div class="h-big">Розбір</div>
+      ${t.undo ? `<button class="icon-btn" id="tr-undo"
+        aria-label="Скасувати останній">${icon("rotate-ccw")}</button>` : ""}
+    </div>
+    <div class="h-sub">що Лис прибрав із черги — підтверди або поверни.
+      Свайп ліворуч — шум, праворуч — лишити в черзі</div>
+    <div class="tr-counts">
+      <span class="tr-cnt">Лишилось <b>${left}</b></span>
+      ${t.done ? `<span class="tr-cnt ok">За захід <b>${t.done}</b></span>` : ""}
+      ${c.good ? `<span class="tr-cnt ok">Повернуто <b>${c.good}</b></span>` : ""}
+    </div>
+    ${t.items.length ? `
+      <div class="tr-deck" id="tr-deck">
+        ${t.items.slice(1, 3).map((_, i) =>
+          `<span class="tr-slab" style="--i:${2 - i}"></span>`).join("")}
+        ${triageCard(t.items[0])}
+      </div>
+      <div class="tr-acts">
+        <button class="tr-act noise" data-swipe="noise">
+          ${icon("x")}<span>Шум</span></button>
+        <button class="tr-act open" data-swipe="open">
+          ${icon("chevron-right")}<span>Відкрити</span></button>
+        <button class="tr-act good" data-swipe="good">
+          ${icon("check")}<span>Лишити</span></button>
+      </div>
+      <div class="tr-note">Нічого не видаляється: «шум» ховає запис із черги,
+        «лишити» повертає його туди. Будь-який свайп скасовується.</div>`
+      : triageDone()}`;
+  wireTriage();
+}
+
+/* Малюємо ПОВНІСТЮ лише верхню картку; дві під нею — порожні плашки.
+
+   Спершу колода складалась із трьох справжніх карток, і на першому ж
+   скріншоті стало видно, чому так не можна: картки різної висоти, тож
+   сусідні визирали з-під верхньої, і три різні заголовки читались одночасно
+   — екран виглядав зламаним. Плашки дають ту саму глибину й нічого не
+   обіцяють оку. */
+function triageCard(p) {
+  const why = [p.kind_word, p.why].filter(Boolean).join(" · ");
+  return `
+    <article class="tr-card ${p.cls}" data-tid="${p.id}">
+      <div class="tr-stamp noise">Шум</div>
+      <div class="tr-stamp good">Лишити</div>
+      <div class="tr-kind">${esc(why)}</div>
+      <div class="tr-title">${esc(p.title)}</div>
+      ${p.image ? `<img class="tr-img" src="${esc(p.image)}" alt=""
+        loading="lazy" onerror="this.remove()">` : ""}
+      ${p.quote ? `<div class="tr-quote">«${esc(p.quote)}»</div>` : ""}
+      ${promiseWho(p.who) ? `<div class="tr-who">${promiseWho(p.who)}</div>` : ""}
+      <div class="tr-meta">${[p.state, ...(p.meta || [])]
+        .filter(Boolean).slice(0, 3).map(esc).join(" · ")}</div>
+      ${p.link ? `<a class="tr-src" href="${esc(p.link.url)}" target="_blank"
+        rel="noopener">${esc(p.link.title || "матеріал")}${
+        p.link.date ? ` · ${esc(p.link.date)}` : ""}</a>` : ""}
+    </article>`;
+}
+
+/* Рішення. Оптимістичне: картка йде одразу, запит летить услід. Повернення
+   в колоду при збої — на те саме місце, щоб людина не гадала, що зникло. */
+async function triageDecide(verdict) {
+  const t = STATE.triage;
+  if (!t || !t.items.length) return;
+  const card = t.items[0];
+  const el = $("tr-deck") && $("tr-deck").querySelector(`[data-tid="${card.id}"]`);
+  if (el) {
+    // Інлайновий transform лишився від перетягування і перебив би клас
+    // вильоту — картка застигла б там, де її відпустили.
+    el.style.transform = "";
+    el.classList.remove("dragging", "to-noise", "to-good");
+    el.classList.add(verdict === "noise" ? "fly-left" : "fly-right");
+    el.style.pointerEvents = "none";
+  }
+  haptic(verdict === "good" ? "success" : "warning");
+  t.items = t.items.slice(1);
+  t.done += 1;
+  t.undo = card;
+  // Даємо картці долетіти, і аж потім перемальовуємо колоду — інакше
+  // наступна з'являлась би поверх тієї, що ще летить.
+  setTimeout(() => { if (STATE.view === "triage") paintTriage(); }, 190);
+  try {
+    await api(`/api/promises/${card.id}/triage`, {
+      method: "POST", body: JSON.stringify({ verdict }) });
+    STATE.promises = null;      // черга змінилась
+  } catch (e) {
+    t.items = [card].concat(t.items);
+    t.done = Math.max(0, t.done - 1);
+    t.undo = null;
+    toast(e.message);
+    if (STATE.view === "triage") paintTriage();
+    return;
+  }
+  if (t.items.length <= TRIAGE_REFILL) triageRefill();
+}
+
+async function triageRefill() {
+  const t = STATE.triage;
+  if (!t || t.loading) return;
+  t.loading = true;
+  try {
+    // offset не потрібен: вирішені картки вже не повертаються запитом, тож
+    // «наступна порція» — це просто перша сторінка ще не розібраного.
+    const d = await api("/api/promises/triage");
+    const have = new Set(t.items.map((x) => x.id));
+    t.items = t.items.concat((d.items || []).filter((x) => !have.has(x.id)));
+    t.counts = d.counts || t.counts;
+    if (STATE.view === "triage") paintTriage();
+  } catch (e) { /* доберемо наступним свайпом */ }
+  t.loading = false;
+}
+
+async function triageUndo() {
+  const t = STATE.triage;
+  if (!t || !t.undo) return;
+  const card = t.undo;
+  t.undo = null;
+  try {
+    await api(`/api/promises/${card.id}/triage`, {
+      method: "POST", body: JSON.stringify({ verdict: null }) });
+    t.items = [card].concat(t.items);
+    t.done = Math.max(0, t.done - 1);
+    STATE.promises = null;
+    haptic("success");
+    toast("Повернув картку");
+  } catch (e) { toast(e.message); }
+  if (STATE.view === "triage") paintTriage();
+}
+
+function wireTriage() {
+  // data-nav не вішаємо: на ньому висить делегат #content, і другий обробник
+  // означав би подвійний перехід.
+  const deck = $("tr-deck");
+  const undo = $("tr-undo");
+  if (undo) undo.onclick = triageUndo;
+  document.querySelectorAll("[data-swipe]").forEach((b) => b.onclick = () => {
+    const t = STATE.triage;
+    if (b.dataset.swipe === "open") {
+      if (t && t.items.length) nav("promise", t.items[0].id);
+      return;
+    }
+    triageDecide(b.dataset.swipe);
+  });
+  if (!deck) return;
+  const top = deck.querySelector(".tr-card:last-child");
+  if (!top) return;
+
+  /* Перетягування. Pointer Events, бо це один код на палець і мишу (у
+     десктопному Telegram свайпів немає, і без миші екран був би там
+     непридатний). Кнопки внизу лишаються завжди — свайп це приємність, а не
+     єдиний спосіб. */
+  let startX = 0, startY = 0, dx = 0, dy = 0, dragging = false, locked = false;
+
+  const move = (x, y) => {
+    dx = x - startX;
+    dy = y - startY;
+    // Вертикальний рух — це прокрутка сторінки, а не свайп: перехоплювати
+    // його означало б зробити довгу картку нечитабельною.
+    if (!locked && Math.abs(dy) > Math.abs(dx) + 8) { end(true); return; }
+    locked = true;
+    const rot = Math.max(-14, Math.min(14, dx / 12));
+    top.style.transform = `translate(${dx}px, ${dy * 0.25}px) rotate(${rot}deg)`;
+    const p = Math.min(1, Math.abs(dx) / TRIAGE_SWIPE);
+    top.classList.toggle("to-noise", dx < -12);
+    top.classList.toggle("to-good", dx > 12);
+    top.style.setProperty("--p", p.toFixed(2));
+  };
+
+  const end = (cancel) => {
+    if (!dragging) return;
+    dragging = false;
+    top.classList.remove("dragging");
+    if (!cancel && Math.abs(dx) >= TRIAGE_SWIPE) {
+      triageDecide(dx < 0 ? "noise" : "good");
+      return;
+    }
+    top.style.transform = "";
+    top.style.removeProperty("--p");
+    top.classList.remove("to-noise", "to-good");
+  };
+
+  top.addEventListener("pointerdown", (e) => {
+    // Тап по лінку на матеріал — це читання, а не свайп.
+    if (e.target.closest("a")) return;
+    dragging = true;
+    locked = false;
+    startX = e.clientX;
+    startY = e.clientY;
+    dx = dy = 0;
+    top.classList.add("dragging");
+    try { top.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  top.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    move(e.clientX, e.clientY);
+    if (locked) e.preventDefault();
+  });
+  top.addEventListener("pointerup", () => end(false));
+  top.addEventListener("pointercancel", () => end(true));
 }
 
 async function renderImpacts() {

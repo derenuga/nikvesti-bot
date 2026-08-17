@@ -344,7 +344,7 @@ def _queue_payload(arg):
                                    "promiser_role": r[3], "reported_by_text": r[4]}
             return {"rows": head, "total": len(rows), "counts": counts,
                     "bounds": bounds, "first": first, "matched": matched,
-                    "cls": cls}
+                    "cls": cls, "shadow": pp.triage_counts(cur)}
     finally:
         conn.close()
 
@@ -382,6 +382,14 @@ async def promises_handler(update, context):
         f"{CLASS_ICON.get(c,'•')} {pp.CLASS_WORD[c]} <b>{counts.get(c,0)}</b>"
         for c in pp.CLASS_ORDER if counts.get(c))
     header.append(f"Усього в роботі: <b>{total}</b>" + (f"\n{facets}" if facets else ""))
+    # Тінь називаємо числом у кожному виводі черги: робочий шар — це фільтр,
+    # а не втрата, і різниця між «у банку 180» і «видно 180 із 950» мусить
+    # бути видима, інакше чистка читається як зникнення даних.
+    shadow = data.get("shadow") or {}
+    hidden = (shadow.get("pending") or 0) + (shadow.get("noise") or 0)
+    if hidden:
+        header.append(f"<i>У тіні ще {hidden} (процедурне · рутина · чужі "
+                      f"актори) — розбір свайпами в апці, пошук їх бачить.</i>")
     header.append(_bounds_line(data["bounds"], shown=total))
 
     body = [format_item(r, data["first"].get(r["id"]), n=i, now=now)
@@ -1770,6 +1778,13 @@ JUDGE_RULES = (
     "• Різні дії щодо одного об'єкта — РІЗНІ обіцянки: реставрація, укриття й "
     "закупівля обладнання для тієї самої школи це три зобов'язання, а не три "
     "формулювання одного.\n"
+    "• Два ГОРИЗОНТИ однієї роботи з одного речення — теж різні записи: "
+    "«основну частину до кінця року» і «остаточне завершення до 2025» мають "
+    "різні дати й різну твердість, зливати їх не можна.\n"
+    "• АЛЕ те саме рішення, роздроблене на шматки за об'єктами чи адресами "
+    "(одна ухвала про демонтаж чотирьох кіосків), — це ОДИН запис: якщо "
+    "кандидат із тієї ж статті описує ту саму дію того ж актора з тим самим "
+    "строком, лише про інший об'єкт переліку, — це воно.\n"
     "• Інший актор — інша обіцянка, навіть якщо предмет той самий: підрядник, "
     "ОВА і Кабмін відповідають кожен за своє (це одна тема, але різні "
     "зобов'язання).\n"
@@ -1876,7 +1891,10 @@ def ingest(results, judge=True, mark=True, drop_first=False):
                     if not (prepared.get("quote") or "").strip():
                         stats["noquote"] += 1
                         continue
-                    cands = pp.candidates(cur, prepared)
+                    # article_id дає шосте джерело кандидатів — те, що вже
+                    # записано з ЦІЄЇ Ж статті: дроблення одного рішення
+                    # народжується саме тут, і суддя мусить бачити сусідів.
+                    cands = pp.candidates(cur, prepared, article_id=art["id"])
                     cid, conf = None, None
                     if cands and client:
                         try:
@@ -1942,7 +1960,7 @@ def _test_payload(article_id):
             prepared = []
             for item in items:
                 p = pp.prepare(cur, item)
-                cands = pp.candidates(cur, p)
+                cands = pp.candidates(cur, p, article_id=article_id)
                 prepared.append({"item": p, "candidates": cands})
             links = _links_for(cur, [article_id])
             marked = bool(api.marked_ids(cur, [article_id]))
@@ -2392,6 +2410,7 @@ def _status_payload():
             cur.execute("SELECT count(*) FROM commitment_revisions")
             n_rev = cur.fetchone()[0]
             rows = pp.list_queue(cur, limit=None)
+            shadow = pp.triage_counts(cur)
             cur.execute(
                 "SELECT coalesce(marked, true), count(*), sum(found) "
                 "FROM promise_attempts GROUP BY 1")
@@ -2406,6 +2425,7 @@ def _status_payload():
     floor = _incr_floor() if on else None
     return {"bounds": bounds, "commitments": n_com, "topics": n_top,
             "revisions": n_rev, "counts": pp.facet_counts(rows),
+            "working": len(rows), "shadow": shadow,
             "prefilter": prefilter, "giveup": giveup,
             "incr_on": on, "floor": floor,
             "pending": _pending(floor) if on else 0}
@@ -2434,6 +2454,27 @@ async def promise_status_handler(update, context):
     if facets:
         lines.append(facets)
 
+    # Два шари числами. Без цього рядка «обіцянок 950» і «у черзі 180»
+    # виглядають як розбіжність, а не як фільтр із відомим правилом.
+    sh = d.get("shadow") or {}
+    kind_word = {"commitment": "зобов'язання", "rhetoric": "риторика",
+                 "process": "процедурні", "routine": "рутина",
+                 "offtopic": "чужі актори", "—": "ще без типу"}
+    if sh.get("by_kind"):
+        lines.append("")
+        lines.append(f"<b>Робочий шар</b>: {d.get('working', 0)} · "
+                     f"у тіні {sh.get('pending', 0) + sh.get('noise', 0)}")
+        lines.append("За типом акту: " + " · ".join(
+            f"{kind_word.get(k, k)} {n}"
+            for k, n in sorted(sh["by_kind"].items(), key=lambda x: -x[1])))
+        if sh.get("by_kind", {}).get("—"):
+            lines.append("<i>«Ще без типу» видно в черзі (fail-open) — "
+                         "переоцінити накопичене: /promise_classify</i>")
+        if sh.get("pending"):
+            lines.append(f"Чекає розбору свайпами: <b>{sh['pending']}</b>"
+                         + (f" · уже розібрано: {sh['noise'] + sh['good']}"
+                            if sh["noise"] or sh["good"] else ""))
+
     lines.append("")
     if d["incr_on"]:
         lines.append(f"✅ Авто-інкремент увімкнено, від {pp.fmt_date(d['floor'])}"
@@ -2460,6 +2501,315 @@ async def promise_status_handler(update, context):
                      f"без маркерів знайшлось {found_un} зобов'язань — "
                      f"{share:.0f}% усього знайденого.")
     await msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+
+# ---------- /promise_classify — разова переоцінка накопиченого ----------
+#
+# Вісь kind з'явилась 17.08, а в банку на той момент лежало ~945 відкритих
+# записів БЕЗ неї (kind IS NULL). Fail-open правило робочого шару показує їх
+# усі — тобто до переоцінки черга виглядає так само, як до ревізії. Ця
+# команда доганяє накопичене: Haiku читає записи пачками і ставить kind/micro
+# ТІЛЬКИ там, де їх немає.
+#
+# Чому звичайний API, а не Batch: на 945 записів різниця в ціні — центи
+# (~$0.3 проти ~$0.6), а Batch тягне за собою полінг, стан у sync_state і
+# «після редеплою — resume». Тут простіше бути перерваним і перезапущеним:
+# кожна пачка комітиться одразу, фільтр kind IS NULL робить повторний виклик
+# продовженням, а не повтором.
+#
+# Модель НЕ переписує нічого: людський свайп (triage) сильніший за kind у
+# будь-який бік, а записи, де kind уже стоїть (свіжий витяг), пропускаються
+# самим запитом.
+
+CLASSIFY_CHUNK = 20
+
+_CLASSIFY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "kind": {"type": "string", "enum": list(pp.KIND)},
+                    "micro": {"type": "boolean"},
+                },
+                "required": ["id", "kind", "micro"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["items"],
+    "additionalProperties": False,
+}
+
+
+def _classify_system():
+    """Системний промпт класифікатора. Словник kind/micro НЕ переписується
+    вдруге — береться з description схеми витягу, тож розійтись із промптом
+    витягу вони не можуть."""
+    kind_desc = api.COMMITMENT_ITEM["properties"]["kind"]["description"]
+    micro_desc = api.COMMITMENT_ITEM["properties"]["micro"]["description"]
+    return (
+        "Ти класифікуєш записи банку тем міського медіа (Миколаїв) за типом "
+        "мовленнєвого акту. Дам масив записів (id, назва, предмет, обіцяльник, "
+        "дослівна цитата, документ-підстава). Для КОЖНОГО поверни kind і "
+        "micro.\n\n"
+        f"kind: {kind_desc}\n\n"
+        f"micro: {micro_desc}\n\n"
+        "Сумніваєшся між commitment і process — дивись, ЩО зміниться в місті, "
+        "коли дію виконають: якщо лише статус документа — це process. "
+        "Сумніваєшся між routine і commitment — питай, чи відбувалося б це й "
+        "без заяви (планова діяльність) чи це окреме взяте зобов'язання. "
+        "Це класифікація типу, а не важливості: не намагайся «врятувати» "
+        "запис, підтягуючи його до commitment."
+    )
+
+
+def _classify_pending(cur, limit=None):
+    """Записи без kind — з першою цитатою і обіцяльником, як бачить їх модель."""
+    cur.execute(
+        "SELECT c.id, c.title, c.subject, c.owner_text, c.deadline, "
+        "       c.based_on_document, c.source_type, "
+        "       (SELECT r.promiser_text FROM commitment_revisions r "
+        "         WHERE r.commitment_id = c.id ORDER BY r.id LIMIT 1), "
+        "       (SELECT r.promiser_role FROM commitment_revisions r "
+        "         WHERE r.commitment_id = c.id ORDER BY r.id LIMIT 1), "
+        "       (SELECT r.quote FROM commitment_revisions r "
+        "         WHERE r.commitment_id = c.id ORDER BY r.id LIMIT 1) "
+        "FROM commitments c WHERE c.kind IS NULL AND c.status = 'expected' "
+        "ORDER BY c.id" + (" LIMIT %s" if limit else ""),
+        ([int(limit)] if limit else []))
+    keys = ("id", "title", "subject", "owner", "deadline", "based_on_document",
+            "source_type", "promiser", "promiser_role", "quote")
+    return [dict(zip(keys, r)) for r in cur.fetchall()]
+
+
+def _classify_chunk(client, rows):
+    """Одна пачка → [{id, kind, micro}]. Вивід валідує json_schema."""
+    payload = [{
+        "id": r["id"], "title": r["title"], "subject": r["subject"],
+        "promiser": r["promiser"], "promiser_role": r["promiser_role"],
+        "owner": r["owner"],
+        "deadline": pp.fmt_date(r["deadline"]) if r["deadline"] else None,
+        "based_on_document": r["based_on_document"],
+        "source_type": r["source_type"],
+        "quote": (r["quote"] or "")[:400],
+    } for r in rows]
+    resp = client.messages.create(
+        model=api.MODEL,
+        max_tokens=3000,
+        system=[{"type": "text", "text": _classify_system(),
+                 "cache_control": {"type": "ephemeral"}}],
+        output_config={"format": {"type": "json_schema",
+                                  "schema": _CLASSIFY_SCHEMA}},
+        messages=[{"role": "user",
+                   "content": json.dumps(payload, ensure_ascii=False)}],
+    )
+    if resp.stop_reason == "max_tokens":
+        raise RuntimeError("вихід класифікатора обрізано на max_tokens")
+    text = next((bl.text for bl in resp.content if bl.type == "text"), "")
+    return json.loads(text).get("items", []), resp.usage
+
+
+def _classify_apply(cur, items, known_ids):
+    """Записати вердикти. `kind IS NULL` у WHERE — щоб гонка зі свіжим витягом
+    чи повторний прогін нічого не переписали."""
+    done = 0
+    for it in items:
+        cid = it.get("id")
+        kind = pp._enum(it.get("kind"), pp.KIND)
+        if cid not in known_ids or not kind:
+            continue
+        cur.execute(
+            "UPDATE commitments SET kind = %s, micro = %s "
+            "WHERE id = %s AND kind IS NULL",
+            (kind, bool(it.get("micro")), int(cid)))
+        done += cur.rowcount or 0
+    return done
+
+
+async def _classify_run(bot, chat_id, msg_id=None):
+    """Фонова переоцінка. Пачка за пачкою, кожна комітиться одразу."""
+    import anthropic
+
+    client = anthropic.Anthropic()
+    usage = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+    done = failed = 0
+
+    def next_chunk():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                return _classify_pending(cur, limit=CLASSIFY_CHUNK)
+        finally:
+            conn.close()
+
+    def apply(items, ids):
+        conn = ep.connect()
+        try:
+            with conn.cursor() as cur:
+                n = _classify_apply(cur, items, ids)
+            conn.commit()
+            return n
+        finally:
+            conn.close()
+
+    async def progress(text):
+        try:
+            if msg_id:
+                await bot.edit_message_text(text, chat_id, msg_id)
+            else:
+                await bot.send_message(chat_id, text)
+        except Exception:
+            pass
+
+    try:
+        while True:
+            rows = await asyncio.to_thread(next_chunk)
+            if not rows:
+                break
+            try:
+                items, u = await asyncio.to_thread(_classify_chunk, client, rows)
+            except Exception as e:
+                # Пачка впала — записи лишились NULL (тобто видимими), і
+                # повторний /promise_classify продовжить рівно звідси. Але
+                # далі не женемо: помилка запиту повторилася б на кожній.
+                failed = len(rows)
+                await bot.send_message(
+                    chat_id,
+                    f"❌ Переоцінка обірвалась: {type(e).__name__}: {e}\n"
+                    f"Класифіковано {done}, решта лишилась видимою (fail-open)."
+                    f" Повторний /promise_classify продовжить з місця обриву.")
+                break
+            usage["input"] += u.input_tokens or 0
+            usage["output"] += u.output_tokens or 0
+            usage["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
+            usage["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0) or 0
+            done += await asyncio.to_thread(
+                apply, items, {r["id"] for r in rows})
+            # Модель могла пропустити запис (не повернути його id) — щоб цикл
+            # не зациклився на тій самій пачці, пропущені позначаємо
+            # найбезпечнішим видимим типом.
+            missing = {r["id"] for r in rows} - {it.get("id") for it in items}
+            if missing:
+                def fallback():
+                    conn = ep.connect()
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "UPDATE commitments SET kind = 'commitment' "
+                                "WHERE id = ANY(%s) AND kind IS NULL",
+                                (list(missing),))
+                        conn.commit()
+                    finally:
+                        conn.close()
+                await asyncio.to_thread(fallback)
+            if done and done % 200 < CLASSIFY_CHUNK:
+                await progress(f"🦊 Переоцінюю банк: {done} записів готово…")
+    finally:
+        if usage["input"]:
+            record_ai_usage(api.MODEL, input_tokens=usage["input"],
+                            output_tokens=usage["output"],
+                            cache_read=usage["cache_read"],
+                            cache_creation=usage["cache_creation"],
+                            feature="promise_triage")
+
+    if failed:
+        return
+    def summary():
+        conn = ep.connect()
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                return pp.triage_counts(cur)
+        finally:
+            conn.close()
+
+    st = await asyncio.to_thread(summary)
+    by = st["by_kind"]
+    visible = by.get("commitment", 0) + by.get("rhetoric", 0)
+    hidden = st["pending"] + st["noise"]
+    cost = (usage["input"] * api.PRICE_IN + usage["output"] * api.PRICE_OUT)
+    kind_word = {"commitment": "зобов'язання", "rhetoric": "риторика",
+                 "process": "процедурні кроки", "routine": "рутина",
+                 "offtopic": "чужі актори", "—": "без типу"}
+    lines = [f"🦊 <b>Переоцінка завершена: {done} записів</b>", "",
+             " · ".join(f"{kind_word.get(k, k)} <b>{n}</b>"
+                        for k, n in sorted(by.items(), key=lambda x: -x[1])),
+             "",
+             f"У робочій черзі лишається ~<b>{visible}</b>, у тіні — "
+             f"<b>{hidden}</b>. Тінь нікуди не зникла: розбирається свайпами "
+             f"в апці (Утиліти → Банк тем → Розбір), повертається одним "
+             f"свайпом праворуч.",
+             f"<i>≈ ${cost:.2f} · вердикт моделі не чіпає рішень людини і "
+             f"не повторюється на вже оцінених.</i>"]
+    await bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
+
+
+async def promise_classify_handler(update, context):
+    """/promise_classify — оцінка кількості й ціни, запуск кнопкою."""
+    if not _allowed(update):
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not os.environ.get("ANTHROPIC_API_KEY") or not bot_db.is_configured():
+        await update.message.reply_text("🦊 Потрібні нора і ANTHROPIC_API_KEY.")
+        return
+    msg = await update.message.reply_text("🦊 Рахую (безкоштовно)…")
+
+    def count():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM commitments "
+                            "WHERE kind IS NULL AND status = 'expected'")
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+    try:
+        n = await asyncio.to_thread(count)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не порахувалось: {e}")
+        return
+    if not n:
+        await msg.edit_text(
+            "🦊 Усі записи вже мають тип — переоцінювати нічого.\n"
+            "Стан шарів: /promise_status, розбір тіні — в апці.")
+        return
+    # ~150 вх токенів на запис + системний промпт на пачку, ~25 вих на запис.
+    # Округлено вгору — число бачить людина перед кнопкою.
+    cost = n * 200 / 1e6 * 1.0 + n * 30 / 1e6 * 5.0
+    await msg.edit_text(
+        f"🦊 <b>Переоцінка банку за типом акту</b>\n\n"
+        f"Записів без типу: <b>{n}</b> (усі зараз видимі — fail-open)\n"
+        f"Вартість: <b>≈ ${max(cost, 0.05):.2f}</b> (Haiku, пачками по "
+        f"{CLASSIFY_CHUNK})\n\n"
+        f"Після переоцінки в черзі журналістів лишаться зобов'язання і "
+        f"риторика; процедурне, рутина й чужі актори підуть у тінь — її "
+        f"розбирають свайпами в апці, і БУДЬ-ЩО повертається одним свайпом.\n"
+        f"<i>Нічого не видаляється. Перерваний прогін продовжується повторним "
+        f"викликом. Рішення людини (свайпи) модель не чіпає.</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+            f"Переоцінити {n} ≈ ${max(cost, 0.05):.2f}",
+            callback_data="pcl:go")]]))
+
+
+async def promise_classify_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not _allowed(update):
+        return
+    await query.edit_message_text(
+        "🦊 Переоцінюю у фоні — пачки комітяться одразу, звіт прийде сюди.")
+    asyncio.create_task(_classify_run(
+        context.bot, query.message.chat_id))
 
 
 # ---------- /promise_eval ----------
@@ -3533,7 +3883,7 @@ async def promise_resplit_callback(update, context):
     await query.edit_message_text(
         f"🦊 Відправив {n} статей у батчі. Результат прийде сюди сам "
         f"(зазвичай хвилини, іноді години). Після редеплою — /promise_resume.")
-    asyncio.create_task(_poll(context.bot, state))
+    asyncio.create_task(_poll_task(context.bot))
 
 
 # ---------- /promise_mine ----------

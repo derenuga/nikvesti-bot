@@ -58,6 +58,7 @@ def price_for(model, period=None):
 # новий інструмент з'являється у звіті сам, а сюди дописують лише назву.
 FEATURE_TITLES = {
     "carousel": "Каруселі для Instagram",
+    "promise_triage": "Банк тем: тип акту (kind)",
 }
 
 

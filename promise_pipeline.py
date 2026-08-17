@@ -70,6 +70,44 @@ STATUS = ("expected", "done", "failed", "abandoned", "void", "superseded",
           "unknown")
 VERIFIABILITY = ("measurable", "undated", "event_triggered", "unfalsifiable")
 
+# ТИП МОВЛЕННЄВОГО АКТУ (kind) — вісь, якої бракувало першому місяцю на
+# обсязі (ревізія 17.08: з 945 відкритих записів журналістськи значущих ~180,
+# решта — процедурні кроки, рутина міського господарства і чужі актори, які
+# витяг чесно записав, бо промпт казав «НЕ РАНЖУЙ»). Це не «важливість» — її
+# машина не міряє, — а властивість самого тексту, як modality:
+#
+#   commitment — зобов'язання влади чи підзвітного місту актора ПРО РЕЗУЛЬТАТ:
+#                збудувати, відремонтувати, запустити, не допустити. Ядро
+#                банку; сюди ж завуальовані «має розробити», «мають винести»
+#                (робоча група З ДОКУМЕНТОМ-підставою — теж результат);
+#   rhetoric   — публічна заява без критерію й дати, яку однаково варто
+#                тримати перед очима: «повернемо краще, ніж було». Клас
+#                перевірки в неї і так unfalsifiable, але це САМОСТІЙНА
+#                властивість: риторика буває і з датою («до кінця року метро
+#                на Намив»);
+#   process    — процедурний крок на шляху до чужого результату: «винести на
+#                розгляд», «подати пропозиції», «розглянути на комісії»,
+#                «провести засідання». Окремо від рутини, бо межа «значущий
+#                процес / шум» — людська: сюди дивиться свайп;
+#   routine    — планова операційна діяльність без окремої обіцянки:
+#                «прибирати територію», «продовжити опалювальний сезон»,
+#                «інспектори перевірятимуть дозволи» (кейс мисливського
+#                сезону), графіки, чергові виплати за чинними програмами;
+#   offtopic   — актор, якого редакція не перевіряє: приватні плани приватних
+#                осіб («ферма планує розширення»), обіцянки хабарів із судових
+#                справ, загальнонаціональне без миколаївського предмета.
+#                Публічне зобовʼязання приватника МІСТУ (демонтувати огорожу,
+#                кейс 320276) — це commitment, не offtopic.
+KIND = ("commitment", "rhetoric", "process", "routine", "offtopic")
+# Що з цього бачить журналіст у черзі. Строгий дефолт — рішення Олега 17.08:
+# краще пропустити в тінь спірний процедурний крок (свайп праворуч поверне),
+# ніж лишити чергу, яку ніхто не відкриває.
+WORKING_KINDS = ("commitment", "rhetoric")
+# Рішення людини зі свайпа: noise — «прибрати з очей», good — «лишити в
+# черзі, хай і process/routine». Вічне, як promise_pairs; NULL = ще не
+# дивились, і це НЕ блокує нічого — модельний kind працює й без свайпів.
+TRIAGE = ("noise", "good")
+
 # Грейс за точністю дати (§5): «до кінця 2025» не означає «зранку 1 січня
 # хтось звітує». Рік перевіряємо в середині січня, місяць — за тиждень після
 # його кінця. Без цього банк тем стане будильником, який вимкнуть.
@@ -340,6 +378,20 @@ CREATE TABLE IF NOT EXISTS promise_pairs (
     created    BIGINT,
     PRIMARY KEY (a, b)
 );
+
+-- Вісь мовленнєвого акту (kind/micro) + рішення людини зі свайпа (triage).
+-- Колонками на commitments, а не окремою таблицею: kind — така сама
+-- властивість запису, як modality, а triage переписує рівно один прапорець і
+-- нічого не видаляє (відкат = поставити NULL). NULL у kind означає «ще не
+-- класифіковано» і чиниться FAIL-OPEN: запис ВИДНО, доки /promise_classify
+-- не пройшов — інакше деплой ховав би весь банк до кінця переоцінки.
+ALTER TABLE commitments ADD COLUMN IF NOT EXISTS kind TEXT;
+-- Дрібність предмета (окремо від kind, бо це незалежна вісь: «відремонтувати
+-- ОДИН під'їзд» — commitment, але micro). TRUE ховає з робочого шару.
+ALTER TABLE commitments ADD COLUMN IF NOT EXISTS micro BOOLEAN;
+ALTER TABLE commitments ADD COLUMN IF NOT EXISTS triage TEXT;
+ALTER TABLE commitments ADD COLUMN IF NOT EXISTS triage_by TEXT;
+ALTER TABLE commitments ADD COLUMN IF NOT EXISTS triage_at BIGINT;
 """
 
 
@@ -482,6 +534,47 @@ def rings(row):
     if (row.get("condition") or "").strip():
         return False
     return True
+
+
+# ---------- Робочий шар ----------
+#
+# Черга, яку бачить журналіст. Ревізія 17.08 показала, чому без цього банк
+# став шумом: значуще тонуло у процедурних кроках і рутині у співвідношенні
+# ~1:4. Правило одне і живе ДВІЧІ — Python для рядків у пам'яті та SQL для
+# вибірок — і звіряється тестом, інакше екрани розійшлися б за місяць.
+#
+#   • triage='good'  — людина свайпнула «лишити»: видно завжди, хай там що;
+#   • triage='noise' — людина свайпнула «прибрати»: не видно, хай там що;
+#   • інакше вирішує модельний kind: commitment і rhetoric видно, process/
+#     routine/offtopic — ні; micro=TRUE ховає незалежно від kind;
+#   • kind IS NULL — ще не класифіковано → ВИДНО (fail-open: деплой не має
+#     ховати банк до кінця переоцінки, а збій класифікатора — губити записи).
+
+WORKING_SQL = """(
+    coalesce(c.triage, '') = 'good'
+    OR (coalesce(c.triage, '') <> 'noise'
+        AND (c.kind IS NULL OR c.kind = ANY(%s::text[]))
+        AND coalesce(c.micro, false) = false)
+)"""
+
+
+def working_params():
+    """Параметри під WORKING_SQL — рівно один: список видимих kind."""
+    return [list(WORKING_KINDS)]
+
+
+def is_working(row):
+    """Те саме правило для рядка в пам'яті. Будь-яка розбіжність із
+    WORKING_SQL — баг; тест ганяє обидва на одних даних."""
+    triage = row.get("triage") or ""
+    if triage == "good":
+        return True
+    if triage == "noise":
+        return False
+    kind = row.get("kind")
+    if kind is not None and kind not in WORKING_KINDS:
+        return False
+    return not bool(row.get("micro"))
 
 
 def queue_class(row, now=None):
@@ -709,10 +802,24 @@ def _amount(value):
 #     зовсім: стаття лишається в черзі й наступна спроба майже напевно дасть
 #     чистий текст (це шум семплінгу, а не стала помилка).
 
+# Апостроф-модифікатор. У Юнікоді ʼ (U+02BC) — це БУКВЕНИЙ знак (категорія
+# Lm), а не пунктуація, тож він не потрапляв у жодне вікно дозволених
+# діапазонів і читався як ієрогліф. Наслідок був тихий і дорогий: будь-яке
+# зобов'язання зі словом «зобовʼязання», «підʼїзд», «обʼєкт» чи «мʼясокомбінат»
+# у назві або цитаті поверталось із record() як `glitch`, тобто НЕ ПИСАЛОСЬ
+# ВЗАГАЛІ, а стаття тричі поверталась у чергу й визнавалась безнадійною.
+# Знайдено тестом робочого шару 17.08 на назві «Відремонтувати один підʼїзд».
+# Сам проєкт цією формою користується скрізь (див. _MATCH_MAP, де вона вже
+# зводиться до звичайного апострофа).
+_APOSTROPHES = {0x02BC, 0x02B9, 0x02BB, 0x02C8}
+
+
 def _suspicious_char(ch):
     """Символ, якого в українському тексті бути не може."""
     o = ord(ch)
     if o < 0x0250 or 0x0400 <= o <= 0x04FF:      # латиниця, кирилиця
+        return False
+    if o in _APOSTROPHES:                         # ʼ — законний апостроф
         return False
     if 0x2000 <= o <= 0x206F or 0x20A0 <= o <= 0x20BF:
         return False                              # типографіка, валюти
@@ -846,6 +953,9 @@ def prepare(cur, item):
         if isinstance(out.get(f), str):
             out[f] = clean_text(out[f])
     out["modality"] = _enum(item.get("modality"), MODALITY)
+    out["kind"] = _enum(item.get("kind"), KIND)
+    # micro строго булеве: рядок «false» від моделі став би істиною в bool().
+    out["micro"] = item.get("micro") if isinstance(item.get("micro"), bool) else None
     out["source_type"] = _enum(item.get("source_type"), SOURCE_TYPE)
     out["verification_method"] = _enum(item.get("verification_method"),
                                        VERIFICATION_METHOD)
@@ -887,6 +997,13 @@ CANDIDATE_LIMIT = 8
 # (щоб знайти вже наявні). Розійдуться — і детектор показуватиме пари, які
 # пре-фільтр більше не створює, або навпаки.
 DUPE_SIM = 0.4
+# Сильніший поріг для пар БЕЗ збігу строку. Ревізія 17.08 знайшла мертвий
+# шов: вимога «однаковий строк» ховала найчастіший клас дублів — та сама
+# обіцянка, у якої в одній статті дата є, а в іншій немає (дотація 1,18 млрд
+# лежала п'ятьма записами, ямковий ремонт — сімома). Знімати вимогу строку на
+# базовому 0.4 не можна («відремонтувати» ~ «освітити» ту саму вулицю), тому
+# для таких пар назва мусить збігатись сильніше. Рішення однаково за суддею.
+DUPE_SIM_STRONG = 0.55
 
 # Спроба розвести детектор і пре-фільтр РІЗНИМИ порогами (03.08) провалилась,
 # і це варте запису, щоб не пробувати вдруге. Задум був: у екрана дублів ціна
@@ -904,7 +1021,7 @@ DUPE_SIM = 0.4
 
 
 
-def candidates(cur, prepared, limit=CANDIDATE_LIMIT):
+def candidates(cur, prepared, limit=CANDIDATE_LIMIT, article_id=None):
     """Обіцянки, з якими ЦЯ може виявитись тією самою (§4 крок 1).
 
     Пре-фільтр копійчаний: спільна картка-предмет (сутнісний шар уже дає
@@ -912,8 +1029,10 @@ def candidates(cur, prepared, limit=CANDIDATE_LIMIT):
     сутністю не є («відкриті апаратні наради», §2.2). Полярність мусить
     збігатись: «зробити» і «не робити» — ніколи не одне зобов'язання.
 
-    Рішення ухвалює суддя, не цей запит: один об'єкт може мати кілька
-    незалежних обіцянок (реставрація, укриття, обладнання) — §4 крок 3.
+    `article_id` — стаття, з якої йде витяг ЗАРАЗ: усе, що вже записано з
+    неї, стає кандидатом (шосте джерело нижче). Рішення ухвалює суддя, не
+    цей запит: один об'єкт може мати кілька незалежних обіцянок
+    (реставрація, укриття, обладнання) — §4 крок 3.
     """
     eid = prepared.get("subject_entity_id")
     key = prepared.get("subject_key")
@@ -994,6 +1113,23 @@ def candidates(cur, prepared, limit=CANDIDATE_LIMIT):
         conds.append("(c.deadline IS NOT DISTINCT FROM %s "
                      " AND similarity(c.title, %s) >= %s)")
         params.extend([deadline, title, DUPE_SIM])
+        # …і сильна схожість БЕЗ вимоги строку. Мертвий шов 17.08: та сама
+        # обіцянка з двох статей, у одній з датою, у другій без, — жодне
+        # джерело вище її не бачило, і суддя не отримував питання. Поріг
+        # вищий (DUPE_SIM_STRONG), бо саму схожість на 0.4 без строку
+        # стримати нічим.
+        conds.append("similarity(c.title, %s) >= %s")
+        params.extend([title, DUPE_SIM_STRONG])
+    # Шосте джерело: те, що ВЖЕ записано з цієї самої статті. Дроблення
+    # одного рішення на записи народжується рівно тут — другий шматок ухвали
+    # не знаходив перший ні по картці (майданчик без сутності), ні по назві
+    # (різні хвости), і суддя лишався без питання. Одна стаття — один
+    # контекст: хай суддя подивиться на сусідів.
+    if article_id:
+        conds.append("EXISTS (SELECT 1 FROM commitment_revisions r5 "
+                     "        WHERE r5.commitment_id = c.id "
+                     "          AND r5.article_id = %s)")
+        params.append(int(article_id))
     if not conds:
         return []
     params.extend([prepared.get("polarity") or "do", limit])
@@ -1110,6 +1246,7 @@ COMMITMENT_FIELDS = (
     "trigger_event", "deadline", "deadline_precision", "criterion",
     "verification_method", "condition", "condition_self_judged", "actor_hidden",
     "framed_as_promise", "based_on_document", "amount", "modality", "source_type",
+    "kind", "micro",
 )
 
 
@@ -1168,6 +1305,7 @@ def record(cur, article, prepared, commitment_id=None, link_confidence=None):
             bool(prepared.get("actor_hidden")), bool(prepared.get("framed_as_promise")),
             prepared.get("based_on_document"), prepared.get("amount"),
             prepared.get("modality"), prepared.get("source_type"),
+            prepared.get("kind"), prepared.get("micro"),
         ]
         cur.execute(
             f"INSERT INTO commitments ({', '.join(COMMITMENT_FIELDS)}, status, created) "
@@ -1198,6 +1336,15 @@ def record(cur, article, prepared, commitment_id=None, link_confidence=None):
         cur.execute(
             "INSERT INTO commitment_objects (commitment_id, entity_id) VALUES (%s, %s) "
             "ON CONFLICT DO NOTHING", (commitment_id, eid))
+    # Ревізія до старого запису без kind ДОКЛАСИФІКОВУЄ його собою: свіжий
+    # витяг уже знає тип акту, і чекати разової переоцінки нема чого. Тільки
+    # coalesce — переписувати наявний kind ревізія не має права (їх могла
+    # виправити людина свайпом, а свайп сильніший за модель).
+    if outcome == "revision" and prepared.get("kind"):
+        cur.execute(
+            "UPDATE commitments SET kind = coalesce(kind, %s), "
+            "  micro = coalesce(micro, %s) WHERE id = %s",
+            (prepared.get("kind"), prepared.get("micro"), commitment_id))
     refresh(cur, commitment_id)
     return commitment_id, outcome
 
@@ -1273,7 +1420,7 @@ COMMITMENT_COLS = """
     c.verification_method, c.condition, c.condition_self_judged, c.actor_hidden,
     c.framed_as_promise, c.based_on_document, c.amount, c.modality, c.source_type,
     c.revisions, c.first_seen, c.last_seen, c.checked_at, c.checked_by,
-    c.check_note
+    c.check_note, c.kind, c.micro, c.triage, c.triage_by, c.triage_at
 """
 
 _COMMITMENT_KEYS = [s.strip().split(".")[-1]
@@ -1292,11 +1439,12 @@ def _decorate(rows, now=None):
         r["priority"] = priority(r, now)
         r["populism"] = populism_reason(r)
         r["rings"] = rings(r)
+        r["working"] = is_working(r)
     rows.sort(key=lambda r: (-r["priority"], r["deadline"] or 1 << 62))
     return rows
 
 
-def list_queue(cur, cls=None, limit=20, now=None, author_id=None):
+def list_queue(cur, cls=None, limit=20, now=None, author_id=None, working=True):
     """Черга банку тем: що горить сьогодні. Порядок — той самий, що стане
     головним екраном апки (§6): спершу те, що горить, а не алфавіт.
 
@@ -1312,6 +1460,13 @@ def list_queue(cur, cls=None, limit=20, now=None, author_id=None):
     `/kpi_link` навмисно лишає рівно один id. Але тут не метрика, а ФІЛЬТР
     «покажи моє»: показати зайве не страшно, а сховати своє — саме той нуль,
     у який Олег уперся 04.08.
+
+    `working=True` (дефолт) — РОБОЧИЙ ШАР: без процедурних кроків, рутини й
+    чужих акторів (див. WORKING_SQL). Це головне рішення ревізії 17.08 —
+    журналіст бачить те, що варто перевіряти, а тінь розбирають Олег і Катя
+    свайпами. `working=False` — весь банк (розбір, експорт, діагностика).
+    Не чіпає `closed`: що людина чи бот уже перевірили — продукт, і його
+    видно завжди.
     """
     # `closed` — окремий кошик перевіреного. Без нього обіцянка, яку людина
     # сходила й позначила зірваною, ЗНИКАЛА б з екрана: статус більше не
@@ -1319,6 +1474,9 @@ def list_queue(cur, cls=None, limit=20, now=None, author_id=None):
     # продукт банку: на них посилаються в наступному тексті.
     where = ["c.status <> 'expected'" if cls == "closed" else "c.status = 'expected'"]
     params = []
+    if working and cls != "closed":
+        where.append(WORKING_SQL)
+        params.extend(working_params())
     ids = ([int(x) for x in author_id] if isinstance(author_id, (list, tuple, set))
            else [int(author_id)] if author_id else [])
     if ids:
@@ -1442,6 +1600,11 @@ def search(cur, term, limit=20):
     +`role_canon.org_entity_id`): «ОВА» без нього віддавала б лише ті
     обіцянки, де ОВА сама є обіцяльником, а особиста обіцянка заступника не
     спливала б (§6.2).
+
+    Робочий шар тут НЕ застосовується свідомо: черга — це те, що бот показує
+    сам, а пошук — явне питання людини, і ховати від неї процедурні кроки по
+    темі, яку вона рісьорчить, означало б зробити банк неповним рівно в
+    момент, коли ним користуються найглибше.
     """
     like = f"%{(term or '').strip().lower()}%"
     if len(like) <= 3:
@@ -1562,6 +1725,83 @@ def data_bounds(cur):
         ") s")
     row = cur.fetchone() or (None, None, 0)
     return {"from": row[0], "to": row[1], "articles": row[2] or 0}
+
+
+# ---------- Розбір: свайпи Олега і Каті ----------
+#
+# Колода — це записи, які модель ПРИБРАЛА з робочого шару (process, routine,
+# offtopic, micro) і які людина ще не дивилась. Свайп ліворуч підтверджує
+# («шум»), свайп праворуч повертає запис у чергу («лишити»). Обидва рішення
+# вічні, як promise_pairs, і обидва відкатні одним UPDATE — нічого не
+# видаляється взагалі, тож знімок тут не потрібен.
+#
+# Свайпи ОПЦІЙНІ за задумом: модельний kind уже сховав тінь, і черга працює,
+# навіть якщо колоду не відкривати ніколи. Розбір лише уточнює межу там, де
+# вона людська: «розглянути на комісії» буває і кроком до значущої справи.
+
+# Порядок колоди: спершу те, де свайп праворуч найімовірніший і найцінніший.
+# process — межа «значущий процес / шум» людська за визначенням; далі
+# micro-зобов'язання (дія справжня, дрібний лише предмет); рутина; і аж потім
+# offtopic, де правка малоймовірна.
+_TRIAGE_BUCKET = """CASE
+    WHEN c.kind = 'process' THEN 0
+    WHEN coalesce(c.micro, false) AND (c.kind IS NULL OR c.kind = ANY(%s::text[])) THEN 1
+    WHEN c.kind = 'routine' THEN 2
+    WHEN c.kind = 'offtopic' THEN 3
+    ELSE 2 END"""
+
+_TRIAGE_PENDING = """c.status = 'expected' AND c.triage IS NULL
+  AND ((c.kind IS NOT NULL AND NOT c.kind = ANY(%s::text[]))
+       OR coalesce(c.micro, false))"""
+
+
+def triage_pending(cur, limit=30, offset=0):
+    """Колода розбору: приховане моделлю, ще не переглянуте людиною."""
+    cur.execute(
+        f"SELECT {COMMITMENT_COLS} FROM commitments c "
+        f"WHERE {_TRIAGE_PENDING} "
+        f"ORDER BY {_TRIAGE_BUCKET}, c.last_seen DESC NULLS LAST, c.id "
+        "LIMIT %s OFFSET %s",
+        (list(WORKING_KINDS), list(WORKING_KINDS), int(limit), int(offset)))
+    rows = _rows(cur)
+    now = int(time.time())
+    for r in rows:
+        r["amount"] = float(r["amount"]) if r["amount"] is not None else None
+        r["class"] = queue_class(r, now)
+        r["populism"] = populism_reason(r)
+    return rows
+
+
+def triage_counts(cur):
+    """Числа для шапки колоди й для /promise_status: скільки в тіні, скільки
+    ще не дивились, скільки вже вирішено свайпами."""
+    cur.execute(f"SELECT count(*) FROM commitments c WHERE {_TRIAGE_PENDING}",
+                (list(WORKING_KINDS),))
+    pending = cur.fetchone()[0]
+    cur.execute(
+        "SELECT coalesce(triage, ''), count(*) FROM commitments c "
+        "WHERE c.status = 'expected' AND c.triage IS NOT NULL GROUP BY 1")
+    decided = {k: n for k, n in cur.fetchall()}
+    cur.execute(
+        "SELECT coalesce(c.kind, '—'), count(*) FROM commitments c "
+        "WHERE c.status = 'expected' GROUP BY 1")
+    by_kind = {k: n for k, n in cur.fetchall()}
+    return {"pending": pending, "noise": decided.get("noise", 0),
+            "good": decided.get("good", 0), "by_kind": by_kind}
+
+
+def set_triage(cur, commitment_id, verdict, who=None):
+    """Свайп: 'noise' | 'good' | None (відкат). Останнє слово за людиною —
+    triage сильніший за kind в обидва боки, і його не переписує ніщо
+    автоматичне (record() робить coalesce, класифікатор чіпає лише NULL)."""
+    if verdict not in TRIAGE and verdict is not None:
+        return False
+    cur.execute(
+        "UPDATE commitments SET triage = %s, triage_by = %s, triage_at = %s "
+        "WHERE id = %s",
+        (verdict, who if verdict else None,
+         int(time.time()) if verdict else None, int(commitment_id)))
+    return cur.rowcount > 0
 
 
 # ---------- Забути / повернути ----------
@@ -1706,16 +1946,34 @@ def restore(cur, purge_id):
 #   • спільний предмет або той самий обіцяльник.
 # Зливає ЛЮДИНА: однакові назва+строк бувають і в двох сусідніх дитсадків.
 
+# Збіг строку більше НЕ обов'язковий для всіх (ревізія 17.08): він ховав
+# найчастіший клас дублів — та сама обіцянка з датою в одній статті й без
+# дати в іншій. Замість нього ТРИ рівноправні шляхи в пару: однаковий строк
+# (як було, базовий поріг схожості) · сильна схожість назви без строку ·
+# СПІЛЬНА СТАТТЯ-джерело (дроблення одного рішення живе в одній статті).
+# Спільна стаття рахується і за «спільний сигнал» унизу: у шматків однієї
+# ухвали предмет якраз різний — бо його різали.
 _DUPE_WHERE = """
         WHERE a.status = 'expected' AND b.status = 'expected'
           AND similarity(a.title, b.title) >= %s
-          AND coalesce(a.deadline, 0) = coalesce(b.deadline, 0)
+          AND (coalesce(a.deadline, 0) = coalesce(b.deadline, 0)
+               OR similarity(a.title, b.title) >= %s
+               OR EXISTS (SELECT 1 FROM commitment_revisions ra
+                          JOIN commitment_revisions rb
+                            ON rb.article_id = ra.article_id
+                          WHERE ra.commitment_id = a.id
+                            AND rb.commitment_id = b.id))
           AND (a.subject_entity_id IS NOT DISTINCT FROM b.subject_entity_id
                    AND a.subject_entity_id IS NOT NULL
                OR coalesce(a.subject_key, '') = coalesce(b.subject_key, '')
                    AND coalesce(a.subject_key, '') <> ''
                OR lower(coalesce(a.owner_text, '')) = lower(coalesce(b.owner_text, ''))
-                   AND coalesce(a.owner_text, '') <> '')
+                   AND coalesce(a.owner_text, '') <> ''
+               OR EXISTS (SELECT 1 FROM commitment_revisions ra2
+                          JOIN commitment_revisions rb2
+                            ON rb2.article_id = ra2.article_id
+                          WHERE ra2.commitment_id = a.id
+                            AND rb2.commitment_id = b.id))
           AND NOT EXISTS (SELECT 1 FROM promise_pairs p
                           WHERE p.a = a.id AND p.b = b.id)
           -- Суддя впевнено сказав «різні» — з екрана геть. Це НЕ те саме, що
@@ -1737,7 +1995,8 @@ def dupe_pairs(cur, limit=40, sim=DUPE_SIM):
         "       a.title, b.title, a.revisions, b.revisions, "
         "       coalesce(a.owner_text, ''), a.deadline "
         "FROM commitments a JOIN commitments b ON b.id > a.id "
-        + _DUPE_WHERE + " ORDER BY sim DESC, a.id LIMIT %s", (sim, limit))
+        + _DUPE_WHERE + " ORDER BY sim DESC, a.id LIMIT %s",
+        (sim, DUPE_SIM_STRONG, limit))
     return [{"a": a, "b": b, "sim": round(float(s), 2),
              "title_a": ta, "title_b": tb, "rev_a": ra, "rev_b": rb,
              "owner": owner, "deadline": dl}
@@ -1830,6 +2089,13 @@ def auto_merge_pairs(cur, who="Лис", limit=200, run=None):
         ra, rb = rows.get(a), rows.get(b)
         if not ra or not rb:
             continue
+        # ОДНЕ речення з ДВОМА строками — це не дубль, а еталон 294413:
+        # «основну частину до кінця року, остаточне завершення до 2025» дає
+        # два законні записи з однієї цитати. Поки детектор вимагав збігу
+        # строку, сюди такі пари не потрапляли; тепер потрапляють — і
+        # автозлиття мусить їх пропускати, лишаючи судді й людині.
+        if (ra.get("deadline") or 0) != (rb.get("deadline") or 0):
+            continue
         keep, drop = merge_winner(ra, rb)
         if merge_commitments(cur, keep["id"], drop["id"], who=who, run=run):
             gone.add(drop["id"])
@@ -1841,7 +2107,8 @@ def auto_merge_pairs(cur, who="Лис", limit=200, run=None):
 
 def dupe_count(cur, sim=DUPE_SIM):
     cur.execute("SELECT count(*) FROM commitments a "
-                "JOIN commitments b ON b.id > a.id" + _DUPE_WHERE, (sim,))
+                "JOIN commitments b ON b.id > a.id" + _DUPE_WHERE,
+                (sim, DUPE_SIM_STRONG))
     return cur.fetchone()[0]
 
 
@@ -2647,9 +2914,15 @@ def fulfil_candidates(cur, since, limit=200):
     ревізія). Спершу тут відсікались усі статті з ревізіями, і це вбивало
     саме той випадок, заради якого детектор писався: пізніший матеріал
     цілком може і переказувати обіцянку, і повідомляти про її виконання.
+
+    Судимо лише РОБОЧИЙ ШАР (WORKING_SQL): рутина й процедурні кроки з черги
+    й так сховані, і платити судді за «чи виконали прибирання території»
+    нема кому — таке закриття ніхто не побачить. Свайп «лишити» повертає
+    запис у шар, і детектор підхоплює його наступним прогоном.
     """
+    wk = working_params()[0]
     cur.execute(
-        """
+        f"""
         WITH origin AS (
             SELECT r.commitment_id,
                    (array_agg(r.article_id ORDER BY a.published, r.id))[1] AS article_id
@@ -2674,13 +2947,15 @@ def fulfil_candidates(cur, since, limit=200):
               AND NOT (e.kind = 'place' AND coalesce(e.subtype, '') = ANY(%s)
                        AND coalesce(e.mentions, 0) >= %s)
             JOIN articles a ON a.id = ae.article_id
-            WHERE c.status = 'expected' AND a.published >= %s AND a.region = 1
+            WHERE c.status = 'expected' AND {WORKING_SQL}
+              AND a.published >= %s AND a.region = 1
             UNION
             SELECT c.id, a.id, a.published
             FROM commitments c
             JOIN commitment_revisions r ON r.commitment_id = c.id
             JOIN articles a ON a.id = r.article_id
-            WHERE c.status = 'expected' AND a.published >= %s AND a.region = 1
+            WHERE c.status = 'expected' AND {WORKING_SQL}
+              AND a.published >= %s AND a.region = 1
             UNION
             -- 3. Стаття, прив'язана до СУСІДА ПО ТЕМІ. Тема — це «одна
             -- справа»: якщо новина закриває одне зобов'язання цієї справи,
@@ -2691,7 +2966,8 @@ def fulfil_candidates(cur, since, limit=200):
             JOIN commitments sib ON sib.topic_id = c.topic_id AND sib.id <> c.id
             JOIN commitment_revisions r ON r.commitment_id = sib.id
             JOIN articles a ON a.id = r.article_id
-            WHERE c.status = 'expected' AND c.topic_id IS NOT NULL
+            WHERE c.status = 'expected' AND {WORKING_SQL}
+              AND c.topic_id IS NOT NULL
               AND a.published >= %s AND a.region = 1
         )
         SELECT p.commitment_id, p.article_id, p.published
@@ -2705,7 +2981,7 @@ def fulfil_candidates(cur, since, limit=200):
         LIMIT %s
         """,
         (list(CONTAINER_PLACE_SUBTYPES), CONTAINER_PLACE_MENTIONS,
-         int(since), int(since), int(since), int(limit)))
+         wk, int(since), wk, int(since), wk, int(since), int(limit)))
     return [{"commitment_id": r[0], "article_id": r[1], "published": r[2]}
             for r in cur.fetchall()]
 

@@ -1226,6 +1226,14 @@ def test_glitch_and_quote_verification():
     check("ієрогліф ловиться як чужий символ", pp.has_glitch("Зараз續є робота"))
     check("звичайний український текст чужим не вважається",
           not pp.has_glitch(text) and not pp.has_glitch("КП «Миколаївводоканал»"))
+    # Тиха втрата, знайдена тестом робочого шару 17.08: ʼ (U+02BC) — це
+    # БУКВЕНИЙ знак у Юнікоді (Lm), тож він не потрапляв у жодне вікно
+    # дозволених діапазонів і читався як ієрогліф. Наслідок: кожне
+    # зобов'язання зі словом «зобовʼязання», «підʼїзд» чи «обʼєкт» не
+    # писалось узагалі, а стаття тричі поверталась у чергу.
+    check("апостроф-модифікатор ʼ не є ієрогліфом",
+          not pp.has_glitch("Відремонтувати підʼїзд — це зобовʼязання"),
+          "інакше половина назв банку мовчки не пишеться")
     check("наголос знімається («Миколаї́в» ламав пошук)",
           pp.clean_text("Миколаї́в") == "Миколаїв")
 
@@ -2293,6 +2301,180 @@ def test_fulfil_detector():
         conn.close()
 
 
+def test_working_layer():
+    """Робочий шар: що бачить журналіст, а що йде в тінь (ревізія 17.08).
+
+    Головне тут — ДВІ реалізації одного правила: SQL `pp.WORKING_SQL` для
+    вибірок і Python `pp.is_working` для рядків у пам'яті. Розійдуться — і
+    черга почне розходитись із числами фасетів мовчки, як це вже було з
+    нормалізацією ролей. Тому обидві ганяються на тих самих записах.
+
+    І окремо — FAIL-OPEN: запис без `kind` (ще не класифікований) мусить
+    лишатись ВИДИМИМ. Інакше деплой ховає весь банк до кінця переоцінки, а
+    збій класифікатора губить записи назавжди.
+    """
+    conn = ep.connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            cur.execute("DELETE FROM topics")
+
+            def put(aid, title, kind=None, micro=None, triage=None):
+                p = pp.prepare(cur, case_item(
+                    320276, title=title, subject=title, objects=[],
+                    quote=f"Цитата для «{title}», достатньо довга для запису",
+                    kind=kind, micro=micro))
+                cid = pp.record(cur, {"id": aid, "published": 1780000000,
+                                      "title_ua": f"Стаття {aid}"}, p)[0]
+                if triage:
+                    pp.set_triage(cur, cid, triage, "Олег")
+                return cid
+
+            visible = put(760101, "Відремонтувати дорогу до Матвіївки", "commitment")
+            rhetoric = put(760102, "Повернути Коблеве кращим, ніж було", "rhetoric")
+            process = put(760103, "Винести питання на розгляд комісії", "process")
+            routine = put(760104, "Прибирати територію парку за графіком", "routine")
+            alien = put(760105, "Розширити виробництво на приватній фермі", "offtopic")
+            micro = put(760106, "Відремонтувати один підʼїзд", "commitment", True)
+            unknown = put(760107, "Запис без типу — ще не класифікований")
+            saved = put(760108, "Винести на сесію землю під модульні будинки",
+                        "process", None, "good")
+            buried = put(760109, "Провести засідання робочої групи",
+                         "commitment", None, "noise")
+
+            rows = pp.list_queue(cur, limit=None)
+            ids = {r["id"] for r in rows}
+            check("зобов'язання і риторика лишаються в черзі",
+                  {visible, rhetoric} <= ids, str(sorted(ids)))
+            check("процедурне, рутина й чужий актор ідуть у тінь",
+                  not ({process, routine, alien} & ids), str(sorted(ids)))
+            check("дрібний предмет ховається окремою віссю", micro not in ids)
+            check("запис БЕЗ типу лишається видимим (fail-open)",
+                  unknown in ids, "інакше деплой ховає банк до переоцінки")
+            check("свайп «лишити» повертає процедурний крок у чергу",
+                  saved in ids)
+            check("свайп «шум» ховає навіть зобов'язання",
+                  buried not in ids, "останнє слово за людиною")
+
+            # ТЕ САМЕ правило в пам'яті. Беремо ВЕСЬ банк і звіряємо два шляхи
+            # запис за записом: розбіжність тут — це майбутня тиха розсинхронка
+            # черги й фасетів.
+            everything = pp.list_queue(cur, limit=None, working=False)
+            check("повний банк доступний окремим прапорцем",
+                  len(everything) == 9, str(len(everything)))
+            mismatch = [r["id"] for r in everything
+                        if pp.is_working(r) != (r["id"] in ids)]
+            check("SQL і Python рахують робочий шар однаково",
+                  not mismatch, str(mismatch))
+            check("_decorate віддає прапорець назовні",
+                  all("working" in r for r in everything))
+
+            # Нагадування в канал живляться тим самим шаром: у «винюхав» поруч
+            # із тендерами рутина не має права з'явитись узагалі.
+            from handlers import promise_reminders as pr
+            pr.ensure_schema(conn)
+            due = pr._due(cur, True, NOW, True)
+            rung = {r["id"] for rows_ in due.values() for r in rows_}
+            check("нагадування не беруть нічого з тіні",
+                  not (rung & {process, routine, alien, micro, buried}),
+                  str(sorted(rung)))
+    finally:
+        conn.close()
+
+
+def test_triage_deck():
+    """Колода розбору: порядок, відкат і те, що нічого не видаляється.
+
+    Свайп — це UPDATE одного прапорця, і саме тому в нього немає журналу
+    знімків: відкат тут не «повернути видалене», а «поставити NULL». Тест
+    закріплює обидва напрямки й те, що вирішена картка не повертається в
+    колоду (інакше та сама пара питалась би вічно — урок role_pairs).
+    """
+    conn = ep.connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            cur.execute("DELETE FROM topics")
+
+            def put(aid, title, kind, micro=None):
+                p = pp.prepare(cur, case_item(
+                    320276, title=title, subject=title, objects=[],
+                    quote=f"Цитата для «{title}», достатньо довга для запису",
+                    kind=kind, micro=micro))
+                return pp.record(cur, {"id": aid, "published": 1780000000,
+                                       "title_ua": f"Стаття {aid}"}, p)[0]
+
+            proc = put(770101, "Розглянути на комісії питання землі", "process")
+            routine = put(770102, "Продовжити опалювальний сезон", "routine")
+            alien = put(770103, "Ферма планує розширення", "offtopic")
+            small = put(770104, "Замінити одну лавку в сквері", "commitment", True)
+            work = put(770105, "Збудувати школу в Північному", "commitment")
+
+            deck = pp.triage_pending(cur, limit=20)
+            deck_ids = [r["id"] for r in deck]
+            check("у колоді лише те, що модель прибрала з черги",
+                  set(deck_ids) == {proc, routine, alien, small},
+                  str(deck_ids))
+            check("робоче в колоду не потрапляє", work not in deck_ids)
+            check("процедурне питається першим — там рішення найімовірніше",
+                  deck_ids[0] == proc, str(deck_ids))
+            check("чужий актор питається останнім", deck_ids[-1] == alien,
+                  str(deck_ids))
+
+            counts = pp.triage_counts(cur)
+            check("колода рахується числом для дверей",
+                  counts["pending"] == 4 and counts["noise"] == 0,
+                  str(counts))
+            check("розклад за типом акту віддається назовні",
+                  counts["by_kind"].get("process") == 1
+                  and counts["by_kind"].get("commitment") == 2,
+                  str(counts["by_kind"]))
+
+            pp.set_triage(cur, proc, "good", "Олег")
+            pp.set_triage(cur, routine, "noise", "Катя")
+            after = [r["id"] for r in pp.triage_pending(cur, limit=20)]
+            check("вирішене з колоди зникає в обидва боки",
+                  proc not in after and routine not in after, str(after))
+            check("повернуте свайпом стоїть у черзі",
+                  proc in {r["id"] for r in pp.list_queue(cur, limit=None)})
+
+            cur.execute("SELECT triage_by, triage_at FROM commitments WHERE id = %s",
+                        (routine,))
+            by, at = cur.fetchone()
+            check("свайп підписаний людиною і часом", by == "Катя" and bool(at))
+
+            # Відкат. Нічого не видалялось, тож і повертати нічого — досить
+            # зняти прапорець, і картка знову в колоді.
+            pp.set_triage(cur, proc, None, "Олег")
+            back = [r["id"] for r in pp.triage_pending(cur, limit=20)]
+            check("скасування свайпа повертає картку в колоду", proc in back,
+                  str(back))
+            cur.execute("SELECT count(*) FROM commitments")
+            check("розбір нічого не видаляє", cur.fetchone()[0] == 5)
+
+            # Модель не має права переписувати рішення людини: ревізія
+            # доклассифіковує лише порожній kind.
+            pp.set_triage(cur, alien, "good", "Олег")
+            cur.execute("UPDATE commitments SET kind = NULL WHERE id = %s", (alien,))
+            p = pp.prepare(cur, case_item(
+                320276, title="Ферма планує розширення",
+                subject="Ферма планує розширення", objects=[],
+                quote="Інша цитата про ту саму ферму, довша за поріг",
+                kind="offtopic"))
+            pp.record(cur, {"id": 770103, "published": 1780000100,
+                            "title_ua": "Стаття 770103"}, p, commitment_id=alien)
+            cur.execute("SELECT kind, triage FROM commitments WHERE id = %s", (alien,))
+            kind, triage = cur.fetchone()
+            check("ревізія доклассифіковує порожній kind", kind == "offtopic")
+            check("свайп людини сильніший за модель", triage == "good")
+    finally:
+        conn.close()
+
+
 def test_app_payload():
     """Екран апки: те, що малює JS, має приїжджати готовим — інакше
     формулювання розійдуться з чатом за три тижні."""
@@ -2364,6 +2546,8 @@ def main():
     test_judge_memory()
     test_resplit_ingest()
     test_fulfil_detector()
+    test_working_layer()
+    test_triage_deck()
     test_app_payload()
     ok = sum(1 for _, o, _ in RESULTS if o)
     print(f"\n{ok}/{len(RESULTS)} перевірок пройдено")
