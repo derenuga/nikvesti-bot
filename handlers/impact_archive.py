@@ -1061,6 +1061,20 @@ def _notify_credit(impact_id, impact_title, person, note):
 
 # ---------- Публічне API модуля ----------
 
+def urls_in(text):
+    """Посилання, згадані в тексті. Олег описує кейс одним абзацом, а лінки
+    ставить прямо в реченні («писали національні медіа (pravda.com.ua/…)») —
+    змушувати його потім розкладати їх по полях форми означало б робити
+    роботу, яку машина робить точніше."""
+    seen, out = set(), []
+    for u in _URL_RE.findall(text or ""):
+        u = u.rstrip(".,;)»\"'")
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
 def hint_urls(row):
     """Підказані людиною матеріали кейсу списком. У базі вони рядками в
     одному полі: список підказок — це той самий факт «людина показала, з чого
@@ -1080,7 +1094,12 @@ def create_impact(actor, source_url, essence, our_urls=None):
     ensure_impact_schema()
     if isinstance(our_urls, str):
         our_urls = [our_urls]
-    hints = "\n".join(u.strip() for u in (our_urls or []) if u and u.strip())
+    # Лінки, згадані в «суті», — теж матеріали кейсу: людина пише абзацом, а
+    # не заповнює поля. Сам лінк-тригер серед них не потрібен
+    hints = [u.strip() for u in (our_urls or []) if u and u.strip()]
+    hints += [u for u in urls_in(essence)
+              if u not in hints and u != (source_url or "").strip()]
+    hints = "\n".join(hints)
     rows = bot_db.query(
         "INSERT INTO impacts (essence, source_url, our_urls, created_by) "
         "VALUES (%s, %s, %s, %s) RETURNING id",
@@ -1120,8 +1139,23 @@ def parse_case_text(text):
         found = _URL_RE.findall(ln)
         if found and not _URL_RE.sub("", ln).strip():
             urls.extend(u.rstrip(".,;)") for u in found)
-        else:
-            body.append(ln)
+            continue
+        # Лінк ПОСЕРЕД речення («писали національні медіа (pravda.com.ua/…)»)
+        # — теж матеріал кейсу: у доках і в листах Олега вони живуть саме так,
+        # а не окремим списком. З тексту їх прибираємо разом із дужками, що
+        # спорожніли: у наративі для донора голий URL посеред речення зайвий,
+        # його місце — у списку матеріалів
+        if found:
+            urls.extend(u.rstrip(".,;)") for u in found)
+            # Спершу лінк РАЗОМ із дужками, у яких він стоїть: інакше
+            # закривальна дужка їде всередині URL (вона не пробіл), а
+            # відкривальна лишається сиротою посеред речення
+            ln = re.sub(r"\s*[\(\[]\s*https?://[^\s\)\]]+\s*[\)\]]", "", ln)
+            ln = _URL_RE.sub("", ln)
+            ln = re.sub(r"\(\s*[,;]?\s*\)", "", ln)
+            ln = re.sub(r"\s+([,.;:])", r"\1", ln)
+            ln = re.sub(r"\s{2,}", " ", ln).strip()
+        body.append(ln)
 
     title, what, significance, bucket = "", [], [], None
     for ln in body:
@@ -1154,11 +1188,17 @@ def import_case(actor, text):
     if not urls:
         return None, None, "У тексті немає жодного посилання на матеріал"
 
-    resolved, report = [], []
+    resolved, externals, report = [], [], []
     for url in urls:
         if not is_our_url(url):
-            report.append({"url": url, "ok": False,
-                           "error": "не наш матеріал — пропущено"})
+            # Чужа публікація чи відео — теж доказ у кейсі (Олег, 14.08:
+            # звільнення голови ОДА підтверджують «Українська правда» і сайт
+            # президента, а відео питання набрало 1,5 млн переглядів)
+            ref = _external_ref(url)
+            if not any(e["url"] == ref["url"] for e in externals):
+                externals.append(ref)
+            report.append({"url": url, "ok": True, "title": ref["title"],
+                           "external": True})
             continue
         aid = resolve_article_id(url)
         row = (_nora_article(aid) or _site_article(aid)) if aid else None
@@ -1177,7 +1217,7 @@ def import_case(actor, text):
         })
         report.append({"url": url, "ok": True, "id": int(aid),
                        "title": resolved[-1]["title"]})
-    if not resolved:
+    if not resolved and not externals:
         return None, report, "Жоден лінк не вдалось розпізнати"
 
     meta = _site_meta([r["id"] for r in resolved])
@@ -1185,43 +1225,52 @@ def import_case(actor, text):
         r.update(meta.get(r["id"]) or {"authors": None, "project_id": None,
                                        "project_name": None, "partner_name": None})
     resolved.sort(key=lambda r: r["published"])
-    # Фіксація — НАЙПІЗНІШИЙ матеріал: саме він зафіксував результат, і з
+    # Фіксація — НАЙПІЗНІШИЙ НАШ матеріал: саме він зафіксував результат, і з
     # нього кейс бере свою дату в архіві. Ключовий — стаття, якщо вона в
     # серії є (велике розслідування важить найбільше), інакше найперший
-    # матеріал: з нього все почалось. Людина перепризначить обидва тапом
-    fixer = resolved[-1]
-    key = next((r for r in resolved if r["kind"] == "article"), resolved[0])
-    _links, image = _page_scrape(fixer["url"])
+    # матеріал: з нього все почалось. Людина перепризначить обидва тапом.
+    # Наших матеріалів може не бути взагалі (кейс тримається на чужих
+    # публікаціях) — тоді фіксацією стає найпізніша з них
+    fixer = resolved[-1] if resolved else max(
+        externals, key=lambda e: e["published"])
+    key = (next((r for r in resolved if r["kind"] == "article"), resolved[0])
+           if resolved else None)
+    _links, image = _page_scrape(fixer["url"]) if resolved else ([], None)
 
     story = json.dumps({"what_happened": what, "significance": significance},
                        ensure_ascii=False)
     with bot_db.transaction():
         rows = bot_db.query(
             "INSERT INTO impacts (title, story, image, status, source_url, "
-            "created_by) VALUES (%s, %s, %s, 'ready', %s, %s) RETURNING id",
-            (title or fixer["title"], story, image, fixer["url"], actor))
+            "our_urls, created_by) VALUES (%s, %s, %s, 'ready', %s, %s, %s) "
+            "RETURNING id",
+            (title or fixer["title"], story, image, fixer["url"],
+             # лінки лишаються підказками: якщо кейс колись перезберуть,
+             # матеріали не доведеться шукати заново
+             "\n".join(a["url"] for a in resolved + externals), actor))
         impact_id = rows[0]["id"]
-        for art in resolved:
+        for art in resolved + externals:
             bot_db.execute(
                 "INSERT INTO impact_articles (impact_id, article_id, url, title, "
                 "published, role, is_key, authors, project_id, project_name, "
                 "partner_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (impact_id, url) DO NOTHING",
                 (impact_id, art["id"], art["url"], art["title"], art["published"],
-                 "fixer" if art["id"] == fixer["id"] else "series",
-                 art["id"] == key["id"], art.get("authors"), art.get("project_id"),
-                 art.get("project_name"), art.get("partner_name")))
+                 "fixer" if art["url"] == fixer["url"] else "series",
+                 bool(key) and art["url"] == key["url"], art.get("authors"),
+                 art.get("project_id"), art.get("project_name"),
+                 art.get("partner_name")))
         # Медальки — з авторів серії: саме їх при ручному перенесенні
         # відновлювати найдовше, а хто писав, БД сайту знає точно. Нотатка
         # каже РІВНО те, що відомо з даних, — жодних здогадок про внесок.
         # Людина в серії одна, навіть якщо написала три тексти: автор
         # ключового ним і лишається (тому він перший у списку)
         notes = {}
-        for art in [key] + resolved:
+        for art in ([key] if key else []) + resolved:
             person = (art.get("authors") or "").strip()
             if person and person not in notes:
                 notes[person] = ("автор(ка) ключового матеріалу"
-                                 if art["id"] == key["id"]
+                                 if key and art["id"] == key["id"]
                                  else "автор(ка) матеріалу серії")
         for person, note in notes.items():
             bot_db.execute(
@@ -1230,6 +1279,14 @@ def import_case(actor, text):
                 (impact_id, person, note))
             _notify_credit(impact_id, title or fixer["title"], person, note)
     return impact_id, report, None
+
+
+def _kept_titles(impact_id):
+    """{url: назва} зовнішніх рядків серії, які вже є в кейсі."""
+    rows = bot_db.query(
+        "SELECT url, title FROM impact_articles "
+        "WHERE impact_id = %s AND article_id IS NULL", (int(impact_id),))
+    return {r["url"]: r["title"] for r in rows if r["title"]}
 
 
 async def build_impact(impact_id):
@@ -1259,6 +1316,13 @@ async def build_impact(impact_id):
         our_urls = [u for u in hints if is_our_url(u)]
         extras = await asyncio.to_thread(
             _external_refs, [u for u in hints if not is_our_url(u)])
+        # Назва, яку людина вписала руками, переживає перезбір. Інакше кожен
+        # наступний збір повертав би голий URL: сторінки, що віддають 403
+        # (pravda.com.ua, president.gov.ua), заголовка не дадуть НІКОЛИ
+        kept = await asyncio.to_thread(_kept_titles, impact_id)
+        for e in extras:
+            if e["title"] == e["url"] and kept.get(e["url"]):
+                e["title"] = kept[e["url"]]
         feedback = (imp.get("feedback") or "").strip() or None
         if is_our_url(source_url):
             # Своя новина-тригер сама себе описує, тож планувальник потрібен
@@ -1384,7 +1448,10 @@ def save_feedback(impact_id, feedback=None, our_urls=None):
     if our_urls is not None:
         if isinstance(our_urls, str):
             our_urls = [our_urls]
-        hints = "\n".join(u.strip() for u in our_urls if u and u.strip())
+        merged = [u.strip() for u in our_urls if u and u.strip()]
+        # Лінк, кинутий прямо в текст поправки, не має губитись
+        merged += [u for u in urls_in(feedback) if u not in merged]
+        hints = "\n".join(merged)
         sets.append("our_urls = %s")
         params.append(hints or None)
     params.append(int(impact_id))
@@ -1559,7 +1626,7 @@ def update_impact(impact_id, title=None, essence=None,
         params.append(title.strip()[:300])
     if essence is not None:
         sets.append("essence = %s")
-        params.append(essence.strip()[:600] or None)
+        params.append(essence.strip()[:2000] or None)
     if what_happened is not None or significance is not None:
         story = json.dumps({
             "what_happened": (what_happened if what_happened is not None
@@ -1619,6 +1686,23 @@ def add_article(impact_id, url):
     # коли кейс перезбирають (а з поправкою редактора перезбір — звична дія)
     add_hint_url(impact_id, _nora_url(row))
     return True, None
+
+
+def rename_article(impact_id, row_id, title):
+    """Перейменувати матеріал у серії.
+
+    Потрібне двом випадкам, і обидва реальні. Чужа сторінка може НЕ ВІДДАТИ
+    заголовок узагалі: pravda.com.ua і president.gov.ua відповідають 403 на
+    будь-який запит із сервера, і в серії лишається голий URL. І наш старий
+    матеріал буває з російським заголовком (у 2019-му української версії не
+    робили) — у документі для донора це впадає в око."""
+    ensure_impact_schema()
+    title = (title or "").strip()[:300]
+    if not title:
+        return None
+    return bot_db.execute(
+        "UPDATE impact_articles SET title = %s WHERE impact_id = %s AND id = %s",
+        (title, int(impact_id), int(row_id)))
 
 
 def set_key_article(impact_id, row_id):

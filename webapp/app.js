@@ -4098,8 +4098,8 @@ function impactAddSheet() {
     <div class="mr-hint" style="margin:-2px 0 12px">наші новини, з яких усе
       почалось; можна й зовнішній лінк — відео чи чужу публікацію</div>
     <div class="f-label">Суть своїми словами (необовʼязково)</div>
-    <input id="im-essence" maxlength="300"
-      placeholder="після нас відремонтували, реакція на новину">
+    <textarea id="im-essence" rows="3" maxlength="2000"
+      placeholder="після нас відремонтували, реакція на новину. Можна абзацом — і з лінками просто в тексті, бот їх підбере"></textarea>
     <button class="link-btn" id="im-import">${icon("file-text")}
       Перенести старий кейс із доків</button>
     <div class="sheet-actions">
@@ -4416,7 +4416,8 @@ function impactFeedbackSheet(im) {
 
 /* Дії над матеріалом серії — шторка зі словами замість іконок-загадок. */
 function impactArticleSheet(im, a, patch) {
-  const meta = [a.date, a.external ? a.source : a.authors, a.partner_name]
+  const meta = [a.date === "—" ? "" : a.date,
+                a.external ? a.source : a.authors, a.partner_name]
     .filter(Boolean).join(" · ");
   openSheet(`
     <h2>${esc(a.title || a.url)}</h2>
@@ -4424,6 +4425,8 @@ function impactArticleSheet(im, a, patch) {
       a.role === "fixer" ? " · новина-фіксація" : ""}${
       a.is_key ? " · ключовий" : ""}</p>
     <button class="link-btn" id="ia-open">${icon("link")} Відкрити матеріал</button>
+    <button class="link-btn" id="ia-rename">${icon("edit")} Перейменувати${
+      a.external ? " — чужий сайт назви не дав" : ""}</button>
     ${a.is_key ? "" : `<button class="link-btn" id="ia-key">
       ${icon("award")} Зробити ключовим — він важить найбільше</button>`}
     ${a.role === "fixer" ? "" : `<button class="link-btn" id="ia-drop" style="color:var(--red)">
@@ -4434,6 +4437,28 @@ function impactArticleSheet(im, a, patch) {
   $("ia-cancel").onclick = closeSheet;
   $("ia-open").onclick = () => {
     try { tg.openLink(a.url); } catch (e) { window.open(a.url, "_blank"); }
+  };
+  /* Назва матеріалу правиться руками: чужа сторінка може не віддати
+     заголовок узагалі (pravda.com.ua і president.gov.ua відповідають 403 на
+     запит із сервера, і в серії лишається голий URL), а наш матеріал 2019
+     року буває з російським заголовком — у документі для донора це видно. */
+  $("ia-rename").onclick = () => {
+    openSheet(`
+      <h2>Назва матеріалу</h2>
+      <p style="color:var(--muted);font-size:13px;margin:-8px 0 12px">
+        Так він буде підписаний у кейсі та в документі для донора.</p>
+      <input id="ia-title" maxlength="300" value="${esc(a.title || "")}">
+      <div class="sheet-actions">
+        <button class="sbtn" id="ia-t-cancel">Скасувати</button>
+        <button class="sbtn primary" id="ia-t-save">Зберегти</button>
+      </div>`);
+    $("ia-t-cancel").onclick = closeSheet;
+    $("ia-t-save").onclick = () => {
+      const title = $("ia-title").value.trim();
+      if (!title) { toast("Назва не може бути порожня"); return; }
+      closeSheet();
+      patch({ action: "rename_article", row_id: a.id, title });
+    };
   };
   const key = $("ia-key");
   if (key) key.onclick = () => { closeSheet(); patch({ action: "set_key", row_id: a.id }); };
