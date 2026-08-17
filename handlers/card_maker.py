@@ -207,6 +207,20 @@ def parse_article_body(html_text):
             else:
                 result["paragraphs"].append(text)
 
+    # Підписи фото з ТІЛА статті: <div class="imgbox…"><img …><span
+    # class="title">Підпис</span></div>. Потрібні як друге джерело, бо в
+    # JSON-LD підпис буває сміттям — у 322371 там лежить «Your credit balance
+    # is too low to access» від сервіса автопідписів, який вичерпав ліміт, а
+    # правильний підпис тим часом стоїть тут (перевірено 17.08.2026).
+    result["photo_titles"] = {}
+    for span in soup.select("span.title"):
+        box = span.find_parent("div")
+        img = box.find("img") if box else None
+        src = (img.get("src") or "") if img else ""
+        title = span.get_text(" ", strip=True)
+        if src and title:
+            result["photo_titles"].setdefault(_img_key(_absolute(src) or src), title)
+
     name = soup.select_one("div.article-author__name")
     if name:
         position = soup.select_one("div.article-author__position")

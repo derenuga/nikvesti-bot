@@ -124,16 +124,31 @@ window.CardKit = (() => {
   }
 
   /**
+   * Де саме ляже кадр у слоті (координати канваса). Потрібне не лише
+   * рендеру: коли фото зсунуте за межі слота, той, хто малює, має знати, яку
+   * смугу лишилось закрити (див. заповнення градієнтом у carousel.html).
+   */
+  function photoDrawRect(st, rect) {
+    const sf = Math.max(rect.w / st.photo.naturalWidth,
+                        rect.h / st.photo.naturalHeight) * (st.zoom || 1);
+    const dw = st.photo.naturalWidth * sf, dh = st.photo.naturalHeight * sf;
+    return {
+      x: rect.x + rect.w / 2 - dw / 2 + (st.offX || 0),
+      y: rect.y + rect.h / 2 - dh / 2 + (st.offY || 0),
+      w: dw, h: dh,
+    };
+  }
+
+  /**
    * Малює фото слота у вже накладений кліп, із його обробкою.
    * st — {photo, zoom, offX, offY, adj}; rect — слот у координатах канваса.
    */
   function paintPhoto(c, st, rect) {
     const a = st.adj || newAdj();
-    const sf = Math.max(rect.w / st.photo.naturalWidth,
-                        rect.h / st.photo.naturalHeight) * (st.zoom || 1);
-    const dw = st.photo.naturalWidth * sf, dh = st.photo.naturalHeight * sf;
-    const dx = rect.w / 2 - dw / 2 + (st.offX || 0);   // координати ВСЕРЕДИНІ слота
-    const dy = rect.h / 2 - dh / 2 + (st.offY || 0);
+    const drawn = photoDrawRect(st, rect);
+    const dw = drawn.w, dh = drawn.h;
+    const dx = drawn.x - rect.x;   // координати ВСЕРЕДИНІ слота
+    const dy = drawn.y - rect.y;
 
     if (isNeutral(a)) { // без обробки — без зайвого проміжного канваса
       c.drawImage(st.photo, rect.x + dx, rect.y + dy, dw, dh);
@@ -177,13 +192,23 @@ window.CardKit = (() => {
     c.drawImage(_off, rect.x, rect.y);
   }
 
-  /** Не даємо кадру від'їхати так, щоб у слоті з'явилась порожнеча. */
-  function clampSlot(st, rect) {
+  /**
+   * Межі зсуву кадру. `slack` — наскільки дозволено вийти ЗА край слота
+   * (частка від його розміру). Нуль означає класичне «порожнечі не буває».
+   *
+   * Ненульовий slack потрібен там, де порожнечу є чим закрити: у каруселі
+   * фото можна підняти вище краю, а низ добудовується градієнтом кольору
+   * самого кадру (Олег, 17.08: «невже не можна понад норму вище потягнути, а
+   * недостачу компенсувати градієнтом?»). Без цього кадр упирається в свою
+   * висоту, і композицію не поправити.
+   */
+  function clampSlot(st, rect, slack = 0) {
     if (!st.photo) return;
     const s = Math.max(rect.w / st.photo.naturalWidth,
                        rect.h / st.photo.naturalHeight) * (st.zoom || 1);
     const dw = st.photo.naturalWidth * s, dh = st.photo.naturalHeight * s;
-    const maxX = (dw - rect.w) / 2, maxY = (dh - rect.h) / 2;
+    const maxX = (dw - rect.w) / 2 + rect.w * slack;
+    const maxY = (dh - rect.h) / 2 + rect.h * slack;
     st.offX = Math.min(maxX, Math.max(-maxX, st.offX || 0));
     st.offY = Math.min(maxY, Math.max(-maxY, st.offY || 0));
   }
@@ -225,6 +250,39 @@ window.CardKit = (() => {
   }
 
   const runPadOf = (size) => size * 0.28;
+
+  // Коробка плашки виділення рахується з МЕТРИК ШРИФТА, а не з підібраних
+  // констант. Причина (Олег, 17.08): на плашці «обвалився фасад» хвіст «ф»
+  // майже торкався низу, а над «і» лишалась зайва порожнеча — тобто плашка
+  // стояла не там, де ink шрифта. fontBoundingBox* при textBaseline="middle"
+  // дає відстані рівно від тієї лінії, по якій ми малюємо, тож плашка сідає
+  // симетрично навколо літер із будь-яким кеглем.
+  //
+  // Метрики лінійні за кеглем, тому міряємо раз на вагу і масштабуємо.
+  const _plateCache = {};
+  function plateBox(c, size, weight = 700) {
+    let m = _plateCache[weight];
+    if (!m) {
+      const saved = c.font, savedBase = c.textBaseline;
+      c.textBaseline = "middle";
+      c.font = `${weight} 100px Commissioner, sans-serif`;
+      const t = c.measureText("Ніфр");   // висхідні, низхідні і кирилиця
+      const asc = t.fontBoundingBoxAscent, desc = t.fontBoundingBoxDescent;
+      m = (asc > 0 && desc > 0)
+        ? { asc: asc / 100, desc: desc / 100 }
+        : { asc: 0.55, desc: 0.69 };     // фолбек: старі константи /card
+      _plateCache[weight] = m;
+      c.font = saved;
+      c.textBaseline = savedBase;
+    }
+    const pad = size * 0.06;
+    return { top: -(m.asc * size + pad), height: (m.asc + m.desc) * size + pad * 2 };
+  }
+
+  /** Мінімальний міжрядок, за якого плашки сусідніх рядків НЕ злипаються. */
+  function minLineH(c, size, weight = 700) {
+    return plateBox(c, size, weight).height * 1.06;
+  }
 
   function wrap(c, words, size, maxW, weight = 700, spaceMul = 1.10) {
     setFont(c, size, weight);
@@ -287,8 +345,10 @@ window.CardKit = (() => {
    * потім самі слова. y — середина рядка (textBaseline має бути "middle").
    */
   function paintLine(c, line, opts) {
-    const { x0, y, size, boxBg, boxText, color, spaceMul = 1.10 } = opts;
+    const { x0, y, size, boxBg, boxText, color, spaceMul = 1.10,
+            weight = 700, radius = 0 } = opts;
     const { xs, widths, runPad } = layoutLine(c, line, size, spaceMul);
+    const box = plateBox(c, size, weight);
     let i = 0;
     while (i < line.length) {
       if (line[i].hl) {
@@ -297,13 +357,19 @@ window.CardKit = (() => {
         const left = x0 + xs[i] - runPad;
         const right = x0 + xs[j - 1] + widths[j - 1] + runPad;
         c.fillStyle = boxBg;
-        c.fillRect(left, y - size * 0.55, right - left, size * 1.24);
+        if (radius) {
+          c.beginPath();
+          c.roundRect(left, y + box.top, right - left, box.height, radius);
+          c.fill();
+        } else {
+          c.fillRect(left, y + box.top, right - left, box.height);
+        }
         i = j;
       } else i++;
     }
     line.forEach((t, k) => {
       c.fillStyle = t.hl ? boxText : color;
-      c.fillText(t.text, x0 + xs[k], y + size * 0.04);
+      c.fillText(t.text, x0 + xs[k], y);
     });
   }
 
@@ -537,7 +603,7 @@ window.CardKit = (() => {
       const p = toSlot(e);
       st.offX = drag.offX + (p.x - drag.x);
       st.offY = drag.offY + (p.y - drag.y);
-      clampSlot(st, opts.getRect());
+      clampSlot(st, opts.getRect(), opts.slack || 0);
       draw(); opts.onChange();
     });
     canvas.addEventListener("pointerup", () => {
@@ -548,7 +614,7 @@ window.CardKit = (() => {
       if (!st || !st.photo) return;
       e.preventDefault();
       st.zoom = Math.min(3, Math.max(1, (st.zoom || 1) * (e.deltaY < 0 ? 1.06 : 0.94)));
-      clampSlot(st, opts.getRect());
+      clampSlot(st, opts.getRect(), opts.slack || 0);
       draw(); opts.onChange();
       if (opts.onZoom) opts.onZoom();
     }, { passive: false });
@@ -654,8 +720,9 @@ window.CardKit = (() => {
 
   return {
     SCHEMES, BRAND, LOGO_URL, PRESETS, ADJ_KEYS, SUPPORTS_FILTER,
-    newAdj, isNeutral, applyPixelAdjust, paintPhoto, clampSlot,
+    newAdj, isNeutral, applyPixelAdjust, paintPhoto, photoDrawRect, clampSlot,
     setFont, lineH, tokenize, tokenizePlain, wrap, layoutLine, paintLine,
+    plateBox, minLineH,
     logoTinted, loadImage, createAdjuster, zipStore, crc32, download,
   };
 })();

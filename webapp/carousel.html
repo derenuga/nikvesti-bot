@@ -314,6 +314,13 @@
 
     <div class="panel" id="stylePanel" hidden>
       <h2>4 · Вигляд</h2>
+      <div class="sliders">
+        <label>Кегль тексту</label>
+        <input type="range" id="fontScale" min="60" max="150" value="100">
+        <output id="fontScaleOut">100%</output>
+      </div>
+      <div class="hint">Якщо текст усе одно не влазить — сам зменшиться, але
+        більшим за це не стане.</div>
       <div class="toolrow">
         <div class="swatches" id="swatches"></div>
         <span class="hint" style="margin:0" id="schemeHint"></span>
@@ -436,6 +443,7 @@
       kicker: "", title: "", body: "", quote: "", attribution: "", caption: "",
       quote_index: null,
       scheme: 0,
+      fontScale: 1,
       words: [],
       slot: { photoIdx: null, photo: null, zoom: 1, offX: 0, offY: 0,
               adj: CK.newAdj(), preset: "none" },
@@ -678,7 +686,7 @@
     if (!slide) return;
     slide.slot.zoom = +e.target.value / 100;
     $("zoomOut").textContent = e.target.value + "%";
-    CK.clampSlot(slide.slot, photoRect(slide));
+    CK.clampSlot(slide.slot, photoRect(), PHOTO_SLACK);
     render(); renderStrip();
   });
   function syncZoom() {
@@ -779,7 +787,15 @@
     selectSlide(S.active);
   });
 
-  // ---------- Схеми ----------
+  // ---------- Кегль і схеми ----------
+  $("fontScale").addEventListener("input", (e) => {
+    const slide = cur();
+    if (!slide) return;
+    slide.fontScale = +e.target.value / 100;
+    $("fontScaleOut").textContent = e.target.value + "%";
+    render(); renderStrip();
+  });
+
   CK.SCHEMES.forEach((sc, i) => {
     const b = document.createElement("button");
     b.className = "swatch";
@@ -845,9 +861,14 @@
       b.addEventListener("click", () => {
         const slide = cur();
         if (!slide) return;
+        // У слайд іде цитата БЕЗ хвоста атрибуції, а сам хвіст — у поле
+        // «хто сказав». Розбір рахує сервер (split_speech), тож сторінка й
+        // агент не можуть різати по-різному.
+        const part = (S.article.quote_parts || [])[i] || {};
         slide.type = "quote";
-        slide.quote = q;
+        slide.quote = part.speech || q;
         slide.quote_index = i;
+        if (part.who && !slide.attribution.trim()) slide.attribution = part.who;
         syncWords(slide);
         selectSlide(S.active);
       });
@@ -1012,14 +1033,25 @@
 
   function photoRect() { return { x: 0, y: 0, w: W, h: H }; }
 
-  /** Підбір кегля: зменшуємо, доки блок не влізе у відведену висоту. */
+  /**
+   * Підбір кегля: стартуємо з того, що попросила людина (повзунок «Кегль»),
+   * і зменшуємо, лише доки блок не влізе. Автопідбір тут ЗАПОБІЖНИК від
+   * переповнення, а не редактор за людину: збільшити або зменшити текст —
+   * її право (Олег, 17.08: «як зменшити кегль на обкладинці?»).
+   *
+   * Міжрядок ніколи не менший за висоту плашки виділення: інакше плашки
+   * сусідніх рядків злипаються в суцільну пляму, і зникає той проміжок, який
+   * є в /card.
+   */
   function fitLines(c, words, o) {
-    let size = o.start;
+    const scale = o.scale || 1;
+    let size = Math.round(o.start * scale);
+    const min = Math.min(o.min, size);
     let lines = [], lh = 0;
     for (;;) {
       lines = CK.wrap(c, words, size, o.maxW, o.weight, o.spaceMul);
-      lh = size * (o.lhMul || 1.32);
-      if (lines.length * lh <= o.maxH || size <= o.min) break;
+      lh = Math.max(size * (o.lhMul || 1.32), CK.minLineH(c, size, o.weight));
+      if (lines.length * lh <= o.maxH || size <= min) break;
       size -= 2;
     }
     return { size, lines, lh, height: lines.length * lh };
@@ -1043,8 +1075,8 @@
       const { total } = CK.layoutLine(c, line, o.size, o.spaceMul);
       const x0 = o.align === "center" ? (W - total) / 2 : PAD;
       CK.paintLine(c, line, {
-        x0, y, size: o.size, spaceMul: o.spaceMul,
-        boxBg: o.boxBg, boxText: o.boxText, color: o.color,
+        x0, y, size: o.size, spaceMul: o.spaceMul, weight: o.weight,
+        boxBg: o.boxBg, boxText: o.boxText, color: o.color, radius: o.radius,
       });
       y += o.lh;
     }
@@ -1068,6 +1100,7 @@
       c.beginPath(); c.rect(0, 0, W, H); c.clip();
       CK.paintPhoto(c, slide.slot, photoRect());
       c.restore();
+      fillPhotoGaps(c, k, slide.slot);
     }
 
     // Кольори тексту: на фото завжди білий по темній підложці, на суцільному
@@ -1076,14 +1109,78 @@
     const color = onPhoto ? "#ffffff" : sc.text;
     const boxBg = onPhoto ? CK.BRAND : sc.boxBg;
     const boxText = onPhoto ? "#ffffff" : sc.boxText;
+    const st = { color, boxBg, boxText, onPhoto, scheme: sc };
 
     if (slide.type === "cta") drawCta(c, slide, sc);
-    else if (slide.type === "quote") drawQuote(c, slide, { color, boxBg, boxText, onPhoto });
-    else if (slide.type === "photo") drawPhotoSlide(c, slide, { color, boxBg, boxText, onPhoto });
-    else drawTextSlide(c, slide, { color, boxBg, boxText, onPhoto });
+    else if (slide.type === "quote") drawQuote(c, slide, st);
+    else if (slide.type === "photo") drawPhotoSlide(c, slide, st);
+    else drawTextSlide(c, slide, st);
 
-    drawChrome(c, i, slide, onPhoto || (slide.type === "cta"), sc);
+    // Світлим лого буває ЛИШЕ на темному: фото завжди має підложку, а на
+    // суцільному кольорі вирішує сама схема. Раніше слайд-заклик форсував
+    // світле незалежно від фону, і на білій схемі лого зникало (Олег, 17.08).
+    drawChrome(c, i, slide, onPhoto, sc);
     c.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  // Наскільки кадр дозволено витягнути за межі слайда. Порожнечу є чим
+  // закрити (див. fillPhotoGaps), тож упиратись у висоту фото більше не
+  // треба — але й загубити кадр зовсім не можна, звідси стеля.
+  const PHOTO_SLACK = 0.45;
+
+  /**
+   * Добудова кадру, витягнутого за межі слайда.
+   *
+   * Олег, 17.08: «було б круто тягнути фотку вище, але впираємось у її
+   * висоту… невже не можна понад норму, а недостачу компенсувати
+   * градієнтом?» Можна — і колір для градієнта беремо не зі стелі, а з
+   * САМОГО кадру: зчитуємо смужку пікселів уздовж його краю просто з
+   * канваса. Читаємо ПІСЛЯ малювання, тому колір уже враховує обробку фото
+   * (яскравість, ч/б тощо) — з константою чи з сирої картинки шов було б
+   * видно щоразу, коли кадр підкрутили.
+   *
+   * Далі градієнт від цього кольору до його притемненої версії: так низ
+   * читається як навмисна віньєтка, а не як «фото закінчилось».
+   */
+  function fillPhotoGaps(c, k, slot) {
+    const r = photoRect();
+    const d = CK.photoDrawRect(slot, r);
+    const gapTop = Math.round(d.y - r.y);
+    const gapBottom = Math.round((r.y + r.h) - (d.y + d.h));
+    if (gapTop <= 0 && gapBottom <= 0) return;
+
+    const sample = (y) => {
+      try {
+        const px = c.getImageData(0, Math.max(0, Math.round(y * k)),
+                                  Math.max(1, Math.round(W * k)), 1).data;
+        let rr = 0, gg = 0, bb = 0;
+        for (let i = 0; i < px.length; i += 4) { rr += px[i]; gg += px[i + 1]; bb += px[i + 2]; }
+        const n = px.length / 4;
+        return [rr / n, gg / n, bb / n];
+      } catch (e) {
+        return [0, 0, 0];   // канвас чомусь «брудний» — чорний теж годиться
+      }
+    };
+    const rgb = (v, m = 1) =>
+      `rgb(${Math.round(v[0] * m)},${Math.round(v[1] * m)},${Math.round(v[2] * m)})`;
+
+    if (gapTop > 0) {
+      const col = sample(d.y + 2);
+      const g = c.createLinearGradient(0, 0, 0, gapTop);
+      g.addColorStop(0, rgb(col, 0.45));
+      g.addColorStop(1, rgb(col));
+      c.fillStyle = g;
+      c.fillRect(0, 0, W, gapTop + 1);
+    }
+    if (gapBottom > 0) {
+      const edge = d.y + d.h - 2;
+      const col = sample(edge);
+      const g = c.createLinearGradient(0, H - gapBottom, 0, H);
+      g.addColorStop(0, rgb(col));
+      g.addColorStop(1, rgb(col, 0.45));
+      c.fillStyle = g;
+      c.fillRect(0, H - gapBottom - 1, W, gapBottom + 1);
+    }
   }
 
   /** Темна підложка знизу — читабельність тексту на будь-якому фото. */
@@ -1123,30 +1220,64 @@
     return h;
   }
 
+  /**
+   * Слайд без фото — не «просто фон і просто текст» (заперечення Олега,
+   * 17.08: «як це продати аудиторії інстаграм?»). Три дешеві прийоми, які
+   * роблять кадр зробленим, а не дефолтним: м'яка брендова пляма в куті,
+   * акцентна смуга над текстом і кікер-пігулка. Нічого з цього не додає
+   * ваги файлу і не заважає читати.
+   */
+  function colourDecor(c, sc) {
+    c.save();
+    c.globalAlpha = sc.dark ? 0.10 : 0.13;
+    c.fillStyle = sc.dark ? "#ffffff" : CK.BRAND;
+    c.beginPath();
+    c.arc(W + 60, H - 40, 460, 0, Math.PI * 2);
+    c.fill();
+    c.globalAlpha = sc.dark ? 0.07 : 0.09;
+    c.beginPath();
+    c.arc(-90, 210, 300, 0, Math.PI * 2);
+    c.fill();
+    c.restore();
+  }
+
+  function accentBar(c, y, color) {
+    c.fillStyle = color;
+    c.fillRect(PAD, y, 96, 10);
+    return 10;
+  }
+
   function drawTextSlide(c, slide, st) {
     const isCover = slide.type === "cover";
     const words = slide.words;
     const bodyWords = CK.tokenizePlain(slide.body);
     const hasKicker = !!slide.kicker.trim();
     const maxW = W - PAD * 2;
+    const scale = slide.fontScale || 1;
+
+    if (!st.onPhoto) colourDecor(c, st.scheme);
 
     const titleStart = isCover ? 96 : 72;
-    const titleMin = isCover ? 52 : 40;
     const title = words.length
-      ? fitLines(c, words, { start: titleStart, min: titleMin, maxW,
-                             maxH: isCover ? H * 0.52 : H * 0.36,
-                             weight: 700, spaceMul: 1.10, lhMul: 1.22 })
+      ? fitLines(c, words, { start: titleStart, min: 40, maxW, scale,
+                             maxH: isCover ? H * 0.54 : H * 0.40,
+                             weight: 700, spaceMul: 1.10, lhMul: 1.26 })
       : { size: titleStart, lines: [], lh: 0, height: 0 };
-    const bodySize = isCover ? 40 : 42;
+    const bodySize = isCover ? 40 : 44;
     const body = bodyWords.length
-      ? fitLines(c, bodyWords, { start: bodySize, min: 28, maxW,
-                                 maxH: H * 0.34, weight: 300,
+      ? fitLines(c, bodyWords, { start: bodySize, min: 26, maxW, scale,
+                                 maxH: H * 0.40, weight: 300,
                                  spaceMul: 0.95, lhMul: 1.45 })
       : { size: bodySize, lines: [], lh: 0, height: 0 };
 
+    // Акцентна смуга — лише там, де немає ні фото, ні кікера: на фото вона
+    // губиться, а під кікером-пігулкою це вже два акценти поспіль.
+    const hasBar = !st.onPhoto && !hasKicker
+      && (title.lines.length || body.lines.length);
     const kickerH = hasKicker ? 54 + 26 : 0;
-    const gap = title.height && body.height ? 34 : 0;
-    const blockH = kickerH + title.height + gap + body.height;
+    const barH = hasBar ? 10 + 30 : 0;
+    const gap = title.height && body.height ? 36 : 0;
+    const blockH = kickerH + barH + title.height + gap + body.height;
 
     // Обкладинка тримає текст унизу (там його шукає око у стрічці), звичайний
     // слайд без фото — по центру, з фото — теж унизу, над підложкою.
@@ -1160,6 +1291,7 @@
 
     let y = top;
     if (hasKicker) y += drawKicker(c, slide.kicker, y, st) + 26;
+    if (hasBar) y += accentBar(c, y, st.boxBg) + 30;
     if (title.lines.length) {
       paintBlock(c, title.lines, {
         top: y, size: title.size, lh: title.lh, weight: 700, spaceMul: 1.10,
@@ -1175,43 +1307,74 @@
     }
   }
 
+  /**
+   * Слайд цитати мусить ЧИТАТИСЬ як цитата з першого погляду (заперечення
+   * Олега, 17.08: «не дає відчуття, що це цитата, незрозуміло від кого»).
+   * Тому велика лапка над текстом — знак, який упізнають без пояснень, — і
+   * підпис БАГАТОРЯДКОВИЙ: «Управління культури, національностей та релігій
+   * Миколаївської ОВА» в один рядок не влазить ніколи, а саме так звуться
+   * органи влади.
+   */
   function drawQuote(c, slide, st) {
     const words = slide.words;
     const who = slide.attribution.trim();
     const maxW = W - PAD * 2;
+    const scale = slide.fontScale || 1;
+
+    if (!st.onPhoto) colourDecor(c, st.scheme);
+
+    const markSize = 150;
+    const markH = markSize * 0.62;
     const quote = words.length
-      ? fitLines(c, words, { start: 62, min: 34, maxW, maxH: H * 0.46,
+      ? fitLines(c, words, { start: 62, min: 30, maxW, scale, maxH: H * 0.44,
                              weight: 500, spaceMul: 0.95, lhMul: 1.38 })
       : { size: 62, lines: [], lh: 0, height: 0 };
+
     const whoSize = 34;
+    const whoWords = who ? CK.tokenizePlain(who) : [];
+    const whoFit = whoWords.length
+      ? fitLines(c, whoWords, { start: whoSize, min: 24, maxW, maxH: H * 0.16,
+                                weight: 600, spaceMul: 0.95, lhMul: 1.32 })
+      : { size: whoSize, lines: [], lh: 0, height: 0 };
     const ruleH = who ? 4 : 0;
-    const whoBlock = who ? 40 + ruleH + whoSize * 1.4 : 0;
-    const blockH = quote.height + whoBlock;
+    const whoBlock = who ? 40 + ruleH + 22 + whoFit.height : 0;
+
+    const blockH = markH + 18 + quote.height + whoBlock;
     // З фото цитата тримається низу (там її не з'їдає обличчя і там лежить
     // підложка), без фото — по центру: на суцільному кольорі текст, притиснутий
     // донизу, лишає порожню верхню третину слайда.
     const top = anchorTop(blockH, st.onPhoto);
 
-    if (st.onPhoto) { topScrim(c); bottomScrim(c, Math.max(0, top - 300)); }
+    if (st.onPhoto) { topScrim(c); bottomScrim(c, Math.max(0, top - 340)); }
 
+    // Лапка кольором акценту, а не тексту: інакше вона читається як частина
+    // першого рядка цитати
+    CK.setFont(c, markSize, 700);
+    c.textBaseline = "alphabetic";
+    c.fillStyle = st.onPhoto ? "#ffffff" : st.boxBg;
+    c.globalAlpha = st.onPhoto ? 0.55 : 0.9;
+    c.fillText("«", PAD - markSize * 0.06, top + markH);
+    c.globalAlpha = 1;
+
+    let y = top + markH + 18;
     if (quote.lines.length) {
       paintBlock(c, quote.lines, {
-        top, size: quote.size, lh: quote.lh, weight: 500, spaceMul: 0.95,
+        top: y, size: quote.size, lh: quote.lh, weight: 500, spaceMul: 0.95,
         color: st.color, boxBg: st.boxBg, boxText: st.boxText,
       });
+      y += quote.height;
     }
     if (who) {
-      // Коротка брендова риска над іменем: відділяє слова того, хто говорить,
-      // від самої цитати без зайвих лапок (цитати сайту вже в «ялинках»).
-      const y = top + quote.height + 40;
+      // Коротка брендова риска над іменем відділяє того, хто говорить,
+      // від самої цитати
+      y += 40;
       c.fillStyle = st.onPhoto ? CK.BRAND : st.boxBg;
       c.fillRect(PAD, y, 96, ruleH);
-      CK.setFont(c, whoSize, 600);
-      c.textBaseline = "middle";
-      c.fillStyle = st.color;
-      c.globalAlpha = 0.95;
-      c.fillText(who, PAD, y + ruleH + whoSize * 0.86);
-      c.globalAlpha = 1;
+      y += ruleH + 22;
+      paintBlock(c, whoFit.lines, {
+        top: y, size: whoFit.size, lh: whoFit.lh, weight: 600, spaceMul: 0.95,
+        color: st.color, boxBg: st.boxBg, boxText: st.boxText,
+      });
     }
   }
 
@@ -1219,9 +1382,11 @@
     const words = CK.tokenizePlain(slide.caption);
     if (!words.length) return;
     const maxW = W - PAD * 2;
-    const cap = fitLines(c, words, { start: 40, min: 28, maxW, maxH: H * 0.24,
+    const cap = fitLines(c, words, { start: 46, min: 26, maxW, maxH: H * 0.30,
+                                     scale: slide.fontScale || 1,
                                      weight: 500, spaceMul: 0.95, lhMul: 1.4 });
     const top = anchorTop(cap.height, true);
+    if (!st.onPhoto) colourDecor(c, st.scheme);
     if (st.onPhoto) { topScrim(c); bottomScrim(c, Math.max(0, top - 260)); }
     paintBlock(c, cap.lines, {
       top, size: cap.size, lh: cap.lh, weight: 500, spaceMul: 0.95,
@@ -1230,6 +1395,7 @@
   }
 
   function drawCta(c, slide, sc) {
+    colourDecor(c, sc);
     const r = 230;
     const cx = W / 2, cy = 470;
     c.save();
@@ -1270,6 +1436,7 @@
     const words = CK.tokenizePlain(S.cta.text);
     if (words.length) {
       const fit = fitLines(c, words, { start: 44, min: 28, maxW: W - PAD * 2,
+                                       scale: slide.fontScale || 1,
                                        maxH: H - y - 170, weight: 500,
                                        spaceMul: 0.95, lhMul: 1.42 });
       paintBlock(c, fit.lines, {
@@ -1379,7 +1546,7 @@
     const p = toCanvas(e);
     slide.slot.offX = drag.offX + (p.x - drag.x);
     slide.slot.offY = drag.offY + (p.y - drag.y);
-    CK.clampSlot(slide.slot, photoRect());
+    CK.clampSlot(slide.slot, photoRect(), PHOTO_SLACK);
     render();
   });
   canvas.addEventListener("pointerup", (e) => {
@@ -1396,13 +1563,14 @@
     if (!slide || !slide.slot.photo) return;
     e.preventDefault();
     slide.slot.zoom = Math.min(3, Math.max(1, slide.slot.zoom * (e.deltaY < 0 ? 1.06 : 0.94)));
-    CK.clampSlot(slide.slot, photoRect());
+    CK.clampSlot(slide.slot, photoRect(), PHOTO_SLACK);
     syncZoom(); render(); renderStrip();
   }, { passive: false });
 
   const adjuster = CK.createAdjuster({
     getSlot: () => cur()?.slot,
     getRect: () => photoRect(),
+    slack: PHOTO_SLACK,
     onChange: () => { render(); renderStrip(); },
     onZoom: () => syncZoom(),
   });

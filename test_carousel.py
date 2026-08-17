@@ -109,33 +109,62 @@ def main():
     # ---------- 3. Точність цитат ----------
     print("\n— Точність цитат (головне) —")
     quotes = a377["quotes"]
+    quotes_doc = a371["quotes"]
 
     slides, notes = carousel.apply_plan_quotes(
         [{"type": "quote", "quote_index": 0, "attribution": "Олег Звягін"}], quotes)
-    check("цитата за номером береться дослівно з тексту статті",
-          slides[0].get("quote") == quotes[0], slides[0].get("quote", "")[:60])
+    got = slides[0].get("quote", "")
+    check("цитата за номером береться з тексту статті",
+          got and got.rstrip(".") in quotes[0], got[:60])
     check("чесна цитата не додає зауважень", notes == [], str(notes))
+
+    # Хвіст атрибуції на слайд не йде: поруч уже стоїть поле «хто сказав»
+    check("хвіст «— запитав Олег Звягін» зрізано",
+          "запитав" not in got and "Звягін" not in got, got[-60:])
+    check("провідне тире прямої мови теж прибрано",
+          not got.startswith("—"), got[:30])
+
+    # Ім'я з хвоста стає підписом, коли агент лишив поле порожнім
+    slides, _ = carousel.apply_plan_quotes([{"type": "quote", "quote_index": 1}], quotes)
+    check("ім'я з хвоста підставилось у «хто сказав»",
+          slides[0].get("attribution") == "Олена Іванова",
+          str(slides[0].get("attribution")))
+
+    # «зазначила вона» нікого не називає — підпису з нього бути не може
+    speech, who = carousel.split_speech(
+        "— Ми це впровадимо, як тільки знайдемо можливість, — зазначила вона.")
+    check("«зазначила вона» не стає підписом", who == "", repr(who))
+    check("а сама фраза лишається цілою",
+          speech == "Ми це впровадимо, як тільки знайдемо можливість.", speech)
+
+    # Цитата з документа: зовнішні «ялинки» знімаються, бо слайд малює свою лапку
+    speech, _ = carousel.split_speech(quotes_doc[0])
+    check("зовнішні «ялинки» цитати з документа зняті",
+          not speech.startswith("«") and not speech.endswith("»"), speech[:40])
+    check("текст документа не постраждав",
+          speech.rstrip(".") in quotes_doc[0], speech[:60])
 
     # Дослівний фрагмент приймається
     piece = quotes[0][10:60]
     slides, notes = carousel.apply_plan_quotes(
         [{"type": "quote", "quote_index": 0, "quote_excerpt": piece}], quotes)
-    check("дослівний фрагмент приймається", slides[0]["quote"] == piece,
-          slides[0]["quote"][:60])
+    check("дослівний фрагмент приймається",
+          slides[0]["quote"].rstrip(".") in piece, slides[0]["quote"][:60])
 
     # Фрагмент із іншими пробілами — теж свій текст, має пройти
     spaced = "  ".join(piece.split(" "))
     slides, _ = carousel.apply_plan_quotes(
         [{"type": "quote", "quote_index": 0, "quote_excerpt": spaced}], quotes)
     check("зайві пробіли у фрагменті не роблять із нього вигадку",
-          slides[0]["quote"] == spaced, slides[0]["quote"][:60])
+          slides[0]["quote"].replace("  ", " ").rstrip(".") in piece.replace("  ", " "),
+          slides[0]["quote"][:60])
 
     # ВИГАДКА: фрагмента в оригіналі немає
     slides, notes = carousel.apply_plan_quotes(
         [{"type": "quote", "quote_index": 0,
           "quote_excerpt": "ми знесемо цей пам'ятник до кінця тижня"}], quotes)
     check("вигаданий фрагмент відкинуто, стоїть текст зі статті",
-          slides[0]["quote"] == quotes[0], slides[0]["quote"][:60])
+          slides[0]["quote"].rstrip(".") in quotes[0], slides[0]["quote"][:60])
     check("про підміну сказано вголос", len(notes) == 1 and "дослівно" in notes[0],
           str(notes))
 
@@ -312,7 +341,8 @@ def main():
     check("чернетка не порожня", len(fake["slides"]) >= 4, f"{len(fake['slides'])}")
     quote_slides = [s for s in fake["slides"] if s["type"] == "quote"]
     check("цитата у чернетці — справжня з тексту",
-          all(s["quote"] in a371["quotes"] for s in quote_slides),
+          all(any(s["quote"].rstrip(".") in q for q in a371["quotes"])
+              for s in quote_slides),
           str([s.get("quote", "")[:40] for s in quote_slides]))
     fake389 = carousel.normalize_plan(carousel.fake_plan(a389), a389)
     check("у статті без цитат чернетка не вигадує quote-слайдів",
