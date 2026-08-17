@@ -74,6 +74,10 @@ CHECKS = {
         ("обіцянку взагалі знайдено",
          lambda its: len(its) >= 1,
          "заява Кіма — зобов'язання, хай і непідтверджуване"),
+        ("заява без критерію позначена риторикою",
+         lambda its: _has(its, kind="rhetoric"),
+         "«повернемо краще, ніж було» — тип rhetoric: лишається видимою в "
+         "черзі, але не як зобов'язання про результат"),
         ("не вигадано дату там, де її немає",
          lambda its: all(not it.get("deadline") for it in its),
          "«Трохи залишилось» — не горизонт. Дедлайн тут = реєстр пише неправду"),
@@ -116,6 +120,10 @@ CHECKS = {
         ("риторика позначена як непідтверджувана",
          lambda its: _has(its, verifiability="unfalsifiable"),
          "«щоб я отримав цю статуетку» не можна прострочити"),
+        ("конкретика і риторика розведені ТИПАМИ",
+         lambda its: _has(its, kind="commitment") and _has(its, kind="rhetoric"),
+         "«відкрити наради» — commitment, «номер один по відкритості» — "
+         "rhetoric; обидва лишаються в робочому шарі"),
         ("перевірювана обіцянка лишилась перевірюваною",
          lambda its: _has(its, verifiability="measurable"),
          "«плануємо з нового року» — горизонт-початок, це теж дата"),
@@ -142,6 +150,12 @@ CHECKS = {
         ("дві обіцянки різних класів не злиті",
          lambda its: len(its) >= 2,
          "власники з датою — і архітектор без дати"),
+        ("зобов'язання приватника МІСТУ не назване чужим",
+         lambda its: any(it.get("kind") == "commitment"
+                         and "власник" in _text(it, "promiser").lower()
+                         for it in its),
+         "актор приватний, а відповідальність публічна — offtopic це не про "
+         "нього (правило kind, версія 2)"),
     ],
     317853: [
         ("полярність не загублена",
@@ -168,6 +182,16 @@ CHECKS = {
         ("безособову форму зафіксовано прапорцем",
          lambda its: _has(its, actor_hidden=True),
          "вуалювання відповідальності цікаве саме по собі"),
+        ("доручення з документом лишилось зобов'язанням",
+         lambda its: _has(its, kind="commitment"),
+         "«має розробити» за розпорядженням — commitment, а не процедурний "
+         "шум: саме заради цього kind і вводився"),
+        ("одне доручення не розпалось на стадії",
+         lambda its: len(its) <= 2,
+         "розробити + проаналізувати + підготувати пропозиції — складові "
+         "ОДНІЄЇ дорученої роботи; окремо може стояти хіба винесення на "
+         "обговорення й сесію (правило процедурного ланцюга, версія 2). "
+         "Три-чотири записи тут = дроблення, яке роздуло банк у 42%"),
     ],
     312757: [
         ("«гарантував» відрізнено від «планують»",
@@ -256,6 +280,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": "умови тендеру на реставрацію", "amount": 145500000,
+            "kind": "commitment", "micro": False,
             "quote": "Згідно з умовами тендеру, підрядник мав виконати роботи до 31 грудня 2024 року, включаючи облаштування укриття та відновлення будівлі після обстрілів.",
         },
         {
@@ -273,6 +298,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "Основну частину робіт планується завершити до кінця цього року, але остаточне завершення може бути відкладене до 2025 року",
         },
         {
@@ -290,6 +316,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": 149500000,
+            "kind": "commitment", "micro": False,
             "quote": "Роботи виконуватимуться протягом 2024-2025 років. Основну частину робіт планується завершити до кінця цього року, але остаточне завершення може бути відкладене до 2025 року",
         },
         {
@@ -306,6 +333,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": False,
             "based_on_document": None, "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "в гімназії №2 до кінця 2021 року планують зробити поточний ремонт, а капітальні роботи поки що відкладуть",
         },
     ],
@@ -322,6 +350,7 @@ REFERENCE = {
             "condition": "після завершення війни", "condition_self_judged": False,
             "trigger_event": None, "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
+            "kind": "rhetoric", "micro": False,
             "quote": "Ми все повернемо краще ніж було! Трохи залишилось",
         },
     ],
@@ -339,6 +368,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "Ми розглянули можливість відкрити апаратні наради для журналістів, плануємо з нового року це зробити. У нас буде відкрита апаратна нарада, яку ми проводимо раз на місяць",
         },
         {
@@ -355,6 +385,7 @@ REFERENCE = {
             "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "Я дам вам обіцянку при всіх і на онлайн-трансляції, що як тільки закінчиться військовий стан, до всіх апаратних нарад, які будуть проводитися, ми будемо залучати журналістів",
         },
         {
@@ -370,6 +401,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": False,
             "based_on_document": None, "amount": None,
+            "kind": "rhetoric", "micro": False,
             "quote": "Я хочу, щоб місто Миколаїв було номер один по відкритості в Україні. Щоб ми були там, щоб я отримав цю статуетку і записав собі в карму «номер один по прозорості»",
         },
     ],
@@ -387,6 +419,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "Власники зупинкового комплексу громадського транспорту «Соборна» пообіцяли, що за вихідні самостійно демонтують незаконно встановлену огорожу.",
         },
         {
@@ -402,6 +435,10 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
+            # Процедурний крок: результат (демонтаж) робитиме ІНШИЙ орган,
+            # Поляков обіцяє лише рух папера. Запис лишається — свайп чи kind
+            # це видимість, а не існування.
+            "kind": "process", "micro": False,
             "quote": "Водночас посадовець пообіцяв звернутись до повноважного органу, який перевірить даний факт і проведе демонтаж.",
         },
         {
@@ -420,6 +457,7 @@ REFERENCE = {
             "trigger_event": "власники не демонтували огорожу за вихідні",
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "Якщо вони за вихідні цього не зроблять, значить зріжемо самі",
         },
     ],
@@ -440,6 +478,7 @@ REFERENCE = {
             "trigger_event": "винесення приватизації цих будівель на сесію міськради",
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "Ми ніколи не підтримаємо приватизацію цього приміщення під когось або під щось, окрім того, щоб зберегти його як майбутній дитячий садочок",
         },
         {
@@ -456,6 +495,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": True, "framed_as_promise": False,
             "based_on_document": None, "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "У 2017 році фінансували проєктування закладу, тоді ж планували завершити будівництво до 2019 року, проте будівельний етап знову не розпочався.",
         },
         {
@@ -472,10 +512,16 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": True, "framed_as_promise": False,
             "based_on_document": None, "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "Тоді запуск будівництва анонсували на 2021 рік, однак і цей термін виконано не було.",
         },
     ],
     321833: [
+        # Версія 2: «проаналізувати стан фонду і підготувати пропозиції» — НЕ
+        # окремий запис, а складова цієї ж дорученої роботи (правило
+        # процедурного ланцюга). У версії 1 тут стояло три записи, і сам
+        # еталон учив дробити — тобто був частиною хвороби, яку лікує ревізія
+        # 17.08 (42% банку виявились шматками).
         {
             "title": "Розробити житлову стратегію громади та план її реалізації",
             "subject": "житлова стратегія Миколаївської громади", "objects": ["Миколаїв"],
@@ -491,23 +537,8 @@ REFERENCE = {
             "actor_hidden": True, "framed_as_promise": True,
             "based_on_document": "розпорядження від 27 липня, підписав Віталій Луков",
             "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "У Миколаєві створили робочу групу, яка має розробити житлову стратегію громади та план її реалізації.",
-        },
-        {
-            "title": "Проаналізувати стан житлового фонду і підготувати пропозиції",
-            "subject": "житлова стратегія Миколаївської громади", "objects": ["Миколаїв"],
-            "promiser": "Ігор Набатов",
-            "promiser_role": "перший заступник директора департаменту ЖКГ",
-            "owner": "Миколаївська міська рада", "reported_by": None,
-            "audience": "community", "polarity": "do", "modality": "planned",
-            "source_type": "government_decision",
-            "deadline": None, "deadline_precision": None,
-            "criterion": "аналіз житлового фонду і пропозиції підготовлені",
-            "verification_method": "document_request",
-            "condition": None, "condition_self_judged": False, "trigger_event": None,
-            "actor_hidden": True, "framed_as_promise": True,
-            "based_on_document": "розпорядження від 27 липня", "amount": None,
-            "quote": "Група має проаналізувати стан житлового фонду Миколаєва, визначити основні проблеми й потреби, а також підготувати пропозиції щодо відновлення, будівництва та управління житлом.",
         },
         {
             "title": "Винести житлову стратегію на громадське обговорення",
@@ -523,6 +554,9 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": True, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
+            # Стадія ПІСЛЯ розробки зі своїм обіцяльником — тому окремий
+            # запис; але за типом це рух папера, process.
+            "kind": "process", "micro": False,
             "quote": "Після розроблення документ мають винести на громадське обговорення, а потім — на розгляд депутатів міської ради.",
         },
     ],
@@ -541,6 +575,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "голова Миколаївської ОВА Віталій Кім гарантував, що у 2026 році вдасться завершити відновлення гімназії",
         },
         {
@@ -557,6 +592,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
+            "kind": "commitment", "micro": False,
             "quote": "На нараді в КМУ нам пообіцяли на два об'єкта (ліцей №60 та ліцей №2, — прим.) фінансування на 2026 рік за рахунок коштів відновлення. Чекаємо",
         },
         {
@@ -573,6 +609,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": "умови тендеру на реставрацію", "amount": 145500000,
+            "kind": "commitment", "micro": False,
             "quote": "Підрядник мав виконати роботи до 31 грудня 2024 року, включаючи облаштування укриття та відновлення будівлі після обстрілів.",
         },
     ],

@@ -1647,6 +1647,40 @@ async def api_promise_dupes(request):
     return web.json_response(await asyncio.to_thread(promise_app.dupes))
 
 
+async def api_promise_triage(request):
+    """Колода «Розбору» — менеджерська: у ній лежить те, що модель прибрала з
+    робочої черги, і питання «шум чи ні» ставиться тим двом, хто відповідає
+    за банк. Журналістці цей екран не потрібен взагалі — у неї вже
+    відфільтрована черга."""
+    person, _, _ = await _require_manager(request)
+    from handlers import promise_app
+
+    try:
+        offset = max(0, int(request.query.get("offset", "0")))
+    except ValueError:
+        offset = 0
+    return web.json_response(
+        await asyncio.to_thread(promise_app.triage_deck, offset))
+
+
+async def api_promise_triage_set(request):
+    """Свайп: noise · good · відкат (verdict=null). Нічого не видаляє —
+    UPDATE одного прапорця, і будь-який свайп скасовується тим самим шляхом."""
+    person, _, _ = await _require_manager(request)
+    from handlers import promise_app
+    import promise_pipeline as pp
+
+    payload = await _json(request)
+    verdict = (payload or {}).get("verdict")
+    if verdict is not None and verdict not in pp.TRIAGE:
+        raise web.HTTPBadRequest(text="Невідомий вердикт")
+    ok = await asyncio.to_thread(
+        promise_app.set_triage, int(request.match_info["cid"]), verdict, person)
+    if not ok:
+        raise web.HTTPNotFound(text="Обіцянки немає")
+    return web.json_response({"ok": True, "verdict": verdict})
+
+
 async def api_promise_not_dupe(request):
     person, _, _ = await _require_manager(request)
     from handlers import promise_app
@@ -2129,6 +2163,7 @@ async def start_webapp(application):
         web.put("/api/kpi/override", api_kpi_override),
         web.get("/api/promises", api_promises),
         web.get("/api/promises/dupes", api_promise_dupes),
+        web.get("/api/promises/triage", api_promise_triage),
         web.get("/api/promises/mine/count", api_promises_mine_count),
         web.get("/api/promises/{cid:\\d+}", api_promise_card),
         web.post("/api/promises/{cid:\\d+}/check", api_promise_check),
@@ -2137,6 +2172,7 @@ async def start_webapp(application):
         web.post("/api/promises/{cid:\\d+}/drop", api_promise_drop),
         web.post("/api/promises/{cid:\\d+}/merge", api_promise_merge),
         web.post("/api/promises/{cid:\\d+}/notdupe", api_promise_not_dupe),
+        web.post("/api/promises/{cid:\\d+}/triage", api_promise_triage_set),
         web.get("/back", back_export.page),
         web.get("/card", card_maker.page),
         web.post("/api/card/scrape", card_maker.api_scrape),

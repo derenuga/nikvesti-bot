@@ -2258,3 +2258,121 @@ body.dark { --stale: #a596e0; --stale-soft: rgba(165, 150, 224, .18);
 /* Коли обіцянку знайшли. У черзі — лише у фасеті «Нові» (там це головна
    колонка сортування), у картці — завжди: реєстр без дати запису неповний. */
 .pr-found { font-size: 12px; color: var(--muted); }
+
+/* ---------- Розбір: колода свайпів ----------
+
+   Екран, який мусить бути приємним, інакше в нього не зайдуть: тінь банку
+   (процедурні кроки, рутина, чужі актори) розбирають двоє, і робиться це
+   між справами. Тому колода, падіння картки згори, поворот за пальцем і
+   кольорові печатки — це не декор, а причина відкрити екран удруге.
+
+   Кнопки внизу дублюють свайп повністю: у десктопному Telegram свайпів
+   немає, і без них екран був би там непридатним. */
+.tr-counts {
+  display: flex; gap: 8px; flex-wrap: wrap; margin: -12px 0 14px;
+  font-size: 12.5px; color: var(--muted);
+}
+.tr-cnt { background: var(--fill); border-radius: 20px; padding: 5px 11px; }
+.tr-cnt.ok { background: var(--good-soft); color: var(--good); }
+
+.tr-deck {
+  position: relative; margin-bottom: 18px;
+  touch-action: pan-y;                 /* вертикаль лишається прокруткою */
+}
+/* Глибина колоди — порожні плашки під верхньою карткою. Саме плашки, а не
+   справжні картки: у карток різна висота, і сусідні визирали з-під верхньої
+   разом зі своїми заголовками (видно на першому ж скріншоті). Плашка
+   притиснута до розміру верхньої картки, тож колода лишається колодою за
+   будь-якої довжини тексту. */
+.tr-slab {
+  position: absolute; inset: 0; border-radius: var(--radius);
+  background: var(--card); box-shadow: var(--shadow); opacity: .6;
+  /* Стискаємо лише по ГОРИЗОНТАЛІ й зсуваємо вниз: при рівномірному
+     масштабуванні плашка ховалась рівно під карткою і глибини не було видно
+     взагалі (перший скріншот). Тепер із-під картки визирає смужка — так
+     колода читається колодою. */
+  transform: translateY(calc(var(--i) * 11px)) scaleX(calc(1 - var(--i) * .05));
+  transform-origin: 50% 0;
+}
+.tr-card {
+  position: relative; z-index: 1; display: flex; flex-direction: column;
+  gap: 8px; text-align: left; background: var(--card);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 15px 16px 14px 18px; overflow: hidden; min-height: 240px;
+  transition: transform .22s cubic-bezier(.22, 1, .36, 1), opacity .2s;
+  will-change: transform;
+  cursor: grab;
+}
+.tr-card::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 4px;
+  background: var(--sev, var(--line));
+}
+/* Верхня картка колоди ПАДАЄ ЗВЕРХУ. Саме це просив Олег, і саме це робить
+   екран живим: наступне питання не «з'являється», а прилітає. */
+.tr-card { animation: tdrop .3s cubic-bezier(.22, 1.2, .4, 1); }
+@keyframes tdrop {
+  from { transform: translateY(-120px) rotate(-4deg) scale(.94); opacity: 0; }
+}
+.tr-card.dragging { transition: none; cursor: grabbing; }
+.tr-card.fly-left  { transform: translate(-140%, 30px) rotate(-22deg); opacity: 0; }
+.tr-card.fly-right { transform: translate(140%, 30px) rotate(22deg); opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .tr-card { animation: none; transition: opacity .15s; }
+}
+
+/* Печатка проявляється за напрямком: --p ставить JS від 0 до 1, тож підказка
+   з'являється рівно тоді, коли палець уже ясно веде в бік. */
+.tr-stamp {
+  position: absolute; top: 16px; z-index: 2; opacity: 0;
+  font-size: 15px; font-weight: 800; letter-spacing: .02em;
+  border: 2.5px solid currentColor; border-radius: 10px; padding: 4px 12px;
+  pointer-events: none; transform: rotate(-9deg);
+}
+.tr-stamp.noise { left: 16px; color: var(--red); transform: rotate(-9deg); }
+.tr-stamp.good { right: 16px; color: var(--good); transform: rotate(9deg); }
+.tr-card.to-noise .tr-stamp.noise { opacity: var(--p, 0); }
+.tr-card.to-good .tr-stamp.good { opacity: var(--p, 0); }
+
+.tr-kind {
+  font-size: 11.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted);
+}
+.tr-title { font-size: 17px; font-weight: 700; line-height: 1.3; }
+.tr-img {
+  display: block; width: 100%; border-radius: 12px;
+  aspect-ratio: 40 / 21; object-fit: cover; background: var(--fill);
+}
+.tr-quote {
+  font-size: 13.5px; line-height: 1.45; color: var(--ink); opacity: .82;
+  border-left: 2px solid var(--line); padding-left: 10px;
+}
+.tr-who { font-size: 12.5px; color: var(--muted); }
+.tr-meta { font-size: 12px; color: var(--muted); margin-top: auto; }
+.tr-src { font-size: 12.5px; color: var(--blue); text-decoration: none; }
+
+.tr-acts { display: flex; gap: 10px; justify-content: center; }
+.tr-act {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  border: 1.5px solid var(--line); background: var(--card); border-radius: 18px;
+  padding: 11px 0; font-size: 12.5px; font-weight: 600; color: var(--muted);
+  flex: 1; transition: transform .12s;
+}
+.tr-act:active { transform: scale(.94); }
+.tr-act .ic { width: 20px; height: 20px; }
+.tr-act.noise { color: var(--red); border-color: var(--red-soft); }
+.tr-act.good { color: var(--good); border-color: var(--good-soft); }
+.tr-act.open { color: var(--blue); }
+.tr-note {
+  font-size: 12px; color: var(--muted); text-align: center;
+  margin: 14px 0 8px; line-height: 1.5;
+}
+
+.tr-empty { text-align: center; padding: 40px 24px; }
+.tr-empty-ic {
+  width: 56px; height: 56px; margin: 0 auto 14px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--good-soft); color: var(--good);
+}
+.tr-empty-ic .ic { width: 26px; height: 26px; }
+.tr-empty-t { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+.tr-empty-m { font-size: 13.5px; color: var(--muted); line-height: 1.5; margin-bottom: 18px; }

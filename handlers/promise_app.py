@@ -354,6 +354,7 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None,
                 items.append(it)
             bounds = pp.data_bounds(cur)
             dupes = pp.dupe_count(cur)
+            shadow = pp.triage_counts(cur)
     finally:
         conn.close()
     return {
@@ -362,6 +363,11 @@ def queue(cls=None, q=None, offset=0, limit=PAGE, now=None, author_id=None,
                    for k, lbl in FACETS],
         "bounds": bounds, "dupes": dupes, "query": q or "",
         "matched": [{"name": m["name"], "kind": m["kind"]} for m in matched],
+        # Скільки лежить у тіні — число на двері «Розбору». Двері без числа
+        # не відкривають (правило апки), а тут воно ще й чесно каже, що черга
+        # відфільтрована, а не порожня.
+        "shadow": {"pending": shadow["pending"], "noise": shadow["noise"],
+                   "good": shadow["good"]},
     }
 
 
@@ -615,6 +621,87 @@ def dupes(limit=40):
                     "b": _dupe_side(b, revs, links, now),
                 })
             return {"pairs": out, "total": pp.dupe_count(cur)}
+    finally:
+        conn.close()
+
+
+# ---------- Розбір: колода свайпів ----------
+#
+# Що бачить менеджер: записи, які модель прибрала з робочої черги (процедурні
+# кроки, рутина, чужі актори, дрібні предмети) і яких людина ще не дивилась.
+# Свайп ліворуч підтверджує «шум», праворуч повертає запис у чергу.
+#
+# Це НЕ обов'язкова робота: модель уже сховала тінь, і черга працює, навіть
+# якщо колоду не відкривати ніколи. Розбір лише уточнює межу там, де вона
+# людська — і саме тому колода віддає ПРИЧИНУ рішення моделі (тип акту
+# людськими словами), а не сам факт приховання.
+
+KIND_WORD = {
+    "process": "процедурний крок",
+    "routine": "планова рутина",
+    "offtopic": "не наш актор",
+    "commitment": "зобов'язання",
+    "rhetoric": "риторика",
+}
+
+KIND_WHY = {
+    "process": "рух папера, а не результат у місті",
+    "routine": "робилося б і без заяви",
+    "offtopic": "редакція не перевіряє цього обіцяльника",
+}
+
+TRIAGE_PAGE = 12
+
+
+def triage_deck(offset=0, limit=TRIAGE_PAGE):
+    """Колода розбору + числа. Картка та сама, що в черзі, плюс підпис, ЧОМУ
+    запис у тіні: без причини свайп перетворюється на вгадування."""
+    now = int(time.time())
+    conn = _conn()
+    try:
+        pp.ensure_schema(conn)
+        with conn.cursor() as cur:
+            rows = pp.triage_pending(cur, limit=limit, offset=offset)
+            counts = pp.triage_counts(cur)
+            revs = _first_revisions(cur, [r["id"] for r in rows])
+            art_ids = [(revs.get(r["id"]) or {}).get("article_id") for r in rows]
+            links = {}
+            if art_ids:
+                from handlers.promises import _links_for
+                links = _links_for(cur, {a for a in art_ids if a})
+            images = _images_for(cur, art_ids)
+            items = []
+            for r in rows:
+                rev = revs.get(r["id"])
+                aid = (rev or {}).get("article_id")
+                it = _item(r, rev, now)
+                it["image"] = images.get(aid)
+                it["kind"] = r.get("kind")
+                it["kind_word"] = KIND_WORD.get(r.get("kind"),
+                                                "дрібний предмет")
+                it["why"] = (KIND_WHY.get(r.get("kind"))
+                             if not r.get("micro") or r.get("kind") in KIND_WHY
+                             else "предмет дрібніший за об'єкт")
+                it["micro"] = bool(r.get("micro"))
+                link = links.get(aid) or {}
+                if link.get("url"):
+                    it["link"] = {"url": link["url"], "title": link.get("title"),
+                                  "date": link.get("date")}
+                items.append(it)
+    finally:
+        conn.close()
+    return {"items": items, "offset": offset, "counts": counts}
+
+
+def set_triage(commitment_id, verdict, who):
+    """Свайп. `verdict` — 'noise' | 'good' | None (відкат останнього)."""
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        with conn.cursor() as cur:
+            ok = pp.set_triage(cur, int(commitment_id), verdict, who)
+        conn.commit()
+        return ok
     finally:
         conn.close()
 
