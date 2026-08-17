@@ -2667,7 +2667,11 @@ def fulfil_candidates(cur, since, limit=200):
             -- новина, і збіг по ній не каже нічого (див. докстрінг). Вулиці
             -- й об'єкти сюди не потрапляють за жодної частоти.
             JOIN entities e ON e.id = ae.entity_id
-              AND NOT (e.kind = 'place' AND e.subtype = ANY(%s)
+              -- coalesce на підтипі — не педантизм: у Postgres NULL = ANY(…)
+              -- дає NULL, NOT NULL теж NULL, і картка без підтипу тихо
+              -- випала б із пари замість того, щоб лишитись. Сьогодні таких
+              -- місць 23 і всі з 1–2 згадками, але витяг пише нові щогодини.
+              AND NOT (e.kind = 'place' AND coalesce(e.subtype, '') = ANY(%s)
                        AND coalesce(e.mentions, 0) >= %s)
             JOIN articles a ON a.id = ae.article_id
             WHERE c.status = 'expected' AND a.published >= %s AND a.region = 1
