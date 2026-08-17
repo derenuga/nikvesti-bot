@@ -1098,9 +1098,8 @@
     if (photo) {
       c.save();
       c.beginPath(); c.rect(0, 0, W, H); c.clip();
-      CK.paintPhoto(c, slide.slot, photoRect());
+      paintSlidePhoto(c, k, slide.slot);
       c.restore();
-      fillPhotoGaps(c, k, slide.slot);
     }
 
     // Кольори тексту: на фото завжди білий по темній підложці, на суцільному
@@ -1124,7 +1123,7 @@
   }
 
   // Наскільки кадр дозволено витягнути за межі слайда. Порожнечу є чим
-  // закрити (див. fillPhotoGaps), тож упиратись у висоту фото більше не
+  // закрити (див. paintSlidePhoto), тож упиратись у висоту фото більше не
   // треба — але й загубити кадр зовсім не можна, звідси стеля.
   const PHOTO_SLACK = 0.45;
 
@@ -1142,83 +1141,70 @@
    * Далі градієнт від цього кольору до його притемненої версії: так низ
    * читається як навмисна віньєтка, а не як «фото закінчилось».
    */
-  // Наскільки розмиття ЗАХОДИТЬ на саме фото. Без напуску видно рівний шов
-  // на межі кадру, і жоден градієнт його не ховає (Олег, 17.08).
+  // Наскільки різкий кадр розтушовується в розмиту підкладку. Без напуску на
+  // межі видно рівний шов, і жоден градієнт його не ховає (Олег, 17.08).
   const BLUR_OVERLAP = 150;
+  // Радіус розмиття підкладки. 70 px на кадрі 1080 — деталі вже нечитабельні,
+  // але колір і світло лишаються тими самими, що на фото.
+  const BG_BLUR = 70;
 
-  const _blurC = document.createElement("canvas");   // крихітний — це і є блюр
-  _blurC.width = 28; _blurC.height = 12;
-  const _blurX = _blurC.getContext("2d");
   const _maskC = document.createElement("canvas");
   const _maskX = _maskC.getContext("2d");
 
-  function fillPhotoGaps(c, k, slot) {
+  /**
+   * Малює фото слайда РАЗОМ із добудовою країв.
+   *
+   * Коли кадр витягнутий за межі слайда, під ним лежить ТОЙ САМИЙ кадр,
+   * розтягнутий на весь слот і сильно розмитий, — прийом із відеоплеєрів.
+   * Перша версія натомість розтягувала смужку пікселів уздовж краю, і на
+   * екрані виходила мозаїка з квадратів (Олег, 17.08). Тут же розмиття
+   * справжнє: у Chrome це ctx.filter, у Safari — поетапне халвання в
+   * cardkit.manualBlur.
+   *
+   * Різкий кадр кладеться зверху з РОЗТУШОВАНИМ краєм: там, де він
+   * закінчується, прозорість плавно спадає в підкладку, тож шва немає.
+   */
+  function paintSlidePhoto(c, k, slot) {
     const r = photoRect();
     const d = CK.photoDrawRect(slot, r);
-    const gapTop = Math.round(d.y - r.y);
-    const gapBottom = Math.round((r.y + r.h) - (d.y + d.h));
-    if (gapTop <= 0 && gapBottom <= 0) return;
+    const gapTop = d.y - r.y;
+    const gapBottom = (r.y + r.h) - (d.y + d.h);
+    const gapLeft = d.x - r.x;
+    const gapRight = (r.x + r.w) - (d.x + d.w);
+    const covered = gapTop <= 1 && gapBottom <= 1 && gapLeft <= 1 && gapRight <= 1;
 
-    // Смужка вздовж краю кадру, з якої «розтягуємо» продовження. Беремо не
-    // піксель, а чверть висоти фото — інакше продовження виходить плоскою
-    // плямою замість м'якого переходу кольорів.
-    const slice = Math.min(260, Math.max(60, d.h * 0.25));
+    if (covered) {           // кадр і так закриває слайд — нічого добудовувати
+      CK.paintPhoto(c, slot, r);
+      return;
+    }
 
-    /**
-     * Розмиття без ctx.filter (його немає в Safari): зменшуємо смужку в
-     * канвас 28×12 і розтягуємо назад. Інтерполяція браузера і дає ту саму
-     * мильну пляму, тільки працює скрізь однаково.
-     */
-    const paint = (srcY, destY, destH, flip) => {
-      const sy = Math.max(0, Math.round(srcY * k));
-      const sh = Math.max(1, Math.round(slice * k));
-      try {
-        _blurX.setTransform(1, 0, 0, 1, 0, 0);
-        _blurX.clearRect(0, 0, _blurC.width, _blurC.height);
-        _blurX.drawImage(c.canvas, 0, sy, Math.max(1, Math.round(W * k)), sh,
-                         0, 0, _blurC.width, _blurC.height);
-      } catch (e) {
-        return false;   // канвас «брудний» — лишиться підкладка кольором фону
-      }
+    // 1. Розмита підкладка: той самий кадр без зсуву, на весь слот
+    CK.paintPhoto(c, {
+      photo: slot.photo, zoom: 1, offX: 0, offY: 0,
+      adj: { ...(slot.adj || CK.newAdj()), blur: BG_BLUR },
+    }, r);
 
-      // Малюємо в маску, щоб напуск на фото м'яко зникав
-      _maskC.width = Math.max(1, Math.round(W * k));
-      _maskC.height = Math.max(1, Math.round(destH * k));
-      _maskX.setTransform(1, 0, 0, 1, 0, 0);
-      _maskX.imageSmoothingEnabled = true;
-      _maskX.save();
-      if (flip) {  // дзеркалимо, щоб продовження йшло «від краю», а не назад
-        _maskX.translate(0, _maskC.height);
-        _maskX.scale(1, -1);
-      }
-      _maskX.drawImage(_blurC, 0, 0, _maskC.width, _maskC.height);
-      _maskX.restore();
+    // 2. Різкий кадр в окремий шар — щоб розтушувати його край
+    _maskC.width = Math.max(1, Math.round(r.w * k));
+    _maskC.height = Math.max(1, Math.round(r.h * k));
+    _maskX.setTransform(k, 0, 0, k, 0, 0);
+    _maskX.clearRect(0, 0, r.w, r.h);
+    CK.paintPhoto(_maskX, slot, { x: 0, y: 0, w: r.w, h: r.h });
+    _maskX.setTransform(1, 0, 0, 1, 0, 0);
 
-      // Прозоро там, де накладаємось на фото, і повністю непрозоро в самому
-      // пропуску. Напуск лежить З БОКУ КАДРУ: для нижнього пропуску це верх
-      // прямокутника, для верхнього — низ.
-      const fade = (BLUR_OVERLAP / destH) * _maskC.height;
-      const g = _maskX.createLinearGradient(
-        0, flip ? 0 : _maskC.height, 0, flip ? fade : _maskC.height - fade);
+    const fadeEdge = (from, to) => {
+      const g = _maskX.createLinearGradient(0, from * k, 0, to * k);
       g.addColorStop(0, "rgba(0,0,0,0)");
       g.addColorStop(1, "rgba(0,0,0,1)");
       _maskX.globalCompositeOperation = "destination-in";
       _maskX.fillStyle = g;
       _maskX.fillRect(0, 0, _maskC.width, _maskC.height);
       _maskX.globalCompositeOperation = "source-over";
-
-      c.drawImage(_maskC, 0, destY, W, destH);
-      return true;
     };
+    if (gapBottom > 1) fadeEdge(d.y + d.h - r.y, d.y + d.h - r.y - BLUR_OVERLAP);
+    if (gapTop > 1) fadeEdge(d.y - r.y, d.y - r.y + BLUR_OVERLAP);
 
-    if (gapBottom > 0) {
-      const edge = d.y + d.h;
-      paint(edge - slice, edge - BLUR_OVERLAP, gapBottom + BLUR_OVERLAP, true);
-    }
-    if (gapTop > 0) {
-      const edge = d.y;
-      paint(edge, edge - gapTop, gapTop + BLUR_OVERLAP, false);
-    }
+    c.drawImage(_maskC, r.x, r.y, r.w, r.h);
   }
 
   /** Темна підложка знизу — читабельність тексту на будь-якому фото. */
