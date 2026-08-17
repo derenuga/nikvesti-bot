@@ -92,6 +92,7 @@ from handlers.promise_fulfil import (promise_fulfil_handler,
 from handlers.tags_wikidata import tags_export_handler, tags_wiki_handler, tags_wiki_reset_handler
 from handlers.budget_revisions import budget_load_handler, budget_status_handler, budget_headline_handler, budget_package_handler, budget_date_handler
 from handlers.budget_snapshots import budget_execution_handler, budget_snapshot_check_handler, budget_execution_test_handler, budget_snapshot_reset_handler
+from handlers.impact_archive import impact_probe_handler
 from handlers.knowledge_graph import kg_handler
 from handlers.builder_monitor import builder_handler, builder_test_handler, is_builder_nudge
 from handlers.fb_missing import fbmissing_handler, fbmissing_test_handler
@@ -642,6 +643,7 @@ def main():
     app.add_handler(CommandHandler("tags_wiki_reset", tags_wiki_reset_handler))
     app.add_handler(CommandHandler("kg", kg_handler))
     app.add_handler(CommandHandler("myip", myip))
+    app.add_handler(CommandHandler("impact_probe", impact_probe_handler))
     app.add_handler(CommandHandler("builder", builder_handler))
     app.add_handler(CommandHandler("builder_test", builder_test_handler))
     app.add_handler(CommandHandler("fbmissing", fbmissing_handler))

@@ -1734,10 +1734,14 @@ body.dark .soc-ic.viber { color: #9c8cff; }
 /* Значок сайту в бейджі зовнішнього матеріалу. Лишається ІНЛАЙНОВИМ (без
    flex і без :has) — бейдж із довгим доменом має переноситись як текст, а
    :has підтримують не всі вебвʼю, у яких відкривають апку */
-.itl-fav {
+.itl-fav, .itl-globe {
   width: 13px; height: 13px; border-radius: 3px; object-fit: contain;
   vertical-align: -2px; margin-right: 4px;
 }
+/* Глобус — запасний значок «це зовнішнє джерело». Поки favicon живий, він
+   зайвий; коли onerror прибрав картинку, глобус лишається першим і видно
+   його. Сусідський селектор, бо :has підтримують не всі вебвʼю */
+.itl-fav + .itl-globe { display: none; }
 .itl-badge.key { color: var(--good); background: var(--good-soft); }
 .itl-foot {
   display: flex; align-items: center; gap: 8px; margin-top: 8px; min-width: 0;
