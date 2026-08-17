@@ -4108,6 +4108,7 @@ function impactAddSheet() {
     </div>`);
   $("im-cancel").onclick = closeSheet;
   $("im-import").onclick = impactImportSheet;
+  pasteWithLinks($("im-essence"));
   // Плюсик доливає ще одне поле (Олег, 14.08). Порожні поля просто ігноруються
   // при збереженні, тож кнопки «прибрати рядок» тут немає — зайвий рядок ні на
   // що не впливає, а зайва кнопка на кожному полі захаращує форму
@@ -4171,6 +4172,7 @@ https://nikvesti.com/news/public/…"></textarea>
       <button class="sbtn primary" id="imi-save">Перенести</button>
     </div>`);
   $("imi-cancel").onclick = closeSheet;
+  pasteWithLinks($("im-text"));
   $("imi-save").onclick = async () => {
     const text = $("im-text").value.trim();
     if (text.length < 20) { toast("Встав текст кейсу разом із лінками"); return; }
@@ -4383,6 +4385,7 @@ function impactFeedbackSheet(im) {
       <button class="sbtn primary" id="imf-save">Дозібрати</button>
     </div>`);
   $("imf-cancel").onclick = closeSheet;
+  pasteWithLinks($("imf-text"));
   $("imf-add").onclick = () => {
     const row = document.createElement("input");
     row.className = "imf-url";
@@ -7559,6 +7562,64 @@ async function paintPromiseDoor() {
   n.className = "door-n";
   n.textContent = String(d.total);
   door.insertBefore(n, door.querySelector(".chev") || null);
+}
+
+/* ВСТАВКА З GOOGLE DOCS зі збереженням лінків (Олег, 14.08: «а якщо я
+   копіюю з доків, де слова залінковані, лінки перенесуться?»). Самі по собі
+   — ні: у текстове поле браузер кладе лише text/plain, і «національні медіа»
+   приїжджають без адреси, тобто найцінніше з кейсу губиться мовчки.
+
+   Тому при вставці дивимось на text/html із буфера і кожен <a> перетворюємо
+   на «текст (URL)» — далі все вже вміє працювати: бот дістає лінки з тексту
+   сам, а в перенесеному кейсі ще й вирізає їх із наративу.
+
+   Абзаци зберігаємо руками: textContent склеїв би весь документ в один
+   рядок, а розбір кейсу читає саме рядки (заголовок, «Значення та вплив»). */
+const _PASTE_BLOCKS = "p,div,li,h1,h2,h3,h4,h5,h6,tr,blockquote";
+
+function _unwrapGoogleLink(href) {
+  // Docs зрідка кладе в буфер не сам лінк, а свій редирект google.com/url?q=
+  try {
+    const u = new URL(href);
+    if (u.hostname === "www.google.com" && u.pathname === "/url") {
+      return u.searchParams.get("q") || href;
+    }
+  } catch (e) {}
+  return href;
+}
+
+function pasteWithLinks(el) {
+  if (!el) return;
+  el.addEventListener("paste", (e) => {
+    const cb = e.clipboardData || window.clipboardData;
+    const html = cb && cb.getData("text/html");
+    if (!html || !/<a[\s>]/i.test(html)) return;   // без лінків — хай вставляє браузер
+    e.preventDefault();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    doc.querySelectorAll("a[href]").forEach((a) => {
+      const href = _unwrapGoogleLink(a.getAttribute("href") || "");
+      const text = (a.textContent || "").trim();
+      if (!/^https?:\/\//i.test(href)) { a.replaceWith(text); return; }
+      a.replaceWith(text && text !== href ? `${text} (${href})` : href);
+    });
+    // Межу абзацу позначаємо СИМВОЛОМ-міткою, а не переносом рядка: у HTML
+    // із буфера повно власних переносів між тегами, і без цього речення
+    // розсипалось би на рядки просто там, де в коді стояв перенос
+    const NL = "\u0000";
+    doc.querySelectorAll("br").forEach((br) => br.replaceWith(NL));
+    doc.querySelectorAll(_PASTE_BLOCKS).forEach(
+      (b) => b.appendChild(doc.createTextNode(NL)));
+    let text = (doc.body.textContent || "")
+      .replace(/\s+/g, " ")                       // випадкове форматування геть
+      .split(NL).map((s) => s.trim()).join("\n")
+      .replace(/\s+([,.;:!?])/g, "$1")           // «(лінк) , а також» → «(лінк), а також»
+      .replace(/\n{3,}/g, "\n\n").trim();
+    const room = (el.maxLength > 0 ? el.maxLength : Infinity) - (el.value.length - (el.selectionEnd - el.selectionStart));
+    if (text.length > room) text = text.slice(0, Math.max(0, room));
+    const from = el.selectionStart;
+    el.value = el.value.slice(0, from) + text + el.value.slice(el.selectionEnd);
+    el.setSelectionRange(from + text.length, from + text.length);
+  });
 }
 
 function openSheet(html) {
