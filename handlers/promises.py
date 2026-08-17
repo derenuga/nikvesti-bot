@@ -1226,6 +1226,14 @@ async def promise_dupes_handler(update, context):
         # мовленнєвий акт, записаний двічі. Людині лишається тільки справді
         # спірне.
         merged, _run = await asyncio.to_thread(auto_merge_dupes)
+        await msg.edit_text("🧑‍⚖️ Питаю суддю про новини цілком…")
+
+        async def gprog(done, total):
+            await msg.edit_text(f"🧑‍⚖️ Читаю новини: {done} з {total}…")
+
+        # Спершу СТАТТІ цілком: там суддя бачить контекст, і саме там живе
+        # дроблення. Аж потім парні кандидати з тем.
+        gstat = await judge_article_dupes(on_progress=gprog)
         await msg.edit_text("🧑‍⚖️ Питаю суддю про нові пари…")
         # Суддя прибирає з екрана те, що впевнено назвав різним. Схожість
         # назви цього не вміє: замір 03.08 дав 0.56 у справжнього дубля і
@@ -1250,8 +1258,16 @@ async def promise_dupes_handler(update, context):
     except Exception as e:
         await msg.edit_text(f"❌ Не порахувалось: {e}")
         return
-    judged_note = (f"🧑‍⚖️ Суддя подивився {seen} нових "
-                   f"{pp.plural(seen, 'пару', 'пари', 'пар')}.\n") if seen else ""
+    judged_note = ""
+    if gstat.get("articles"):
+        judged_note += (f"📰 Прочитав {gstat['articles']} "
+                        f"{pp.plural(gstat['articles'], 'новину', 'новини', 'новин')} "
+                        f"цілком — знайшов {gstat['groups']} "
+                        f"{pp.plural(gstat['groups'], 'групу', 'групи', 'груп')} "
+                        f"однакових записів.\n")
+    if seen:
+        judged_note += (f"🧑‍⚖️ Суддя подивився {seen} нових "
+                        f"{pp.plural(seen, 'пару', 'пари', 'пар')}.\n")
     auto = judged_note + (f"🤝 Сам звів {len(merged)} "
             f"{pp.plural(len(merged), 'пару', 'пари', 'пар')} — там обидва "
             f"записи цитували одне речення, питати не було про що "
@@ -2197,6 +2213,75 @@ def _pending(floor, limit=None):
                         (floor, api.REGION_MYKOLAIV, pp.MAX_ATTEMPTS, limit))
 
 
+async def judge_article_dupes(limit=40, on_progress=None):
+    """Спитати суддю про кожну статтю ЦІЛИМ НАБОРОМ записів.
+
+    Питання Олега 17.08: «що це за суддя, який не бачить в одній і тій самій
+    новині дублі?» — і він мав рацію. Пара приходила до судді голою, без
+    статті, тож «з'ясувати, хто прибрав зупинку» і «перевірити, хто проводив
+    демонтаж» виглядали різними діями. Тепер для однієї статті питання інше
+    за формою: не «чи однакові оці два», а «розклади ці N на групи», і разом
+    із ними йде сама новина.
+
+    Заразом дешевше: стаття з шести записів це п'ятнадцять пар або ОДИН
+    виклик. Вердикти лягають попарно в ту саму пам'ять, тож екран і злиття
+    не змінюються.
+    """
+    def load():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                return pp.article_groups(cur, limit=limit)
+        finally:
+            conn.close()
+
+    batches = await asyncio.to_thread(load)
+    if not batches:
+        return {"articles": 0, "groups": 0, "pairs": 0}
+
+    sem = asyncio.Semaphore(pj.CONCURRENCY)
+    done = 0
+
+    async def one(b):
+        nonlocal done
+        async with sem:
+            b["groups"] = await pj.judge_article(b["article"], b["records"])
+        done += 1
+        if on_progress and done % 10 == 0:
+            try:
+                await on_progress(done, len(batches))
+            except Exception:
+                pass
+        return b
+
+    judged = list(await asyncio.gather(*(one(b) for b in batches)))
+
+    def remember():
+        conn = ep.connect()
+        try:
+            with conn.cursor() as cur:
+                groups = pairs = 0
+                for b in judged:
+                    if b.get("groups") is None:
+                        continue      # збій моделі — не рішення, спитаємо ще
+                    ids = [r["id"] for r in b["records"]]
+                    got = b["groups"] or []
+                    # ОДИН прохід по всіх парах статті: і групи, і решту.
+                    # Двома проходами другий затер би «одне й те саме» на
+                    # «різні» — save_verdict робить upsert.
+                    pairs += pp.save_group_verdicts(cur, ids, got)
+                    groups += len(got)
+            conn.commit()
+            return groups, pairs
+        finally:
+            conn.close()
+
+    groups, pairs = await asyncio.to_thread(remember)
+    return {"articles": len(judged), "groups": groups, "pairs": pairs}
+
+
 async def judge_new_dupes(limit=None):
     """Прогнати суддю по НОВИХ парах-кандидатах і запам'ятати вердикти.
 
@@ -2215,8 +2300,32 @@ async def judge_new_dupes(limit=None):
             pp.ensure_schema(conn)
             conn.autocommit = True
             with conn.cursor() as cur:
-                pairs = pp.dupe_pairs(cur, limit=limit or pj.MAX_PAIRS)
-                fresh = pp.unjudged(cur, pairs)
+                cap = limit or pj.MAX_PAIRS
+                # ТРИ джерела кандидатів, і два останні принципово інші за
+                # перше. Схожість рядка бачить лише дублі, написані схожими
+                # словами, — а замір 17.08 показав, чого вона не бачить:
+                # у парах ОДНІЄЇ СТАТТІ детектор упізнав 0 із 671, у парах
+                # однієї теми — 9 зі 168. Живий приклад Олега: «З'ясувати,
+                # хто прибрав зупинку» і «Перевірити, хто проводив демонтаж»
+                # — одна дія з однієї статті, схожість назв 0.2.
+                #
+                # Ці двоє йдуть ТІЛЬКИ судді. В екран людини потрапляє те,
+                # про що він сказав «одне й те саме», тож черга питань не
+                # росте від самого лише розширення пошуку.
+                pairs = pp.dupe_pairs(cur, limit=cap)
+                # Пари з ОДНІЄЇ статті сюди не йдуть: їх питає груповий
+                # прогін (judge_article_dupes), де суддя бачить усі записи
+                # разом і саму новину. Тут лишаються теми — вони живуть у
+                # РІЗНИХ статтях, спільного тексту в них немає.
+                pairs += pp.topic_pairs(cur, limit=cap)
+                seen, uniq = set(), []
+                for p in pairs:
+                    key = (p["a"], p["b"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    uniq.append(p)
+                fresh = pp.unjudged(cur, uniq)[:cap]
                 return pp.dupe_candidate_sides(cur, fresh)
         finally:
             conn.close()
@@ -2312,6 +2421,8 @@ async def sync_promises_incremental(bot):
         # питаннями, на які машина вже вміє відповісти. Коштує центи: нових
         # пар за годину одиниці.
         try:
+            # Спершу статті цілком (там контекст і там дроблення), потім пари.
+            await judge_article_dupes(limit=15)
             await judge_new_dupes()
         except Exception as e:
             print(f"банк тем: суддя дублів — {e}")

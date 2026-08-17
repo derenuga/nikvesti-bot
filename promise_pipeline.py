@@ -2010,27 +2010,6 @@ def restore(cur, purge_id):
 # ухвали предмет якраз різний — бо його різали.
 _DUPE_WHERE = f"""
         WHERE a.status = 'expected' AND b.status = 'expected'
-          AND ((similarity(a.title, b.title) >= %s
-                AND (coalesce(a.deadline, 0) = coalesce(b.deadline, 0)
-                     OR similarity(a.title, b.title) >= %s))
-               OR (similarity(a.title, b.title) >= %s
-                   AND {_act_sql('a.title')} = {_act_sql('b.title')}
-                   AND EXISTS (SELECT 1 FROM commitment_revisions ra
-                               JOIN commitment_revisions rb
-                                 ON rb.article_id = ra.article_id
-                               WHERE ra.commitment_id = a.id
-                                 AND rb.commitment_id = b.id)))
-          AND (a.subject_entity_id IS NOT DISTINCT FROM b.subject_entity_id
-                   AND a.subject_entity_id IS NOT NULL
-               OR coalesce(a.subject_key, '') = coalesce(b.subject_key, '')
-                   AND coalesce(a.subject_key, '') <> ''
-               OR lower(coalesce(a.owner_text, '')) = lower(coalesce(b.owner_text, ''))
-                   AND coalesce(a.owner_text, '') <> ''
-               OR EXISTS (SELECT 1 FROM commitment_revisions ra2
-                          JOIN commitment_revisions rb2
-                            ON rb2.article_id = ra2.article_id
-                          WHERE ra2.commitment_id = a.id
-                            AND rb2.commitment_id = b.id))
           AND NOT EXISTS (SELECT 1 FROM promise_pairs p
                           WHERE p.a = a.id AND p.b = b.id)
           -- Суддя впевнено сказав «різні» — з екрана геть. Це НЕ те саме, що
@@ -2039,6 +2018,36 @@ _DUPE_WHERE = f"""
           AND NOT EXISTS (SELECT 1 FROM promise_pair_verdicts v
                           WHERE v.a = a.id AND v.b = b.id
                             AND v.same IS FALSE AND v.confidence = 'high')
+          AND (
+            -- 1. Суддя вже сказав «одне й те саме». Інших підстав не треба —
+            -- і саме цим у екран потрапляють дублі, написані РІЗНИМИ словами:
+            -- рядкова схожість їх не бачить у принципі (замір 17.08: у парах
+            -- однієї теми детектор бачив 9 зі 168).
+            EXISTS (SELECT 1 FROM promise_pair_verdicts vs
+                    WHERE vs.a = a.id AND vs.b = b.id AND vs.same IS TRUE)
+            -- 2. Або схожість назви + спільний сигнал, як було.
+            OR (((similarity(a.title, b.title) >= %s
+                  AND (coalesce(a.deadline, 0) = coalesce(b.deadline, 0)
+                       OR similarity(a.title, b.title) >= %s))
+                 OR (similarity(a.title, b.title) >= %s
+                     AND {_act_sql('a.title')} = {_act_sql('b.title')}
+                     AND EXISTS (SELECT 1 FROM commitment_revisions ra
+                                 JOIN commitment_revisions rb
+                                   ON rb.article_id = ra.article_id
+                                 WHERE ra.commitment_id = a.id
+                                   AND rb.commitment_id = b.id)))
+                AND (a.subject_entity_id IS NOT DISTINCT FROM b.subject_entity_id
+                         AND a.subject_entity_id IS NOT NULL
+                     OR coalesce(a.subject_key, '') = coalesce(b.subject_key, '')
+                         AND coalesce(a.subject_key, '') <> ''
+                     OR lower(coalesce(a.owner_text, '')) = lower(coalesce(b.owner_text, ''))
+                         AND coalesce(a.owner_text, '') <> ''
+                     OR EXISTS (SELECT 1 FROM commitment_revisions ra2
+                                JOIN commitment_revisions rb2
+                                  ON rb2.article_id = ra2.article_id
+                                WHERE ra2.commitment_id = a.id
+                                  AND rb2.commitment_id = b.id)))
+          )
 """
 
 
@@ -2055,6 +2064,162 @@ def dupe_pairs(cur, limit=40, sim=DUPE_SIM):
         + _DUPE_WHERE + " ORDER BY sim DESC, a.id LIMIT %s",
         (sim, DUPE_SIM_STRONG, DUPE_SIM_SAME_ART, limit))
     return [{"a": a, "b": b, "sim": round(float(s), 2),
+             "title_a": ta, "title_b": tb, "rev_a": ra, "rev_b": rb,
+             "owner": owner, "deadline": dl}
+            for a, b, s, ta, tb, ra, rb, owner, dl in cur.fetchall()]
+
+
+def article_groups(cur, limit=40, min_records=2):
+    """Статті, у яких лежить кілька відкритих записів і є ще не суджені пари.
+
+    Одиниця питання до судді для однієї статті — не пара, а ГРУПА: він має
+    бачити всі записи разом і саму новину (див. promise_judge.judge_article).
+    Стаття з шести записів це п'ятнадцять пар або один виклик.
+    """
+    cur.execute(
+        "SELECT r.article_id, count(DISTINCT r.commitment_id) AS n "
+        "FROM commitment_revisions r JOIN commitments c ON c.id = r.commitment_id "
+        "WHERE c.status = 'expected' "
+        "GROUP BY r.article_id HAVING count(DISTINCT r.commitment_id) >= %s "
+        "ORDER BY r.article_id DESC", (int(min_records),))
+    candidates = [(int(a), int(n)) for a, n in cur.fetchall()]
+    out = []
+    for article_id, _n in candidates:
+        cur.execute(
+            "SELECT c.id, c.title, c.owner_text, c.deadline, "
+            "       (SELECT r2.promiser_text FROM commitment_revisions r2 "
+            "         WHERE r2.commitment_id = c.id ORDER BY r2.id LIMIT 1), "
+            "       (SELECT r3.quote FROM commitment_revisions r3 "
+            "         WHERE r3.commitment_id = c.id ORDER BY r3.id LIMIT 1) "
+            "FROM commitments c JOIN commitment_revisions r ON r.commitment_id = c.id "
+            "WHERE r.article_id = %s AND c.status = 'expected' "
+            "GROUP BY c.id ORDER BY c.id", (article_id,))
+        recs = [{"id": r[0], "title": r[1], "owner_text": r[2], "deadline": r[3],
+                 "promiser": r[4], "quote": (r[5] or "")[:300]}
+                for r in cur.fetchall()]
+        if len(recs) < min_records:
+            continue
+        ids = [r["id"] for r in recs]
+        # Питаємо лише тоді, коли в статті лишилась хоч одна НЕсуджена пара:
+        # інакше кожен прогін платив би за ті самі статті вічно.
+        cur.execute(
+            "SELECT count(*) FROM (SELECT unnest(%s::bigint[]) AS x) sa "
+            "JOIN (SELECT unnest(%s::bigint[]) AS y) sb ON sb.y > sa.x "
+            "WHERE NOT EXISTS (SELECT 1 FROM promise_pair_verdicts v "
+            "                  WHERE v.a = sa.x AND v.b = sb.y) "
+            "  AND NOT EXISTS (SELECT 1 FROM promise_pairs p "
+            "                  WHERE p.a = sa.x AND p.b = sb.y)", (ids, ids))
+        if not cur.fetchone()[0]:
+            continue
+        cur.execute(
+            "SELECT coalesce(title_ua, title_ru), "
+            "       substr(coalesce(text_ua, text_ru), 1, 1200) "
+            "FROM articles WHERE id = %s", (article_id,))
+        row = cur.fetchone() or ("", "")
+        out.append({"article": {"id": article_id, "title": row[0],
+                                "text": row[1]},
+                    "records": recs})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def save_group_verdicts(cur, ids, groups):
+    """Розкласти груповий вердикт на попарні — пам'ять і екран не міняються.
+
+    `groups` — список груп судді (кожна з 2+ id). Пари ВСЕРЕДИНІ групи →
+    «одне й те саме»; решта пар статті → «різні», але з упевненістю `medium`,
+    а не `high`: суддя про них прямо не висловлювався, і ховати їх з екрана
+    назавжди підстав немає. Досить того, що вони не повернуться в чергу
+    питань.
+
+    Пишемо КОЖНУ пару рівно раз: `save_verdict` робить upsert, і два проходи
+    по тих самих id затерли б «одне й те саме» на «різні».
+    """
+    inside = {}
+    for g in groups or []:
+        gid = sorted({int(i) for i in (g.get("ids") or [])})
+        for i, a in enumerate(gid):
+            for b in gid[i + 1:]:
+                inside[(a, b)] = g
+    ids = sorted({int(i) for i in ids})
+    n = 0
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            g = inside.get((a, b))
+            save_verdict(cur, a, b, {
+                "same": bool(g),
+                "confidence": (g.get("confidence") or "medium") if g else "medium",
+                "why": (g.get("why") if g
+                        else "суддя не назвав їх одним зобов'язанням"),
+            })
+            n += 1
+    return n
+
+
+def article_pairs(cur, limit=200):
+    """Пари обіцянок з ОДНІЄЇ СТАТТІ, яких суддя ще не бачив.
+
+    Дроблення народжується всередині одного тексту, і саме там рядкова
+    схожість найбезпорадніша: «З'ясувати, хто прибрав зупинку на перетині
+    9-ї Воєнної та Костянтинівської» і «Перевірити, хто проводив демонтаж
+    зупинкового комплексу» — одна дія, один департамент, одна стаття,
+    схожість назв 0.2 (замір 17.08 на живому банку: детектор упізнав 0 пар
+    із 671).
+
+    Як і теми, це джерело для СУДДІ, не для екрана: в одній статті законно
+    живуть різні обіцянки (у 320276 обіцяють троє), і показувати їх людині
+    парами означало б завалити її питаннями, на які машина вміє відповісти
+    сама.
+    """
+    cur.execute(
+        "SELECT a.id, b.id, similarity(a.title, b.title), a.title, b.title, "
+        "       a.revisions, b.revisions, coalesce(a.owner_text, ''), a.deadline "
+        "FROM commitments a JOIN commitments b ON b.id > a.id "
+        "WHERE a.status = 'expected' AND b.status = 'expected' "
+        "  AND EXISTS (SELECT 1 FROM commitment_revisions ra "
+        "              JOIN commitment_revisions rb ON rb.article_id = ra.article_id "
+        "              WHERE ra.commitment_id = a.id AND rb.commitment_id = b.id) "
+        "  AND NOT EXISTS (SELECT 1 FROM promise_pairs p "
+        "                  WHERE p.a = a.id AND p.b = b.id) "
+        "  AND NOT EXISTS (SELECT 1 FROM promise_pair_verdicts v "
+        "                  WHERE v.a = a.id AND v.b = b.id) "
+        "ORDER BY a.id, b.id LIMIT %s", (int(limit),))
+    return [{"a": a, "b": b, "sim": round(float(s or 0), 2),
+             "title_a": ta, "title_b": tb, "rev_a": ra, "rev_b": rb,
+             "owner": owner, "deadline": dl}
+            for a, b, s, ta, tb, ra, rb, owner, dl in cur.fetchall()]
+
+
+def topic_pairs(cur, limit=200):
+    """Пари обіцянок ОДНІЄЇ ТЕМИ, яких суддя ще не бачив.
+
+    Друге джерело кандидатів, і воно принципово інше за перше. Детектор вище
+    шукає збіг РЯДКА, а дублі в банку часто написані різними словами про те
+    саме — на живому замірі 17.08 у парах однієї теми схожість назви бачила
+    9 пар зі 168. Тема ж уже несе відповідь «це одна справа»: її зшив або
+    сутнісний шар (спільна картка предмета), або суддя тем, або людина
+    (/promise_same).
+
+    Сама по собі спільна тема НЕ робить пару дублем — у темі законно живуть
+    різні зобов'язання (звернутись · відремонтувати · зробити ямковий ремонт
+    тієї самої дороги). Тому пари звідси йдуть ТІЛЬКИ судді, і в екран
+    потрапляють лише ті, про які він сказав «одне й те саме»; людина не
+    бачить ні сотні кандидатів, ні жодного зайвого питання.
+    """
+    cur.execute(
+        "SELECT a.id, b.id, similarity(a.title, b.title), a.title, b.title, "
+        "       a.revisions, b.revisions, coalesce(a.owner_text, ''), a.deadline "
+        "FROM commitments a "
+        "JOIN commitments b ON b.id > a.id AND b.topic_id = a.topic_id "
+        "WHERE a.status = 'expected' AND b.status = 'expected' "
+        "  AND a.topic_id IS NOT NULL "
+        "  AND NOT EXISTS (SELECT 1 FROM promise_pairs p "
+        "                  WHERE p.a = a.id AND p.b = b.id) "
+        "  AND NOT EXISTS (SELECT 1 FROM promise_pair_verdicts v "
+        "                  WHERE v.a = a.id AND v.b = b.id) "
+        "ORDER BY a.id, b.id LIMIT %s", (int(limit),))
+    return [{"a": a, "b": b, "sim": round(float(s or 0), 2),
              "title_a": ta, "title_b": tb, "rev_a": ra, "rev_b": rb,
              "owner": owner, "deadline": dl}
             for a, b, s, ta, tb, ra, rb, owner, dl in cur.fetchall()]
