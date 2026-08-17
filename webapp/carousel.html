@@ -405,6 +405,9 @@
   // прев'ю просто масштабується (PREVIEW_K) — тоді експорт і те, що на екрані,
   // не можуть розійтись.
   const W = 1080, H = 1440, PREVIEW_K = 1.5;
+  // Мінімальний читабельний кегль на полотні 1080 (практика оформлення
+  // каруселей) і жорстка підлога, нижче якої не опускаємось ніколи.
+  const READABLE_MIN = 40, HARD_MIN = 30;
   const PAD = 84;
   const JPEG_Q = 0.9;
 
@@ -1046,12 +1049,17 @@
   function fitLines(c, words, o) {
     const scale = o.scale || 1;
     let size = Math.round(o.start * scale);
-    const min = Math.min(o.min, size);
+    // Підлога кегля — не смак, а вимога читабельності: рекомендація для
+    // каруселей 2026 року — не дрібніше ~40 px на полотні 1080 (нижче текст
+    // доводиться зумити). Тому спершу зменшуємо лише до READABLE_MIN, і аж
+    // якщо блок усе одно не влазить — до жорсткої підлоги, бо текст, що
+    // поїхав за край, гірший за дрібний.
+    const hard = Math.min(o.hardMin || HARD_MIN, o.min || READABLE_MIN, size);
     let lines = [], lh = 0;
     for (;;) {
       lines = CK.wrap(c, words, size, o.maxW, o.weight, o.spaceMul);
       lh = Math.max(size * (o.lhMul || 1.32), CK.minLineH(c, size, o.weight));
-      if (lines.length * lh <= o.maxH || size <= min) break;
+      if (lines.length * lh <= o.maxH || size <= hard) break;
       size -= 2;
     }
     return { size, lines, lh, height: lines.length * lh };
@@ -1283,13 +1291,13 @@
 
     const titleStart = isCover ? 96 : 72;
     const title = words.length
-      ? fitLines(c, words, { start: titleStart, min: 40, maxW, scale,
+      ? fitLines(c, words, { start: titleStart, min: 44, maxW, scale,
                              maxH: isCover ? H * 0.54 : H * 0.40,
                              weight: 700, spaceMul: 1.10, lhMul: 1.26 })
       : { size: titleStart, lines: [], lh: 0, height: 0 };
     const bodySize = isCover ? 40 : 44;
     const body = bodyWords.length
-      ? fitLines(c, bodyWords, { start: bodySize, min: 26, maxW, scale,
+      ? fitLines(c, bodyWords, { start: bodySize, min: READABLE_MIN, maxW, scale,
                                  maxH: H * 0.40, weight: 300,
                                  spaceMul: 0.95, lhMul: 1.45 })
       : { size: bodySize, lines: [], lh: 0, height: 0 };
@@ -1350,14 +1358,14 @@
     const markSize = 150;
     const markH = markSize * 0.62;
     const quote = words.length
-      ? fitLines(c, words, { start: 62, min: 30, maxW, scale, maxH: H * 0.44,
+      ? fitLines(c, words, { start: 62, min: READABLE_MIN, maxW, scale, maxH: H * 0.44,
                              weight: 500, spaceMul: 0.95, lhMul: 1.38 })
       : { size: 62, lines: [], lh: 0, height: 0 };
 
     const whoSize = 34;
     const whoWords = who ? CK.tokenizePlain(who) : [];
     const whoFit = whoWords.length
-      ? fitLines(c, whoWords, { start: whoSize, min: 24, maxW, maxH: H * 0.16,
+      ? fitLines(c, whoWords, { start: whoSize, min: 28, hardMin: 24, maxW, maxH: H * 0.16,
                                 weight: 600, spaceMul: 0.95, lhMul: 1.32 })
       : { size: whoSize, lines: [], lh: 0, height: 0 };
     const ruleH = who ? 4 : 0;
@@ -1406,7 +1414,7 @@
     const words = CK.tokenizePlain(slide.caption);
     if (!words.length) return;
     const maxW = W - PAD * 2;
-    const cap = fitLines(c, words, { start: 46, min: 26, maxW, maxH: H * 0.30,
+    const cap = fitLines(c, words, { start: 46, min: 38, maxW, maxH: H * 0.30,
                                      scale: slide.fontScale || 1,
                                      weight: 500, spaceMul: 0.95, lhMul: 1.4 });
     const top = anchorTop(cap.height, true);
@@ -1459,7 +1467,7 @@
     }
     const words = CK.tokenizePlain(S.cta.text);
     if (words.length) {
-      const fit = fitLines(c, words, { start: 44, min: 28, maxW: W - PAD * 2,
+      const fit = fitLines(c, words, { start: 44, min: READABLE_MIN, maxW: W - PAD * 2,
                                        scale: slide.fontScale || 1,
                                        maxH: H - y - 170, weight: 500,
                                        spaceMul: 0.95, lhMul: 1.42 });
