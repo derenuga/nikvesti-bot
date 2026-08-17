@@ -2275,6 +2275,19 @@ body.dark { --stale: #a596e0; --stale-soft: rgba(165, 150, 224, .18);
 .tr-cnt { background: var(--fill); border-radius: 20px; padding: 5px 11px; }
 .tr-cnt.ok { background: var(--good-soft); color: var(--good); }
 
+/* Двері «спершу дублі» над колодою. Та сама форма, що .pr-dupes у черзі —
+   один вигляд на одну роль, щоб екран не вчив двох різних мов. */
+.tr-dupes {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  background: var(--card); border: 1.5px solid var(--line);
+  border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px;
+  font-size: 14px; color: var(--blue); text-align: left;
+}
+.tr-dupes .tr-dupes-m {
+  display: block; font-size: 12px; color: var(--muted); margin-top: 2px;
+}
+.tr-dupes .chev { margin-left: auto; color: var(--muted); }
+
 .tr-deck {
   position: relative; margin-bottom: 18px;
   touch-action: pan-y;                 /* вертикаль лишається прокруткою */

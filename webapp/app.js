@@ -3875,6 +3875,10 @@ function wireDupes() {
    рвати ритм; помилка мережі повертає картку назад у колоду з тостом. */
 
 const TRIAGE_SWIPE = 96;      // px, після яких відпускання = рішення
+// Мертва зона: доки палець не пройшов стільки, напрям жесту НЕ вирішено.
+// Без неї рішення «це прокрутка» ухвалювалось на тремтінні пальця і
+// вбивало свайп посеред руху.
+const TRIAGE_DEAD = 10;
 const TRIAGE_REFILL = 4;      // коли лишається стільки — тягнемо наступну порцію
 
 async function renderTriage() {
@@ -3931,7 +3935,14 @@ function paintTriage() {
       <span class="tr-cnt">Лишилось <b>${left}</b></span>
       ${t.done ? `<span class="tr-cnt ok">За захід <b>${t.done}</b></span>` : ""}
       ${c.good ? `<span class="tr-cnt ok">Повернуто <b>${c.good}</b></span>` : ""}
+      ${c.held_dupes ? `<span class="tr-cnt">Чекають дублів <b>${c.held_dupes}</b></span>` : ""}
     </div>
+    ${c.held_dupes ? `<button class="tr-dupes" data-nav="dupes">
+        ${icon("link")} <span>Спершу дублі — <b>${c.held_dupes}</b> карток
+        відкладено</span>
+        <span class="tr-dupes-m">свайпати запис, який зіллється з сусідом, —
+          подвійна робота</span>
+        ${icon("chevron-right", "ic chev")}</button>` : ""}
     ${t.items.length ? `
       <div class="tr-deck" id="tr-deck">
         ${t.items.slice(1, 3).map((_, i) =>
@@ -4076,15 +4087,28 @@ function wireTriage() {
   const move = (x, y) => {
     dx = x - startX;
     dy = y - startY;
-    // Вертикальний рух — це прокрутка сторінки, а не свайп: перехоплювати
-    // його означало б зробити довгу картку нечитабельною.
-    if (!locked && Math.abs(dy) > Math.abs(dx) + 8) { end(true); return; }
-    locked = true;
-    const rot = Math.max(-14, Math.min(14, dx / 12));
-    top.style.transform = `translate(${dx}px, ${dy * 0.25}px) rotate(${rot}deg)`;
-    const p = Math.min(1, Math.abs(dx) / TRIAGE_SWIPE);
-    top.classList.toggle("to-noise", dx < -12);
-    top.classList.toggle("to-good", dx > 12);
+    // Напрям жесту вирішується НЕ на першому русі. Саме тут була причина
+    // «іноді свайп обривається»: рішення «це прокрутка» ухвалювалось на
+    // 1–2 пікселях тремтіння пальця, і якщо той мікрорух випадково пішов
+    // угору, перетягування скасовувалось НАЗАВЖДИ — палець ще на екрані й
+    // їде вбік, а картка вже не слухається (Олег, 17.08, на живій колоді).
+    //
+    // Тепер є мертва зона: поки палець не пройшов TRIAGE_DEAD, ми не
+    // вирішуємо нічого. Далі вирішуємо ОДИН раз — по тому, чого більше.
+    if (!locked) {
+      if (Math.abs(dx) < TRIAGE_DEAD && Math.abs(dy) < TRIAGE_DEAD) return;
+      // Вертикальний рух — це прокрутка сторінки, а не свайп: перехоплювати
+      // його означало б зробити довгу картку нечитабельною.
+      if (Math.abs(dy) > Math.abs(dx)) { end(true); return; }
+      locked = true;
+    }
+    // Мертву зону віднімаємо, інакше картка стрибнула б одразу на 10 px.
+    const shift = dx - Math.sign(dx) * TRIAGE_DEAD;
+    const rot = Math.max(-14, Math.min(14, shift / 12));
+    top.style.transform = `translate(${shift}px, ${dy * 0.25}px) rotate(${rot}deg)`;
+    const p = Math.min(1, Math.abs(shift) / TRIAGE_SWIPE);
+    top.classList.toggle("to-noise", shift < -12);
+    top.classList.toggle("to-good", shift > 12);
     top.style.setProperty("--p", p.toFixed(2));
   };
 
@@ -4092,7 +4116,7 @@ function wireTriage() {
     if (!dragging) return;
     dragging = false;
     top.classList.remove("dragging");
-    if (!cancel && Math.abs(dx) >= TRIAGE_SWIPE) {
+    if (!cancel && Math.abs(dx) - TRIAGE_DEAD >= TRIAGE_SWIPE) {
       triageDecide(dx < 0 ? "noise" : "good");
       return;
     }
