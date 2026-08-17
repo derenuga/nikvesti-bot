@@ -8,9 +8,10 @@
 - /aicost — витрати за поточний місяць на вимогу
 - 1-го числа щомісяця Лис сам звітує Олегу за попередній місяць (scheduler)
 
-Ціни приблизні (стандартний прайс $/1M токенів); кеш-читання ~0.1× input,
-кеш-запис ~1.25× input. Оцінка «згори» — під час інтро-цін Sonnet 5
-реальні витрати трохи нижчі.
+Ціни приблизні ($/1M токенів); кеш-читання ~0.1× input, кеш-запис ~1.25×
+input. Вступні ціни враховуються за ПЕРІОДОМ звіту (INTRO_PRICING), тож
+серпень і через рік порахується серпневим прайсом, а не сьогоднішнім.
+Оцінка лишається «згори»: там, де періоду не знаємо, беремо звичайну ціну.
 """
 
 from datetime import datetime, timedelta
@@ -25,6 +26,33 @@ PRICING = {
 }
 DEFAULT_PRICE = (3.0, 15.0)
 
+# Вступні ціни, що діють ДО вказаної дати включно (модель → ціна, «по яку»).
+# Sonnet 5 до 31.08.2026 коштує $2/$10 замість $3/$15 — тобто третину серпневої
+# суми звіт приписував нам дарма: замір 17.08 показував по Sonnet $26.15 там,
+# де насправді ~$17.5, а разом $69.52 замість ~$60. Дата тут не для краси:
+# 1 вересня прайс повертається сам, і звіт за вересень порахується правильно
+# без жодної правки, а звіт за серпень і через рік лишиться правильним — бо
+# ціна береться за ПЕРІОД звіту, а не за «сьогодні».
+INTRO_PRICING = {
+    "claude-sonnet-5": ((2.0, 10.0), "2026-08-31"),
+}
+
+
+def price_for(model, period=None):
+    """Ціна моделі за період звіту ('YYYY-MM' або 'YYYY-MM-DD').
+
+    Без періоду віддаємо звичайний прайс, а не вступний: звіт і далі має
+    бути оцінкою ЗГОРИ, тож коли ми не знаємо, за коли рахуємо, помилятись
+    треба в бік «дорожче», а не «дешевше».
+    """
+    intro = INTRO_PRICING.get(model)
+    if intro and period:
+        price, until = intro
+        if str(period) <= until[:len(str(period))]:
+            return price
+    return PRICING.get(model, DEFAULT_PRICE)
+
+
 # Людські назви інструментів для розрізу «на що йшли гроші». Ключ ставить сам
 # виклик (record_ai_usage(feature=…)); незнайомий ключ друкується як є, тож
 # новий інструмент з'являється у звіті сам, а сюди дописують лише назву.
@@ -33,8 +61,8 @@ FEATURE_TITLES = {
 }
 
 
-def _model_cost(model, rec):
-    price_in, price_out = PRICING.get(model, DEFAULT_PRICE)
+def _model_cost(model, rec, period=None):
+    price_in, price_out = price_for(model, period)
     return (
         rec.get("input", 0) / 1e6 * price_in
         + rec.get("output", 0) / 1e6 * price_out
@@ -43,10 +71,16 @@ def _model_cost(model, rec):
     )
 
 
-def models_cost(models):
+def models_cost(models, period=None):
     """Вартість набору {model: rec} за прайсом — спільна лінійка для місячного
-    розрізу по людях (/aicost) і денного зрізу (/usage), щоб числа сходились."""
-    return sum(_model_cost(model, rec) for model, rec in (models or {}).items())
+    розрізу по людях (/aicost) і денного зрізу (/usage), щоб числа сходились.
+
+    `period` ('YYYY-MM' або 'YYYY-MM-DD') потрібен там, де діяла вступна ціна:
+    без нього рядок людини рахувався б за звичайним прайсом, а підсумок — за
+    вступним, і сума частин не дорівнювала б цілому.
+    """
+    return sum(_model_cost(model, rec, period)
+               for model, rec in (models or {}).items())
 
 
 def models_tokens(models):
@@ -76,7 +110,7 @@ def format_month_report(month):
     total_requests = 0
     total_tokens = 0
     for model, rec in sorted(usage.items()):
-        cost = _model_cost(model, rec)
+        cost = _model_cost(model, rec, month)
         total_cost += cost
         total_requests += rec.get("requests", 0)
         model_tokens = rec.get("input", 0) + rec.get("output", 0) + rec.get("cache_read", 0) + rec.get("cache_creation", 0)
@@ -97,7 +131,7 @@ def format_month_report(month):
         rows = []
         tagged_cost = 0.0
         for key, models in by_feature.items():
-            cost = models_cost(models)
+            cost = models_cost(models, month)
             tagged_cost += cost
             requests = sum(m.get("requests", 0) for m in models.values())
             rows.append((cost, requests, FEATURE_TITLES.get(key, key)))
@@ -117,7 +151,7 @@ def format_month_report(month):
         users_cost = 0.0
         for uid, user_rec in by_user.items():
             models = user_rec.get("models", {})
-            cost = models_cost(models)
+            cost = models_cost(models, month)
             users_cost += cost
             requests = sum(m.get("requests", 0) for m in models.values())
             rows.append((cost, requests, user_rec.get("name") or f"id {uid}"))
