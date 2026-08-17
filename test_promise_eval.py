@@ -59,6 +59,9 @@ ARTICLES = {
              "vlasniki-poobitsiali-zrizati", "public"),
     321833: (1785456000, "У Миколаєві планують розробити нову житлову стратегію",
              "u-mikolayevi-planuyut-rozrobyty-novu-zhytlovu-strategiyu", "municipal"),
+    322324: (1786554000, "Київський суддя звернувся до Кабміну через незаконне "
+                         "використання земель Міноборони на Миколаївщині",
+             "kyivskyi-suddia-zvernuvsia-do-kabminu", "politics"),
 }
 
 # Картки сутнісного шару. Гімназія і ліцей — ДВІ РІЗНІ картки, як воно і є в
