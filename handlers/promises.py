@@ -2567,6 +2567,27 @@ def _classify_system():
     )
 
 
+def _classify_reset(cur, kind):
+    """Скинути тип у записів ОДНОГО класу — щоб перекласифікувати їх після
+    правки правила.
+
+    Потрібне тому, що помиляється модель НЕ поштучно, а класом, і це видно
+    лише на живих даних. Перший же прогін 17.08 дав рівно такий випадок:
+    правило «offtopic — це те, чого редакція не перевіряє» модель прочитала
+    як «обіцяльник не мерія», і в тінь пішли дотація місту 1,18 млрд із
+    держбюджету, передача профтехзакладів у комунальну власність і очисні
+    споруди Миколаївщини. Правило виправлене — але накопичене лікується лише
+    перечитом, а перечитувати ВЕСЬ банк заради одного класу безглуздо.
+
+    Рішення ЛЮДИНИ (свайпи) не чіпаємо ніколи: вони сильніші за модель і
+    вічні, тож запис зі свайпом лишається як є.
+    """
+    cur.execute(
+        "UPDATE commitments SET kind = NULL, micro = NULL "
+        "WHERE kind = %s AND triage IS NULL AND status = 'expected'", (kind,))
+    return cur.rowcount or 0
+
+
 def _classify_pending(cur, limit=None):
     """Записи без kind — з першою цитатою і обіцяльником, як бачить їх модель."""
     cur.execute(
@@ -2750,13 +2771,31 @@ async def _classify_run(bot, chat_id, msg_id=None):
     await bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
 
 
+def _classify_cost(n):
+    """~200 вх токенів на запис + системний промпт на пачку, ~30 вих."""
+    return max(n * 200 / 1e6 * 1.0 + n * 30 / 1e6 * 5.0, 0.05)
+
+
 async def promise_classify_handler(update, context):
-    """/promise_classify — оцінка кількості й ціни, запуск кнопкою."""
+    """/promise_classify [клас] — оцінка кількості й ціни, запуск кнопкою.
+
+    З аргументом-класом (`offtopic`, `routine`, `process`…) перечитує САМЕ
+    цей клас: правило правиться, коли на живих даних видно, що модель
+    промахнулась не поштучно, а цілим класом. Свайпи людини при цьому не
+    чіпаються.
+    """
     if not _allowed(update):
         await update.message.reply_text("⛔ Тільки для редакції.")
         return
     if not os.environ.get("ANTHROPIC_API_KEY") or not bot_db.is_configured():
         await update.message.reply_text("🦊 Потрібні нора і ANTHROPIC_API_KEY.")
+        return
+    arg = (context.args or [""])[0].strip().lower()
+    target = arg if arg in pp.KIND else None
+    if arg and not target:
+        await update.message.reply_text(
+            "Клас має бути один із: " + " · ".join(pp.KIND)
+            + "\nБез аргументу — переоцінка записів, які ще не мають типу.")
         return
     msg = await update.message.reply_text("🦊 Рахую (безкоштовно)…")
 
@@ -2766,8 +2805,13 @@ async def promise_classify_handler(update, context):
             pp.ensure_schema(conn)
             conn.autocommit = True
             with conn.cursor() as cur:
-                cur.execute("SELECT count(*) FROM commitments "
-                            "WHERE kind IS NULL AND status = 'expected'")
+                if target:
+                    cur.execute(
+                        "SELECT count(*) FROM commitments WHERE kind = %s "
+                        "AND triage IS NULL AND status = 'expected'", (target,))
+                else:
+                    cur.execute("SELECT count(*) FROM commitments "
+                                "WHERE kind IS NULL AND status = 'expected'")
                 return cur.fetchone()[0]
         finally:
             conn.close()
@@ -2779,26 +2823,37 @@ async def promise_classify_handler(update, context):
         return
     if not n:
         await msg.edit_text(
+            f"🦊 У класі «{target}» нема чого перечитувати."
+            if target else
             "🦊 Усі записи вже мають тип — переоцінювати нічого.\n"
             "Стан шарів: /promise_status, розбір тіні — в апці.")
         return
-    # ~150 вх токенів на запис + системний промпт на пачку, ~25 вих на запис.
-    # Округлено вгору — число бачить людина перед кнопкою.
-    cost = n * 200 / 1e6 * 1.0 + n * 30 / 1e6 * 5.0
+    cost = _classify_cost(n)
+    if target:
+        head = (f"🦊 <b>Перечитати клас «{target}»</b>\n\n"
+                f"Записів: <b>{n}</b> (ті, яких людина ще не свайпала)\n"
+                f"Вартість: <b>≈ ${cost:.2f}</b>\n\n"
+                f"Тип скидається і рахується заново — за ЧИННИМ правилом. "
+                f"Потрібно тоді, коли на живих даних видно, що модель "
+                f"промахнулась не поштучно, а цілим класом.\n"
+                f"<i>Свайпи не чіпаються: рішення людини сильніше за модель.</i>")
+    else:
+        head = (f"🦊 <b>Переоцінка банку за типом акту</b>\n\n"
+                f"Записів без типу: <b>{n}</b> (усі зараз видимі — fail-open)\n"
+                f"Вартість: <b>≈ ${cost:.2f}</b> (Haiku, пачками по "
+                f"{CLASSIFY_CHUNK})\n\n"
+                f"Після переоцінки в черзі журналістів лишаться зобов'язання і "
+                f"риторика; процедурне, рутина й чужі актори підуть у тінь — її "
+                f"розбирають свайпами в апці, і БУДЬ-ЩО повертається одним "
+                f"свайпом.\n"
+                f"<i>Нічого не видаляється. Перерваний прогін продовжується "
+                f"повторним викликом. Рішення людини (свайпи) модель не чіпає.</i>")
     await msg.edit_text(
-        f"🦊 <b>Переоцінка банку за типом акту</b>\n\n"
-        f"Записів без типу: <b>{n}</b> (усі зараз видимі — fail-open)\n"
-        f"Вартість: <b>≈ ${max(cost, 0.05):.2f}</b> (Haiku, пачками по "
-        f"{CLASSIFY_CHUNK})\n\n"
-        f"Після переоцінки в черзі журналістів лишаться зобов'язання і "
-        f"риторика; процедурне, рутина й чужі актори підуть у тінь — її "
-        f"розбирають свайпами в апці, і БУДЬ-ЩО повертається одним свайпом.\n"
-        f"<i>Нічого не видаляється. Перерваний прогін продовжується повторним "
-        f"викликом. Рішення людини (свайпи) модель не чіпає.</i>",
-        parse_mode="HTML",
+        head, parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-            f"Переоцінити {n} ≈ ${max(cost, 0.05):.2f}",
-            callback_data="pcl:go")]]))
+            (f"Перечитати {n} ≈ ${cost:.2f}" if target
+             else f"Переоцінити {n} ≈ ${cost:.2f}"),
+            callback_data=f"pcl:{target or 'go'}")]]))
 
 
 async def promise_classify_callback(update, context):
@@ -2806,8 +2861,27 @@ async def promise_classify_callback(update, context):
     await query.answer()
     if not _allowed(update):
         return
-    await query.edit_message_text(
-        "🦊 Переоцінюю у фоні — пачки комітяться одразу, звіт прийде сюди.")
+    target = query.data.split(":", 1)[1]
+    target = target if target in pp.KIND else None
+    if target:
+        def reset():
+            conn = ep.connect()
+            try:
+                pp.ensure_schema(conn)
+                with conn.cursor() as cur:
+                    n = _classify_reset(cur, target)
+                conn.commit()
+                return n
+            finally:
+                conn.close()
+
+        n = await asyncio.to_thread(reset)
+        await query.edit_message_text(
+            f"🦊 Скинув тип у {n} записів класу «{target}» — вони знову "
+            f"видимі, поки перечитую. Звіт прийде сюди.")
+    else:
+        await query.edit_message_text(
+            "🦊 Переоцінюю у фоні — пачки комітяться одразу, звіт прийде сюди.")
     asyncio.create_task(_classify_run(
         context.bot, query.message.chat_id))
 
