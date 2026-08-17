@@ -1312,10 +1312,21 @@ async def promise_dupes_handler(update, context):
         if not p.get("judged_same") and (i == confirmed) and confirmed:
             lines.append("<b>Просто схожі назви — дивись сам:</b>")
         mark = "✅ " if p.get("judged_same") else ""
-        lines += [f"{mark}• {escape_html(p['title_a'])}",
-                  f"  {escape_html(p['title_b'])}",
+        # ПОРЯДОК ПОКАЗУ = порядок команди, і рахує його merge_winner — той
+        # самий, що в апці. Доти рядки друкувались як прийшли з детектора, і
+        # готова команда лишала не той запис: у парі «ремонт доріг Миколаєва»
+        # / «виділити 14 мільйонів» виживала назва, за якою нічого не
+        # відстежиш (Олег, 17.08).
+        keep, drop = pp.merge_winner(
+            {"id": p["a"], "title": p.get("title_a"),
+             "revisions": p.get("rev_a") or 0},
+            {"id": p["b"], "title": p.get("title_b"),
+             "revisions": p.get("rev_b") or 0})
+        lines += [f"{mark}• {escape_html(keep['title'] or '')}",
+                  f"  {escape_html(drop['title'] or '')}",
                   f"  <i>схожість {p['sim']} · строк {pp.fmt_date(p['deadline'])}"
-                  f"</i> — <code>/promise_merge {p['a']} {p['b']}</code>", ""]
+                  f"</i> — <code>/promise_merge {keep['id']} {drop['id']}</code>",
+                  ""]
     lines.append("<i>Зручніше — в апці: /team → Утиліти → Банк тем → «Схоже "
                  "на дублі». Там видно цитати обох.</i>")
     await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML",
