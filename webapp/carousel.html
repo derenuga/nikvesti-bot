@@ -843,6 +843,10 @@
     $("ctaText").value = preset.text;
     [...$("ctaPresets").children].forEach((el) =>
       el.classList.toggle("on", el.dataset.preset === key));
+    // Перемалювати ОБОВʼЯЗКОВО: зміна стану без render() виглядає як
+    // «кнопка не працює» — прев'ю оновлювалось аж на наступній правці тексту
+    // (Олег, 17.08). Виклик під час старту нешкідливий: слайдів ще немає.
+    if (S.slides.length) { render(); renderStrip(); }
   }
   $("ctaText").addEventListener("input", (e) => {
     S.cta.text = e.target.value; render(); renderStrip();

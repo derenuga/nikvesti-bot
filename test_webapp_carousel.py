@@ -287,6 +287,27 @@ async def main():
                 check("передостанній слайд отримав стрілку",
                       chrome3[-2]["chevron"] is True)
 
+                # Тап по пресету мусить одразу перемалювати прев'ю, а не
+                # чекати наступної правки тексту
+                await page.evaluate(
+                    "__carousel.selectSlide(__carousel.S.slides.length - 1)")
+                await page.wait_for_timeout(250)
+                # sample() бере ІНДЕКС слайда — міряємо саме заклик, останній
+                last = await page.evaluate("__carousel.S.slides.length - 1")
+                before_cta = await page.evaluate(
+                    f"__carousel.sample({last}, 84, 900, 900, 300)")
+                await page.click('#ctaPresets button[data-preset="club"]')
+                await page.wait_for_timeout(300)
+                after_cta = await page.evaluate(
+                    f"__carousel.sample({last}, 84, 900, 900, 300)")
+                check("пресет заклику одразу видно в прев'ю",
+                      abs(before_cta["r"] - after_cta["r"]) > 0.5
+                      or abs(before_cta["g"] - after_cta["g"]) > 0.5,
+                      f"{before_cta['r']:.2f} → {after_cta['r']:.2f}")
+                check("текст пресета підставився",
+                      "Клуб" in await page.input_value("#ctaText"),
+                      await page.input_value("#ctaText"))
+
                 # Заклик лишається останнім, хоч би куди його тягнули
                 await page.evaluate(
                     "__carousel.moveSlide(__carousel.S.slides.length - 1, 0)")
