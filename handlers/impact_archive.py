@@ -48,6 +48,7 @@ import asyncio
 import json
 import re
 import threading
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -195,7 +196,13 @@ _BROWSER_HEADERS = {
 _UA_BLOCKED = {401, 403, 405, 406, 429}
 
 
-def fetch_page(url, timeout=20):
+# Чужа сторінка або відповідає швидко, або не відповість узагалі. 20 секунд
+# на захід (а заходів два) — це хвилина очікування на трьох лінках, і саме
+# так збір кейсу почав тягтись три хвилини (Олег, 14.08)
+FETCH_TIMEOUT = 8
+
+
+def fetch_page(url, timeout=FETCH_TIMEOUT):
     """(відповідь, яким заходом узялось). Спершу чесний бот-UA, на відмову —
     браузерні заголовки. Віддає останню відповідь, навіть невдалу: діагностика
     /impact_probe має показати саме те, що сказав сайт."""
@@ -361,15 +368,11 @@ def _external_source(url):
     try:
         soup = _fetch_soup(url)
     except Exception as e:
-        # Сайт не пустив (403 з дата-центру) — читаємо копію з веб-архіву.
-        # Лінк у кейсі лишається оригінальний: архівом ми лише читаємо
-        snapshot = wayback_url(url)
-        if not snapshot:
-            raise ValueError(f"Сторінку {url} не вдалось прочитати — {e}")
-        try:
-            soup = _fetch_soup(snapshot)
-        except Exception as e2:
-            raise ValueError(f"Сторінку {url} не вдалось прочитати — {e2}")
+        # У веб-архів по дорозі НЕ ходимо (Олег, 14.08: «не потрібно, і це
+        # дуже подовжує»): сайт, який ріже дата-центри, коштує ще двох
+        # запитів, а назву однаково швидше вписати руками. Архів лишився
+        # окремою перевіркою в /impact_probe, коли справді треба
+        raise ValueError(f"Сторінку {url} не вдалось прочитати — {e}")
 
     def _meta(*keys):
         for key in keys:
@@ -413,7 +416,7 @@ def _youtube_oembed(url):
     try:
         import requests
 
-        resp = requests.get("https://www.youtube.com/oembed", timeout=15,
+        resp = requests.get("https://www.youtube.com/oembed", timeout=FETCH_TIMEOUT,
                             params={"url": url, "format": "json"})
         resp.raise_for_status()
         data = resp.json()
@@ -499,7 +502,16 @@ def _external_ref(url):
 
 
 def _external_refs(urls):
-    return [_external_ref(u) for u in (urls or [])]
+    """Зовнішні матеріали — ПАРАЛЕЛЬНО. Це різні сайти, чекати на них по
+    черзі немає жодної причини: три лінки коштували стільки ж, скільки три
+    найповільніші сайти підряд."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    urls = list(urls or [])
+    if len(urls) < 2:
+        return [_external_ref(u) for u in urls]
+    with ThreadPoolExecutor(max_workers=min(6, len(urls))) as pool:
+        return list(pool.map(_external_ref, urls))
 
 
 def _nora_article(article_id):
@@ -754,7 +766,9 @@ def _search_our_archive(queries):
     out, seen = [], set()
     for query in (queries or [])[:5]:
         words = [w for w in (query or "").split() if w]
-        while words:
+        tries = 0
+        while words and tries < 3:      # далі коротшати немає сенсу: одне-два
+            tries += 1                  # слова дадуть шум, а не збіги
             try:
                 items = search_items(" ".join(words), limit=SEARCH_PER_QUERY)
             except Exception as e:
@@ -1415,6 +1429,12 @@ async def build_impact(impact_id):
     if not imp:
         return
 
+    t0 = time.monotonic()
+    stages = []
+
+    def _mark(name):
+        stages.append(f"{name} {time.monotonic() - t0:.1f}s")
+
     try:
         source_url = imp["source_url"]
         hints = hint_urls(imp)
@@ -1425,6 +1445,7 @@ async def build_impact(impact_id):
         our_urls = [u for u in hints if is_our_url(u)]
         extras = await asyncio.to_thread(
             _external_refs, [u for u in hints if not is_our_url(u)])
+        _mark("зовнішні матеріали")
         # Назва, яку людина вписала руками, переживає перезбір. Інакше кожен
         # наступний збір повертав би голий URL: сторінки, що віддають 403
         # (pravda.com.ua, president.gov.ua), заголовка не дадуть НІКОЛИ
@@ -1454,8 +1475,10 @@ async def build_impact(impact_id):
                 page, imp["essence"], our_urls, feedback, extras)
             trigger, candidates = await asyncio.to_thread(
                 _collect_external, page, our_urls, queries)
+        _mark("кандидати")
         verdict = await _run_judge(trigger, candidates, imp["essence"],
                                    feedback, extras)
+        _mark("суддя")
 
         by_id = {c["id"]: c for c in candidates}
         verdict, rescued = _delouse_verdict(verdict, set(by_id))
@@ -1528,6 +1551,8 @@ async def build_impact(impact_id):
                     _notify_credit(impact_id, impact_title, person, note)
 
         await asyncio.to_thread(_save)
+        _mark("запис")
+        print(f"impact: кейс {impact_id} зібрано — {' · '.join(stages)}")
     except Exception as e:
         msg = str(e)[:400]
         print(f"impact: збір кейсу {impact_id} впав — {msg}")

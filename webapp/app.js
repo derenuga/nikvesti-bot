@@ -4297,12 +4297,14 @@ function paintImpact(im) {
       </form>`}
     </div>
     ${ro ? "" : `<button class="cta" id="imd-send">Надіслати файлом у приват</button>
-    <button class="link-btn" id="imd-fix" style="margin-top:4px">
-      ${icon("edit")} Поправити збір і дозібрати${
-        im.feedback ? " · поправка є" : ""}</button>
-    <button class="link-btn" id="imd-rebuild" style="margin-top:4px">
-      ${icon("chevron-right")} Перезібрати кейс заново</button>
-    <button class="link-btn" id="imd-del" style="margin-top:4px;color:var(--red)">${icon("trash")} Видалити кейс</button>`}`;
+    <div class="im-acts">
+      <button class="link-btn" id="imd-fix">
+        ${icon("edit")} Поправити збір і дозібрати${
+          im.feedback ? " · поправка є" : ""}</button>
+      <button class="link-btn" id="imd-rebuild">
+        ${icon("chevron-right")} Перезібрати кейс заново</button>
+    </div>
+    <button class="link-btn im-danger" id="imd-del">${icon("trash")} Видалити кейс</button>`}`;
   if (!ro) wireImpactDetail(im);
 }
 
