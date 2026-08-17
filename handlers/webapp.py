@@ -16,9 +16,19 @@ HTTP на тому ж Railway-сервісі. Стартує з post_init (event
 
 Авторизація: Telegram Mini App шле window.Telegram.WebApp.initData — підписаний
 HMAC-ом рядок з user id/username. Перевіряємо підпис секретом від BOT_TOKEN
-(алгоритм з docs Telegram), свіжість auth_date ≤ 24 год, далі резолвимо людину
-через team_roster (чужинець = 403, навіть із валідним підписом). Це САМОСТІЙНИЙ
-захист: закритість чату, звідки відкрили апку, ролі не грає.
+(алгоритм з docs Telegram), далі резолвимо людину через team_roster (чужинець =
+403, навіть із валідним підписом). Це САМОСТІЙНИЙ захист: закритість чату,
+звідки відкрили апку, ролі не грає.
+
+СТРОКУ ЖИТТЯ initData НЕМАЄ СВІДОМО (17.08.2026). Стояла межа 24 год, і апка
+почала не пускати Олега з екраном «Не пустили · initData протух»: Telegram
+видає initData РІВНО РАЗ, на холодному запуску, і не оновлює його ніколи — ні
+при перезавантаженні сторінки, ні коли згорнуту апку піднімають з фону. Тобто
+межа міряла не свіжість доступу, а те, скільки днів тому людина востаннє
+закривала вікно, і полагодити її з апки неможливо: єдиний вихід був закрити
+мініапку начисто й відкрити з бота заново. Підпис HMAC при цьому лишається
+доказом справжності, а доступ ріже РОСТЕР — людину прибирають із team_roster,
+і вона отримує 403 тієї ж хвилини, скільки б не було її initData.
 
 API прототипу (концепція v2 — редакторський інтерфейс):
   GET  /api/bootstrap        — усе для старту апки одним запитом: я, люди з фото
@@ -65,8 +75,6 @@ WEBAPP_URL = normalize_https_url(os.environ.get("WEBAPP_URL"))
 # Прямий лінк апки з BotFather (t.me/mykvisti_bot/team) — для запуску з груп.
 WEBAPP_DIRECT_LINK = normalize_https_url(os.environ.get("WEBAPP_DIRECT_LINK"))
 
-INIT_DATA_MAX_AGE = 24 * 3600
-
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webapp")
 
 
@@ -97,9 +105,10 @@ def _verify_init_data(init_data):
     if not hmac.compare_digest(computed, received_hash):
         raise ValueError("підпис не збігається")
     data = dict(pairs)
-    auth_date = int(data.get("auth_date", "0"))
-    if time.time() - auth_date > INIT_DATA_MAX_AGE:
-        raise ValueError("initData протух")
+    # auth_date НЕ перевіряємо (див. шапку модуля): Telegram видає initData раз
+    # на холодному запуску і не оновлює його ні при перезавантаженні сторінки,
+    # ні коли згорнуту апку піднімають з фону, тож будь-яка межа рано чи пізно
+    # замикає людину в екрані, з якого немає виходу всередині апки.
     user = json.loads(data.get("user", "{}"))
     if not user.get("id"):
         raise ValueError("немає user")
