@@ -230,6 +230,12 @@ CREATE TABLE IF NOT EXISTS promise_pair_verdicts (
     created    BIGINT,
     PRIMARY KEY (a, b)
 );
+-- ХТО дав вердикт: парний суддя чи груповий прохід по статті. Потрібне рівно
+-- для одного — перепитати саме той бік, чиї ПРАВИЛА змінились. Перший
+-- груповий прогін 17.08 перегрупував стадії однієї справи («розробити ПКД» +
+-- «облаштувати центр»), правило посилено, і без цієї колонки довелось би або
+-- терти всю пам'ять суддів, або жити з хибними «одне й те саме».
+ALTER TABLE promise_pair_verdicts ADD COLUMN IF NOT EXISTS source TEXT;
 
 -- Зірочка: «веду цю тему сам». Черга банку спільна, і в ній сотні записів —
 -- а журналіст веде п'ять. Ключ складений із людиною, бо зірочка особиста:
@@ -2182,16 +2188,27 @@ def save_group_verdicts(cur, ids, groups):
                     "same": True,
                     "confidence": g.get("confidence") or "medium",
                     "why": g.get("why"),
-                })
+                }, source="group")
                 n += 1
                 continue
             cur.execute(
                 "INSERT INTO promise_pair_verdicts (a, b, same, confidence, why, "
-                "  created) VALUES (%s, %s, FALSE, 'medium', %s, %s) "
-                "ON CONFLICT (a, b) DO NOTHING",
+                "  created, source) VALUES (%s, %s, FALSE, 'medium', %s, %s, "
+                "  'group') ON CONFLICT (a, b) DO NOTHING",
                 (a, b, GROUP_APART, int(time.time())))
             n += cur.rowcount or 0
     return n
+
+
+def forget_group_verdicts(cur):
+    """Забути ВСІ вердикти групового проходу — коли змінились його правила.
+
+    Рішень ЛЮДИНИ (promise_pairs) і вердиктів парного судді не чіпає: у них
+    інші правила й інша пам'ять. Пари стають несудженими й пройдуть груповий
+    прохід заново — за новими правилами.
+    """
+    cur.execute("DELETE FROM promise_pair_verdicts WHERE source = 'group'")
+    return cur.rowcount or 0
 
 
 def drop_group_downgrades(cur):
@@ -2388,17 +2405,17 @@ def dupe_count(cur, sim=DUPE_SIM):
     return cur.fetchone()[0]
 
 
-def save_verdict(cur, a, b, verdict):
+def save_verdict(cur, a, b, verdict, source="pair"):
     """Запам'ятати рішення судді. Порядок id нормалізуємо — пара одна."""
     a, b = sorted((int(a), int(b)))
     cur.execute(
-        "INSERT INTO promise_pair_verdicts (a, b, same, confidence, why, created) "
-        "VALUES (%s, %s, %s, %s, %s, %s) "
+        "INSERT INTO promise_pair_verdicts (a, b, same, confidence, why, created, "
+        "  source) VALUES (%s, %s, %s, %s, %s, %s, %s) "
         "ON CONFLICT (a, b) DO UPDATE SET same = EXCLUDED.same, "
         "  confidence = EXCLUDED.confidence, why = EXCLUDED.why, "
-        "  created = EXCLUDED.created",
+        "  created = EXCLUDED.created, source = EXCLUDED.source",
         (a, b, bool(verdict.get("same")), verdict.get("confidence"),
-         (verdict.get("why") or "")[:300], int(time.time())))
+         (verdict.get("why") or "")[:300], int(time.time()), source))
 
 
 def load_verdicts(cur, pairs):
