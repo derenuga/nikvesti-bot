@@ -1102,6 +1102,10 @@ def test_dupes_and_merge():
                   (pp.load_verdicts(cur, [{"a": b, "b": other}])
                    .get(tuple(sorted((b, other)))) or {}).get("why")
                   == pp.GROUP_APART)
+            check("позначка групового проходу ХОВАЄ пару, хоч і medium",
+                  not any({a, b} == {x['a'], x['b']} for x in pp.dupe_pairs(cur)),
+                  "суддя прочитав усю новину й не поставив їх в одну групу — "
+                  "це рішення в контексті, а не сумнів парного судді")
             check("груповий «так» сильніший за свою ж стару позначку",
                   pp.save_group_verdicts(
                       cur, [b, other],

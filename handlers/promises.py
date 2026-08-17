@@ -1276,12 +1276,19 @@ async def promise_dupes_handler(update, context):
         await msg.edit_text(
             auto + "🦊 Спірних пар не лишилось.", parse_mode="HTML")
         return
+    confirmed = sum(1 for p in pairs if p.get("judged_same"))
     lines = [auto + f"🦊 <b>Схоже на дублі: {total}</b>",
-             "<i>однаковий строк + спільний предмет або обіцяльник. "
+             "<i>Згори — те, що суддя прочитав у контексті новини й назвав "
+             "одним записом; нижче — схожі за написанням, рішення твоє. "
              "Злиття не видаляє: ревізії другого переходять у перший, "
              "обидві цитати лишаються доказами.</i>", ""]
-    for p in pairs:
-        lines += [f"• {escape_html(p['title_a'])}",
+    for i, p in enumerate(pairs):
+        if p.get("judged_same") and i == 0:
+            lines.append("<b>Суддя каже — одне й те саме:</b>")
+        if not p.get("judged_same") and (i == confirmed) and confirmed:
+            lines.append("<b>Просто схожі назви — дивись сам:</b>")
+        mark = "✅ " if p.get("judged_same") else ""
+        lines += [f"{mark}• {escape_html(p['title_a'])}",
                   f"  {escape_html(p['title_b'])}",
                   f"  <i>схожість {p['sim']} · строк {pp.fmt_date(p['deadline'])}"
                   f"</i> — <code>/promise_merge {p['a']} {p['b']}</code>", ""]

@@ -2001,6 +2001,13 @@ def restore(cur, purge_id):
 #   • спільний предмет або той самий обіцяльник.
 # Зливає ЛЮДИНА: однакові назва+строк бувають і в двох сусідніх дитсадків.
 
+# Підпис вердикту, який ставить ГРУПОВИЙ прохід парам поза групами. Окремим
+# рядком, бо за ним же їх і прибирає ремонт нижче.
+GROUP_APART = "суддя не назвав їх одним зобов'язанням"
+# Той самий рядок для вставки в SQL-літерал: апостроф подвоюється.
+GROUP_APART_SQL = GROUP_APART.replace("'", "''")
+
+
 # Збіг строку більше НЕ обов'язковий для всіх (ревізія 17.08): він ховав
 # найчастіший клас дублів — та сама обіцянка з датою в одній статті й без
 # дати в іншій. Замість нього ТРИ рівноправні шляхи в пару: однаковий строк
@@ -2012,12 +2019,25 @@ _DUPE_WHERE = f"""
         WHERE a.status = 'expected' AND b.status = 'expected'
           AND NOT EXISTS (SELECT 1 FROM promise_pairs p
                           WHERE p.a = a.id AND p.b = b.id)
-          -- Суддя впевнено сказав «різні» — з екрана геть. Це НЕ те саме, що
-          -- рішення людини в promise_pairs: вердикт машини переглядається,
-          -- коли зміняться правила, тому таблиці різні.
+          -- Суддя сказав «різні» — з екрана геть. Це НЕ те саме, що рішення
+          -- людини в promise_pairs: вердикт машини переглядається, коли
+          -- зміняться правила, тому таблиці різні.
+          --
+          -- Ховають ДВА різні вердикти, і плутати їх не можна:
+          --
+          -- 1. парний суддя сказав «різні» ВПЕВНЕНО (`high`). Його `medium`
+          --    означає справжній сумнів — така пара лишається питанням;
+          -- 2. ГРУПОВИЙ прохід прочитав усю новину і не поставив ці два
+          --    записи в одну групу. Він теж пише `medium`, але це не сумнів,
+          --    а рішення в контексті — тому розрізняємо за ПІДПИСОМ, а не за
+          --    впевненістю. Без цього на живому прогоні 17.08 в екран
+          --    повернулись два різні прапори й укриття різних шкіл: вердикт
+          --    був, але не діяв.
           AND NOT EXISTS (SELECT 1 FROM promise_pair_verdicts v
                           WHERE v.a = a.id AND v.b = b.id
-                            AND v.same IS FALSE AND v.confidence = 'high')
+                            AND v.same IS FALSE
+                            AND (v.confidence = 'high'
+                                 OR v.why = '{GROUP_APART_SQL}'))
           AND (
             -- 1. Суддя вже сказав «одне й те саме». Інших підстав не треба —
             -- і саме цим у екран потрапляють дублі, написані РІЗНИМИ словами:
@@ -2059,14 +2079,20 @@ def dupe_pairs(cur, limit=40, sim=DUPE_SIM):
     cur.execute(
         "SELECT a.id, b.id, similarity(a.title, b.title) AS sim, "
         "       a.title, b.title, a.revisions, b.revisions, "
-        "       coalesce(a.owner_text, ''), a.deadline "
+        "       coalesce(a.owner_text, ''), a.deadline, "
+        "       EXISTS (SELECT 1 FROM promise_pair_verdicts vy "
+        "               WHERE vy.a = a.id AND vy.b = b.id AND vy.same IS TRUE) "
+        "         AS judged_same "
         "FROM commitments a JOIN commitments b ON b.id > a.id "
-        + _DUPE_WHERE + " ORDER BY sim DESC, a.id LIMIT %s",
+        + _DUPE_WHERE +
+        # Підтверджене суддею — ЗГОРИ. Інакше справжні дублі, які він знайшов
+        # у контексті новини, тонуть під парами, схожими лише написанням.
+        " ORDER BY judged_same DESC, sim DESC, a.id LIMIT %s",
         (sim, DUPE_SIM_STRONG, DUPE_SIM_SAME_ART, limit))
     return [{"a": a, "b": b, "sim": round(float(s), 2),
              "title_a": ta, "title_b": tb, "rev_a": ra, "rev_b": rb,
-             "owner": owner, "deadline": dl}
-            for a, b, s, ta, tb, ra, rb, owner, dl in cur.fetchall()]
+             "owner": owner, "deadline": dl, "judged_same": bool(js)}
+            for a, b, s, ta, tb, ra, rb, owner, dl, js in cur.fetchall()]
 
 
 def article_groups(cur, limit=40, min_records=2):
@@ -2122,11 +2148,6 @@ def article_groups(cur, limit=40, min_records=2):
         if len(out) >= limit:
             break
     return out
-
-
-# Підпис вердикту, який ставить ГРУПОВИЙ прохід парам поза групами. Окремим
-# рядком, бо за ним же їх і прибирає ремонт нижче.
-GROUP_APART = "суддя не назвав їх одним зобов'язанням"
 
 
 def save_group_verdicts(cur, ids, groups):
