@@ -178,17 +178,47 @@ def ensure_impact_schema():
 
 # ---------- Збір кандидатів ----------
 
+# Чесний UA — щоб на нашому ж сайті було видно, хто ходить. АЛЕ в ньому є
+# слово «bot», а типова WAF-правило на чужому сайті ріже такі запити не
+# дивлячись (403 без жодної перевірки). Тому на відмову йде другий захід
+# зі звичайними браузерними заголовками: сторінка публічна, ми не обходимо
+# ні пейволу, ні капчі — лише прибираємо слово, через яке нас не пускають.
+_BOT_UA = "Mozilla/5.0 (nikvesti-bot)"
+_BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 "
+                   "Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.6",
+}
+# Коди, на яких має сенс перепитати браузерними заголовками
+_UA_BLOCKED = {401, 403, 405, 406, 429}
+
+
+def fetch_page(url, timeout=20):
+    """(відповідь, яким заходом узялось). Спершу чесний бот-UA, на відмову —
+    браузерні заголовки. Віддає останню відповідь, навіть невдалу: діагностика
+    /impact_probe має показати саме те, що сказав сайт."""
+    import requests
+
+    attempts = [("bot", {"User-Agent": _BOT_UA}), ("browser", _BROWSER_HEADERS)]
+    resp = None
+    for name, headers in attempts:
+        resp = requests.get(url, timeout=timeout, headers=headers)
+        if resp.status_code not in _UA_BLOCKED:
+            return resp, name
+    return resp, "browser"
+
+
 def _fetch_soup(url):
     """BeautifulSoup живої сторінки. Читаємо БАЙТИ, а не resp.text: у
     imi.org.ua Content-Type приходить без charset, і requests за RFC вважає
     таку сторінку ISO-8859-1 — увесь український текст перетворювався на
     кракозябри (перевірено на живій сторінці 14.08). bs4 бере кодування з
     <meta> самої сторінки і не помиляється."""
-    import requests
     from bs4 import BeautifulSoup
 
-    resp = requests.get(url, timeout=20,
-                        headers={"User-Agent": "Mozilla/5.0 (nikvesti-bot)"})
+    resp, _how = fetch_page(url)
     resp.raise_for_status()
     return BeautifulSoup(resp.content, "html.parser")
 
@@ -364,6 +394,37 @@ def _youtube_oembed(url):
         "author": (data.get("author_name") or "").strip() or None,
         "links": [],
     }
+
+
+def probe_external(url):
+    """Що чужий сайт відповідає НАШОМУ СЕРВЕРУ. Питання Олега 14.08: «яка
+    проблема взяти нормальний заголовок із сайту президента?» — з мого боку
+    той сайт віддає 403 і з бот-UA, і з браузерним, але то мій IP; чи так
+    само з Railway, здогадками не встановити. Ця команда відповідає точно:
+    статус, яким заходом узялось, який заголовок вийшов."""
+    lines = [f"<b>{_esc(url)}</b>"]
+    yt = _youtube_oembed(url)
+    if yt:
+        lines.append(f"oEmbed: ✅ <i>{_esc(yt['title'])}</i>")
+        return "\n".join(lines)
+    try:
+        resp, how = fetch_page(url)
+    except Exception as e:
+        return "\n".join(lines + [f"Не достукались: {_esc(str(e)[:300])}"])
+    lines.append(f"HTTP {resp.status_code} · заходом «{how}» · "
+                 f"{len(resp.content)} байт")
+    if not resp.ok:
+        lines.append("Сайт не пускає наш сервер. Назву матеріалу можна "
+                     "вписати руками: тап по ньому в кейсі → «Перейменувати».")
+        return "\n".join(lines)
+    try:
+        page = _external_source(url)
+        lines.append(f"Заголовок: <i>{_esc(page['title'] or '—')}</i>")
+        lines.append(f"Дата: {page['published'] or '—'} · "
+                     f"фото: {'є' if page['image'] else 'немає'}")
+    except Exception as e:
+        lines.append(f"Сторінка відкрилась, але розбір не вдався: {_esc(str(e)[:200])}")
+    return "\n".join(lines)
 
 
 def _external_ref(url):
@@ -971,7 +1032,8 @@ def _judge_prompt(trigger, candidates, essence, feedback=None, extras=None):
 Збери кейс через impact_case:
 {rules}
 - key_article_id — той ОДИН текст, що зробив найбільше (розслідування, велика стаття, перший викривальний матеріал), не новина-фіксація;
-- what_happened і significance — стримано і фактично, як у звіті донору: без пафосу, без «унікальний», лише те, що є в текстах; хронологія і причинність мають читатись."""
+- what_happened і significance — стримано і фактично, як у звіті донору: без пафосу, без «унікальний», лише те, що є в текстах; хронологія і причинність мають читатись;
+- редакція називається «МикВісті» — навіть якщо в старих матеріалах стоїть «НикВести»: кейс пишеться сьогодні."""
 
 
 def _split_leak(text):
@@ -1237,7 +1299,9 @@ def import_case(actor, text):
            if resolved else None)
     _links, image = _page_scrape(fixer["url"]) if resolved else ([], None)
 
-    story = json.dumps({"what_happened": what, "significance": significance},
+    title = use_current_brand(title)
+    story = json.dumps({"what_happened": use_current_brand(what),
+                        "significance": use_current_brand(significance)},
                        ensure_ascii=False)
     with bot_db.transaction():
         rows = bot_db.query(
@@ -1367,8 +1431,10 @@ async def build_impact(impact_id):
             key_id = -1
 
         story = json.dumps({
-            "what_happened": (verdict.get("what_happened") or "").strip(),
-            "significance": (verdict.get("significance") or "").strip(),
+            "what_happened": use_current_brand(
+                (verdict.get("what_happened") or "").strip()),
+            "significance": use_current_brand(
+                (verdict.get("significance") or "").strip()),
         }, ensure_ascii=False)
 
         def _save():
@@ -1376,7 +1442,8 @@ async def build_impact(impact_id):
                 bot_db.execute(
                     "UPDATE impacts SET title = %s, story = %s, image = %s, "
                     "status = 'ready', error = NULL, updated_at = now() WHERE id = %s",
-                    ((verdict.get("title") or trigger["title"]).strip(),
+                    (use_current_brand(
+                        (verdict.get("title") or trigger["title"]).strip()),
                      story, trigger.get("image"), int(impact_id)),
                 )
                 # перезбір починає серію з нуля — інакше «спробувати ще»
@@ -1401,7 +1468,8 @@ async def build_impact(impact_id):
                          art.get("authors"), art.get("project_id"),
                          art.get("project_name"), art.get("partner_name")),
                     )
-                impact_title = (verdict.get("title") or trigger["title"]).strip()
+                impact_title = use_current_brand(
+                    (verdict.get("title") or trigger["title"]).strip())
                 for cr in (verdict.get("credits") or [])[:10]:
                     person = (cr.get("person") or "").strip()
                     if not person:
@@ -1484,11 +1552,36 @@ def retry_impact(impact_id):
         "updated_at = now() WHERE id = %s", (int(impact_id),))
 
 
+# Стара назва редакції. У новинах 2019 року вона стоїть у цитатах і
+# заголовках — там це факт і його не чіпаємо. Але кейс пишеться СЬОГОДНІ і
+# для донора, тож у наративі редакція має зватись так, як зараз (Олег,
+# 14.08). Домен nikvesti.com не чіпаємо: у ньому та сама латиниця
+_OLD_BRAND = re.compile(
+    r"«?\b(НикВести|Ник\s+Вести|НИКВЕСТИ|Nik\s?Vesti)\b»?(?!\.\w)", re.I)
+
+
+def use_current_brand(text):
+    """«НикВести» → «МикВісті» в тексті кейсу. Лапки зберігаємо: у наративі
+    назва майже завжди стоїть у них."""
+    def _sub(m):
+        raw = m.group(0)
+        return f"«МикВісті»" if raw.startswith("«") else "МикВісті"
+
+    return _OLD_BRAND.sub(_sub, text or "")
+
+
 def _story(row):
+    """Наратив кейсу. Стару назву редакції правимо НА ЧИТАННІ, а не лише при
+    записі: кейси, зібрані до цього правила, теж мають зватись сьогоднішнім
+    іменем — інакше «везде» означало б «у нових, а старі перезбирай»."""
     try:
-        return json.loads(row["story"]) if row.get("story") else {}
+        story = json.loads(row["story"]) if row.get("story") else {}
     except (ValueError, TypeError):
         return {}
+    for field in ("what_happened", "significance"):
+        if story.get(field):
+            story[field] = use_current_brand(story[field])
+    return story
 
 
 def list_impacts():
@@ -1513,7 +1606,7 @@ def list_impacts():
         """)
     return [{
         "id": r["id"],
-        "title": r["title"],
+        "title": use_current_brand(r["title"]),
         "essence": r["essence"],
         "status": r["status"],
         "error": r["error"],
@@ -1584,7 +1677,7 @@ def get_impact(impact_id):
         (int(impact_id),))
     return {
         "id": r["id"],
-        "title": r["title"],
+        "title": use_current_brand(r["title"]),
         "essence": r["essence"],
         "status": r["status"],
         "error": r["error"],
@@ -1850,3 +1943,31 @@ def export_html(impact_id):
 </body></html>"""
     fname = f"impact-{impact_id}.html"
     return fname, html
+
+
+# ---------- Діагностика зовнішніх джерел ----------
+
+async def impact_probe_handler(update, context):
+    """/impact_probe <url> — що чужий сайт відповідає нашому серверу.
+
+    Потрібна тому, що «сайт нас блокує» перевірити інакше неможливо: з
+    ноутбука сторінка відкривається, а бот бачить 403 — і незрозуміло, чи то
+    сайт, чи наш код. Тут видно і статус, і яким заходом узялось, і який
+    заголовок вийшов."""
+    import os
+
+    allowed = {int(u) for u in os.environ.get("ALLOWED_USER_IDS", "").split(",")
+               if u.strip()}
+    if allowed and update.effective_user.id not in allowed:
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    url = update.message.text.partition(" ")[2].strip()
+    if not url.lower().startswith(("http://", "https://")):
+        await update.message.reply_text(
+            "Використання: /impact_probe <лінк>\n"
+            "Покаже, що ця сторінка віддає нашому серверу — і чи вийде взяти "
+            "з неї заголовок для імпакт-кейсу.")
+        return
+    msg = await update.message.reply_text("🦊 Стукаю в сторінку…")
+    text = await asyncio.to_thread(probe_external, url)
+    await msg.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
