@@ -62,10 +62,15 @@ _PROMPT_FILE = os.path.join(
 PLAN_MODEL = "claude-sonnet-5"
 
 # Скільки слайдів просимо в агента. Стеля Instagram при ручному постингу —
-# 20 (через API 10), але карусель на десять екранів не догортує ніхто.
-MIN_SLIDES, MAX_SLIDES = 4, 7
+# 20 (через API 10), але це межа платформи, а не редакційна: карусель гортають,
+# доки цікаво, і на п'ятому екрані більшість уже вийшла.
+#
+# Було 4–7, стало 3–5 (Олег, 17.08, подивившись на живі прогони: «в тестах
+# було або 7, або 6 — давай зменшимо»). Коротка карусель ще й чесніша: агент
+# перестає розтягувати новину на два абзаци до семи екранів.
+MIN_SLIDES, MAX_SLIDES = 3, 5
 # Жорстка стеля редактора разом із фінальним CTA: більше не даємо додати.
-HARD_MAX_SLIDES = 10
+HARD_MAX_SLIDES = 8
 
 # Ліміти довжини — ті самі числа, що в промпті агента і в лічильниках UI.
 LIMITS = {"title": 70, "kicker": 28, "body": 280, "quote": 320, "caption": 120}
@@ -242,6 +247,70 @@ def _norm_ws(text):
     return re.sub(r"\s+", " ", (text or "").replace(" ", " ")).strip()
 
 
+# Хвіст атрибуції в кінці прямої мови: «…, — сказала Олена Іванова.»,
+# «…», — йдеться у відповіді на запит.» На слайді він зайвий двічі: поле
+# «хто сказав» уже є, і воно стоїть окремим рядком (Олег, 17.08: «цитата —
+# це цитата, хто сказав — це хто сказав, не мішай у цитату вставні
+# конструкції»).
+#
+# Ріжемо ДЕТЕРМІНОВАНО і тільки ВИДАЛЯЄМО: жодного слова не додається і не
+# переставляється, тож обіцянка «текст цитати — з тексту статті» лишається
+# в силі. Дієслова взяті з живих цитат 322377 і 322371.
+_SPEECH_VERB = (r"(?:сказа|зазнач|додав|додала|повідом|розпов|наголос|поясн|"
+                r"заяв|підкресл|відповів|відповіла|йдеться|йшлося|зауваж|"
+                r"резюм|підсум|прокоментув|уточн|каже|казав|казала|нагада|"
+                r"звернув|запевн|констату|вважає|зізна|поскарж|запропонув|"
+                r"запита|вигукн|перекон|іронізу|обурив|обурила)")
+
+_TAIL_RE = re.compile(
+    r"[\s,;:]*[—–]\s*(?P<tail>[^—–]{0,140}?" + _SPEECH_VERB + r"[^—–]{0,140})\s*$",
+    re.IGNORECASE)
+
+_LEAD_DASH_RE = re.compile(r"^\s*[—–]\s*")
+
+# Слова, які самі по собі нікого не називають: «зазначила вона» підписом бути
+# не може, а «сказав Роман Сеник» — може.
+_UPPER_RE = re.compile(r"[А-ЯЄІЇҐA-Z]")
+
+
+def split_speech(text):
+    """Цитата → (сама цитата, підказка «хто сказав»).
+
+    Прибирає провідне тире прямої мови, зовнішні «ялинки» і хвіст атрибуції.
+    Другим значенням повертає того, кого хвіст назвав, — але лише якщо він
+    справді когось назвав: із «зазначила вона» підпису не буває."""
+    text = (text or "").strip()
+    who = ""
+
+    m = _TAIL_RE.search(text)
+    if m:
+        text = text[:m.start()].strip()
+        tail = re.sub(r"^\W+", "", m.group("tail")).strip(" .")
+        # з хвоста лишаємо все, крім самого дієслова мовлення
+        rest = re.sub(r"^\S*" + _SPEECH_VERB + r"\S*\s*", "", tail,
+                      flags=re.IGNORECASE).strip(" ,.")
+        if rest and _UPPER_RE.search(rest):
+            who = rest
+
+    text = _LEAD_DASH_RE.sub("", text).strip()
+    text = text.rstrip(" ,;:")
+
+    # Зовнішні «ялинки» знімаємо лише коли вони парні й обрамляють усе:
+    # усередині цитати теж бувають лапки («Зеленбуд»), і зняти їх не можна
+    if (text.startswith("«") and text.endswith("»")
+            and text.count("«") == text.count("»")):
+        inner = text[1:-1]
+        if "»" not in inner or inner.count("«") == inner.count("»"):
+            text = inner.strip()
+
+    # Зрізаний хвіст лишає фразу без крапки («…як тільки знайдемо можливість»).
+    # Ставимо її: це друкарське завершення речення, а не зміна слів.
+    text = text.strip()
+    if text and text[-1] not in ".!?…»":
+        text += "."
+    return text, who
+
+
 def apply_plan_quotes(slides, quotes):
     """Підставляє в quote-слайди ТЕКСТ ІЗ СТАТТІ і карає вигадки.
 
@@ -283,8 +352,13 @@ def apply_plan_quotes(slides, quotes):
         else:
             text = original
 
-        slide["quote"] = text
+        speech, who = split_speech(text)
+        slide["quote"] = speech or text
         slide["quote_index"] = idx
+        # Агент часто лишає підпис порожнім, бо ім'я стоїть у хвості самої
+        # цитати, який ми щойно зрізали. Підставляємо його, а не втрачаємо.
+        if who and not (slide.get("attribution") or "").strip():
+            slide["attribution"] = who
         slide.pop("quote_excerpt", None)
         out.append(slide)
     return out, notes
@@ -365,6 +439,21 @@ def normalize_plan(plan, article):
 _DOC_PHOTO_RE = re.compile(
     r"скрин|скрін|screenshot|документ|акт\b|витяг|таблиц|інфографік|"
     r"допис|пост\b|переписк|лист\b|довідк|звіт\b", re.IGNORECASE)
+
+
+def better_caption(image, body):
+    """Підпис фото: спершу той, що стоїть під фото в тілі статті, і лише
+    потім JSON-LD.
+
+    Порядок саме такий, бо в тілі лежить те, що бачить читач, і воно буває
+    правильнішим: у 322371 підпис у JSON-LD виявився чужим текстом (помилка
+    сервісу автопідписів, яку CMS зберегла), а під самим фото стояло
+    «Скриншот акту обстеження будівлі у 2019 році». Фільтра «схоже на
+    сміття» тут свідомо немає: агенції в підписах пишуться латиною («Reuters»,
+    «AFP»), і будь-яке таке правило рано чи пізно з'їло б справжній кредит."""
+    return ((body.get("photo_titles") or {}).get(
+        card_maker._img_key(image.get("url") or ""))
+        or (image.get("caption") or "").strip())
 
 
 def looks_like_document(caption):
@@ -530,6 +619,8 @@ def scrape_article(url):
 
     data = card_maker.parse_article(html_text)
     body = card_maker.parse_article_body(html_text)
+    data["images"] = [dict(im, caption=better_caption(im, body))
+                      for im in data.get("images") or []]
 
     # Цитати беремо З ТІЛА статті, а не з усього документа: нумерація —
     # частина контракту з агентом, і вона мусить рахуватись від того самого
@@ -696,6 +787,13 @@ def _public_article(article):
         "images": [dict(im, doc_like=looks_like_document(im.get("caption")))
                    for im in (article.get("images") or [])],
         "quotes": article.get("quotes") or [],
+        # Розібрана цитата для редактора: у слайд іде speech, у поле «хто
+        # сказав» — who. Розбір живе в ОДНОМУ місці (Python), інакше сторінка
+        # і сервер різали б хвости по-різному.
+        "quote_parts": [
+            dict(zip(("speech", "who"), split_speech(q)))
+            for q in (article.get("quotes") or [])
+        ],
         "paragraphs": article.get("paragraphs") or [],
         "author": article.get("author"),
         "is_ad": bool(article.get("is_ad")),

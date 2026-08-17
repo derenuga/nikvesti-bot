@@ -326,6 +326,105 @@ async def main():
                       first[:2] == b"\xff\xd8" and first[-2:] == b"\xff\xd9",
                       str(first[:4]))
 
+                # ---------- 4a. Кегль, плашки, добудова кадру ----------
+                # Заголовок із двома сусідніми виділеними словами: саме на
+                # такому Олег побачив, що плашки злипаються, а текст у них
+                # стоїть низько.
+                # Далі все міряємо на ПЕРШОМУ слайді — попередні перевірки
+                # рухали активний, і тап по мініатюрі поставив би фото не туди
+                await page.evaluate("__carousel.selectSlide(0)")
+                await page.wait_for_timeout(200)
+                await page.evaluate("""() => {
+                  const S = __carousel.S, s = S.slides[0];
+                  s.type = 'cover';
+                  s.title = 'Депутати вимагають прибрати мішки з піску від Дюка';
+                  s.kicker = '';
+                  s.words = window.CardKit.tokenize(s.title, []);
+                  ['вимагають', 'прибрати', 'мішки'].forEach((w) => {
+                    const t = s.words.find((x) => x.text === w);
+                    if (t) t.hl = true;
+                  });
+                  s.slot.photoIdx = null; s.slot.photo = null;
+                  s.scheme = 0;
+                  s.fontScale = 1;
+                }""")
+                await page.wait_for_timeout(300)
+
+                plates = await page.evaluate("""() => {
+                  const CK = window.CardKit;
+                  const c = document.createElement('canvas').getContext('2d');
+                  CK.setFont(c, 100, 700);
+                  const box = CK.plateBox(c, 100, 700);
+                  return { height: box.height, top: box.top,
+                           minLh: CK.minLineH(c, 100, 700) };
+                }""")
+                check("плашка рахується з метрик шрифту, а не з констант",
+                      plates["height"] > 80 and plates["height"] < 160,
+                      str(plates))
+                check("міжрядок більший за плашку — рядки не злипаються",
+                      plates["minLh"] > plates["height"], str(plates))
+                check("плашка сидить навколо літер, а не під ними",
+                      abs(abs(plates["top"]) - plates["height"] / 2) < plates["height"] * 0.22,
+                      f"top={plates['top']:.1f} height={plates['height']:.1f}")
+
+                # Кегль: 60% має дати менше тексту на екрані, 150% — більше
+                async def ink(scale):
+                    await page.evaluate(
+                        "(s) => { __carousel.S.slides[0].fontScale = s; }", scale)
+                    await page.wait_for_timeout(150)
+                    return await page.evaluate("__carousel.sample(0, 0, 0, 1080, 1440)")
+
+                small = await ink(0.6)
+                big = await ink(1.5)
+                check("повзунок кегля справді міняє розмір тексту",
+                      big["r"] > small["r"] + 4,
+                      f"60%={small['r']:.1f} 150%={big['r']:.1f} білого")
+                await ink(1.0)
+
+                # Фото, витягнуте вище краю: низ добудовується кольором самого
+                # кадру, а не кольором схеми. Фото ставимо тапом по мініатюрі,
+                # а не присвоєнням у стан: саме тап вантажить картинку.
+                await page.click("#thumbs .thumb")
+                await page.wait_for_timeout(800)
+                check("тап по мініатюрі справді ставить фото на слайд",
+                      await page.evaluate(
+                          "!!__carousel.S.slides[__carousel.S.active].slot.photo"))
+                pulled = await page.evaluate("""() => {
+                  const s = __carousel.S.slides[0];
+                  s.slot.offY = -400;
+                  window.CardKit.clampSlot(s.slot, {x:0,y:0,w:1080,h:1440}, 0.45);
+                  return s.slot.offY;
+                }""")
+                check("кадр можна витягнути за власну висоту",
+                      pulled <= -300, f"offY={pulled}")
+                await page.wait_for_timeout(300)
+                bottom = await page.evaluate("__carousel.sample(0, 0, 1410, 1080, 25)")
+                # Кадр у прогоні червоний, фон схеми синій. Порівнюємо ВІДТІНОК,
+                # а не яскравість: градієнт добудови ще й притемнений, тож
+                # абсолютні числа малі («r=20 b=4»), а от синій фон дав би
+                # навпаки — b утричі більше за r.
+                check("порожнеча знизу добудована кольором кадру, не фоном схеми",
+                      bottom["r"] > bottom["b"] * 2,
+                      f"r={bottom['r']:.0f} g={bottom['g']:.0f} b={bottom['b']:.0f}")
+                await page.evaluate("""() => {
+                  const s = __carousel.S.slides[0];
+                  s.slot.offY = 0; s.slot.photoIdx = null; s.slot.photo = null;
+                }""")
+                await page.wait_for_timeout(200)
+
+                # Лого на світлому фоні мусить бути темним
+                await page.evaluate("() => { __carousel.S.slides[0].scheme = 2; }")
+                await page.wait_for_timeout(250)
+                logo_light = await page.evaluate("__carousel.sample(0, 84, 64, 210, 90)")
+                await page.evaluate("() => { __carousel.S.slides[0].scheme = 0; }")
+                await page.wait_for_timeout(250)
+                logo_dark = await page.evaluate("__carousel.sample(0, 84, 64, 210, 90)")
+                check("на білому фоні лого темне, а не біле на білому",
+                      logo_light["r"] < 200, f"яскравість {logo_light['r']:.0f}")
+                check("на синьому фоні лого світле",
+                      logo_dark["r"] > logo_light["r"],
+                      f"синій {logo_dark['r']:.0f} проти білого {logo_light['r']:.0f}")
+
                 # ---------- 5. Скриншоти документів ----------
                 docs = await page.evaluate("__carousel.S.images.map(i => !!i.doc_like)")
                 check("скриншоти акта позначені в бібліотеці фото",
@@ -392,9 +491,18 @@ async def main():
                 slides_q = await page.evaluate(
                     "__carousel.S.slides.filter(s => s.type === 'quote')"
                     ".map(s => s.quote)")
-                check("кожна цитата слайда дослівно є в статті",
-                      all(q in quotes for q in slides_q),
+                check("кожна цитата слайда дослівно є в тексті статті",
+                      all(any(q.rstrip(".") in orig for orig in quotes)
+                          for q in slides_q),
                       str([q[:40] for q in slides_q]))
+                check("хвіст атрибуції на слайд не поїхав",
+                      not any("сказав" in q or "запитав" in q or "заявив" in q
+                              for q in slides_q),
+                      str([q[-40:] for q in slides_q]))
+                parts = await page.evaluate("__carousel.S.article.quote_parts")
+                check("сервер віддав розібрані цитати сторінці",
+                      len(parts) == len(quotes) and all("speech" in p for p in parts),
+                      str(len(parts)))
             finally:
                 await browser.close()
 
