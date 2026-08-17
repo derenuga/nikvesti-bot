@@ -2231,6 +2231,14 @@ async def judge_article_dupes(limit=40, on_progress=None):
         conn = ep.connect()
         try:
             pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                # Разовий ремонт: зняти позначки групового проходу, які перший
+                # прогін 17.08 записав ПОВЕРХ чужих вердиктів (див.
+                # pp.drop_group_downgrades). Після виправлення це порожня дія.
+                healed = pp.drop_group_downgrades(cur)
+                if healed:
+                    print(f"банк тем: знято {healed} перезаписаних вердиктів")
+            conn.commit()
             conn.autocommit = True
             with conn.cursor() as cur:
                 return pp.article_groups(cur, limit=limit)
