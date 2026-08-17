@@ -645,6 +645,9 @@ function nav(view, arg, back, opts = {}) {
     };
     STATE.promiseSeed = null;
   }
+  // Розбір живе без прокрутки (див. fitTriage). Знімаємо прапорець на ВИХОДІ,
+  // інакше решта апки лишилась би замороженою.
+  if (view !== "triage") document.body.classList.remove("no-scroll");
   rememberView();
   paintNav();
   // KPI і його підекрани більше не пункт нижнього меню — заходять із
@@ -3923,14 +3926,13 @@ function paintTriage() {
   const c = t.counts || {};
   const left = Math.max(0, (c.pending || 0) - t.done);
   $("content").innerHTML = `
+   <div class="tr-screen">
     <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
     <div class="head-row">
       <div class="h-big">Розбір</div>
       ${t.undo ? `<button class="icon-btn" id="tr-undo"
         aria-label="Скасувати останній">${icon("rotate-ccw")}</button>` : ""}
     </div>
-    <div class="h-sub">що Лис прибрав із черги — підтверди або поверни.
-      Свайп ліворуч — шум, праворуч — лишити в черзі</div>
     <div class="tr-counts">
       <span class="tr-cnt">Лишилось <b>${left}</b></span>
       ${t.done ? `<span class="tr-cnt ok">За захід <b>${t.done}</b></span>` : ""}
@@ -3957,11 +3959,42 @@ function paintTriage() {
         <button class="tr-act good" data-swipe="good">
           ${icon("check")}<span>Лишити</span></button>
       </div>
-      <div class="tr-note">Нічого не видаляється: «шум» ховає запис із черги,
-        «лишити» повертає його туди. Будь-який свайп скасовується.</div>`
-      : triageDone()}`;
+      <div class="tr-note">Свайп ліворуч — шум, праворуч — лишити.
+        Нічого не видаляється, будь-який свайп скасовується.</div>`
+      : triageDone()}
+   </div>`;
+  fitTriage();
   wireTriage();
 }
+
+/* Екран Розбору живе РІВНО у вікні — без прокрутки.
+
+   Причина не в красі: доки сторінка могла скролитись, браузер вважав
+   вертикальний рух своїм і забирав жест посеред свайпу (Олег, 17.08:
+   «бывают скосы»). Мертва зона зменшила частоту, але не прибрала причину —
+   прибирає її відсутність прокрутки: якщо скролити нема куди, відбирати теж
+   нема чого, і колода може взяти жест повністю (touch-action: none).
+
+   Висоту беремо в Telegram, а не з 100vh: у мініапці висота змінна (шапка
+   клієнта, клавіатура), і на iOS 100vh систематично більший за видиме. */
+function triageViewportHeight() {
+  const tgh = tg && (tg.viewportStableHeight || tg.viewportHeight);
+  return Math.max(420, Math.round(tgh || window.innerHeight || 640));
+}
+
+function fitTriage() {
+  document.documentElement.style.setProperty(
+    "--tri-vh", triageViewportHeight() + "px");
+  document.body.classList.toggle("no-scroll", STATE.view === "triage");
+}
+
+/* Висота мініапки змінюється на льоту (розгортання, клавіатура) — перерахунок
+   вішаємо один раз на весь час життя сторінки. */
+if (tg && tg.onEvent) {
+  try { tg.onEvent("viewportChanged", () => { if (STATE.view === "triage") fitTriage(); }); }
+  catch (e) {}
+}
+window.addEventListener("resize", () => { if (STATE.view === "triage") fitTriage(); });
 
 /* Малюємо ПОВНІСТЮ лише верхню картку; дві під нею — порожні плашки.
 
