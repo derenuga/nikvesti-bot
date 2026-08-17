@@ -82,6 +82,13 @@ MAX_TEXT_CHARS = 12000
 
 SLIDE_TYPES = ("cover", "text", "quote", "photo", "cta")
 
+# Версія логіки плану. План кешується ГОТОВИМ (уже з підставленими цитатами),
+# тож зміна правил розбору сама собою старий кеш не лікує: 17.08 хвіст
+# «— зазначила вона» лишався на слайді ще довго після фіксу, бо новину вже
+# відкривали раніше. Міняти це число щоразу, коли міняється те, ЯК план
+# складається; записи іншої версії просто ігноруються.
+PLAN_VERSION = 2
+
 # Токен живе довго: СММ відкриває сторінку з закладки, і щоденне ходіння в
 # бота по свіжий лінк перетворило б інструмент на квест.
 TOKEN_TTL_DAYS = 30
@@ -739,7 +746,7 @@ async def api_plan(request):
     article_id = article.get("article_id") or ""
     if article_id and not force:
         cached = await asyncio.to_thread(storage.get_carousel_plan, article_id)
-        if cached and cached.get("plan"):
+        if cached and cached.get("plan") and cached.get("v") == PLAN_VERSION:
             return web.json_response({
                 "article": _public_article(article),
                 "plan": cached["plan"],
@@ -766,6 +773,7 @@ async def api_plan(request):
     if article_id and source in ("live", "fake"):
         await asyncio.to_thread(storage.save_carousel_plan, article_id, {
             "plan": plan,
+            "v": PLAN_VERSION,
             "at": datetime.now().isoformat(timespec="seconds"),
             "person": who.get("person"),
         })
