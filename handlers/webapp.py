@@ -62,7 +62,7 @@ except ImportError:  # локальний dev без aiohttp — модуль п
     web = None
 
 from handlers import (
-    back_export, bot_db, card_maker, content_report, impact_archive, team_analytics,
+    back_export, bot_db, card_maker, carousel, content_report, impact_archive, team_analytics,
     team_conditions, team_contacts, team_director, team_kpi, team_matches,
     team_notifications, team_publications, team_projects, team_reviews,
     team_roster, team_tasks, team_todos, video_download,
@@ -1947,7 +1947,7 @@ async def api_kpi_override(request):
 #    JS проти нового API стає неможливим. Заразом версійований URL можна
 #    кешувати вічно (immutable), тож повторні відкриття апки не тягнуть нічого.
 
-_STATIC_ASSETS = ("app.js", "style.css")
+_STATIC_ASSETS = ("app.js", "style.css", "cardkit.js")
 
 _asset_versions = {}   # "app.js" -> "3f2a1c0b9d" (хеш вмісту, короткий)
 _index_html = None     # відрендерений index.html із ?v=… (None — віддамо файл як є)
@@ -2141,6 +2141,9 @@ async def start_webapp(application):
         web.get("/card", card_maker.page),
         web.post("/api/card/scrape", card_maker.api_scrape),
         web.get("/api/card/img", card_maker.api_image),
+        web.get("/carousel", carousel.page),
+        web.get("/api/carousel/state", carousel.api_state),
+        web.post("/api/carousel/plan", carousel.api_plan),
         web.get("/video", video_download.page),
         web.get("/api/video/state", video_download.api_state),
         web.post("/api/video/identity", video_download.api_identity),

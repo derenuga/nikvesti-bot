@@ -25,6 +25,13 @@ PRICING = {
 }
 DEFAULT_PRICE = (3.0, 15.0)
 
+# Людські назви інструментів для розрізу «на що йшли гроші». Ключ ставить сам
+# виклик (record_ai_usage(feature=…)); незнайомий ключ друкується як є, тож
+# новий інструмент з'являється у звіті сам, а сюди дописують лише назву.
+FEATURE_TITLES = {
+    "carousel": "Каруселі для Instagram",
+}
+
 
 def _model_cost(model, rec):
     price_in, price_out = PRICING.get(model, DEFAULT_PRICE)
@@ -79,6 +86,28 @@ def format_month_report(month):
 
     lines.append("")
     lines.append(f"Разом: {total_requests} звернень до AI, {total_tokens // 1000} тис. токенів, ~${total_cost:.2f}")
+
+    # Розріз ПО ІНСТРУМЕНТАХ — відповідає на «скільки з'їли каруселі», чого
+    # розріз по людях сказати не може: той самий Лис у тієї самої людини і на
+    # питання відповідає, і слайди складає. Позначку ставить сам виклик, тому
+    # тут лише те, що вже позначене, — і про це сказано вголос, інакше «решта»
+    # читалася б як «більше ні на що не витрачали».
+    by_feature = storage.get_ai_usage_features(month)
+    if by_feature:
+        rows = []
+        tagged_cost = 0.0
+        for key, models in by_feature.items():
+            cost = models_cost(models)
+            tagged_cost += cost
+            requests = sum(m.get("requests", 0) for m in models.values())
+            rows.append((cost, requests, FEATURE_TITLES.get(key, key)))
+        lines.append("")
+        lines.append("На що йшли гроші:")
+        for cost, requests, title in sorted(rows, key=lambda r: -r[0]):
+            lines.append(f"  {title}: {requests} звернень, {fmt_cost(cost)}")
+        rest = total_cost - tagged_cost
+        if rest > 0.005:
+            lines.append(f"  Решта Лиса (ще без розрізу): ~${rest:.2f}")
 
     # Розріз по людях: тільки виклики, які ініціювала конкретна людина
     # (NLQ-питання, беки, /dossier). Решта — автоматика Лиса за розкладом.

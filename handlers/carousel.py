@@ -1,0 +1,781 @@
+"""
+Генератор каруселей для Instagram — сторінка /carousel на домені Mini App.
+
+Старший брат генератора карток (/card, handlers/card_maker.py): там одна
+картинка з заголовком, тут — 4–7 слайдів, які гортають. Флоу: СММ кидає лінк
+на новину → агент читає СТАТТЮ і пропонує зміст слайдів → людина в редакторі
+править усе (тексти, фото, порядок, типи) → «Завантажити» віддає готові JPG
+1080×1440 для ручного постингу.
+
+Агент тут — ЧЕРНЕТКА, а не продукт. Продукт — те, що затвердила людина.
+
+**Точність цитат гарантує КОД, а не промпт.** Головний ризик карусельного
+агента — красива цитата, якої ніхто не казав: підпис «Іванов, депутат» під
+переказом перетворює переказ на пряму мову. Тому агент не пише текст цитати
+ніколи. Він повертає лише НОМЕР цитати в масиві blockquote статті, а текст
+підставляє сервер із самої статті (apply_plan_quotes нижче). Для задовгих
+цитат агент може дати дослівний фрагмент — і той звіряється входженням в
+оригінал після нормалізації пробілів; не збіглось → слайд деградує у
+звичайний текстовий, а в відповіді лежить позначка про це. Стаття без
+blockquote (322389) слайдів quote не отримує взагалі — просто нема з чого.
+
+**Авторизація.** Сторінка коштує грошей (виклик Sonnet на статтю), тож
+відкритою бути не може, як /card чи /back. Вхід — персональний токен, який
+видає команда бота /carousel: резолв людини через team_roster, токен у
+storage (TTL 30 днів), кнопка з лінком. Сторінка кладе токен у localStorage
+і шле в кожен запит. Проксі картинок і сам скрап лишаються відкритими
+ендпоінтами card_maker — вони read-only і нічого не коштують.
+
+**Гроші.** Кожен план записується в /aicost і /usage РАЗОМ З ЛЮДИНОЮ
+(record_ai_usage(user_id=…)), інакше «хто скільки напитав» показувало б
+генерації каруселей як автоматику Лиса. План кешується за id новини: вдруге
+відкрита та сама новина не платить, а кнопка «Запропонувати інакше» шле
+force=true і переписує кеш.
+"""
+
+import asyncio
+import json
+import os
+import re
+import secrets
+from datetime import datetime, timedelta
+
+from handlers import card_maker, storage
+from handlers.helpers import normalize_https_url
+
+try:
+    from aiohttp import web
+except ImportError:  # локальний dev без aiohttp — веб-шар неактивний
+    web = None
+
+WEBAPP_URL = normalize_https_url(os.environ.get("WEBAPP_URL"))
+
+_STATIC_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webapp")
+
+_PROMPT_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "carousel_plan_prompt.md")
+
+# Модель: карусель — редакційний текст під іменем видання, тут не місце
+# економії на розумі. Sonnet уже є в ai_usage.PRICING.
+PLAN_MODEL = "claude-sonnet-5"
+
+# Скільки слайдів просимо в агента. Стеля Instagram при ручному постингу —
+# 20 (через API 10), але карусель на десять екранів не догортує ніхто.
+MIN_SLIDES, MAX_SLIDES = 4, 7
+# Жорстка стеля редактора разом із фінальним CTA: більше не даємо додати.
+HARD_MAX_SLIDES = 10
+
+# Ліміти довжини — ті самі числа, що в промпті агента і в лічильниках UI.
+LIMITS = {"title": 70, "kicker": 28, "body": 280, "quote": 320, "caption": 120}
+
+# Текст статті для агента. 12k символів ≈ 4k токенів: довші лонгріди
+# ріжемо і чесно про це кажемо в промпті — краще план за початком статті,
+# ніж відмова.
+MAX_TEXT_CHARS = 12000
+
+SLIDE_TYPES = ("cover", "text", "quote", "photo", "cta")
+
+# Токен живе довго: СММ відкриває сторінку з закладки, і щоденне ходіння в
+# бота по свіжий лінк перетворило б інструмент на квест.
+TOKEN_TTL_DAYS = 30
+
+# Заклики фінального слайда. Текст редагований, це лише заготовки.
+CTA_PRESETS = {
+    "subscribe": {
+        "label": "Підписка",
+        "text": "Сподобався матеріал? Підпишіться на МикВісті в Instagram — "
+                "щодня розповідаємо, що насправді відбувається в Миколаєві.",
+    },
+    "club": {
+        "label": "Клуб МикВісті",
+        "text": "Ця робота існує завдяки читачам. Приєднуйтесь до Клубу "
+                "МикВісті — і підтримайте незалежну журналістику Миколаєва.",
+    },
+    "site": {
+        "label": "Повний текст",
+        "text": "Це лише головне. Повний текст — на nikvesti.com",
+    },
+}
+DEFAULT_CTA = "subscribe"
+
+
+# ---------- Токени доступу ----------
+
+def _fresh(entry):
+    """Чи токен ще живий (виданий не давніше за TTL)."""
+    try:
+        return datetime.fromisoformat(entry["at"]) > datetime.now() - timedelta(
+            days=TOKEN_TTL_DAYS)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def token_for(person, tg_id):
+    """Персональний вхід людини на сторінку. Живий токен тієї самої людини
+    перевикористовуємо: лінк у неї в закладках має лишатись робочим, а не
+    змінюватись від кожного /carousel. Блокуючий (пише стан)."""
+    tokens = {t: who for t, who in storage.get_carousel_tokens().items()
+              if _fresh(who)}
+    for token, who in tokens.items():
+        if who.get("person") == person:
+            return token
+    token = secrets.token_urlsafe(16)
+    tokens[token] = {"person": person, "tg_id": tg_id,
+                     "at": datetime.now().isoformat(timespec="seconds")}
+    storage.save_carousel_tokens(tokens)
+    return token
+
+
+def whois(token):
+    """{person, tg_id, at} за токеном або None (немає / протух). Блокуючий."""
+    if not token:
+        return None
+    entry = storage.get_carousel_tokens().get(token)
+    return entry if entry and _fresh(entry) else None
+
+
+def carousel_url(token, article=""):
+    """Лінк на сторінку з готовим токеном (і одразу новиною, якщо дали)."""
+    if not WEBAPP_URL or not token:
+        return None
+    from urllib.parse import quote
+    link = f"{WEBAPP_URL}/carousel?k={quote(token)}"
+    if article:
+        link += "&url=" + quote(article)
+    return link
+
+
+# ---------- Промпт і схема ----------
+
+_SYSTEM_PROMPT = None
+
+
+def load_prompt():
+    """Промпт агента — окремий файл (конвенція promise_extract_prompt.md):
+    правила подачі правлять редактори, а не програміст у рядку коду."""
+    global _SYSTEM_PROMPT
+    if _SYSTEM_PROMPT is None:
+        with open(_PROMPT_FILE, encoding="utf-8") as f:
+            _SYSTEM_PROMPT = f.read()
+    return _SYSTEM_PROMPT
+
+
+_PLAN_TOOL = {
+    "name": "carousel_plan",
+    "description": "План каруселі: слайди по порядку.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "slides": {
+                "type": "array",
+                "description": f"Слайди по порядку, {MIN_SLIDES}–{MAX_SLIDES} штук. "
+                               "Перший — завжди cover.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["cover", "text", "quote", "photo"],
+                            "description": "cover — обкладинка; text — думка текстом; "
+                                           "quote — пряма мова (лише за номером цитати); "
+                                           "photo — сильний кадр із підписом",
+                        },
+                        "kicker": {
+                            "type": "string",
+                            "description": f"2–4 слова над заголовком, до "
+                                           f"{LIMITS['kicker']} знаків (необов'язково)",
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": f"Заголовок слайда, до {LIMITS['title']} знаків",
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": f"Абзац тексту, до {LIMITS['body']} знаків",
+                        },
+                        "quote_index": {
+                            "type": "integer",
+                            "description": "НОМЕР цитати зі списку цитат статті "
+                                           "(нумерація з 0). Текст цитати підставить "
+                                           "сервер — не пиши його сам.",
+                        },
+                        "quote_excerpt": {
+                            "type": "string",
+                            "description": "Дослівний фрагмент цієї ж цитати, якщо "
+                                           "повна задовга. Символ у символ, інакше "
+                                           "сервер його відкине.",
+                        },
+                        "attribution": {
+                            "type": "string",
+                            "description": "Хто сказав: ім'я і посада, як у статті",
+                        },
+                        "caption": {
+                            "type": "string",
+                            "description": f"Підпис до фото, до {LIMITS['caption']} знаків",
+                        },
+                        "photo_index": {
+                            "type": "integer",
+                            "description": "Номер фото зі списку фото статті (з 0)",
+                        },
+                    },
+                    "required": ["type"],
+                },
+            },
+            "cta_suggestion": {
+                "type": "string",
+                "enum": list(CTA_PRESETS),
+                "description": "Який фінальний заклик доречніший",
+            },
+        },
+        "required": ["slides"],
+    },
+}
+
+
+# ---------- Валідація цитат ----------
+
+def _norm_ws(text):
+    """Нормалізація пробілів для звірки фрагмента з оригіналом: у HTML вони
+    довільні, а нерозривний пробіл на око не відрізниш від звичайного."""
+    return re.sub(r"\s+", " ", (text or "").replace(" ", " ")).strip()
+
+
+def apply_plan_quotes(slides, quotes):
+    """Підставляє в quote-слайди ТЕКСТ ІЗ СТАТТІ і карає вигадки.
+
+    Правило одне: текст цитати береться з quotes[quote_index], і більше
+    нізвідки. Агент може попросити коротший фрагмент (quote_excerpt) — тоді
+    фрагмент має дослівно входити в оригінал після нормалізації пробілів.
+    Не входить або номер поза списком → слайд деградує у text (з поміткою),
+    бо порожній слайд чесніший за вигадану цитату.
+
+    Повертає (slides, notes) — notes іде в відповідь, щоб людина бачила, що
+    саме бот не прийняв, а не гадала, чому слайдів менше.
+    """
+    notes = []
+    out = []
+    for n, slide in enumerate(slides, 1):
+        slide = dict(slide)
+        if slide.get("type") != "quote":
+            slide.pop("quote_index", None)
+            slide.pop("quote_excerpt", None)
+            out.append(slide)
+            continue
+
+        idx = slide.get("quote_index")
+        if not isinstance(idx, int) or not 0 <= idx < len(quotes):
+            notes.append(f"Слайд {n}: агент послався на цитату №{idx}, "
+                         f"а в статті їх {len(quotes)} — зробив текстовим.")
+            out.append(_degrade(slide))
+            continue
+
+        original = quotes[idx]
+        excerpt = (slide.get("quote_excerpt") or "").strip()
+        if excerpt:
+            if _norm_ws(excerpt) in _norm_ws(original):
+                text = excerpt
+            else:
+                notes.append(f"Слайд {n}: агент обрізав цитату не дослівно — "
+                             f"поставив повну з тексту статті.")
+                text = original
+        else:
+            text = original
+
+        slide["quote"] = text
+        slide["quote_index"] = idx
+        slide.pop("quote_excerpt", None)
+        out.append(slide)
+    return out, notes
+
+
+def _degrade(slide):
+    """Quote-слайд без надійної цитати → звичайний текстовий."""
+    slide = dict(slide)
+    slide["type"] = "text"
+    slide.pop("quote_index", None)
+    slide.pop("quote_excerpt", None)
+    slide.pop("quote", None)
+    if not slide.get("body") and slide.get("attribution"):
+        slide["body"] = slide["attribution"]
+    slide.pop("attribution", None)
+    return slide
+
+
+def normalize_plan(plan, article):
+    """Приводить відповідь агента до того, що вміє намалювати редактор.
+
+    Це не «про всяк випадок»: модель охоче віддає photo_index поза списком,
+    quote-слайд без цитати або десять слайдів замість семи, і кожен такий
+    випадок у редакторі виглядав би поламаною сторінкою.
+    """
+    quotes = article.get("quotes") or []
+    photos = article.get("images") or []
+
+    raw = [s for s in (plan.get("slides") or []) if isinstance(s, dict)]
+    raw = [s for s in raw if s.get("type") in ("cover", "text", "quote", "photo")]
+    raw = raw[:MAX_SLIDES]
+
+    slides, notes = apply_plan_quotes(raw, quotes)
+
+    clean = []
+    for slide in slides:
+        idx = slide.get("photo_index")
+        if not isinstance(idx, int) or not 0 <= idx < len(photos):
+            idx = None
+        # Слайд-фото без фото — це порожній слайд; хай буде текстовим
+        if slide["type"] == "photo" and idx is None:
+            slide = dict(slide, type="text")
+            if not slide.get("body"):
+                slide["body"] = slide.pop("caption", "") or ""
+        slide["photo_index"] = idx
+        for key, limit in (("title", "title"), ("kicker", "kicker"),
+                           ("body", "body"), ("caption", "caption")):
+            if slide.get(key):
+                slide[key] = str(slide[key]).strip()[:LIMITS[limit] * 2]
+        clean.append(slide)
+
+    # Перший слайд — завжди обкладинка: лічильник, стрілка й пропорція
+    # каруселі рахуються від нього, а «обкладинка посередині» це не варіант
+    # подачі, а помилка агента.
+    if clean and clean[0]["type"] != "cover":
+        clean[0] = dict(clean[0], type="cover")
+    if clean and not clean[0].get("title"):
+        clean[0]["title"] = article.get("title") or ""
+    if clean and clean[0].get("photo_index") is None and photos:
+        clean[0]["photo_index"] = 0
+
+    cta = plan.get("cta_suggestion")
+    return {
+        "slides": clean,
+        "cta_suggestion": cta if cta in CTA_PRESETS else DEFAULT_CTA,
+        "notes": notes,
+    }
+
+
+# ---------- Агент ----------
+
+# Підписи, за якими видно, що це не ілюстрація, а папір. Реальний привід
+# (Олег, 17.08.2026, стаття 322371 про «Іскру»): з трьох фото статті два —
+# «Скриншот акту обстеження будівлі у 2019 році». У тексті вони на місці, на
+# весь екран у стрічці Instagram — ні. Тому такі кадри позначені і для
+# агента (щоб не ставив на обкладинку), і в редакторі (щоб людина бачила, що
+# треба підвантажити своє фото об'єкта).
+_DOC_PHOTO_RE = re.compile(
+    r"скрин|скрін|screenshot|документ|акт\b|витяг|таблиц|інфографік|"
+    r"допис|пост\b|переписк|лист\b|довідк|звіт\b", re.IGNORECASE)
+
+
+def looks_like_document(caption):
+    """Чи підпис каже, що на фото папір, а не об'єкт зйомки."""
+    return bool(_DOC_PHOTO_RE.search(caption or ""))
+
+
+def build_prompt(article, force=False):
+    """Матеріал для агента: заголовок, опис, ПРОНУМЕРОВАНІ фото й цитати,
+    текст статті. Нумерація тут — це контракт: агент повертає номери, сервер
+    за ними бере текст і картинки."""
+    lines = [
+        f"ЗАГОЛОВОК СТАТТІ: {article.get('title') or '—'}",
+        f"ОПИС (лід): {article.get('description') or '—'}",
+        "",
+    ]
+
+    photos = article.get("images") or []
+    if photos:
+        lines.append("ФОТО СТАТТІ (номер — те, що ставиш у photo_index):")
+        for i, im in enumerate(photos):
+            cap = (im.get("caption") or "").strip()
+            mark = "  ⚠ схоже на скриншот документа — не для обкладинки" \
+                if looks_like_document(cap) else ""
+            lines.append(f"  [{i}] {cap or 'без підпису'}{mark}")
+        if all(looks_like_document(im.get("caption")) for im in photos):
+            lines.append("  Усі фото статті — папір. Кольорові слайди без фото "
+                         "тут будуть кращі; редакція підвантажить свої кадри.")
+    else:
+        lines.append("ФОТО СТАТТІ: немає — усі слайди будуть кольоровими, "
+                     "photo_index не став.")
+    lines.append("")
+
+    quotes = article.get("quotes") or []
+    if quotes:
+        lines.append("ЦИТАТИ СТАТТІ (номер — те, що ставиш у quote_index; "
+                     "текст НЕ переписуй):")
+        for i, q in enumerate(quotes):
+            lines.append(f"  [{i}] {q}")
+    else:
+        lines.append("ЦИТАТ У СТАТТІ НЕМАЄ — слайдів типу quote бути не може "
+                     "взагалі. Не вигадуй пряму мову.")
+    lines.append("")
+
+    text = "\n\n".join(article.get("paragraphs") or [])
+    if len(text) > MAX_TEXT_CHARS:
+        text = text[:MAX_TEXT_CHARS] + "\n\n[текст статті обрізано — далі йде "
+        text += "продовження, якого ти не бачиш; не посилайся на нього]"
+    lines += ["ТЕКСТ СТАТТІ:", text or "—"]
+
+    if force:
+        lines += [
+            "",
+            "УВАГА: попередній варіант плану редакцію не влаштував. Зайди з "
+            "ІНШОГО КУТА — інша головна думка на обкладинці, інший порядок, "
+            "інший набір слайдів. Не переставляй слова в тому самому плані.",
+        ]
+    return "\n".join(lines)
+
+
+def clip_words(text, limit):
+    """Обрізка по межі слова: «на протиаварій» замість половини слова.
+    Різати посеред слова можна в лічильнику, але не в тому, що піде в кадр."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    if space > limit * 0.6:
+        cut = cut[:space]
+    return cut.rstrip(" ,;:—-") + "…"
+
+
+def fake_plan(article):
+    """План без моделі — для тестів (env CAROUSEL_FAKE_PLAN=1) і для випадку,
+    коли ANTHROPIC_API_KEY не налаштований. Не «заглушка про всяк випадок»:
+    ганяти живий Sonnet у кожному прогоні Playwright ні до чого, а без ключа
+    редактор має відкриватись і працювати руками."""
+    photos = article.get("images") or []
+    quotes = article.get("quotes") or []
+    paragraphs = article.get("paragraphs") or []
+
+    # Скриншоти актів і таблиць у чернетку не ставимо — те саме правило, що
+    # й для агента: на весь екран у стрічці папір не читається.
+    usable = [i for i, im in enumerate(photos)
+              if not looks_like_document(im.get("caption"))]
+
+    slides = [{
+        "type": "cover",
+        "title": clip_words(article.get("title"), LIMITS["title"]),
+        "photo_index": usable[0] if usable else None,
+    }]
+    for i, para in enumerate(paragraphs[:2]):
+        slides.append({
+            "type": "text",
+            "body": clip_words(para, LIMITS["body"]),
+            "photo_index": usable[i + 1] if i + 1 < len(usable) else None,
+        })
+    if quotes:
+        slides.append({"type": "quote", "quote_index": 0, "attribution": ""})
+    if len(paragraphs) > 2:
+        slides.append({"type": "text",
+                       "body": clip_words(paragraphs[2], LIMITS["body"])})
+    return {"slides": slides, "cta_suggestion": DEFAULT_CTA}
+
+
+async def make_plan(article, *, force=False, user_id=None, user_name=None):
+    """Виклик агента → нормалізований план. Кидає винятки виклику назовні:
+    вирішує ендпоінт (сторінка має відкритись і без плану)."""
+    from handlers.ai_messages import async_client
+
+    if os.environ.get("CAROUSEL_FAKE_PLAN") == "1":
+        return normalize_plan(fake_plan(article), article), "fake"
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return normalize_plan(fake_plan(article), article), "nokey"
+
+    msg = await async_client.messages.create(
+        model=PLAN_MODEL,
+        max_tokens=2000,
+        thinking={"type": "disabled"},
+        system=load_prompt(),
+        tools=[_PLAN_TOOL],
+        tool_choice={"type": "tool", "name": "carousel_plan"},
+        messages=[{"role": "user", "content": build_prompt(article, force)}],
+    )
+    _record_usage(msg.usage, user_id, user_name)
+    raw = next((b.input for b in msg.content if b.type == "tool_use"), None)
+    if not raw:
+        raise ValueError("агент не повернув план")
+    return normalize_plan(raw, article), "live"
+
+
+def _record_usage(usage, user_id, user_name):
+    """Облік вартості РАЗОМ З ЛЮДИНОЮ: сторінку відкривають самі СММ, і в
+    /aicost ці гроші мають лежати під їхніми іменами, а не в «автоматиці
+    Лиса». Збій обліку не має ламати генерацію."""
+    try:
+        storage.record_ai_usage(
+            PLAN_MODEL,
+            input_tokens=getattr(usage, "input_tokens", 0) or 0,
+            output_tokens=getattr(usage, "output_tokens", 0) or 0,
+            cache_read=getattr(usage, "cache_read_input_tokens", 0) or 0,
+            cache_creation=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            user_id=user_id,
+            user_name=user_name,
+            feature="carousel",   # → рядок «Каруселі для Instagram» в /aicost
+        )
+    except Exception as e:
+        print(f"carousel: облік витрат не записався — {e}")
+
+
+# ---------- Скрап ----------
+
+def scrape_article(url):
+    """Дані статті для каруселі: те саме, що бачить /card, ПЛЮС повний текст,
+    цитати по порядку і картка автора. Блокуючий (мережа)."""
+    import requests
+
+    resp = requests.get(url, timeout=card_maker.FETCH_TIMEOUT,
+                        headers={"User-Agent": card_maker._UA})
+    resp.raise_for_status()
+    html_text, final_url = resp.text, resp.url
+
+    data = card_maker.parse_article(html_text)
+    body = card_maker.parse_article_body(html_text)
+
+    # Цитати беремо З ТІЛА статті, а не з усього документа: нумерація —
+    # частина контракту з агентом, і вона мусить рахуватись від того самого
+    # контейнера, з якого взято абзаци.
+    data["quotes"] = body["quotes"]
+    data["paragraphs"] = body["paragraphs"]
+    data["author"] = body["author"]
+    data["final_url"] = final_url if card_maker._host_allowed(final_url) else url
+    data["article_id"] = article_id_from(data["final_url"])
+
+    author = data.get("author")
+    if author and author.get("photo"):
+        # Велика аватарка для круглого фото на CTA-слайді. Перевіряємо саме
+        # content-type: ресайзер на розмір, якого немає, віддає 200 з
+        # порожнім тілом і text/html, тобто «успіх» за кодом брехливий.
+        big = card_maker.author_photo_url(author["photo"])
+        author["photo_big"] = big if card_maker.probe_image(big) else author["photo"]
+
+    return data
+
+
+def article_id_from(url):
+    """id новини з URL (…/322371-slug) — ключ кеша планів і імена файлів."""
+    m = re.search(r"/(\d{4,})(?:-|$)", url or "")
+    return m.group(1) if m else ""
+
+
+# ---------- HTTP ----------
+
+def _token_of(request):
+    return (request.headers.get("X-Carousel-Key")
+            or request.query.get("k") or "").strip()
+
+
+async def _require_person(request):
+    """Хто прийшов. Повертає запис або кидає 403 зі зрозумілим текстом."""
+    who = await asyncio.to_thread(whois, _token_of(request))
+    if not who:
+        raise web.HTTPForbidden(
+            text=json.dumps({"error": "Лінк застарів або чужий. Попроси "
+                                      "свіжий у бота командою /carousel."},
+                            ensure_ascii=False),
+            content_type="application/json")
+    return who
+
+
+_page_html = None
+
+
+def render_page():
+    """carousel.html із версійованим лінком на cardkit.js.
+
+    Сторінка віддається без кеша, а ядро лежить у /static з довгим — без
+    ?v=<хеш> після деплою можна було б отримати свіжу сторінку зі старим
+    ядром. Той самий прийом, що для app.js в апці, лише рахований тут, щоб
+    не тягнути webapp у carousel (webapp уже імпортує carousel — вийшло б
+    кільце). Читаємо раз на процес."""
+    global _page_html
+    if _page_html is None:
+        import hashlib
+        with open(os.path.join(_STATIC_DIR, "carousel.html"), encoding="utf-8") as f:
+            html = f.read()
+        try:
+            with open(os.path.join(_STATIC_DIR, "cardkit.js"), "rb") as f:
+                version = hashlib.sha256(f.read()).hexdigest()[:10]
+            html = html.replace("/static/cardkit.js",
+                                f"/static/cardkit.js?v={version}")
+        except OSError as e:
+            print(f"carousel: версія cardkit.js не порахувалась — {e}")
+        _page_html = html
+    return _page_html
+
+
+async def page(request):
+    """GET /carousel — сторінка редактора. Без токена теж віддається: сама
+    сторінка покаже, що треба взяти лінк у бота (білий екран нічого не
+    пояснює, а людина зазвичай просто відкрила стару закладку)."""
+    return web.Response(
+        text=await asyncio.to_thread(render_page),
+        content_type="text/html",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+async def api_plan(request):
+    """POST /api/carousel/plan {url, force} → {article, plan, source}.
+
+    Один запит на весь вхід: сторінці однаково потрібні і дані статті, і
+    план, а скрапити ту саму сторінку двічі — марно палити ліміти сайту.
+    """
+    who = await _require_person(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "не JSON"}, status=400)
+
+    url = (body.get("url") or "").strip()
+    if re.fullmatch(r"\d{4,}", url):
+        url = "https://nikvesti.com/" + url   # сайт сам редіректить на слаг
+    if not card_maker._host_allowed(url):
+        return web.json_response(
+            {"error": "Приймаються лише посилання nikvesti.com"}, status=400)
+    force = bool(body.get("force"))
+
+    import requests
+    try:
+        article = await asyncio.to_thread(scrape_article, url)
+    except requests.RequestException as e:
+        return web.json_response(
+            {"error": f"Не вдалося прочитати сторінку: {e}"}, status=502)
+    if not article.get("title") and not article.get("paragraphs"):
+        return web.json_response(
+            {"error": "Схоже, це не сторінка матеріалу — ні заголовка, "
+                      "ні тексту не знайшлось"}, status=422)
+
+    article_id = article.get("article_id") or ""
+    if article_id and not force:
+        cached = await asyncio.to_thread(storage.get_carousel_plan, article_id)
+        if cached and cached.get("plan"):
+            return web.json_response({
+                "article": _public_article(article),
+                "plan": cached["plan"],
+                "source": "cache",
+                "planned_at": cached.get("at"),
+                "planned_by": cached.get("person"),
+            })
+
+    try:
+        plan, source = await make_plan(
+            article, force=force,
+            user_id=who.get("tg_id"), user_name=who.get("person"))
+    except Exception as e:
+        print(f"carousel: агент не склав план — {e}")
+        # Сторінка має відкритись і без агента: людина збере слайди руками,
+        # а не дивитиметься на червоне повідомлення замість редактора.
+        return web.json_response({
+            "article": _public_article(article),
+            "plan": None,
+            "source": "error",
+            "error": f"Агент не склав план ({e}). Слайди можна зібрати руками.",
+        })
+
+    if article_id and source in ("live", "fake"):
+        await asyncio.to_thread(storage.save_carousel_plan, article_id, {
+            "plan": plan,
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "person": who.get("person"),
+        })
+    return web.json_response({
+        "article": _public_article(article),
+        "plan": plan,
+        "source": source,
+    })
+
+
+def _public_article(article):
+    """Те, що потрібне редактору. Абзаци теж віддаємо: людина часто хоче
+    взяти в слайд саме речення зі статті, а не переказ агента."""
+    return {
+        "title": article.get("title") or "",
+        "description": article.get("description") or "",
+        "url": article.get("final_url") or "",
+        "article_id": article.get("article_id") or "",
+        "images": [dict(im, doc_like=looks_like_document(im.get("caption")))
+                   for im in (article.get("images") or [])],
+        "quotes": article.get("quotes") or [],
+        "paragraphs": article.get("paragraphs") or [],
+        "author": article.get("author"),
+        "is_ad": bool(article.get("is_ad")),
+    }
+
+
+async def api_state(request):
+    """GET /api/carousel/state — хто я і що вміє сторінка. Перше, що вона
+    питає: без валідного токена показуємо підказку, а не порожній редактор."""
+    who = await asyncio.to_thread(whois, _token_of(request))
+    if not who:
+        return web.json_response({"ok": False,
+                                  "hint": "Візьми свіжий лінк у бота: /carousel"},
+                                 status=403)
+    return web.json_response({
+        "ok": True,
+        "person": who.get("person"),
+        "cta_presets": CTA_PRESETS,
+        "default_cta": DEFAULT_CTA,
+        "limits": LIMITS,
+        "max_slides": HARD_MAX_SLIDES,
+    })
+
+
+# ---------- Команда бота ----------
+
+async def carousel_handler(update, context):
+    """/carousel [лінк|id] — персональний вхід на сторінку каруселей."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from handlers import team_roster
+
+    user = update.effective_user
+    person = await asyncio.to_thread(
+        team_roster.resolve_person, user.id, user.username)
+    if not person:
+        await update.message.reply_text(
+            "🦊 Не впізнав тебе в ростері редакції — сторінка каруселей "
+            "іменна. Напиши Олегу, і тебе додадуть.")
+        return
+
+    arg = " ".join(context.args or []).strip()
+    article = card_maker._host_allowed(arg) and article_id_from(arg) or ""
+    if not article and re.fullmatch(r"\d{4,}", arg):
+        article = arg
+    if arg and not article:
+        await update.message.reply_text(
+            "Це не схоже на лінк новини nikvesti.com. Приклад:\n"
+            "<code>/carousel https://nikvesti.com/322371</code>",
+            parse_mode="HTML")
+        return
+
+    token = await asyncio.to_thread(token_for, person, user.id)
+    link = carousel_url(token, article)
+    if not link:
+        await update.message.reply_text(
+            "Сторінка каруселей спить: не налаштований WEBAPP_URL.")
+        return
+
+    lines = [
+        "🦊 <b>Карусель для Instagram</b>",
+        "Кинь лінк новини — прочитаю статтю і запропоную слайди. "
+        "Далі правиш усе руками й забираєш готові JPG 1080×1440.",
+        "",
+        "<i>Лінк особистий — він твій вхід, не пересилай його.</i>",
+    ]
+    if update.effective_chat.type != "private":
+        # У приваті бот пускає лише ALLOWED_USER_IDS (Олег, Катя, Ліза), тож
+        # для решти редакції ця команда працює саме з групового чату. Мовчати
+        # про це не можна: людина спробує в приваті й отримає «доступ заборонено».
+        lines.insert(3, "Команду можна кликати звідси, з чату — лінк однаково "
+                        "особистий.")
+
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode="HTML", disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🖼 Відкрити генератор", url=link)]]))
+
+
+def carousel_button(article_id, text="🖼 Зробити карусель"):
+    """Кнопка в генератор каруселей для інших модулів. None без WEBAPP_URL —
+    і None без токена: вхід іменний, тож кнопку в нікуди не малюємо."""
+    return None if not WEBAPP_URL or not article_id else text
