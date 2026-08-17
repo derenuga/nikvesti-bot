@@ -1059,6 +1059,45 @@ def test_dupes_and_merge():
                   pp.merge_winner({"id": 2, "revisions": 3, "title": "А"},
                                   {"id": 1, "revisions": 1, "title": "Б"})[0]["id"] == 2)
 
+            # Дві живі пари, на яких Олег (17.08) назвав правило: виживає та
+            # обіцянка, яку МОЖНА ПЕРЕВІРИТИ. Механіка була сліпа до цього і
+            # в обох випадках лишала не той рядок — тобто банк вів би далі
+            # назву, за якою нічого не відстежиш.
+            citywide = {"id": 1745, "revisions": 1,
+                        "title": "Провести ямковий та аварійний ремонт доріг "
+                                 "Миколаєва"}
+            with_sum = {"id": 2059, "revisions": 1,
+                        "title": "Виділити 14 мільйонів гривень на аварійний "
+                                 "та ямковий ремонт доріг у Миколаєві"}
+            check("обіцянка «на все місто» програє тій, де є число",
+                  pp.merge_winner(citywide, with_sum)[0]["id"] == 2059)
+            check("…і в зворотному порядку теж",
+                  pp.merge_winner(with_sum, citywide)[0]["id"] == 2059)
+            check("«ремонт доріг Миколаєва» — обіцянка на все місто",
+                  pp._title_is_citywide(citywide["title"]))
+            check("рядок із числом обіцянкою «на все місто» не вважається",
+                  not pp._title_is_citywide(with_sum["title"]))
+            check("адреса в назві рятує від мітки «все місто»",
+                  not pp._title_is_citywide("Облаштувати центр на Озерній, 43"))
+
+            pkd = {"id": 2351, "revisions": 1,
+                   "title": "Розробити проєктно-кошторисну документацію для "
+                            "молодіжного та спортивно-освітнього центру на "
+                            "Озерній, 43"}
+            obj = {"id": 2352, "revisions": 1,
+                   "title": "Облаштувати молодіжний та спортивно-освітній "
+                            "центр у недобудові на Озерній, 43"}
+            check("стадія програє результату — стежать за центром, а не за ПКД",
+                  pp.merge_winner(pkd, obj)[0]["id"] == 2352)
+            check("…незалежно від порядку і меншого id",
+                  pp.merge_winner(obj, pkd)[0]["id"] == 2352)
+            check("ПКД розпізнається як підготовчий крок",
+                  pp._title_is_step(pkd["title"]))
+            check("облаштування центру кроком не вважається",
+                  not pp._title_is_step(obj["title"]))
+            check("виділення коштів — теж крок",
+                  pp._title_is_step("Виділити кошти на ремонт даху"))
+
             pairs = pp.dupe_pairs(cur)
             found = {(p["a"], p["b"]) for p in pairs}
             check("детектор бачить пару, яку не зшив суддя ланцюга",
@@ -1118,6 +1157,29 @@ def test_dupes_and_merge():
                   and (pp.load_verdicts(cur, [{"a": a, "b": other}])
                        .get(tuple(sorted((a, other)))) or {}).get("confidence")
                       == "high")
+
+            # Ворота групового судді. Вирок виносить КОД за властивостями,
+            # які назвала модель, — і саме тут три правки промпту поспіль
+            # зробили гірше. Тому правило перевіряється без моделі.
+            from handlers import promise_judge as pjg
+            check("та сама дія, яку не виконати нарізно, — одне зобов'язання",
+                  pjg.group_survives({"same_action": True,
+                                      "doable_separately": False,
+                                      "stage_of_same_result": False}))
+            check("та сама дія, але виконувана нарізно, — НЕ дубль",
+                  not pjg.group_survives({"same_action": True,
+                                          "doable_separately": True,
+                                          "stage_of_same_result": False}))
+            check("різні дії й різні об'єкти лишаються різними записами",
+                  not pjg.group_survives({"same_action": False,
+                                          "doable_separately": True,
+                                          "stage_of_same_result": False}),
+                  "прапори й «огородити котлован / прибрати дерева»")
+            check("стадія і результат однієї справи зводяться в одну тему",
+                  pjg.group_survives({"same_action": False,
+                                      "doable_separately": True,
+                                      "stage_of_same_result": True}),
+                  "ПКД центру на Озерній, 43 — це той самий центр")
 
             res = pp.merge_commitments(cur, a, b, who="тест")
             check("злиття переносить ревізії, а не видаляє докази",
