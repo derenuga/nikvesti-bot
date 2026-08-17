@@ -137,7 +137,7 @@ def format_usage_report(day, exclude_user_id=None):
         # з user_id; старі дні без ключа "ai" — просто без рядка)
         ai_models = rec.get("ai")
         if ai_models:
-            cost = ai_usage.models_cost(ai_models)
+            cost = ai_usage.models_cost(ai_models, day)
             total_ai_cost += cost
             tokens = ai_usage.models_tokens(ai_models)
             tokens_text = f"{tokens // 1000} тис." if tokens >= 1000 else str(tokens)
@@ -192,6 +192,7 @@ def format_person_report(person_query, days=30):
     total_nlq = total_backs = 0
     total_cmds, total_tools = {}, {}
     total_ai = {}
+    total_ai_cost = 0.0
     for day in sorted(matched.keys(), reverse=True):
         rec = matched[day]
         label = datetime.strptime(day, "%Y-%m-%d").strftime("%d.%m")
@@ -207,7 +208,11 @@ def format_person_report(person_query, days=30):
             parts.append(f"{sum(commands.values())} команд")
         ai_models = rec.get("ai")
         if ai_models:
-            parts.append(f"AI {ai_usage.fmt_cost(ai_usage.models_cost(ai_models))}")
+            # Ціна рахується ЗА ДЕНЬ, а не за зведеним набором: вступний прайс
+            # має дату кінця, тож вікно у 30 днів може лежати по обидва її боки.
+            day_cost = ai_usage.models_cost(ai_models, day)
+            total_ai_cost += day_cost
+            parts.append(f"AI {ai_usage.fmt_cost(day_cost)}")
         lines.append(f"📅 {label} — " + ", ".join(parts))
 
         for q in rec.get("questions", []):
@@ -241,7 +246,7 @@ def format_person_report(person_query, days=30):
     if total_cmds:
         summary.append(f"{sum(total_cmds.values())} команд")
     if total_ai:
-        cost = ai_usage.models_cost(total_ai)
+        cost = total_ai_cost          # сума денних, а не перерахунок зведеного
         tokens = ai_usage.models_tokens(total_ai)
         tokens_text = f"{tokens // 1000} тис." if tokens >= 1000 else str(tokens)
         summary.append(f"AI {ai_usage.fmt_cost(cost)} ({tokens_text} токенів)")

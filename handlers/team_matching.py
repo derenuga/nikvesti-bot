@@ -796,8 +796,14 @@ def retro_plan(since=None):
 
 
 def estimate_cost(n):
-    """($ за прогін, скільки токенів) за прайсом судді."""
-    price_in, price_out = ai_usage.PRICING.get(JUDGE_MODEL, ai_usage.DEFAULT_PRICE)
+    """($ за прогін, скільки токенів) за прайсом судді НА СЬОГОДНІ.
+
+    Саме на сьогодні, а не за постійним прайсом: оцінка показується перед тим,
+    як людина натисне «платимо», і має відповідати тому, що спишуть зараз
+    (у Sonnet 5 до 31.08.2026 діє вступна ціна — див. ai_usage.INTRO_PRICING).
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    price_in, price_out = ai_usage.price_for(JUDGE_MODEL, today)
     tin, tout = n * EST_IN_PER_NODE, n * EST_OUT_PER_NODE
     return tin / 1e6 * price_in + tout / 1e6 * price_out, tin, tout
 
