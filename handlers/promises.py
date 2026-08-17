@@ -2405,7 +2405,13 @@ def _status_payload():
             bounds = pp.data_bounds(cur)
             cur.execute("SELECT count(*) FROM commitments")
             n_com = cur.fetchone()[0]
-            cur.execute("SELECT count(*) FROM topics")
+            # Теми рахуємо ЗАЙНЯТІ, а не всі рядки таблиці. Порожні лишаються
+            # після кожного видалення й злиття (їх не вимітають поодинці —
+            # знімок відкату лежить разом з обіцянкою), і в статусі це давало
+            # відверту неправду: «обіцянок 971 · тем 1249», тобто тем більше,
+            # ніж записів, які в них лежать.
+            cur.execute("SELECT count(DISTINCT topic_id) FROM commitments "
+                        "WHERE topic_id IS NOT NULL")
             n_top = cur.fetchone()[0]
             cur.execute("SELECT count(*) FROM commitment_revisions")
             n_rev = cur.fetchone()[0]
@@ -2746,13 +2752,23 @@ async def _classify_run(bot, chat_id, msg_id=None):
         try:
             conn.autocommit = True
             with conn.cursor() as cur:
-                return pp.triage_counts(cur)
+                st = pp.triage_counts(cur)
+                # Рахуємо робочий шар ТИМ САМИМ правилом, що й черга, а не
+                # сумою типів. Перший звіт 17.08 склав «зобов'язання +
+                # риторика» й забув відняти micro: людині сказали 454, а
+                # /promise_status показав 395 — два екрани про те саме число.
+                cur.execute(
+                    "SELECT count(*) FROM commitments c "
+                    "WHERE c.status = 'expected' AND " + pp.WORKING_SQL,
+                    pp.working_params())
+                st["working"] = cur.fetchone()[0]
+                return st
         finally:
             conn.close()
 
     st = await asyncio.to_thread(summary)
     by = st["by_kind"]
-    visible = by.get("commitment", 0) + by.get("rhetoric", 0)
+    visible = st["working"]
     hidden = st["pending"] + st["noise"]
     cost = (usage["input"] * api.PRICE_IN + usage["output"] * api.PRICE_OUT)
     kind_word = {"commitment": "зобов'язання", "rhetoric": "риторика",
@@ -2762,10 +2778,11 @@ async def _classify_run(bot, chat_id, msg_id=None):
              " · ".join(f"{kind_word.get(k, k)} <b>{n}</b>"
                         for k, n in sorted(by.items(), key=lambda x: -x[1])),
              "",
-             f"У робочій черзі лишається ~<b>{visible}</b>, у тіні — "
-             f"<b>{hidden}</b>. Тінь нікуди не зникла: розбирається свайпами "
-             f"в апці (Утиліти → Банк тем → Розбір), повертається одним "
-             f"свайпом праворуч.",
+             f"У робочій черзі лишається <b>{visible}</b>, у тіні — "
+             f"<b>{hidden}</b> (сюди ж дрібні предмети — вони ховаються "
+             f"окремою віссю, тому сума типів більша). Тінь нікуди не "
+             f"зникла: розбирається свайпами в апці (Утиліти → Банк тем → "
+             f"Розбір), повертається одним свайпом праворуч.",
              f"<i>≈ ${cost:.2f} · вердикт моделі не чіпає рішень людини і "
              f"не повторюється на вже оцінених.</i>"]
     await bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
