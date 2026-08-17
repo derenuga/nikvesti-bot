@@ -1789,6 +1789,9 @@ async def api_impact_patch(request):
         asyncio.create_task(impact_archive.build_impact(impact_id))
         imp = await _in_session(impact_archive.get_impact, impact_id)
         return web.json_response(imp)
+    elif action == "rename_article":
+        await _in_session(impact_archive.rename_article, impact_id,
+                          int(payload.get("row_id")), payload.get("title"))
     elif action == "set_key":
         await _in_session(impact_archive.set_key_article, impact_id, int(payload.get("row_id")))
     elif action == "remove_article":
