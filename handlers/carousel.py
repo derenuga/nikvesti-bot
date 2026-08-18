@@ -1026,6 +1026,91 @@ async def api_plan(request):
     })
 
 
+# ---------- Чернетки ----------
+#
+# Нової бази для цього не треба: чернетка — це кілька кілобайтів JSON, і
+# лежить вона там само, де токени й кеш планів (файл стану на Volume).
+# Ключ «людина:новина», тож повторне збереження тієї самої каруселі
+# перезаписує чернетку, а не плодить копії.
+#
+# У чернетці НЕМАЄ ні статті, ні картинок: стаття тягнеться заново при
+# відкритті (це безкоштовно й заразом свіже), а власні фото з диска живуть
+# у браузері як blob-посилання, які після перезавантаження сторінки мертві
+# в принципі. Тому їх кількість записана числом — щоб сказати людині, що
+# саме доведеться підвантажити ще раз, а не мовчки віддати слайд без фото.
+
+def _draft_key(person, article_id):
+    return f"{person}:{article_id}"
+
+
+async def api_drafts(request):
+    """GET /api/carousel/drafts — чернетки цієї людини, свіжі першими."""
+    who = await _require_person(request)
+    drafts = await asyncio.to_thread(storage.get_carousel_drafts)
+    mine = [d for k, d in drafts.items()
+            if d.get("person") == who.get("person")]
+    mine.sort(key=lambda d: d.get("at", ""), reverse=True)
+    return web.json_response({"drafts": mine})
+
+
+async def api_draft_save(request):
+    """POST /api/carousel/draft — зберегти чернетку (перезаписує свою ж)."""
+    who = await _require_person(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "не JSON"}, status=400)
+
+    url = (body.get("url") or "").strip()
+    article_id = article_id_from(url)
+    if not card_maker._host_allowed(url) or not article_id:
+        return web.json_response({"error": "немає лінка новини"}, status=400)
+
+    entry = {
+        "person": who.get("person"),
+        "url": url,
+        "article_id": article_id,
+        "title": (body.get("title") or "")[:200],
+        "slides": body.get("slides") or [],
+        "cta": body.get("cta") or {},
+        "own_photos": int(body.get("own_photos") or 0),
+        "at": datetime.now().isoformat(timespec="seconds"),
+    }
+    await asyncio.to_thread(
+        storage.save_carousel_draft, _draft_key(who.get("person"), article_id), entry)
+    return web.json_response({"ok": True, "at": entry["at"]})
+
+
+async def api_draft_delete(request):
+    """DELETE /api/carousel/draft?id=<article_id> — прибрати свою чернетку."""
+    who = await _require_person(request)
+    article_id = (request.query.get("id") or "").strip()
+    if not article_id:
+        return web.json_response({"error": "немає id"}, status=400)
+    await asyncio.to_thread(
+        storage.delete_carousel_draft, _draft_key(who.get("person"), article_id))
+    return web.json_response({"ok": True})
+
+
+async def api_article(request):
+    """GET /api/carousel/article?url=… — дані статті БЕЗ виклику агента.
+
+    Потрібне для відкриття чернетки: слайди в ній свої, а фото, цитати й
+    текст статті беруться свіжими. Грошей не коштує."""
+    await _require_person(request)
+    url = (request.query.get("url") or "").strip()
+    if not card_maker._host_allowed(url):
+        return web.json_response(
+            {"error": "Приймаються лише посилання nikvesti.com"}, status=400)
+    import requests
+    try:
+        article = await asyncio.to_thread(scrape_article, url)
+    except requests.RequestException as e:
+        return web.json_response(
+            {"error": f"Не вдалося прочитати сторінку: {e}"}, status=502)
+    return web.json_response({"article": _public_article(article)})
+
+
 async def api_revise(request):
     """POST /api/carousel/slide {url, slide, others, feedback} → правка ОДНОГО
     слайда. Відповідь несе лише текстові поля — усе інше сторінка лишає своє."""

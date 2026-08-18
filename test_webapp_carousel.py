@@ -120,6 +120,11 @@ async def start_server():
         web.get("/carousel", carousel.page),
         web.get("/api/carousel/state", carousel.api_state),
         web.post("/api/carousel/plan", carousel.api_plan),
+        web.post("/api/carousel/slide", carousel.api_revise),
+        web.get("/api/carousel/article", carousel.api_article),
+        web.get("/api/carousel/drafts", carousel.api_drafts),
+        web.post("/api/carousel/draft", carousel.api_draft_save),
+        web.delete("/api/carousel/draft", carousel.api_draft_delete),
         web.static("/static", str(WEBAPP)),
     ])
     runner = web.AppRunner(app)
@@ -517,6 +522,64 @@ async def main():
                 await page.click("#viewerClose")
                 await page.wait_for_timeout(200)
                 check("прев'ю закривається", not await page.is_visible("#viewer"))
+            finally:
+                await browser.close()
+
+            # ---------- 7a. Чернетка: зберегти → закрити → продовжити ----------
+            browser, page = await open_page(pw, token)
+            try:
+                await page.wait_for_selector("#app:not([hidden])", timeout=10000)
+                await load_plan(page, "322377")
+                await page.evaluate("""() => {
+                  const s = __carousel.S.slides[1];
+                  s.title = 'Мітка чернетки';
+                  s.body = 'Текст, який має пережити закриття сторінки.';
+                  s.fontScale = 1.4;
+                  s.scheme = 2;
+                }""")
+                await page.wait_for_timeout(200)
+                await page.click("#saveDraft")
+                await page.wait_for_timeout(600)
+                check("чернетка зберігається",
+                      "Збережено" in await page.inner_text("#draftsNote"),
+                      await page.inner_text("#draftsNote"))
+            finally:
+                await browser.close()
+
+            # Нова вкладка — той самий чоловік, чернетка на місці
+            browser, page = await open_page(pw, token)
+            try:
+                await page.wait_for_selector("#app:not([hidden])", timeout=10000)
+                await page.wait_for_timeout(700)
+                check("список чернеток видно одразу",
+                      not await page.is_hidden("#draftsRow"))
+                await page.click("#draftsToggle")
+                await page.wait_for_timeout(300)
+                await page.click("#draftsList .draft button")
+                await page.wait_for_selector("#strip:not([hidden])", timeout=15000)
+                await page.wait_for_timeout(900)
+                restored = await page.evaluate("""() => {
+                  const s = __carousel.S.slides[1];
+                  return { title: s.title, body: s.body, scale: s.fontScale,
+                           scheme: s.scheme,
+                           photos: __carousel.S.images.length,
+                           quotes: (__carousel.S.article.quotes || []).length };
+                }""")
+                check("тексти слайда відновились",
+                      restored["title"] == "Мітка чернетки", str(restored["title"]))
+                check("кегль і схема теж",
+                      abs(restored["scale"] - 1.4) < 0.01 and restored["scheme"] == 2,
+                      str(restored))
+                check("стаття підтягнулась заново — фото й цитати на місці",
+                      restored["photos"] >= 2 and restored["quotes"] == 6,
+                      str(restored))
+                check("відкриття чернетки не викликало агента",
+                      "чернетка" in await page.inner_text("#planSource"),
+                      await page.inner_text("#planSource"))
+                size = await page.evaluate("__carousel.slideSize(0)")
+                check("із чернетки одразу можна експортувати",
+                      size["w"] == 1080 and size["h"] == 1440,
+                      f"{size['w']}×{size['h']}")
             finally:
                 await browser.close()
 
