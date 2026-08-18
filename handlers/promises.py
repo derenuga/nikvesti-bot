@@ -1259,6 +1259,15 @@ async def promise_dupes_handler(update, context):
         # Спершу СТАТТІ цілком: там суддя бачить контекст, і саме там живе
         # дроблення. Аж потім парні кандидати з тем.
         gstat = await judge_article_dupes(on_progress=gprog)
+
+        async def cprog(done, total):
+            await msg.edit_text(f"🧑‍⚖️ Звіряю справи між новинами: {done} з {total}…")
+
+        # Третє джерело: записи з РІЗНИХ новин зі спільним рідкісним словом.
+        # Перші два бачать або схожий рядок, або спільну статтю, і обидва
+        # сліпі до тієї самої справи, описаної в різні дні різними словами.
+        await msg.edit_text("🧑‍⚖️ Звіряю справи між новинами…")
+        cstat = await judge_cluster_dupes(limit=CLUSTER_RUN, on_progress=cprog)
         await msg.edit_text("🧑‍⚖️ Питаю суддю про нові пари…")
         # Суддя прибирає з екрана те, що впевнено назвав різним. Схожість
         # назви цього не вміє: замір 03.08 дав 0.56 у справжнього дубля і
@@ -1293,6 +1302,24 @@ async def promise_dupes_handler(update, context):
                         f"цілком — знайшов {gstat['groups']} "
                         f"{pp.plural(gstat['groups'], 'групу', 'групи', 'груп')} "
                         f"однакових записів.\n")
+    if cstat.get("clusters"):
+        judged_note += (f"🔗 Звірив {cstat['clusters']} "
+                        f"{pp.plural(cstat['clusters'], 'набір', 'набори', 'наборів')} "
+                        f"записів із різних новин")
+        got = []
+        if cstat.get("groups"):
+            got.append(f"{cstat['groups']} однакових")
+        if cstat.get("topics"):
+            got.append(f"{cstat['topics']} зобовʼязань зведено в спільні теми")
+        judged_note += (" — " + ", ".join(got) if got else " — нового не знайшов")
+        judged_note += ".\n"
+        if cstat["clusters"] >= CLUSTER_RUN:
+            judged_note += ("   <i>це не всі: за прогін звіряю "
+                            f"{CLUSTER_RUN}, решта — наступним "
+                            "/promise_dupes.</i>\n")
+    if gstat.get("topics"):
+        judged_note += (f"🧵 Усередині новин зведено тем: "
+                        f"{gstat['topics']}.\n")
     if seen:
         judged_note += (f"🧑‍⚖️ Суддя подивився {seen} нових "
                         f"{pp.plural(seen, 'пару', 'пари', 'пар')}.\n")
@@ -2451,6 +2478,34 @@ def _pending(floor, limit=None):
                         (floor, api.REGION_MYKOLAIV, pp.MAX_ATTEMPTS, limit))
 
 
+def _apply_groups(cur, ids, groups, run=None):
+    """Розкласти вердикт судді на ДВІ різні дії.
+
+    Він відповідає на два питання одразу, і наслідки в них різні:
+    «одне зобов'язання» веде до злиття (прибирає запис — тому вирішує людина),
+    «одна справа» лише зводить ТЕМИ (міняє рядок черги, нічого не прибирає —
+    тому робиться само, як і в /promise_topics).
+    """
+    merges = [g for g in (groups or []) if g.get("merge")]
+    pairs = save = pp.save_group_verdicts(cur, ids, merges)
+    topics = 0
+    for g in (groups or []):
+        if not g.get("same_case"):
+            continue
+        keep = None
+        for cid in g["ids"]:
+            cur.execute("SELECT topic_id FROM commitments WHERE id = %s", (cid,))
+            row = cur.fetchone()
+            t = row[0] if row else None
+            if not t:
+                continue
+            if keep is None:
+                keep = t
+            elif t != keep:
+                topics += pp.merge_topics(cur, keep, t, run=run)
+    return save, len(merges), topics
+
+
 async def judge_article_dupes(limit=40, on_progress=None):
     """Спитати суддю про кожну статтю ЦІЛИМ НАБОРОМ записів.
 
@@ -2508,7 +2563,8 @@ async def judge_article_dupes(limit=40, on_progress=None):
         conn = ep.connect()
         try:
             with conn.cursor() as cur:
-                groups = pairs = 0
+                groups = pairs = topics = 0
+                run_id = pp.next_run(cur)
                 for b in judged:
                     if b.get("groups") is None:
                         continue      # збій моделі — не рішення, спитаємо ще
@@ -2517,15 +2573,97 @@ async def judge_article_dupes(limit=40, on_progress=None):
                     # ОДИН прохід по всіх парах статті: і групи, і решту.
                     # Двома проходами другий затер би «одне й те саме» на
                     # «різні» — save_verdict робить upsert.
-                    pairs += pp.save_group_verdicts(cur, ids, got)
-                    groups += len(got)
+                    p_, g_, t_ = _apply_groups(cur, ids, got, run=run_id)
+                    pairs += p_
+                    groups += g_
+                    topics += t_
             conn.commit()
-            return groups, pairs
+            return groups, pairs, topics
         finally:
             conn.close()
 
-    groups, pairs = await asyncio.to_thread(remember)
-    return {"articles": len(judged), "groups": groups, "pairs": pairs}
+    groups, pairs, topics = await asyncio.to_thread(remember)
+    return {"articles": len(judged), "groups": groups, "pairs": pairs,
+            "topics": topics}
+
+
+# Скільки наборів звіряємо за один /promise_dupes. На замірі 18.08 їх 630
+# на весь банк — це пара доларів і хвилини три, тобто одним прогоном не
+# треба, а мовчки різати не можна: скільки лишилось, бот каже числом.
+CLUSTER_RUN = 120
+
+
+async def judge_cluster_dupes(limit=60, on_progress=None):
+    """Спитати суддю про записи з РІЗНИХ новин, зібрані спільним рідкісним
+    словом.
+
+    Третє джерело кандидатів. Перші два бачать або схожий РЯДОК, або спільну
+    статтю — і обидва сліпі до найдорожчого класу: та сама справа, описана
+    в різні дні різними словами. Живий замір 18.08: «Знайти в бюджеті кошти
+    на виплату надбавок працівникам культури» і «Збільшити фонд оплати праці
+    в галузі культури» — схожість 0.29, різні статті, різні теми, картки
+    предмета порожні. Жоден сигнал не спрацював, і поруч лежав ще й третій
+    запис про те саме.
+
+    Наслідків теж два: справжній дубль іде в екран на злиття, а «різні дії
+    про одну справу» зшиваються ТЕМОЮ — і тоді черга й колода розбору
+    показують одну справу одним рядком, а не тричі.
+    """
+    def load():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                return pp.word_clusters(cur, limit=limit)
+        finally:
+            conn.close()
+
+    batches = await asyncio.to_thread(load)
+    if not batches:
+        return {"clusters": 0, "groups": 0, "pairs": 0, "topics": 0}
+
+    sem = asyncio.Semaphore(pj.CONCURRENCY)
+    done = 0
+
+    async def one(b):
+        nonlocal done
+        async with sem:
+            b["groups"] = await pj.judge_article(
+                {"label": "СПІЛЬНЕ РІДКІСНЕ СЛОВО", "title": b["stem"]},
+                b["records"], rules=pj._RULES_CLUSTER)
+        done += 1
+        if on_progress and done % 10 == 0:
+            try:
+                await on_progress(done, len(batches))
+            except Exception:
+                pass
+        return b
+
+    judged = list(await asyncio.gather(*(one(b) for b in batches)))
+
+    def remember():
+        conn = ep.connect()
+        try:
+            with conn.cursor() as cur:
+                groups = pairs = topics = 0
+                run_id = pp.next_run(cur)
+                for b in judged:
+                    if b.get("groups") is None:
+                        continue      # збій моделі — не рішення
+                    ids = [r["id"] for r in b["records"]]
+                    p_, g_, t_ = _apply_groups(cur, ids, b["groups"], run=run_id)
+                    pairs += p_
+                    groups += g_
+                    topics += t_
+            conn.commit()
+            return groups, pairs, topics
+        finally:
+            conn.close()
+
+    groups, pairs, topics = await asyncio.to_thread(remember)
+    return {"clusters": len(judged), "groups": groups, "pairs": pairs,
+            "topics": topics}
 
 
 async def judge_new_dupes(limit=None):
@@ -2667,8 +2805,12 @@ async def sync_promises_incremental(bot):
         # питаннями, на які машина вже вміє відповісти. Коштує центи: нових
         # пар за годину одиниці.
         try:
-            # Спершу статті цілком (там контекст і там дроблення), потім пари.
+            # Спершу статті цілком (там контекст і там дроблення), потім
+            # набори між новинами, потім пари. Набори тут із малим лімітом:
+            # накопичене догрібає /promise_dupes, а інкремент має лише не
+            # відставати від свіжого потоку.
             await judge_article_dupes(limit=15)
+            await judge_cluster_dupes(limit=15)
             await judge_new_dupes()
         except Exception as e:
             print(f"банк тем: суддя дублів — {e}")
