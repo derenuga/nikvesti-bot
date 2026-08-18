@@ -620,7 +620,12 @@ def dupes(limit=40):
                     "a": _dupe_side(a, revs, links, now),
                     "b": _dupe_side(b, revs, links, now),
                 })
-            return {"pairs": out, "total": pp.dupe_count(cur)}
+            # Лічильник — ДРУГИЙ прохід тим самим важким детектором, і поки
+            # пари вміщаються в ліміт, він рахує те, що вже лежить у руках.
+            # Питаємо базу лише коли список справді впертий у стелю.
+            total = (len(pairs) if len(pairs) < limit
+                     else pp.dupe_count(cur))
+            return {"pairs": out, "total": total}
     finally:
         conn.close()
 
