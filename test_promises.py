@@ -1186,20 +1186,35 @@ def test_dupes_and_merge():
             check("та сама дія, яку не виконати нарізно, — одне зобов'язання",
                   pjg.group_survives({"same_action": True,
                                       "doable_separately": False,
-                                      "stage_of_same_result": False}))
+                                      "stage_of_same_result": False,
+                                      "same_object": True}))
+            # ОБ'ЄКТ — умова обов'язкова. Живий прогін 18.08: у 14 із 40
+            # підтверджених пар суддя САМ писав «але це різні підприємства /
+            # різні території», і пара все одно проходила, бо дія справді була
+            # та сама. Тарифи для двох КП, план території для двох ділянок,
+            # знаки на двох вулицях — однакова дія над РІЗНИМИ об'єктами.
+            check("однакова дія над РІЗНИМИ об'єктами злиттям не буває",
+                  not pjg.group_survives({"same_action": True,
+                                          "doable_separately": False,
+                                          "stage_of_same_result": True,
+                                          "same_object": False}),
+                  "тарифи для «Миколаївкомунтрансу» і для «Обрій-ДКП»")
             check("та сама дія, але виконувана нарізно, — НЕ дубль",
                   not pjg.group_survives({"same_action": True,
                                           "doable_separately": True,
-                                          "stage_of_same_result": False}))
+                                          "stage_of_same_result": False,
+                                          "same_object": True}))
             check("різні дії й різні об'єкти лишаються різними записами",
                   not pjg.group_survives({"same_action": False,
                                           "doable_separately": True,
-                                          "stage_of_same_result": False}),
+                                          "stage_of_same_result": False,
+                                          "same_object": True}),
                   "прапори й «огородити котлован / прибрати дерева»")
             check("стадія і результат однієї справи зводяться в одну тему",
                   pjg.group_survives({"same_action": False,
                                       "doable_separately": True,
-                                      "stage_of_same_result": True}),
+                                      "stage_of_same_result": True,
+                                      "same_object": True}),
                   "ПКД центру на Озерній, 43 — це той самий центр")
 
             # ТРЕТЄ ДЖЕРЕЛО КАНДИДАТІВ: спільне рідкісне слово.
