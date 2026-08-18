@@ -137,6 +137,15 @@
     background: #f8faff; border-radius: 8px; cursor: pointer;
   }
   .para:hover { background: #eef2fb; }
+  #draftsList[hidden] { display: none; }
+  .draft {
+    display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 10px; margin-top: 8px;
+    font-size: 13.5px;
+  }
+  .draft .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .draft .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
   details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   .revise { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
   .revise[hidden] { display: none; }
@@ -291,8 +300,14 @@
       <div class="note" id="planNote" hidden></div>
       <div class="toolrow" id="replanRow" hidden>
         <button class="ghost tiny" id="replan">Запропонувати інакше</button>
+        <button class="ghost tiny" id="saveDraft">Зберегти чернетку</button>
         <span class="hint" style="margin:0" id="planSource"></span>
       </div>
+      <div class="toolrow" id="draftsRow" hidden>
+        <button class="ghost tiny" id="draftsToggle">Мої чернетки</button>
+        <span class="hint" style="margin:0" id="draftsNote"></span>
+      </div>
+      <div id="draftsList" hidden></div>
     </div>
 
     <div class="panel" id="slidePanel" hidden>
@@ -448,6 +463,7 @@
     slides: [],
     active: 0,
     cta: { on: false, preset: "subscribe", text: "" },
+    drafts: [],
     presets: {}, limits: { title: 70, kicker: 28, body: 280, quote: 320, caption: 120 },
     maxSlides: 10,
     logo: null,
@@ -816,6 +832,145 @@
   // не поїхало у фото чи кроп.
   const REVISABLE = ["kicker", "title", "body", "quote", "quote_index",
                      "attribution", "caption"];
+
+  // ---------- Чернетки ----------
+  //
+  // Зберігаємо СЛАЙДИ, а не всю сторінку: стаття при відкритті тягнеться
+  // заново (безкоштовно й свіжа), а власні фото з диска — це blob-посилання,
+  // які після перезавантаження мертві в принципі. Тому їх кількість пишемо
+  // числом і чесно кажемо людині, що доведеться підвантажити ще раз.
+  const draftSlide = (s) => ({
+    type: s.type, kicker: s.kicker, title: s.title, body: s.body,
+    quote: s.quote, quote_index: s.quote_index, attribution: s.attribution,
+    caption: s.caption, scheme: s.scheme, fontScale: s.fontScale,
+    words: s.words,
+    slot: {
+      // Своє фото не переживе перезавантаження — лишаємо слайд без нього
+      photoIdx: S.images[s.slot.photoIdx]?.local ? null : s.slot.photoIdx,
+      zoom: s.slot.zoom, offX: s.slot.offX, offY: s.slot.offY,
+      adj: s.slot.adj, preset: s.slot.preset,
+    },
+  });
+
+  $("saveDraft").addEventListener("click", async () => {
+    const btn = $("saveDraft");
+    btn.disabled = true;
+    try {
+      const ownPhotos = S.slides.filter(
+        (s) => S.images[s.slot.photoIdx]?.local).length;
+      const resp = await api("/api/carousel/draft", {
+        method: "POST",
+        body: JSON.stringify({
+          url: S.article?.url || $("url").value.trim(),
+          title: S.article?.title || "",
+          slides: S.slides.map(draftSlide),
+          cta: S.cta,
+          own_photos: ownPhotos,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || resp.statusText);
+      $("draftsNote").textContent = ownPhotos
+        ? `Збережено. Свої фото (${ownPhotos}) доведеться підвантажити знову.`
+        : "Збережено — можна закривати й повертатись пізніше.";
+      loadDrafts();
+    } catch (e) {
+      $("draftsNote").textContent = String(e.message || e);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $("draftsToggle").addEventListener("click", () => {
+    const box = $("draftsList");
+    box.hidden = !box.hidden;
+    if (!box.hidden) loadDrafts();
+  });
+
+  async function loadDrafts() {
+    try {
+      const resp = await api("/api/carousel/drafts");
+      const data = await resp.json();
+      if (!resp.ok) return;
+      S.drafts = data.drafts || [];
+      $("draftsRow").hidden = !S.drafts.length;
+      $("draftsToggle").textContent = `Мої чернетки (${S.drafts.length})`;
+      renderDrafts();
+    } catch (e) { /* чернетки — зручність, їх відсутність нічого не ламає */ }
+  }
+
+  function renderDrafts() {
+    const box = $("draftsList");
+    box.textContent = "";
+    S.drafts.forEach((d) => {
+      const row = document.createElement("div");
+      row.className = "draft";
+      const t = document.createElement("div");
+      t.className = "t";
+      t.textContent = d.title || d.url;
+      const when = document.createElement("span");
+      when.className = "when";
+      when.textContent = (d.at || "").slice(5, 16).replace("T", " ");
+      const open = document.createElement("button");
+      open.className = "tiny";
+      open.textContent = "Відкрити";
+      open.addEventListener("click", () => openDraft(d));
+      const del = document.createElement("button");
+      del.className = "ghost tiny";
+      del.textContent = "✕";
+      del.title = "Прибрати чернетку";
+      del.addEventListener("click", async () => {
+        await api(`/api/carousel/draft?id=${encodeURIComponent(d.article_id)}`,
+                  { method: "DELETE" });
+        loadDrafts();
+      });
+      row.append(t, when, open, del);
+      box.appendChild(row);
+    });
+  }
+
+  async function openDraft(draft) {
+    $("err").hidden = true;
+    $("draftsNote").textContent = "Відкриваю…";
+    try {
+      const resp = await api(
+        "/api/carousel/article?url=" + encodeURIComponent(draft.url));
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || resp.statusText);
+      applyArticle(data.article);
+      S.slides = (draft.slides || []).map((raw) => {
+        const s = newSlide(raw.type || "text");
+        Object.assign(s, {
+          kicker: raw.kicker || "", title: raw.title || "", body: raw.body || "",
+          quote: raw.quote || "", quote_index: raw.quote_index ?? null,
+          attribution: raw.attribution || "", caption: raw.caption || "",
+          scheme: raw.scheme || 0, fontScale: raw.fontScale || 1,
+        });
+        Object.assign(s.slot, raw.slot || {});
+        s.slot.photo = null;
+        syncWords(s);
+        return s;
+      });
+      if (!S.slides.length) S.slides = [newSlide("cover")];
+      if (draft.cta) {
+        S.cta = { ...S.cta, ...draft.cta };
+        $("ctaOn").checked = S.slides.some((s) => s.type === "cta");
+        S.cta.on = $("ctaOn").checked;
+        $("ctaBody").hidden = !S.cta.on;
+        $("ctaText").value = S.cta.text || "";
+      }
+      $("url").value = draft.url;
+      $("replanRow").hidden = false;
+      $("planSource").textContent = "чернетка";
+      $("draftsList").hidden = true;
+      $("draftsNote").textContent = draft.own_photos
+        ? `Свої фото (${draft.own_photos}) підвантаж знову — вони живуть лише в браузері.`
+        : "";
+      afterLoad();
+    } catch (e) {
+      $("draftsNote").textContent = String(e.message || e);
+    }
+  }
 
   const slideDigest = (s) => ({
     type: s.type, title: s.title, body: s.body,
@@ -1825,6 +1980,8 @@
       $("ctaPresets").appendChild(b);
     });
     setCtaPreset(S.cta.preset);
+
+    loadDrafts();
 
     const pre = qp.get("url");
     if (pre) {

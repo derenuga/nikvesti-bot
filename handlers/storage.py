@@ -630,6 +630,11 @@ def save_back_export(token, entry):
 # Кеш планів — щоб повторне відкриття тієї самої новини не платило вдруге.
 CAROUSEL_TOKENS_MAX = 30
 CAROUSEL_PLANS_MAX = 30
+# Чернетки каруселей. Зберігаємо ЛИШЕ слайди й лінк — сама стаття тягнеться
+# заново при відкритті, тож запис лишається кілька кілобайтів. Класти в
+# чернетку ще й текст статті означало б роздути файл стану, який
+# перечитується й переписується на КОЖНУ операцію.
+CAROUSEL_DRAFTS_MAX = 30
 
 
 def get_carousel_tokens():
@@ -667,6 +672,33 @@ def save_carousel_plan(article_id, entry):
             for key in oldest[:len(plans) - CAROUSEL_PLANS_MAX]:
                 del plans[key]
         _write_state(state)
+
+
+def get_carousel_drafts():
+    """{ключ: чернетка} — усі збережені чернетки каруселей."""
+    with _lock:
+        return dict(_read_state().get("carousel_drafts", {}))
+
+
+def save_carousel_draft(key, entry):
+    """Кладе чернетку під ключем «людина:новина» (повторне збереження тієї
+    самої новини перезаписує, а не плодить копії)."""
+    with _lock:
+        state = _read_state()
+        drafts = state.setdefault("carousel_drafts", {})
+        drafts[key] = entry
+        if len(drafts) > CAROUSEL_DRAFTS_MAX:
+            oldest = sorted(drafts, key=lambda k: drafts[k].get("at", ""))
+            for old in oldest[:len(drafts) - CAROUSEL_DRAFTS_MAX]:
+                del drafts[old]
+        _write_state(state)
+
+
+def delete_carousel_draft(key):
+    with _lock:
+        state = _read_state()
+        if state.get("carousel_drafts", {}).pop(key, None) is not None:
+            _write_state(state)
 
 
 def get_seen_competitor_ids(source_id):
