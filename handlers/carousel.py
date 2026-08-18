@@ -83,6 +83,12 @@ HARD_MAX_SLIDES = 8
 # лійка до неї: легка адаптація, після якої йдуть читати повний текст.
 LIMITS = {"title": 55, "kicker": 20, "body": 150, "quote": 170, "caption": 90}
 
+# Підпис під постом. Instagram ховає все після ~125 знаків за «…ще», тож
+# гачок мусить бути в першому рядку, а не в кінці. Стеля з запасом на
+# 3–4 короткі абзаци; хештегів у підписі немає свідомо — рішення Олега
+# 17.08: «вони не мають сенсу».
+POST_CAPTION_MAX = 600
+
 # Текст статті для агента. 12k символів ≈ 4k токенів: довші лонгріди
 # ріжемо і чесно про це кажемо в промпті — краще план за початком статті,
 # ніж відмова.
@@ -95,7 +101,7 @@ SLIDE_TYPES = ("cover", "text", "quote", "photo", "cta")
 # «— зазначила вона» лишався на слайді ще довго після фіксу, бо новину вже
 # відкривали раніше. Міняти це число щоразу, коли міняється те, ЯК план
 # складається; записи іншої версії просто ігноруються.
-PLAN_VERSION = 4
+PLAN_VERSION = 5
 
 # Токен живе довго: СММ відкриває сторінку з закладки, і щоденне ходіння в
 # бота по свіжий лінк перетворило б інструмент на квест.
@@ -245,6 +251,12 @@ _PLAN_TOOL = {
                     },
                     "required": ["type"],
                 },
+            },
+            "post_caption": {
+                "type": "string",
+                "description": "Підпис під постом у стрічці. Перший рядок — "
+                               "гачок (до 125 знаків, далі Instagram ховає "
+                               "текст). БЕЗ хештегів.",
             },
             "cta_suggestion": {
                 "type": "string",
@@ -496,8 +508,28 @@ def normalize_plan(plan, article):
     return {
         "slides": clean,
         "cta_suggestion": cta if cta in CTA_PRESETS else DEFAULT_CTA,
+        "post_caption": clean_caption(plan.get("post_caption")),
         "notes": notes,
     }
+
+
+# Хештеги в підписі не потрібні (рішення Олега 17.08: «вони не мають сенсу»),
+# і просити про це промпт — половина заходу: модель усе одно час від часу дописує
+# «#Миколаїв #новини» в кінець. Тому зрізаємо їх кодом — так само, як усе
+# інше, що не має доїхати до людини.
+_HASHTAG_RE = re.compile(r"(?:^|\s)#[^\s#]+")
+
+
+def clean_caption(text):
+    """Підпис під пост: без хештегів, без порожніх хвостів, у межах стелі."""
+    text = _HASHTAG_RE.sub(" ", str(text or ""))
+    lines = [ln.strip() for ln in text.splitlines()]
+    while lines and not lines[-1]:
+        lines.pop()
+    text = "\n".join(lines).strip()
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text[:POST_CAPTION_MAX]
 
 
 # ---------- Агент ----------
@@ -629,7 +661,9 @@ def fake_plan(article):
     if len(paragraphs) > 2:
         slides.append({"type": "text",
                        "body": clip_words(paragraphs[2], LIMITS["body"])})
-    return {"slides": slides, "cta_suggestion": DEFAULT_CTA}
+    lead = (article.get("description") or article.get("title") or "").strip()
+    return {"slides": slides, "cta_suggestion": DEFAULT_CTA,
+            "post_caption": clip_words(lead, 200)}
 
 
 # ---------- Правка ОДНОГО слайда за підказкою людини ----------
@@ -670,6 +704,8 @@ _SLIDE_TOOL = {
                      "description": "лише для НОВОГО слайда: який він"},
             "photo_index": {"type": "integer",
                             "description": "лише для НОВОГО слайда: номер фото"},
+            "post_caption": {"type": "string",
+                             "description": "лише для правки підпису під постом"},
             "note": {"type": "string",
                      "description": "одне речення людині: що саме ти змінив"},
         },
@@ -706,7 +742,11 @@ def build_revise_prompt(article, slide, feedback, others, mode="fix"):
             lines.append(f"  [{i}] {cap or 'без підпису'}{mark}")
         lines.append("")
 
-    if slide:
+    if mode == "caption":
+        lines.append("ПОТОЧНИЙ ПІДПИС ПІД ПОСТОМ:")
+        lines.append((slide or {}).get("caption") or "(порожній)")
+        lines.append("")
+    elif slide:
         lines.append(f"СЛАЙД, ЯКИЙ ТРЕБА ВИПРАВИТИ (тип {slide.get('type')}):")
         for key in ("kicker", "title", "body", "quote", "attribution", "caption"):
             if slide.get(key):
@@ -724,7 +764,13 @@ def build_revise_prompt(article, slide, feedback, others, mode="fix"):
     if feedback.strip():
         lines += ["ЩО КАЖЕ РЕДАКТОР:", feedback.strip(), ""]
 
-    if mode == "new":
+    if mode == "caption":
+        lines += [
+            "ЗАВДАННЯ: перепиши ПІДПИС під постом (поле post_caption).",
+            "Слайди не чіпай — їх ти тут не міняєш узагалі.",
+            "Виклич інструмент slide_fix.",
+        ]
+    elif mode == "new":
         lines += [
             "ЗАВДАННЯ: додай ОДИН новий слайд до цієї каруселі.",
             "Він мусить давати те, чого на наявних слайдах ЩЕ НЕМАЄ — не",
@@ -771,6 +817,10 @@ async def revise_slide(article, slide, feedback, others=(), *, mode="fix",
         raise ValueError("агент не повернув правку")
 
     # Беремо ЛИШЕ дозволені поля — решту відповіді ігноруємо мовчки
+    if mode == "caption":
+        caption = clean_caption(raw.get("post_caption"))
+        return ({"post_caption": caption} if caption else {}), \
+            (raw.get("note") or "").strip(), []
     allowed = NEW_SLIDE_FIELDS if mode == "new" else REVISABLE_FIELDS
     fixed = {k: raw[k] for k in allowed if k in raw}
     note = (raw.get("note") or "").strip()
@@ -1073,6 +1123,7 @@ async def api_draft_save(request):
         "title": (body.get("title") or "")[:200],
         "slides": body.get("slides") or [],
         "cta": body.get("cta") or {},
+        "caption": clean_caption(body.get("caption")),
         "own_photos": int(body.get("own_photos") or 0),
         "at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -1121,7 +1172,7 @@ async def api_revise(request):
         return web.json_response({"error": "не JSON"}, status=400)
 
     feedback = (body.get("feedback") or "").strip()
-    mode = "new" if body.get("mode") == "new" else "fix"
+    mode = body.get("mode") if body.get("mode") in ("new", "caption") else "fix"
     slide = body.get("slide") or {}
     # Для нового слайда підказка НЕ обовʼязкова: «додай ще один» — теж завдання
     if mode == "fix" and not feedback:

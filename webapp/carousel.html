@@ -372,6 +372,25 @@
       </div>
     </div>
 
+    <div class="panel" id="captionPanel" hidden>
+      <h2>Підпис під постом</h2>
+      <div class="field">
+        <label for="postCaption">
+          Текст у стрічці під каруселлю
+          <span class="count" id="captionCount"></span>
+        </label>
+        <textarea id="postCaption" class="tall" spellcheck="false"></textarea>
+      </div>
+      <div class="toolrow">
+        <button class="tiny" id="copyCaption">Скопіювати</button>
+        <button class="ghost tiny" id="captionRedo">Переписати підпис</button>
+        <span class="hint" style="margin:0" id="captionNote"></span>
+      </div>
+      <div class="hint">Перші ~125 знаків Instagram показує в стрічці, решту
+        ховає під «…ще» — тому гачок має бути в першому рядку. Хештегів немає
+        свідомо.</div>
+    </div>
+
     <div class="panel" id="ctaPanel" hidden>
       <h2>5 · Фінальний слайд</h2>
       <label class="row">
@@ -463,6 +482,7 @@
     slides: [],
     active: 0,
     cta: { on: false, preset: "subscribe", text: "" },
+    caption: "",
     drafts: [],
     presets: {}, limits: { title: 70, kicker: 28, body: 280, quote: 320, caption: 120 },
     maxSlides: 10,
@@ -602,6 +622,7 @@
     });
     if (!S.slides.length) S.slides = [newSlide("cover")];
     S.active = 0;
+    if (plan.post_caption) setCaption(plan.post_caption);
     if (plan.cta_suggestion) {
       S.cta.preset = plan.cta_suggestion;
       setCtaPreset(plan.cta_suggestion);
@@ -611,7 +632,8 @@
 
   function afterLoad() {
     S.slides.forEach((s) => ensurePhoto(s));
-    ["slidePanel", "photoPanel", "stylePanel", "ctaPanel"].forEach((id) => { $(id).hidden = false; });
+    ["slidePanel", "photoPanel", "stylePanel", "ctaPanel", "captionPanel"]
+      .forEach((id) => { $(id).hidden = false; });
     $("strip").hidden = false;
     $("dlAll").disabled = false;
     $("dlOne").disabled = false;
@@ -865,6 +887,7 @@
           title: S.article?.title || "",
           slides: S.slides.map(draftSlide),
           cta: S.cta,
+          caption: S.caption,
           own_photos: ownPhotos,
         }),
       });
@@ -959,6 +982,7 @@
         $("ctaBody").hidden = !S.cta.on;
         $("ctaText").value = S.cta.text || "";
       }
+      setCaption(draft.caption || "");
       $("url").value = draft.url;
       $("replanRow").hidden = false;
       $("planSource").textContent = "чернетка";
@@ -971,6 +995,70 @@
       $("draftsNote").textContent = String(e.message || e);
     }
   }
+
+  // ---------- Підпис під постом ----------
+  function setCaption(text) {
+    S.caption = text || "";
+    $("postCaption").value = S.caption;
+    paintCaptionCount();
+  }
+
+  function paintCaptionCount() {
+    // Показуємо не «скільки лишилось», а де саме обріже Instagram: людині
+    // важливо, чи влазить гачок у видиму частину
+    const n = $("postCaption").value.length;
+    const el = $("captionCount");
+    el.textContent = n <= 125 ? `${n} — видно повністю`
+                              : `${n} · у стрічці видно перші 125`;
+    el.classList.toggle("over", n > 600);
+  }
+
+  $("postCaption").addEventListener("input", (e) => {
+    S.caption = e.target.value;
+    paintCaptionCount();
+  });
+
+  $("copyCaption").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText($("postCaption").value);
+      $("captionNote").textContent = "Скопійовано";
+    } catch (e) {
+      $("postCaption").select();
+      $("captionNote").textContent = "Виділив — копіюй Ctrl+C";
+    }
+  });
+
+  $("captionRedo").addEventListener("click", async () => {
+    const btn = $("captionRedo");
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = "Переписую…";
+    $("captionNote").textContent = "";
+    try {
+      const resp = await api("/api/carousel/slide", {
+        method: "POST",
+        body: JSON.stringify({
+          url: S.article?.url || $("url").value.trim(),
+          mode: "caption",
+          feedback: $("reviseText").value.trim(),
+          slide: { type: "text", caption: S.caption },
+          others: S.slides.map((s) => ({
+            type: s.type, title: s.title, body: s.body,
+            quote: s.quote, caption: s.caption,
+          })),
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || resp.statusText);
+      if (data.slide?.post_caption) setCaption(data.slide.post_caption);
+      $("captionNote").textContent = data.note || "готово";
+    } catch (e) {
+      $("captionNote").textContent = String(e.message || e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  });
 
   const slideDigest = (s) => ({
     type: s.type, title: s.title, body: s.body,
