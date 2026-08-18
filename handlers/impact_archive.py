@@ -406,13 +406,70 @@ def _external_source(url):
     }
 
 
-def _youtube_oembed(url):
-    """Заголовок і превʼю відео через oEmbed. Сторінку YouTube роботам не
-    віддає взагалі (429 і редирект на google.com/sorry — перевірено на
-    лінку Олега 14.08), а oEmbed відкритий і повертає рівно те, що потрібно
-    рядку серії."""
-    if not re.search(r"(youtube\.com|youtu\.be)", url or ""):
+_YOUTUBE_ID = re.compile(
+    r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|embed/|live/))"
+    r"([A-Za-z0-9_-]{6,})")
+
+
+def youtube_id(url):
+    m = _YOUTUBE_ID.search(url or "")
+    return m.group(1) if m else None
+
+
+def canonical_url(url):
+    """Канонічний вигляд лінка. Потрібен для ДЕДУПУ: один і той самий ролик
+    приїжджає в кейс двічі, бо у формі він `youtu.be/X`, а в тексті —
+    `youtube.com/watch?v=X` (Олег, 14.08: «одна була вгорі в списку, друга в
+    текстовому полі для контексту»). Заразом зрізаємо хвости стеження, які
+    ділилка додає до того самого лінка."""
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+    url = (url or "").strip()
+    vid = youtube_id(url)
+    if vid:
+        return f"https://youtu.be/{vid}"
+    try:
+        u = urlparse(url)
+    except ValueError:
+        return url
+    if not u.scheme:
+        return url
+    # utm_* — сімейство, решта — точні імена: «si» як префікс з'їв би і
+    # «since», і «size», а це вже інший параметр і інша сторінка
+    query = [(k, v) for k, v in parse_qsl(u.query)
+             if not k.lower().startswith("utm_")
+             and k.lower() not in {"si", "fbclid", "gclid", "igshid"}]
+    return urlunparse((u.scheme.lower(), u.netloc.lower(),
+                       u.path.rstrip("/") or "/", "", urlencode(query), ""))
+
+
+def _youtube_ref(url):
+    """Відео як матеріал серії: назва, ДАТА ЗАВАНТАЖЕННЯ, превʼю.
+
+    Сторінку YouTube роботам не віддає взагалі (429 і редирект на
+    google.com/sorry), тож два джерела. Перше — Data API тим самим OAuth, що
+    вже возить статистику каналу: він єдиний знає `publishedAt`, і без нього
+    відео стоїть у серії без дати й ламає хронологію (Олег, 14.08). Друге —
+    відкритий oEmbed: він дає назву, але дати не має взагалі."""
+    vid = youtube_id(url)
+    if not vid:
         return None
+    ref = {"url": f"https://youtu.be/{vid}", "title": "", "text": "",
+           "image": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+           "published": 0, "site": "youtube.com", "author": None, "links": []}
+    try:
+        from handlers import youtube_analytics
+
+        if youtube_analytics.is_configured():
+            items = youtube_analytics.get_videos_by_ids([vid])
+            if items:
+                ref["title"] = (items[0].get("title") or "").strip()
+                ref["text"] = ref["title"]
+                ref["published"] = _parse_ts(items[0].get("published_at"))
+    except Exception as e:
+        print(f"impact: YouTube Data API не дав відео {vid} — {e}")
+    if ref["title"]:
+        return ref
     try:
         import requests
 
@@ -422,17 +479,12 @@ def _youtube_oembed(url):
         data = resp.json()
     except Exception as e:
         print(f"impact: oEmbed YouTube не відповів — {e}")
-        return None
-    return {
-        "url": url,
-        "title": (data.get("title") or "").strip(),
-        "text": (data.get("title") or "").strip(),
-        "image": data.get("thumbnail_url"),
-        "published": 0,
-        "site": "youtube.com",
-        "author": (data.get("author_name") or "").strip() or None,
-        "links": [],
-    }
+        return ref if ref["title"] else None
+    ref["title"] = (data.get("title") or "").strip()
+    ref["text"] = ref["title"]
+    ref["image"] = data.get("thumbnail_url") or ref["image"]
+    ref["author"] = (data.get("author_name") or "").strip() or None
+    return ref
 
 
 def probe_external(url):
@@ -442,7 +494,7 @@ def probe_external(url):
     само з Railway, здогадками не встановити. Ця команда відповідає точно:
     статус, яким заходом узялось, який заголовок вийшов."""
     lines = [f"<b>{_esc(url)}</b>"]
-    yt = _youtube_oembed(url)
+    yt = _youtube_ref(url)
     if yt:
         lines.append(f"oEmbed: ✅ <i>{_esc(yt['title'])}</i>")
         return "\n".join(lines)
@@ -482,7 +534,7 @@ def _external_ref(url):
     через те, що чужий сайт не любить скрапінг (Олег, 14.08 кинув у поправку
     лінк на відео, і YouTube віддав роботу 429). Тому три рівні: oEmbed для
     відео → читання сторінки → сам лінк як назва. Порожнім це не буває."""
-    ref = _youtube_oembed(url)
+    ref = _youtube_ref(url)
     if not ref:
         try:
             ref = _external_source(url)
@@ -492,7 +544,7 @@ def _external_ref(url):
                    "site": _site_of(url), "image": None}
     return {
         "id": None,
-        "url": ref["url"],
+        "url": canonical_url(ref["url"]),
         "title": ref.get("title") or url,
         "published": int(ref.get("published") or 0),
         "site": ref.get("site"),
@@ -1202,7 +1254,28 @@ def hint_urls(row):
     все почалось», і розносити його по таблиці нема чого. `our_url` читається
     як запасний — там лежать кейси, заведені до появи плюсика."""
     raw = (row.get("our_urls") or row.get("our_url") or "")
-    return [u.strip() for u in raw.split("\n") if u.strip()]
+    # дедуп саме тут: у кейсах, заведених до канонізації, той самий ролик
+    # лежить у двох написаннях, і без цього перезбір читав би його двічі
+    return _dedupe_links(raw.split("\n"))
+
+
+def _dedupe_links(urls, skip=None):
+    """Список лінків без повторів. Порівнюємо КАНОНІЧНИЙ вигляд, а зберігаємо
+    той, який дала людина: `youtu.be/X` і `youtube.com/watch?v=X` — один
+    матеріал, і в серії він має бути один."""
+    seen, out = set(), []
+    if skip:
+        seen.add(canonical_url(skip))
+    for u in urls:
+        u = (u or "").strip()
+        if not u:
+            continue
+        key = canonical_url(u)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(u)
+    return out
 
 
 def create_impact(actor, source_url, essence, our_urls=None):
@@ -1217,9 +1290,8 @@ def create_impact(actor, source_url, essence, our_urls=None):
         our_urls = [our_urls]
     # Лінки, згадані в «суті», — теж матеріали кейсу: людина пише абзацом, а
     # не заповнює поля. Сам лінк-тригер серед них не потрібен
-    hints = [u.strip() for u in (our_urls or []) if u and u.strip()]
-    hints += [u for u in urls_in(essence)
-              if u not in hints and u != (source_url or "").strip()]
+    hints = _dedupe_links(list(our_urls or []) + urls_in(essence),
+                          skip=source_url)
     hints = "\n".join(hints)
     rows = bot_db.query(
         "INSERT INTO impacts (essence, source_url, our_urls, created_by) "
@@ -1586,10 +1658,8 @@ def save_feedback(impact_id, feedback=None, our_urls=None):
     if our_urls is not None:
         if isinstance(our_urls, str):
             our_urls = [our_urls]
-        merged = [u.strip() for u in our_urls if u and u.strip()]
         # Лінк, кинутий прямо в текст поправки, не має губитись
-        merged += [u for u in urls_in(feedback) if u not in merged]
-        hints = "\n".join(merged)
+        hints = "\n".join(_dedupe_links(list(our_urls) + urls_in(feedback)))
         sets.append("our_urls = %s")
         params.append(hints or None)
     params.append(int(impact_id))
@@ -1606,7 +1676,7 @@ def add_hint_url(impact_id, url):
     if not rows:
         return None
     urls = hint_urls(rows[0])
-    if url in urls:
+    if canonical_url(url) in {canonical_url(u) for u in urls}:
         return None
     urls.append(url)
     return bot_db.execute("UPDATE impacts SET our_urls = %s WHERE id = %s",
@@ -1763,8 +1833,10 @@ def get_impact(impact_id):
     r = rows[0]
     story = _story(r)
     arts = bot_db.query(
+        # NULLIF: у зовнішнього матеріалу дата буває нульова, і без цього
+        # він ставав НА ПОЧАТОК серії — попереду всього, що сталось насправді
         "SELECT * FROM impact_articles WHERE impact_id = %s "
-        "ORDER BY published NULLS LAST, id", (int(impact_id),))
+        "ORDER BY NULLIF(published, 0) NULLS LAST, id", (int(impact_id),))
     credits = bot_db.query(
         "SELECT id, person, note FROM impact_credits WHERE impact_id = %s ORDER BY id",
         (int(impact_id),))
