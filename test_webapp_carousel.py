@@ -537,7 +537,15 @@ async def main():
                   s.fontScale = 1.4;
                   s.scheme = 2;
                 }""")
-                await page.wait_for_timeout(200)
+                caption = await page.input_value("#postCaption")
+                check("агент дав підпис під пост", len(caption) > 20, caption[:60])
+                check("у підписі немає хештегів", "#" not in caption, caption[-60:])
+                check("видно, де Instagram обріже підпис",
+                      "125" in await page.inner_text("#captionCount")
+                      or "повністю" in await page.inner_text("#captionCount"),
+                      await page.inner_text("#captionCount"))
+                await page.fill("#postCaption", "Свій підпис під пост.")
+                await page.wait_for_timeout(150)
                 await page.click("#saveDraft")
                 await page.wait_for_timeout(600)
                 check("чернетка зберігається",
@@ -577,6 +585,9 @@ async def main():
                       "чернетка" in await page.inner_text("#planSource"),
                       await page.inner_text("#planSource"))
                 size = await page.evaluate("__carousel.slideSize(0)")
+                check("підпис під пост теж відновився",
+                      await page.input_value("#postCaption") == "Свій підпис під пост.",
+                      await page.input_value("#postCaption"))
                 check("із чернетки одразу можна експортувати",
                       size["w"] == 1080 and size["h"] == 1440,
                       f"{size['w']}×{size['h']}")
