@@ -1505,9 +1505,13 @@
   function chromeOf(i) {
     const slide = S.slides[i];
     const nums = S.slides.filter((s) => s.type !== "cta").length;
+    const counter = slide && slide.type !== "cta" ? `${i + 1}/${nums}` : null;
     return {
-      counter: slide && slide.type !== "cta" ? `${i + 1}/${nums}` : null,
+      counter,
       chevron: !isLast(i),
+      // Що стоїть біля шеврона внизу праворуч. На обкладинці корисніше
+      // запросити гортати, ніж повідомити «1/5» — це й так перший екран.
+      label: slide && slide.type === "cover" ? "гортайте" : counter,
     };
   }
 
@@ -1525,46 +1529,41 @@
       c.restore();
     }
 
-    if (chrome.counter) {
-      const label = chrome.counter;
-      CK.setFont(c, 32, 600);
-      c.textBaseline = "middle";
-      const tw = c.measureText(label).width;
-      c.save();
-      if (light) { c.shadowColor = "rgba(0,0,0,.5)"; c.shadowBlur = 10; }
-      c.fillStyle = tint;
-      c.globalAlpha = 0.92;
-      c.fillText(label, W - PAD - tw, 64 + 46);
-      c.restore();
-      c.globalAlpha = 1;
-    }
-
-    if (chrome.chevron) drawChevron(c, tint, slide.type === "cover");
+    // Лічильник живе ВНИЗУ, біля шеврона. Угорі праворуч його малює сам
+    // Instagram — там висить рідний «2/5», і наш ставав другим таким самим
+    // числом поруч (Олег, 17.08).
+    drawBottomRow(c, tint, chrome.label, chrome.chevron);
   }
 
-  function drawChevron(c, tint, withHint) {
+  function drawBottomRow(c, tint, label, withChevron) {
+    if (!label && !withChevron) return;
     const x = W - PAD, y = H - 78, s = 17;
     c.save();
     c.shadowColor = "rgba(0,0,0,.45)";
     c.shadowBlur = 10;
-    if (withHint) {
-      CK.setFont(c, 28, 500);
+
+    let right = x;
+    if (withChevron) {
+      c.strokeStyle = tint;
+      c.lineWidth = 6;
+      c.lineCap = "round";
+      c.lineJoin = "round";
+      c.beginPath();
+      c.moveTo(x - s * 2, y - s);
+      c.lineTo(x - s * 0.6, y);
+      c.lineTo(x - s * 2, y + s);
+      c.stroke();
+      right = x - s * 2 - 20;
+    }
+
+    if (label) {
+      CK.setFont(c, 30, 600);
       c.textBaseline = "middle";
       c.fillStyle = tint;
-      c.globalAlpha = 0.9;
-      const t = "гортайте";
-      c.fillText(t, x - s * 2 - 18 - c.measureText(t).width, y);
+      c.globalAlpha = 0.92;
+      c.fillText(label, right - c.measureText(label).width, y);
       c.globalAlpha = 1;
     }
-    c.strokeStyle = tint;
-    c.lineWidth = 6;
-    c.lineCap = "round";
-    c.lineJoin = "round";
-    c.beginPath();
-    c.moveTo(x - s * 2, y - s);
-    c.lineTo(x - s * 0.6, y);
-    c.lineTo(x - s * 2, y + s);
-    c.stroke();
     c.restore();
   }
 
