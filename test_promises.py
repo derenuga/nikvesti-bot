@@ -1202,6 +1202,27 @@ def test_dupes_and_merge():
                                       "stage_of_same_result": True}),
                   "ПКД центру на Озерній, 43 — це той самий центр")
 
+            # ПАКЕТ ЗЛИТТЯ ОДНИМ ТАПОМ. Кнопки під /promise_dupes — не
+            # прикраса: десять готових команд поспіль означають десять ручних
+            # вводів у чаті, і Олег зупинився саме на цьому (17.08). Тут
+            # перевіряється контракт клавіатури: обрані ВСІ одразу (суддя вже
+            # сказав «так», людина знімає незгодні), а на кнопці стоїть число
+            # саме обраних.
+            from handlers import promises as ph
+            kb = ph._dupes_keyboard([(1, 2), (3, 4), (5, 6)], set())
+            flat = [x.text for row in kb.inline_keyboard for x in row]
+            check("за замовчуванням обрані всі пари", flat[:3] == ["✅1", "✅2", "✅3"],
+                  str(flat))
+            check("кнопка називає число обраних", flat[-1].endswith("(3)"), flat[-1])
+            kb2 = ph._dupes_keyboard([(1, 2), (3, 4), (5, 6)], {1})
+            flat2 = [x.text for row in kb2.inline_keyboard for x in row]
+            check("знята пара видно як знята", flat2[1] == "☐2", str(flat2))
+            check("…і число на кнопці зменшилось", flat2[-1].endswith("(2)"),
+                  flat2[-1])
+            kb0 = ph._dupes_keyboard([(1, 2)], {0})
+            check("порожній вибір не пропонує злиття",
+                  kb0.inline_keyboard[-1][0].callback_data == "pdm:nop")
+
             res = pp.merge_commitments(cur, a, b, who="тест")
             check("злиття переносить ревізії, а не видаляє докази",
                   res and res["revisions"] == 1, str(res))

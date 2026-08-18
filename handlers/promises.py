@@ -53,6 +53,7 @@ from handlers import bot_db
 from handlers.helpers import escape_html, extract_article_id
 from handlers.notifier import notify_error
 from handlers import promise_judge as pj
+from handlers import storage
 from handlers.storage import record_ai_usage
 
 import entity_pipeline as ep
@@ -1306,6 +1307,12 @@ async def promise_dupes_handler(update, context):
              "одним записом; нижче — схожі за написанням, рішення твоє. "
              "Злиття не видаляє: ревізії другого переходять у перший, "
              "обидві цитати лишаються доказами.</i>", ""]
+    # Пари, які суддя назвав однаковими, ідуть ПАКЕТОМ: під повідомленням
+    # номерні кнопки й одне «злити обрані». Десять готових команд поспіль —
+    # це десять ручних вводів у чаті, і саме на цьому Олег зупинився
+    # (17.08). Обрані всі одразу: суддя вже сказав «так», людина знімає
+    # незгодні, а не проставляє згодні.
+    batch = []
     for i, p in enumerate(pairs):
         if p.get("judged_same") and i == 0:
             lines.append("<b>Суддя каже — одне й те саме:</b>")
@@ -1322,15 +1329,124 @@ async def promise_dupes_handler(update, context):
              "revisions": p.get("rev_a") or 0},
             {"id": p["b"], "title": p.get("title_b"),
              "revisions": p.get("rev_b") or 0})
-        lines += [f"{mark}• {escape_html(keep['title'] or '')}",
-                  f"  {escape_html(drop['title'] or '')}",
-                  f"  <i>схожість {p['sim']} · строк {pp.fmt_date(p['deadline'])}"
-                  f"</i> — <code>/promise_merge {keep['id']} {drop['id']}</code>",
-                  ""]
+        if p.get("judged_same"):
+            batch.append([keep["id"], drop["id"]])
+            head = f"{mark}<b>{len(batch)}.</b> {escape_html(keep['title'] or '')}"
+            tail = (f"  <i>схожість {p['sim']} · строк "
+                    f"{pp.fmt_date(p['deadline'])}</i>")
+        else:
+            head = f"• {escape_html(keep['title'] or '')}"
+            tail = (f"  <i>схожість {p['sim']} · строк "
+                    f"{pp.fmt_date(p['deadline'])}</i> — "
+                    f"<code>/promise_merge {keep['id']} {drop['id']}</code>")
+        lines += [head, f"  {escape_html(drop['title'] or '')}", tail, ""]
+    kb = None
+    if batch:
+        lines.append("<i>Номер — це тап по кнопці внизу. Знімаєш ті, де "
+                     "суддя помилився, і тиснеш «злити обрані» — одним "
+                     "рухом замість десяти команд.</i>")
+        storage.save_promise_dupes(_dupes_dialog(update), {
+            "pairs": batch, "off": [], "at": datetime.now().isoformat()})
+        kb = _dupes_keyboard(batch, set())
     lines.append("<i>Зручніше — в апці: /team → Утиліти → Банк тем → «Схоже "
                  "на дублі». Там видно цитати обох.</i>")
     await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML",
-                        disable_web_page_preview=True)
+                        disable_web_page_preview=True, reply_markup=kb)
+
+
+def _dupes_dialog(update):
+    """Ключ розмови для відбору пар. Той самий вигляд, що в news_search."""
+    chat = update.effective_chat.id if update.effective_chat else 0
+    user = update.effective_user.id if update.effective_user else 0
+    return f"{chat}:{user}"
+
+
+def _dupes_keyboard(pairs, off):
+    """Номерні перемикачі + одна кнопка злиття. Обране позначено ✅."""
+    rows, row = [], []
+    for i in range(len(pairs)):
+        state = "☐" if i in off else "✅"
+        row.append(InlineKeyboardButton(f"{state}{i + 1}",
+                                        callback_data=f"pdm:t:{i}"))
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    n = len(pairs) - len(off)
+    rows.append([InlineKeyboardButton(
+        f"🔗 Злити обрані ({n})" if n else "нічого не обрано",
+        callback_data="pdm:go" if n else "pdm:nop")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def promise_dupes_callback(update, context):
+    """Кнопки пакетного злиття під /promise_dupes."""
+    q = update.callback_query
+    if not _allowed(update):
+        await q.answer("Не для цього чату", show_alert=True)
+        return
+    key = _dupes_dialog(update)
+    entry = storage.get_promise_dupes(key) or {}
+    pairs = [tuple(x) for x in (entry.get("pairs") or [])]
+    off = set(entry.get("off") or [])
+    if not pairs:
+        await q.answer()
+        await q.edit_message_reply_markup(reply_markup=None)
+        return
+    data = (q.data or "").split(":")
+    action = data[1] if len(data) > 1 else ""
+    if action == "nop":
+        await q.answer("Спершу познач хоч одну пару", show_alert=True)
+        return
+    if action == "t":
+        i = int(data[2])
+        off.symmetric_difference_update({i})
+        entry["off"] = sorted(off)
+        storage.save_promise_dupes(key, entry)
+        await q.answer("зняв" if i in off else "повернув")
+        await q.edit_message_reply_markup(
+            reply_markup=_dupes_keyboard(pairs, off))
+        return
+
+    chosen = [p for i, p in enumerate(pairs) if i not in off]
+    who = update.effective_user.full_name if update.effective_user else None
+    await q.answer()
+    await q.edit_message_reply_markup(reply_markup=None)
+
+    def run():
+        conn = ep.connect()
+        try:
+            pp.ensure_schema(conn)
+            with conn.cursor() as cur:
+                run_id = pp.next_run(cur)
+                done = []
+                for keep_id, drop_id in chosen:
+                    # Пару могли злити руками між показом і тапом — тоді
+                    # merge_commitments нічого не робить, і це не помилка.
+                    if pp.merge_commitments(cur, keep_id, drop_id,
+                                            who=who, run=run_id):
+                        done.append((keep_id, drop_id))
+            conn.commit()
+            return done, run_id
+        finally:
+            conn.close()
+
+    try:
+        done, run_id = await asyncio.to_thread(run)
+    except Exception as e:
+        await q.message.reply_text(f"❌ Не вийшло: {type(e).__name__}: {e}")
+        return
+    storage.save_promise_dupes(key, {"pairs": [], "off": [],
+                                     "at": datetime.now().isoformat()})
+    skipped = len(chosen) - len(done)
+    note = (f"\n{skipped} {pp.plural(skipped, 'пара', 'пари', 'пар')} вже "
+            f"була зведена раніше." if skipped else "")
+    await q.message.reply_text(
+        f"🤝 Звів {len(done)} {pp.plural(len(done), 'пару', 'пари', 'пар')}. "
+        f"Обидві цитати лишились доказами в одній картці.{note}\n\n"
+        f"Відкат усього пакета: <code>/promise_prune_undo {run_id}</code>",
+        parse_mode="HTML")
 
 
 async def promise_vague_handler(update, context):

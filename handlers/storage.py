@@ -558,6 +558,32 @@ def save_news_search(dialog_id, entry):
         _write_state(state)
 
 
+# Відбір пар у екрані дублів банку тем (/promise_dupes → кнопки «злити
+# обрані»). Той самий підхід, що news_search: стан живе на томі, бо кнопки
+# мусять пережити редеплой — інакше вибір посеред розбору мовчки помирає, а
+# людина цього не бачить, поки не тапне.
+PROMISE_DUPES_MAX_ENTRIES = 6
+
+
+def get_promise_dupes(dialog_id):
+    """Останній відбір пар-дублів для розмови dialog_id ("chat:user")."""
+    with _lock:
+        return _read_state().get("promise_dupes", {}).get(dialog_id)
+
+
+def save_promise_dupes(dialog_id, entry):
+    """Зберігає {"pairs": [[keep, drop], ...], "off": [...], "at": iso}."""
+    with _lock:
+        state = _read_state()
+        picks = state.setdefault("promise_dupes", {})
+        picks[dialog_id] = entry
+        if len(picks) > PROMISE_DUPES_MAX_ENTRIES:
+            oldest = sorted(picks, key=lambda k: picks[k].get("at", ""))
+            for key in oldest[:len(picks) - PROMISE_DUPES_MAX_ENTRIES]:
+                del picks[key]
+        _write_state(state)
+
+
 # Сторінка завантаження відео (video_download): токен доступу і куки.
 #
 # Куки лежать тут, а не у змінній середовища, з двох причин. Перша: вони

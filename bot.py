@@ -72,7 +72,7 @@ from handlers.promises import (
     promise_increment_off_handler, promise_prune_handler,
     promise_prune_callback, promise_prune_undo_handler,
     promise_prune_who_handler, promise_prune_who_callback,
-    promise_dupes_handler, promise_merge_handler,
+    promise_dupes_handler, promise_dupes_callback, promise_merge_handler,
     promise_export_handler, promises_fix_callback,
     promise_notdupe_handler, promise_glitches_handler,
     promise_glitches_callback, promise_vague_handler,
@@ -797,6 +797,7 @@ def main():
     app.add_handler(CallbackQueryHandler(promise_glitches_callback, pattern="^pgl:"))
     app.add_handler(CallbackQueryHandler(promise_auto_callback, pattern="^pau:"))
     app.add_handler(CallbackQueryHandler(promise_classify_callback, pattern="^pcl:"))
+    app.add_handler(CallbackQueryHandler(promise_dupes_callback, pattern="^pdm:"))
     print("Bot started...")
     # callback_query — обов'язково в allowed_updates, інакше Telegram не шле
     # натискання inline-кнопок і кнопка «Написати бек» мовчить.
