@@ -664,7 +664,27 @@ function nav(view, arg, back, opts = {}) {
   window.scrollTo(0, 0);
 }
 
-function render() {
+/* Фонове оновлення (повернення у вкладку) НЕ має блимати скелетонами.
+   Раніше при поверненні в апку йшов повний re-render: заповнений екран
+   стирався в сірі плашки і збирався наново — на екрані дублів це виглядало
+   як самовільне перезавантаження (Олег, 18.08). Дані підтягувати треба,
+   видовище — ні.
+
+   Тому каркас зі скелетонами малюється лише тоді, коли екран справді
+   порожній, тобто при звичайному переході. У фоновому проході старий вміст
+   лишається на місці разом зі своїми обробниками, а свіжі дані переллються
+   поверх, коли приїдуть — вони йдуть у ті самі підконтейнери (#pr-body,
+   #cnt-body…), які там уже стоять. Прапорець описує ОСТАННІЙ прохід:
+   наступний render() від навігації сам поставить false. */
+let BG_RENDER = false;
+
+function shell(el, html) {
+  if (el && !BG_RENDER) el.innerHTML = html;
+  return el;
+}
+
+function render(bg) {
+  BG_RENDER = !!bg;
   const v = STATE.view;
   // Журналістка ходить тим самим роутером, що менеджер: у неї зʼявились
   // підекрани («Виконані», «Події», «KPI по місяцях»), а без роутера їх не
@@ -805,20 +825,20 @@ function renderHome() {
   };
 
   if (STATE.homeView === "analytics") {
-    $("content").innerHTML = `
+    shell($("content"), `
       ${homeHead()}
       ${seg}
-      <div id="an-body">${skeleton("rows", 4)}</div>`;
+      <div id="an-body">${skeleton("rows", 4)}</div>`);
     wire();
     renderAnalytics();
     return;
   }
 
   if (STATE.homeView === "report") {
-    $("content").innerHTML = `
+    shell($("content"), `
       ${homeHead()}
       ${seg}
-      <div id="dash-body">${skeleton("rings", 8)}</div>`;
+      <div id="dash-body">${skeleton("rings", 8)}</div>`);
     wire();
     renderDashboard();
     return;
@@ -1297,7 +1317,7 @@ async function renderAnalytics() {
   // самий період), щоб перемикач не блимав порожнім заголовком
   const stale = a.data && a.data.period === a.period && a.data.offset === a.offset
     ? a.data : null;
-  body.innerHTML = anControls(stale) + `<div id="an-data">${skeleton("rows", 4)}</div>`;
+  shell(body, anControls(stale) + `<div id="an-data">${skeleton("rows", 4)}</div>`);
   wireAnControls();
   let data;
   try {
@@ -1376,7 +1396,7 @@ function renderPerson() {
     <div class="dept-title">${esc(donor)} · ${list.length}</div>
     <div class="soft-card">${list.map(taskRow).join("")}</div>`).join("");
 
-  $("content").innerHTML = `
+  shell($("content"), `
     <button class="back" data-nav="home">${icon("chevron-left")} Команда</button>
     <div class="who">
       ${avatar(person, entry, 56)}
@@ -1390,7 +1410,7 @@ function renderPerson() {
     <div class="f-label" style="margin-top:20px;font-size:14px;color:var(--ink)">Проєктні задачі</div>
     ${donorSections || `<div class="empty-hint">Відкритих проєктних задач немає.</div>`}
     ${closed.length ? `<div class="dept-title">Закриті недавно · ${closed.length}</div>
-      <div class="soft-card">${closed.map(taskRow).join("")}</div>` : ""}`;
+      <div class="soft-card">${closed.map(taskRow).join("")}</div>` : ""}`);
 
   $("person-away").onclick = () => absenceSheet(person);
   $("person-rate").onclick = () => rateSheet(person);
@@ -2888,14 +2908,14 @@ function notifRow(n) {
 
 async function renderAlerts() {
   const already = STATE.pending && STATE.notifs && STATE.absenceRequests;
-  $("content").innerHTML = `
+  shell($("content"), `
     <div class="head-row">
       <div class="h-big">Сповіщення</div>
       <button class="icon-btn" id="queue-add" aria-label="Додати публікацію в чергу">
         ${icon("link")}${icon("plus", "ic sm")}</button>
     </div>
     <div class="h-sub">що просить підтвердити і що вже сталось</div>
-    <div id="alerts-body">${already ? "" : skeleton("rows", 3)}</div>`;
+    <div id="alerts-body">${already ? "" : skeleton("rows", 3)}</div>`);
   $("queue-add").onclick = queueAddSheet;
   if (!already) {
     try {
@@ -3040,7 +3060,7 @@ async function renderContacts() {
     </div>
     <div class="h-sub">телефони редакції — спільні на всіх</div>
     ${searchBox("cnt-q", q, "імʼя, посада, тема, номер…")}`;
-  $("content").innerHTML = head + `<div id="cnt-body">${skeleton("rows", 4)}</div>`;
+  shell($("content"), head + `<div id="cnt-body">${skeleton("rows", 4)}</div>`);
   wireContactControls();
   let data;
   try {
@@ -3323,7 +3343,7 @@ async function renderPromises() {
       <button class="icon-btn" id="pr-search" aria-label="Пошук">${icon("search")}</button>
     </div>`;
   if (!STATE.promises) {
-    $("content").innerHTML = head + `<div id="pr-body">${skeleton("rows", 4)}</div>`;
+    shell($("content"), head + `<div id="pr-body">${skeleton("rows", 4)}</div>`);
     wirePromiseSearch();
     try {
       STATE.promises = await api("/api/promises?cls=" + encodeURIComponent(facet)
@@ -3498,9 +3518,9 @@ function wirePromises() {
 
 async function renderPromise() {
   const id = STATE.currentPromise;
-  $("content").innerHTML = `
+  shell($("content"), `
     <button class="back" data-back>${icon("chevron-left")} Назад</button>
-    ${skeleton("rows", 4)}`;
+    ${skeleton("rows", 4)}`);
   let d;
   try {
     d = await api(`/api/promises/${id}`);
@@ -3754,10 +3774,10 @@ function wirePromiseCard(d) {
    дитсадків, і відрізняє їх саме текст. */
 
 async function renderDupes() {
-  $("content").innerHTML = `
+  shell($("content"), `
     <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
     <div class="h-big">Схоже на дублі</div>
-    ${skeleton("rows", 3)}`;
+    ${skeleton("rows", 3)}`);
   let d;
   try {
     d = await api("/api/promises/dupes");
@@ -3885,9 +3905,9 @@ const TRIAGE_DEAD = 10;
 const TRIAGE_REFILL = 4;      // коли лишається стільки — тягнемо наступну порцію
 
 async function renderTriage() {
-  $("content").innerHTML = `
+  shell($("content"), `
     <button class="back" data-back>${icon("chevron-left")} Банк тем</button>
-    ${skeleton("rows", 2)}`;
+    ${skeleton("rows", 2)}`);
   let d;
   try {
     d = await api("/api/promises/triage");
@@ -4186,7 +4206,7 @@ async function renderImpacts() {
       <button class="icon-btn" id="im-add" aria-label="Новий кейс">${icon("plus")}</button>
     </div>
     <div class="h-sub">що змінилось завдяки нашим текстам — для заявок і донорів</div>`;
-  $("content").innerHTML = head + `<div id="im-body">${skeleton("rows", 3)}</div>`;
+  shell($("content"), head + `<div id="im-body">${skeleton("rows", 3)}</div>`);
   $("im-add").onclick = impactAddSheet;
   let data;
   try {
@@ -4550,9 +4570,9 @@ async function renderImpact() {
   // імпактів» — у них, з архіву — в архів (маршрут знає backTarget)
   const backLabel = STATE.impactFrom === "myimpacts" ? "Мої імпакти"
     : STATE.impactFrom === "home" ? "Назад" : "Імпакт-архів";
-  $("content").innerHTML = `
+  shell($("content"), `
     <button class="back" data-back>${icon("chevron-left")} ${backLabel}</button>
-    <div id="imd-body">${skeleton("rows", 4)}</div>`;
+    <div id="imd-body">${skeleton("rows", 4)}</div>`);
   let im;
   try {
     im = await api(`/api/impacts/${id}`);
@@ -4972,11 +4992,11 @@ async function impactDelete(id) {
 async function renderMyImpacts() {
   const me = viewPerson();
   const q = me.preview ? `?person=${encodeURIComponent(me.name)}` : "";
-  $("content").innerHTML = `
+  shell($("content"), `
     <button class="back" data-back>${icon("chevron-left")} Назад</button>
     <div class="h-big">${me.preview ? esc(me.first_name) + " · імпакти" : "Мої імпакти"}</div>
     <div class="h-sub">кейси, де є твій внесок — те, що змінилось завдяки текстам</div>
-    <div id="mi-body">${skeleton("rows", 2)}</div>`;
+    <div id="mi-body">${skeleton("rows", 2)}</div>`);
   let data;
   try {
     data = await api("/api/impacts/mine" + q);
@@ -5104,7 +5124,7 @@ async function renderAway() {
     <button class="back" data-back>${icon("chevron-left")} Назад</button>
     <div class="h-big">Хто коли відсутній</div>
     <div class="h-sub">відпустки, лікарняні, відрядження · засічки — дедлайни завдань</div>`;
-  $("content").innerHTML = head + `<div id="aw-body">${skeleton("rows", 3)}</div>`;
+  shell($("content"), head + `<div id="aw-body">${skeleton("rows", 3)}</div>`);
   let absences = [], requests = [];
   try {
     const [a, r] = await Promise.all([
@@ -5900,9 +5920,9 @@ function normById(id) {
 
 async function renderKpi() {
   if (!STATE.kpi) {
-    $("content").innerHTML = `<div class="h-big">Налаштування KPI</div>
+    shell($("content"), `<div class="h-big">Налаштування KPI</div>
       <div class="h-sub">норма на відділ, облік по людині · звіт — на Головній</div>
-      ${skeleton("rows", 4)}`;
+      ${skeleton("rows", 4)}`);
     try { await loadKpi(); } catch (e) { toast(e.message); return; }
     if (STATE.view !== "kpi") return;
   }
@@ -6065,7 +6085,7 @@ async function renderDashboard() {
   const d = STATE.dash;
   const loading = $("dash-body");
   if (loading) {
-    loading.innerHTML = dashControls(null) + skeleton("rings", 6);
+    shell(loading, dashControls(null) + skeleton("rings", 6));
     wireDashControls(loading);   // перемикач лишається живим і під час завантаження
   }
   // Тики швидші за відповідь: перемогти має ОСТАННІЙ вибір, інакше повільніша
@@ -6134,7 +6154,7 @@ function markPct(p) {
 async function renderPersonHistory() {
   const person = STATE.currentPerson;
   const entry = personEntry(person);
-  $("content").innerHTML = `
+  shell($("content"), `
     <button class="back" data-back>${icon("chevron-left")} ${esc(backName("Звіт"))}</button>
     <div class="who">
       ${avatar(person, entry, 56)}
@@ -6144,7 +6164,7 @@ async function renderPersonHistory() {
     <button class="peek-btn" data-peek="${esc(person)}">
       ${icon("search")} Подивитись її екран
     </button>
-    <div id="hist-body">${skeleton("bars", 12)}</div>`;
+    <div id="hist-body">${skeleton("bars", 12)}</div>`);
   $("content").querySelectorAll("[data-peek]").forEach((b) =>
     b.onclick = () => nav("preview", b.dataset.peek));
   let data;
@@ -6757,11 +6777,11 @@ async function renderMyPubs() {
   const me = viewPerson();
   const off = STATE.pubsOffset || 0;
   const q = me.preview ? `&person=${encodeURIComponent(me.name)}` : "";
-  $("content").innerHTML = `
+  shell($("content"), `
     <button class="back" data-back>${icon("chevron-left")} Назад</button>
     <div class="h-big">${me.preview ? esc(me.first_name) + " · публікації" : "Мої публікації"}</div>
     <div class="h-sub">${me.preview ? "вихід за місяць" : "що вийшло під твоїм іменем"}</div>
-    <div id="pubs-body">${skeleton("rows", 4)}</div>`;
+    <div id="pubs-body">${skeleton("rows", 4)}</div>`);
   $("content").querySelectorAll("[data-nav]").forEach((b) =>
     b.onclick = () => nav(b.dataset.nav));
   let data;
@@ -6865,7 +6885,7 @@ async function renderDirector() {
     <div class="h-big">Кабінет директора</div>
     <div class="h-sub">коли кому востаннє переглядали умови</div>`;
   if (!STATE.director) {
-    $("content").innerHTML = head + `<div id="dir-body">${skeleton("rows", 4)}</div>`;
+    shell($("content"), head + `<div id="dir-body">${skeleton("rows", 4)}</div>`);
     try {
       STATE.director = await api("/api/conditions");
     } catch (e) {
@@ -6964,7 +6984,7 @@ async function renderDirCard() {
   const head = `
     <button class="back" data-back>${icon("chevron-left")} Кабінет</button>`;
   if (!STATE.dirCard || STATE.dirCard.person !== who) {
-    $("content").innerHTML = head + `<div id="dc-body">${skeleton("rows", 5)}</div>`;
+    shell($("content"), head + `<div id="dc-body">${skeleton("rows", 5)}</div>`);
     try {
       STATE.dirCard = await api("/api/conditions/card?person=" + encodeURIComponent(who));
     } catch (e) {
@@ -7207,7 +7227,7 @@ async function renderReviews() {
     <div class="h-big">Оцінка</div>
     <div class="h-sub">те, чого не видно з цифр — лишається в картці перегляду</div>`;
   if (!STATE.reviews) {
-    $("content").innerHTML = head + `<div id="rv-body">${skeleton("rows", 4)}</div>`;
+    shell($("content"), head + `<div id="rv-body">${skeleton("rows", 4)}</div>`);
     try {
       STATE.reviews = await api("/api/reviews?offset=" + (STATE.reviewOffset || 0));
     } catch (e) {
@@ -7368,7 +7388,7 @@ async function renderTodos() {
       <button class="td-plus" type="submit" aria-label="Додати">${icon("plus")}</button>
     </form>`;
   if (!STATE.todos) {
-    $("content").innerHTML = head + `<div id="td-body">${skeleton("rows", 3)}</div>`;
+    shell($("content"), head + `<div id="td-body">${skeleton("rows", 3)}</div>`);
     wireTodoForm();
     try {
       STATE.todos = await api("/api/todos");
@@ -7510,7 +7530,7 @@ const MY_FEED_BLOCKS = [
 async function renderMyFeed() {
   const back = `<button class="back" data-nav="home">${icon("chevron-left")} Головна</button>
     <div class="h-big">Події</div>`;
-  $("content").innerHTML = back + skeleton("rows", 3);
+  shell($("content"), back + skeleton("rows", 3));
   let data = STATE.myFeed;
   if (!data) {
     try { data = STATE.myFeed = await api("/api/notifications"); } catch (e) {
@@ -7552,7 +7572,7 @@ async function renderMyFeed() {
 async function renderMyHistory() {
   const back = `<button class="back" data-nav="home">${icon("chevron-left")} Головна</button>
     <div class="h-big">KPI по місяцях</div>`;
-  $("content").innerHTML = back + skeleton("bars", 12);
+  shell($("content"), back + skeleton("bars", 12));
   const wire = () => $("content").querySelectorAll("[data-nav]").forEach((b) =>
     b.onclick = () => nav(b.dataset.nav));
   wire();
@@ -8099,7 +8119,7 @@ async function refreshIfStale() {
   try {
     await reload();
     lastLoadedAt = Date.now();
-    render();
+    render(true);          // тихо: без скелетонів поверх заповненого екрана
   } catch (e) { /* фонове оновлення мовчазне: показуємо, що маємо */ }
 }
 
