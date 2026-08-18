@@ -1810,19 +1810,42 @@ def triage_pending(cur, limit=30, offset=0, skip_ids=None):
     params = [list(WORKING_KINDS), list(WORKING_KINDS)]
     if skip:
         params.append(skip)
+    # Беремо ширше за ліміт, бо далі згортаємо колоду ПО ТЕМАХ.
     cur.execute(
         f"SELECT {COMMITMENT_COLS} FROM commitments c "
         f"WHERE {where} "
         f"ORDER BY {_TRIAGE_BUCKET}, c.last_seen DESC NULLS LAST, c.id "
         "LIMIT %s OFFSET %s",
-        params + [int(limit), int(offset)])
+        params + [int(limit) * 4, int(offset)])
     rows = _rows(cur)
-    now = int(time.time())
+    # ОДНЕ ПИТАННЯ НА СПРАВУ. Записи однієї теми — це та сама справа, і
+    # питати про неї тричі означає тричі та сама відповідь (Олег, 18.08:
+    # «пока свайпал, постоянно нахожу дубли… иногда даже по три»). Свайп
+    # застосовується до всіх записів теми, тож картка каже це вголос.
+    seen, out = set(), []
     for r in rows:
+        key = r["topic_id"] or -r["id"]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+        if len(out) >= int(limit):
+            break
+    topics = [r["topic_id"] for r in out if r["topic_id"]]
+    sib = {}
+    if topics:
+        cur.execute(
+            f"SELECT c.topic_id, count(*) FROM commitments c WHERE {_TRIAGE_PENDING} "
+            "AND c.topic_id = ANY(%s) GROUP BY c.topic_id",
+            (list(WORKING_KINDS), topics))
+        sib = {r[0]: r[1] for r in cur.fetchall()}
+    now = int(time.time())
+    for r in out:
         r["amount"] = float(r["amount"]) if r["amount"] is not None else None
         r["class"] = queue_class(r, now)
         r["populism"] = populism_reason(r)
-    return rows
+        r["case_n"] = int(sib.get(r["topic_id"], 1) or 1)
+    return out
 
 
 def triage_counts(cur, skip_ids=None):
@@ -1863,11 +1886,35 @@ def set_triage(cur, commitment_id, verdict, who=None):
     автоматичне (record() робить coalesce, класифікатор чіпає лише NULL)."""
     if verdict not in TRIAGE and verdict is not None:
         return False
-    cur.execute(
-        "UPDATE commitments SET triage = %s, triage_by = %s, triage_at = %s "
-        "WHERE id = %s",
-        (verdict, who if verdict else None,
-         int(time.time()) if verdict else None, int(commitment_id)))
+    # Свайп вирішує ВСЮ СПРАВУ, а не один рядок: колода й показує одну картку
+    # на тему. Беремо лише записи, яких людина ще не торкалась (triage IS
+    # NULL) — власне рішення колеги на сусідньому записі не перебиваємо
+    # ніколи, навіть протилежним свайпом.
+    cur.execute("SELECT topic_id FROM commitments WHERE id = %s",
+                (int(commitment_id),))
+    row = cur.fetchone()
+    topic = row[0] if row else None
+    stamp = int(time.time()) if verdict else None
+    if not topic:
+        cur.execute(
+            "UPDATE commitments SET triage = %s, triage_by = %s, triage_at = %s "
+            "WHERE id = %s",
+            (verdict, who if verdict else None, stamp, int(commitment_id)))
+    elif verdict:
+        cur.execute(
+            "UPDATE commitments SET triage = %s, triage_by = %s, triage_at = %s "
+            "WHERE topic_id = %s AND status = 'expected' "
+            "  AND (id = %s OR triage IS NULL)",
+            (verdict, who, stamp, topic, int(commitment_id)))
+    else:
+        # Відкат знімає рівно те, що поставив ТОЙ САМИЙ свайп: позначка часу
+        # спільна на всю справу, і чуже, поставлене іншим заходом, лишається.
+        cur.execute(
+            "UPDATE commitments SET triage = NULL, triage_by = NULL, "
+            "  triage_at = NULL "
+            "WHERE topic_id = %s AND status = 'expected' AND triage_at = "
+            "  (SELECT triage_at FROM commitments WHERE id = %s)",
+            (topic, int(commitment_id)))
     return cur.rowcount > 0
 
 
@@ -2199,6 +2246,88 @@ def article_groups(cur, limit=40, min_records=2):
         out.append({"article": {"id": article_id, "title": row[0],
                                 "text": row[1]},
                     "records": recs})
+        if len(out) >= limit:
+            break
+    return out
+
+
+# Скільки записів може нести одне рідкісне слово, щоб група лишалась групою.
+# Понад вісім — це вже не справа, а тема на кшталт «бюджет».
+CLUSTER_MAX = 8
+# Наскільки рідкісним має бути слово. «Миколаєва» трапляється у сотнях назв і
+# не каже нічого; «культур» — у чотирьох, і це вже привід спитати.
+CLUSTER_DF_MAX = 8
+
+
+def word_clusters(cur, limit=60, max_size=CLUSTER_MAX, df_max=CLUSTER_DF_MAX):
+    """Записи з РІЗНИХ новин, які тримає купи спільне рідкісне слово.
+
+    Третє джерело кандидатів, і без нього ціла родина дублів невидима.
+    Заміряно на живій парі 18.08: «Збільшити фонд оплати праці в галузі
+    культури при підготовці бюджету на 2027 рік» і «Знайти в бюджеті кошти на
+    виплату надбавок працівникам культури» — схожість назв 0.29 (нижче всіх
+    порогів), спільної статті немає, теми різні, картки предмета порожні.
+    Тобто жоден наявний сигнал не спрацював, і суддя цієї пари не бачив
+    жодного разу — а поруч лежав ще й третій запис про те саме.
+
+    Слово береться значуще (від шести літер) і РІДКІСНЕ: часте слово тягне
+    сотні пар і нічого не означає, рідкісне майже завжди вказує на одну
+    справу. Стемінгу тут немає — шість перших літер відрізають український
+    відмінок дешевше й передбачуваніше за будь-яку морфологію.
+
+    Read-only. Повертає групи, у яких лишилась хоч одна НЕсуджена пара:
+    інакше кожен прогін платив би за ті самі слова вічно.
+    """
+    cur.execute(
+        "WITH open AS ("
+        "  SELECT c.id, lower(c.title) AS t FROM commitments c "
+        "  WHERE c.status = 'expected' AND c.title IS NOT NULL), "
+        "w AS ("
+        "  SELECT o.id, left(word, 6) AS stem FROM open o, "
+        "    regexp_split_to_table("
+        "      regexp_replace(o.t, '[^а-щьюяєіїґa-z0-9 ]', ' ', 'g'), '\s+') AS word "
+        "  WHERE length(word) >= 6), "
+        "ww AS (SELECT DISTINCT id, stem FROM w) "
+        "SELECT stem, array_agg(id ORDER BY id) AS ids "
+        "FROM ww GROUP BY stem "
+        "HAVING count(*) BETWEEN 2 AND %s "
+        "ORDER BY count(*) DESC, stem", (int(max_size),))
+    raw = [(r[0], [int(x) for x in r[1]]) for r in cur.fetchall()]
+    # Те саме сузір'я записів приходить під кількома словами («культур» і
+    # «надбав»). Питати про нього двічі — платити двічі за ту саму відповідь.
+    seen, out = set(), []
+    for stem, ids in raw:
+        if len(ids) > df_max:
+            continue
+        key = tuple(ids)
+        if key in seen:
+            continue
+        seen.add(key)
+        cur.execute(
+            "SELECT count(*) FROM (SELECT unnest(%s::bigint[]) AS x) sa "
+            "JOIN (SELECT unnest(%s::bigint[]) AS y) sb ON sb.y > sa.x "
+            "WHERE NOT EXISTS (SELECT 1 FROM promise_pair_verdicts v "
+            "                  WHERE v.a = sa.x AND v.b = sb.y) "
+            "  AND NOT EXISTS (SELECT 1 FROM promise_pairs p "
+            "                  WHERE p.a = sa.x AND p.b = sb.y)", (ids, ids))
+        if not cur.fetchone()[0]:
+            continue
+        cur.execute(
+            "SELECT c.id, c.title, c.owner_text, c.deadline, c.topic_id, "
+            "       (SELECT r2.promiser_text FROM commitment_revisions r2 "
+            "         WHERE r2.commitment_id = c.id ORDER BY r2.id LIMIT 1), "
+            "       (SELECT r3.quote FROM commitment_revisions r3 "
+            "         WHERE r3.commitment_id = c.id ORDER BY r3.id LIMIT 1), "
+            "       (SELECT coalesce(a.title_ua, a.title_ru) "
+            "          FROM commitment_revisions r4 JOIN articles a ON a.id = r4.article_id "
+            "         WHERE r4.commitment_id = c.id ORDER BY r4.id LIMIT 1) "
+            "FROM commitments c WHERE c.id = ANY(%s) ORDER BY c.id", (ids,))
+        recs = [{"id": r[0], "title": r[1], "owner_text": r[2], "deadline": r[3],
+                 "topic_id": r[4], "promiser": r[5], "quote": (r[6] or "")[:300],
+                 "article_title": r[7]} for r in cur.fetchall()]
+        if len(recs) < 2:
+            continue
+        out.append({"stem": stem, "records": recs})
         if len(out) >= limit:
             break
     return out

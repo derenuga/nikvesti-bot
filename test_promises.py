@@ -1202,6 +1202,83 @@ def test_dupes_and_merge():
                                       "stage_of_same_result": True}),
                   "ПКД центру на Озерній, 43 — це той самий центр")
 
+            # ТРЕТЄ ДЖЕРЕЛО КАНДИДАТІВ: спільне рідкісне слово.
+            # Жива пара 18.08, на якій видно дірку: схожість назв 0.29 (нижче
+            # ВСІХ порогів), статті різні, теми різні, картки предмета
+            # порожні — жоден наявний сигнал не спрацював, і суддя цієї пари
+            # не бачив жодного разу. Поруч лежав ще й третій запис про те саме.
+            t1 = "Знайти в бюджеті кошти на виплату надбавок працівникам культури"
+            t2 = ("Збільшити фонд оплати праці в галузі культури при підготовці "
+                  "бюджету на 2027 рік")
+            cur.execute("INSERT INTO commitments (title, status, subject_key) "
+                        "VALUES (%s, 'expected', 'надбавки') RETURNING id", (t1,))
+            k1 = cur.fetchone()[0]
+            cur.execute("INSERT INTO commitments (title, status, subject_key) "
+                        "VALUES (%s, 'expected', 'фонд оплати') RETURNING id", (t2,))
+            k2 = cur.fetchone()[0]
+            cur.execute("SELECT similarity(%s, %s)", (t1, t2))
+            sim_k = round(float(cur.fetchone()[0]), 2)
+            check("рядкова схожість цієї пари нижча за всі пороги детектора",
+                  sim_k < pp.DUPE_SIM_SAME_ART, f"схожість {sim_k}")
+            check("…тому детектор дублів її не бачить",
+                  not any({k1, k2} == {p_["a"], p_["b"]} for p_ in pp.dupe_pairs(cur)))
+            cl = pp.word_clusters(cur, limit=60)
+            found = [c for c in cl
+                     if {k1, k2} <= {r["id"] for r in c["records"]}]
+            check("спільне рідкісне слово зводить їх в один набір для судді",
+                  found, f"наборів {len(cl)}")
+            check("набір підписаний словом, яке справді є в обох назвах",
+                  found and all(found[0]["stem"] in t.lower() for t in (t1, t2)),
+                  str(found[0]["stem"]) if found else "")
+            check("у наборі є цитата й заголовок новини — без них суддя гадає",
+                  found and all("quote" in r and "article_title" in r
+                                for r in found[0]["records"]))
+            # Часте слово набором НЕ стає: «бюджет» є в обох назвах, але воно
+            # трапляється всюди й нічого не означає.
+            pp.save_verdict(cur, k1, k2, {"same": False, "confidence": "high",
+                                          "why": "тест"})
+            after = pp.word_clusters(cur, limit=60)
+            check("суджений набір більше не питається — інакше платили б вічно",
+                  not any({r["id"] for r in c["records"]} == {k1, k2}
+                          for c in after),
+                  "набір із ширшим складом лишається — у ньому є інші пари")
+            cur.execute("DELETE FROM promise_pair_verdicts WHERE a = %s AND b = %s",
+                        tuple(sorted((k1, k2))))
+
+            # ДВА НАСЛІДКИ ОДНОГО ВЕРДИКТУ. «Одне зобов'язання» веде до
+            # злиття (прибирає запис — тому питає людину), «одна справа» лише
+            # зводить ТЕМИ (міняє рядок черги — тому робиться само).
+            from handlers.promises import _apply_groups
+            cur.execute("INSERT INTO topics (title) VALUES ('перша') RETURNING id")
+            tp1 = cur.fetchone()[0]
+            cur.execute("INSERT INTO topics (title) VALUES ('друга') RETURNING id")
+            tp2 = cur.fetchone()[0]
+            cur.execute("UPDATE commitments SET topic_id = %s WHERE id = %s", (tp1, k1))
+            cur.execute("UPDATE commitments SET topic_id = %s WHERE id = %s", (tp2, k2))
+            _apply_groups(cur, [k1, k2], [{"ids": [k1, k2], "merge": False,
+                                           "same_case": True, "confidence": "high",
+                                           "why": "зарплати в культурі"}])
+            cur.execute("SELECT topic_id FROM commitments WHERE id = ANY(%s)",
+                        ([k1, k2],))
+            tps = {r[0] for r in cur.fetchall()}
+            check("«одна справа» зводить теми — черга покаже один рядок",
+                  len(tps) == 1, str(tps))
+            v = pp.load_verdicts(cur, [{"a": k1, "b": k2}]).get(
+                tuple(sorted((k1, k2)))) or {}
+            check("…але дублем їх НЕ називає — це різні зобов'язання",
+                  v.get("same") is not True, str(v))
+
+            cur.execute("DELETE FROM promise_pair_verdicts WHERE a = %s AND b = %s",
+                        tuple(sorted((k1, k2))))
+            _apply_groups(cur, [k1, k2], [{"ids": [k1, k2], "merge": True,
+                                           "same_case": True, "confidence": "high",
+                                           "why": "те саме"}])
+            v = pp.load_verdicts(cur, [{"a": k1, "b": k2}]).get(
+                tuple(sorted((k1, k2)))) or {}
+            check("«одне зобов'язання» лягає в пам'ять пар — і піде в екран",
+                  v.get("same") is True, str(v))
+            cur.execute("DELETE FROM commitments WHERE id = ANY(%s)", ([k1, k2],))
+
             # ПАКЕТ ЗЛИТТЯ ОДНИМ ТАПОМ. Кнопки під /promise_dupes — не
             # прикраса: десять готових команд поспіль означають десять ручних
             # вводів у чаті, і Олег зупинився саме на цьому (17.08). Тут
@@ -2594,6 +2671,44 @@ def test_triage_deck():
                   deck_ids[0] == proc, str(deck_ids))
             check("чужий актор питається останнім", deck_ids[-1] == alien,
                   str(deck_ids))
+
+            # ОДНЕ ПИТАННЯ НА СПРАВУ. Записи однієї теми — та сама справа, і
+            # питати про неї тричі означає тричі ту саму відповідь (Олег,
+            # 18.08: «пока свайпал, постоянно нахожу дубли… иногда даже по
+            # три»). Свайп вирішує всю тему, відкат знімає її ж.
+            cur.execute("UPDATE commitments SET topic_id = "
+                        "(SELECT topic_id FROM commitments WHERE id = %s) "
+                        "WHERE id = %s", (proc, routine))
+            deck2 = pp.triage_pending(cur, limit=20)
+            ids2 = [r["id"] for r in deck2]
+            check("одна тема — одна картка в колоді", routine not in ids2,
+                  str(ids2))
+            card = next(r for r in deck2 if r["id"] == proc)
+            check("картка каже, скільки записів вирішить свайп",
+                  card.get("case_n") == 2, str(card.get("case_n")))
+            pp.set_triage(cur, proc, "noise", "Олег")
+            cur.execute("SELECT triage FROM commitments WHERE id = %s", (routine,))
+            check("свайп вирішує всю справу, а не один рядок",
+                  cur.fetchone()[0] == "noise")
+            pp.set_triage(cur, proc, None, "Олег")
+            cur.execute("SELECT triage FROM commitments WHERE id = %s", (routine,))
+            check("відкат повертає всю справу", cur.fetchone()[0] is None)
+            # Рішення КОЛЕГИ на сусідньому записі свайпом не перебивається:
+            # людське сильніше за все, включно з іншим людським.
+            pp.set_triage(cur, routine, "good", "Катя")
+            pp.set_triage(cur, proc, "noise", "Олег")
+            cur.execute("SELECT triage FROM commitments WHERE id = %s", (routine,))
+            check("чуже рішення на сусідньому записі лишається",
+                  cur.fetchone()[0] == "good")
+            pp.set_triage(cur, proc, None, "Олег")
+            pp.set_triage(cur, routine, None, "Катя")
+            cur.execute("UPDATE commitments SET topic_id = %s WHERE id = %s",
+                        (None, routine))
+            cur.execute("SELECT topic_id FROM commitments WHERE id = %s", (proc,))
+            tp = cur.fetchone()[0]
+            cur.execute("INSERT INTO topics (title) VALUES ('окрема') RETURNING id")
+            cur.execute("UPDATE commitments SET topic_id = %s WHERE id = %s",
+                        (cur.fetchone()[0], routine))
 
             counts = pp.triage_counts(cur)
             check("колода рахується числом для дверей",
