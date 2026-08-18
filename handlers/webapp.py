@@ -2144,6 +2144,7 @@ async def start_webapp(application):
         web.get("/carousel", carousel.page),
         web.get("/api/carousel/state", carousel.api_state),
         web.post("/api/carousel/plan", carousel.api_plan),
+        web.post("/api/carousel/slide", carousel.api_revise),
         web.get("/video", video_download.page),
         web.get("/api/video/state", video_download.api_state),
         web.post("/api/video/identity", video_download.api_identity),

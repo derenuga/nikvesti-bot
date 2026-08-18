@@ -205,6 +205,105 @@ def main():
     check("у статті без blockquote quote-слайдів не буває",
           slides[0]["type"] == "text", slides[0]["type"])
 
+    # ---------- 3a. Правка одного слайда підказкою ----------
+    print("\n— Правка слайда за підказкою —")
+
+    # Головне тут — МЕЖА: хоч би що повернула модель, далі дозволених
+    # текстових полів воно не проходить. Тому підсовуємо відповідь, яка
+    # намагається переписати все: тип слайда, фото, кегль і сусідів.
+    class _Msg:
+        class usage:
+            input_tokens = output_tokens = 0
+            cache_read_input_tokens = cache_creation_input_tokens = 0
+
+        def __init__(self, payload):
+            self.content = [type("B", (), {"type": "tool_use", "input": payload})()]
+
+    async def fake_call(**kwargs):
+        return _Msg({
+            "title": "Свято було в Тернополі",
+            "body": "Мер Миколаєва поїхав на День міста до Тернополя.",
+            "note": "Прибрав «сусідів» — Тернопіль на заході, ми на півдні.",
+            # усе нижче агент віддавати не має права
+            "type": "photo", "photo_index": 2, "fontScale": 3,
+            "scheme": 3, "slides": [{"type": "cover", "title": "чуже"}],
+        })
+
+    import handlers.ai_messages as ai
+    saved_create = ai.async_client.messages.create
+    saved_key = os.environ.get("ANTHROPIC_API_KEY")
+    os.environ["ANTHROPIC_API_KEY"] = "test"
+    ai.async_client.messages.create = fake_call
+    try:
+        slide = {"type": "text", "title": "Гучне свято — у сусідів",
+                 "body": "Тернопіль три дні гуляв День міста.", "kicker": ""}
+        fixed, note, _ = asyncio.run(carousel.revise_slide(
+            a377, slide, "Тернопіль не сусід Миколаєва, переформулюй",
+            [(1, {"type": "cover", "title": "інший слайд"})]))
+    finally:
+        ai.async_client.messages.create = saved_create
+        if saved_key is None:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+        else:
+            os.environ["ANTHROPIC_API_KEY"] = saved_key
+
+    check("правка міняє тексти слайда",
+          fixed.get("title") == "Свято було в Тернополі", str(fixed.get("title")))
+    check("агент пояснює людині, що змінив", "Тернопіль" in note, note)
+    check("тип слайда змінити не може", "type" not in fixed, str(fixed))
+    check("фото і кадр недосяжні", not {"photo_index", "fontScale", "scheme"} & set(fixed),
+          str(sorted(fixed)))
+    check("сусідні слайди недосяжні", "slides" not in fixed, str(sorted(fixed)))
+    check("повертаються ЛИШЕ дозволені поля",
+          set(fixed) <= set(carousel.REVISABLE_FIELDS) | {"quote"},
+          str(sorted(fixed)))
+
+    # Режим «додай ще слайд»: тут тип і фото обирати МОЖНА (слайда ж немає),
+    # але сусідні слайди — так само недосяжні
+    async def fake_new(**kwargs):
+        return _Msg({
+            "type": "photo", "photo_index": 1, "caption": "Мер серед гостей",
+            "note": "Додав кадр із самого свята.",
+            "slides": [{"type": "cover", "title": "чуже"}], "fontScale": 3,
+        })
+
+    os.environ["ANTHROPIC_API_KEY"] = "test"
+    ai.async_client.messages.create = fake_new
+    try:
+        made, note2, _ = asyncio.run(carousel.revise_slide(
+            a377, None, "", [(1, {"type": "cover", "title": "є"})], mode="new"))
+    finally:
+        ai.async_client.messages.create = saved_create
+        if saved_key is None:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+        else:
+            os.environ["ANTHROPIC_API_KEY"] = saved_key
+
+    check("новий слайд може мати свій тип", made.get("type") == "photo", str(made))
+    check("і своє фото зі статті", made.get("photo_index") == 1, str(made))
+    check("а сусідні слайди все одно недосяжні", "slides" not in made, str(sorted(made)))
+    check("кегль і схема лишаються за людиною",
+          not {"fontScale", "scheme"} & set(made), str(sorted(made)))
+    check("агент пояснює й новий слайд", "кадр" in note2.lower(), note2)
+
+    # Фото поза списком не має стати битим слайдом
+    async def fake_bad_photo(**kwargs):
+        return _Msg({"type": "photo", "photo_index": 99, "caption": "х",
+                     "note": "n"})
+
+    os.environ["ANTHROPIC_API_KEY"] = "test"
+    ai.async_client.messages.create = fake_bad_photo
+    try:
+        bad, _, _ = asyncio.run(carousel.revise_slide(a377, None, "", mode="new"))
+    finally:
+        ai.async_client.messages.create = saved_create
+        if saved_key is None:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+        else:
+            os.environ["ANTHROPIC_API_KEY"] = saved_key
+    check("неіснуюче фото не приїде у слайд", bad.get("photo_index") is None,
+          str(bad))
+
     # ---------- 4. Нормалізація плану ----------
     print("\n— Нормалізація плану агента —")
     plan = carousel.normalize_plan({
