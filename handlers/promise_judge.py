@@ -420,7 +420,13 @@ _GROUP_TOOL = {
                                            "дія: тарифи для ДВОХ підприємств, "
                                            "план території для ДВОХ ділянок, "
                                            "звернення від ДВОХ громад, знаки "
-                                           "на ДВОХ різних вулицях.",
+                                           "на ДВОХ різних вулицях, ДВА різні "
+                                           "прапори, ЦНАП у Вознесенську і "
+                                           "ЦНАП у Миколаєві, два звернення до "
+                                           "Кабміну про РІЗНЕ. Спільна назва "
+                                           "класу («прапор», «ЦНАП», "
+                                           "«звернення») тим самим обʼєктом НЕ "
+                                           "робить.",
                         },
                         "same_case": {
                             "type": "boolean",
@@ -526,7 +532,7 @@ _RULES_GROUP = _INTRO_ARTICLE + _RULES_GROUP_BODY
 _RULES_CLUSTER = _INTRO_CLUSTER + _RULES_GROUP_BODY
 
 
-def group_survives(g):
+def group_survives(g, deadlines=None):
     """Вирок за властивостями, які назвала модель. ОКРЕМОЮ функцією — щоб
     правило можна було перевірити тестом без звернення до моделі: саме на
     цьому місці три правки промпту поспіль зробили гірше.
@@ -544,7 +550,19 @@ def group_survives(g):
     if not g.get("same_object"):
         return False
     same_act = bool(g.get("same_action")) and not g.get("doable_separately")
-    return same_act or bool(g.get("stage_of_same_result"))
+    stage = bool(g.get("stage_of_same_result"))
+    if not (same_act or stage):
+        return False
+    # ТРАНШІ. Та сама дія над тим самим обʼєктом, але з РІЗНИМИ строками — це
+    # не дубль, а розписані етапи одного рішення: «Безпечне місто» — 24 точки
+    # у 2026, 8 у 2027, 8 у 2028. Злити означало б втратити саме ті два
+    # транші, які найлегше не виконати. Стадії-результату це не стосується:
+    # там різні строки законні (ПКД до березня, обʼєкт до грудня).
+    if same_act and not stage and deadlines:
+        named = {d for d in deadlines if d}
+        if len(named) > 1:
+            return False
+    return True
 
 
 def _group_block(article, records):
@@ -619,7 +637,9 @@ async def judge_article(article, records, rules=None):
         # назвала або тією самою дією, яку не можна виконати нарізно, або
         # СТАДІЄЮ одного результату (Олег, 17.08: «ми не будемо моніторити,
         # зробили ПКД чи ні, ми стежимо за самим центром»).
-        merge = group_survives(g)
+        by_id = {int(r["id"]): r for r in records}
+        merge = group_survives(g, [by_id[i].get("deadline") for i in ids
+                                   if i in by_id])
         case = bool(g.get("same_case"))
         if not merge and not case:
             continue
