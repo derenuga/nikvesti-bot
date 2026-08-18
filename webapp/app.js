@@ -3967,9 +3967,11 @@ function paintTriage() {
         ${icon("chevron-right", "ic chev")}</button>` : ""}
     ${t.items.length ? `
       <div class="tr-deck" id="tr-deck">
-        ${t.items.slice(1, 3).map((_, i) =>
-          `<span class="tr-slab" style="--i:${2 - i}"></span>`).join("")}
-        ${triageCard(t.items[0])}
+        <div class="tr-stack">
+          ${t.items.slice(1, 3).map((_, i) =>
+            `<span class="tr-slab" style="--i:${2 - i}"></span>`).join("")}
+          ${triageCard(t.items[0])}
+        </div>
       </div>
       <div class="tr-acts">
         <button class="tr-act noise" data-swipe="noise">
@@ -4006,6 +4008,18 @@ function fitTriage() {
   document.documentElement.style.setProperty(
     "--tri-vh", triageViewportHeight() + "px");
   document.body.classList.toggle("no-scroll", STATE.view === "triage");
+  // Висоту рахуємо ЗА ФАКТОМ, а не «мінус 132 пікселі». Константу підігнали
+  // на одному телефоні, і на іншому вона одночасно лишала під колодою
+  // порожню смугу і тиснула картку так, що заголовок обрізало (Олег, 18.08).
+  // Міряємо те, що є насправді: від верху колоди до нижнього меню.
+  const el = document.querySelector(".tr-screen");
+  if (!el) return;
+  const nav = $("bottomnav");
+  el.style.height = "";                       // спершу віддаємо CSS-розрахунок
+  const top = el.getBoundingClientRect().top;
+  const bottom = nav && !nav.classList.contains("hidden")
+    ? nav.getBoundingClientRect().top : triageViewportHeight();
+  el.style.height = Math.max(360, Math.round(bottom - top - 8)) + "px";
 }
 
 /* Висота мініапки змінюється на льоту (розгортання, клавіатура) — перерахунок
@@ -4026,7 +4040,7 @@ window.addEventListener("resize", () => { if (STATE.view === "triage") fitTriage
 function triageCard(p) {
   const why = [p.kind_word, p.why].filter(Boolean).join(" · ");
   return `
-    <article class="tr-card ${p.cls}" data-tid="${p.id}">
+    <article class="tr-card ${p.cls}${p.image ? "" : " noimg"}" data-tid="${p.id}">
       <div class="tr-stamp noise">Шум</div>
       <div class="tr-stamp good">Лишити</div>
       <div class="tr-kind">${esc(why)}</div>
@@ -4041,6 +4055,57 @@ function triageCard(p) {
         rel="noopener">${esc(p.link.title || "матеріал")}${
         p.link.date ? ` · ${esc(p.link.date)}` : ""}</a>` : ""}
     </article>`;
+}
+
+/* Слід рішення. Ліворуч — хмара пилу з хлопком, праворуч — галочки, які
+   малюються штрихом і спливають.
+
+   Шар кладемо на body поверх колоди, а не в саму колоду: через 190 мс після
+   рішення колода перемальовується (наступна картка падає зверху), і все, що
+   лежало б усередині, зникло б рівно посеред анімації.
+
+   Траєкторії рахуються з ІНДЕКСА, без Math.random: випадковість тут нічого
+   не додає оку, зате робить ефект неперевірюваним і різним у двох людей. */
+function triageBurst(kind) {
+  const deck = $("tr-deck");
+  if (!deck || !window.matchMedia
+      || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const box = deck.getBoundingClientRect();
+  const fx = document.createElement("div");
+  fx.className = "tr-fx";
+  fx.style.cssText = `left:${box.left}px; top:${box.top}px;`
+    + `width:${box.width}px; height:${box.height}px;`;
+  if (kind === "noise") {
+    fx.innerHTML = '<i class="puff"></i>';
+    const N = 22;
+    for (let i = 0; i < N; i++) {
+      const a = (i / N) * Math.PI * 2 + (i % 3) * 0.11;
+      const d = 54 + ((i * 29) % 96);
+      const p = document.createElement("i");
+      p.className = "dust" + (i % 4 === 0 ? " warm" : "");
+      p.style.setProperty("--dx", Math.round(Math.cos(a) * d) + "px");
+      p.style.setProperty("--dy", Math.round(Math.sin(a) * d * 0.68) + "px");
+      p.style.setProperty("--s", (3 + (i % 4)) + "px");
+      p.style.setProperty("--t", ((i % 6) * 24) + "ms");
+      fx.appendChild(p);
+    }
+  } else {
+    fx.innerHTML = '<i class="glow"></i>';
+    // Розкидані по картці, а не в одну точку: п'ять галочок читаються як
+    // «зараховано», одна велика — як діалогове вікно.
+    [[50, 50], [30, 40], [70, 43], [37, 63], [65, 62]].forEach((pt, i) => {
+      const t = document.createElement("i");
+      t.className = "tick";
+      t.style.left = pt[0] + "%";
+      t.style.top = pt[1] + "%";
+      t.style.setProperty("--t", (i * 55) + "ms");
+      t.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+        + '<polyline points="20 6 9 17 4 12"/></svg>';
+      fx.appendChild(t);
+    });
+  }
+  document.body.appendChild(fx);
+  setTimeout(() => fx.remove(), 800);
 }
 
 /* Рішення. Оптимістичне: картка йде одразу, запит летить услід. Повернення
@@ -4058,6 +4123,7 @@ async function triageDecide(verdict) {
     el.classList.add(verdict === "noise" ? "fly-left" : "fly-right");
     el.style.pointerEvents = "none";
   }
+  triageBurst(verdict);
   haptic(verdict === "good" ? "success" : "warning");
   t.items = t.items.slice(1);
   t.done += 1;
