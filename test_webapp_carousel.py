@@ -260,6 +260,20 @@ async def main():
                 check("стрілка на всіх, крім останнього",
                       [c["chevron"] for c in chrome] == [True] * (n - 1) + [False],
                       str([c["chevron"] for c in chrome]))
+                # Лічильник переїхав донизу, до шеврона: угорі праворуч своє
+                # число малює сам Instagram
+                check("на обкладинці внизу «гортайте», а не «1/N»",
+                      chrome[0]["label"] == "гортайте", str(chrome[0]))
+                check("на решті слайдів унизу стоїть лічильник",
+                      all(c["label"] == c["counter"] for c in chrome[1:]),
+                      str([c["label"] for c in chrome]))
+                top_right = await page.evaluate(
+                    "__carousel.sample(1, 800, 60, 200, 100)")
+                bottom_right = await page.evaluate(
+                    "__carousel.sample(1, 700, 1330, 300, 90)")
+                check("угорі праворуч тепер порожньо, а внизу — ні",
+                      abs(bottom_right["r"] - top_right["r"]) > 1.5,
+                      f"верх {top_right['r']:.1f}, низ {bottom_right['r']:.1f}")
 
                 # Додали слайд — арифметика перерахувалась сама
                 await page.evaluate("__carousel.addSlide()")
