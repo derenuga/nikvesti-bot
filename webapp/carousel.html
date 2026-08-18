@@ -138,6 +138,10 @@
   }
   .para:hover { background: #eef2fb; }
   details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .revise { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .revise[hidden] { display: none; }
+  .revise summary { color: var(--brand); font-weight: 600; }
+  .revise textarea { min-height: 74px; font-size: 14px; }
 
   .swatches { display: inline-flex; gap: 8px; align-items: center; }
   .swatch { width: 30px; height: 30px; border-radius: 50%; cursor: pointer; border: 1px solid var(--line); padding: 0; }
@@ -302,6 +306,20 @@
       <div id="fields"></div>
       <div class="chips" id="chips" hidden></div>
       <div class="hint" id="chipsHint" hidden>Тапни слово, щоб виділити його плашкою (ще раз — зняти).</div>
+      <details class="revise" id="revise">
+        <summary>Попросити агента</summary>
+        <div class="field" style="margin-top:10px">
+          <textarea id="reviseText" spellcheck="false" placeholder="Напиши, що не так. Наприклад: «Тернопіль складно назвати сусідом Миколаєва — це не сусідній регіон. Але думка хороша, переформулюй»"></textarea>
+        </div>
+        <div class="toolrow" style="margin-top:8px">
+          <button class="tiny" id="reviseGo">Переписати цей слайд</button>
+          <button class="ghost tiny" id="addAiGo">Додати ще слайд</button>
+        </div>
+        <div class="hint" id="reviseNote" style="margin-top:8px"></div>
+        <div class="hint">Правка змінює тільки тексти цього слайда — фото,
+          кадр, тип і решта слайдів лишаються як є. Для нового слайда підказка
+          не обовʼязкова: без неї агент сам візьме те, чого ще немає.</div>
+      </details>
     </div>
 
     <div class="panel" id="photoPanel" hidden>
@@ -793,6 +811,82 @@
   }
   window.addEventListener("pointerup", () => { dragHl = null; });
 
+  // Правка одного слайда підказкою. Межу тримає сервер (віддає лише текстові
+  // поля), але й тут вливаємо строго їх — щоб випадкове зайве поле у відповіді
+  // не поїхало у фото чи кроп.
+  const REVISABLE = ["kicker", "title", "body", "quote", "quote_index",
+                     "attribution", "caption"];
+
+  const slideDigest = (s) => ({
+    type: s.type, title: s.title, body: s.body,
+    quote: s.quote, caption: s.caption,
+  });
+
+  async function askAgent(mode, btn, working) {
+    const slide = cur();
+    const feedback = $("reviseText").value.trim();
+    if (mode === "fix" && (!slide || !feedback)) return;
+    if (mode === "new" && S.slides.length >= S.maxSlides) {
+      $("reviseNote").textContent = `Уже ${S.slides.length} слайдів — це стеля.`;
+      return;
+    }
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = working;
+    $("reviseNote").textContent = "";
+    try {
+      const resp = await api("/api/carousel/slide", {
+        method: "POST",
+        body: JSON.stringify({
+          url: S.article?.url || $("url").value.trim(),
+          mode, feedback,
+          slide: mode === "fix" ? {
+            ...slideDigest(slide),
+            kicker: slide.kicker, quote_index: slide.quote_index,
+            attribution: slide.attribution,
+          } : null,
+          others: (mode === "fix" ? S.slides.filter((s) => s !== slide) : S.slides)
+            .map(slideDigest),
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || resp.statusText);
+
+      let target = slide;
+      if (mode === "new") {
+        // Новий слайд стає перед закликом — той за визначенням фінальний
+        const ctaAt = S.slides.findIndex((s) => s.type === "cta");
+        const at = ctaAt >= 0 ? ctaAt : S.slides.length;
+        target = newSlide(data.slide?.type || "text");
+        S.slides.splice(at, 0, target);
+        S.active = at;
+        if (Number.isInteger(data.slide?.photo_index)) {
+          target.slot.photoIdx = data.slide.photo_index;
+          ensurePhoto(target);
+        }
+      }
+      REVISABLE.forEach((key) => {
+        if (data.slide && key in data.slide) target[key] = data.slide[key];
+      });
+      if (mode === "new" && data.slide?.type) target.type = data.slide.type;
+      syncWords(target);
+      selectSlide(S.active);
+      $("reviseNote").textContent = data.note || "готово";
+      if ((data.notes || []).length) showNote(data.notes.join("\n"));
+      $("reviseText").value = "";
+    } catch (e) {
+      $("reviseNote").textContent = String(e.message || e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
+  $("reviseGo").addEventListener("click",
+    () => askAgent("fix", $("reviseGo"), "Переписую…"));
+  $("addAiGo").addEventListener("click",
+    () => askAgent("new", $("addAiGo"), "Складаю…"));
+
   $("typeSeg").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     const slide = cur();
@@ -1010,6 +1104,8 @@
     [...$("typeSeg").children].forEach((b) =>
       b.classList.toggle("on", b.dataset.type === slide.type));
     $("typeSeg").hidden = slide.type === "cta";
+    // На слайді-заклику текст свій, із пресетів — агенту там нема що правити
+    $("revise").hidden = slide.type === "cta";
     buildFields();
     syncPanels();
     markThumbs();

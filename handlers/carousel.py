@@ -632,6 +632,183 @@ def fake_plan(article):
     return {"slides": slides, "cta_suggestion": DEFAULT_CTA}
 
 
+# ---------- Правка ОДНОГО слайда за підказкою людини ----------
+#
+# Привід (Олег, 17.08): агент написав «Гучне свято — у сусідів» про Тернопіль,
+# а Тернопіль Миколаєву не сусід — він на заході, ми на півдні. Думка при
+# цьому хороша, переробляти всю карусель через один невдалий рядок безглуздо.
+#
+# Межу тут тримає КОД, а не прохання в промпті: ендпоінт віддає лише текстові
+# поля ОДНОГО слайда, і сторінка вливає рівно їх. Навіть якщо модель вирішить
+# переписати всю карусель, далі цього списку її відповідь не пройде — фото,
+# кроп, тип, кегль, порядок і сусідні слайди недосяжні за побудовою.
+REVISABLE_FIELDS = ("kicker", "title", "body", "attribution", "caption",
+                    "quote_index", "quote_excerpt")
+# У режимі «додай ще один слайд» агент має право обрати ще й тип і фото —
+# слайда ж не існує. На правці наявного ці поля лишаються недосяжними: там
+# тип і кадр уже обрала людина.
+NEW_SLIDE_FIELDS = REVISABLE_FIELDS + ("type", "photo_index")
+NEW_SLIDE_TYPES = ("text", "quote", "photo")
+
+_SLIDE_TOOL = {
+    "name": "slide_fix",
+    "description": "Виправлений текст ОДНОГО слайда.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "kicker": {"type": "string", "description": f"до {LIMITS['kicker']} знаків"},
+            "title": {"type": "string", "description": f"до {LIMITS['title']} знаків"},
+            "body": {"type": "string", "description": f"до {LIMITS['body']} знаків"},
+            "quote_index": {"type": "integer",
+                            "description": "лише для слайда-цитати: номер цитати статті"},
+            "quote_excerpt": {"type": "string",
+                              "description": "скорочена цитата за тими самими "
+                                             "правилами: тільки викидання слів"},
+            "attribution": {"type": "string", "description": "хто сказав"},
+            "caption": {"type": "string", "description": "підпис до фото"},
+            "type": {"type": "string", "enum": list(NEW_SLIDE_TYPES),
+                     "description": "лише для НОВОГО слайда: який він"},
+            "photo_index": {"type": "integer",
+                            "description": "лише для НОВОГО слайда: номер фото"},
+            "note": {"type": "string",
+                     "description": "одне речення людині: що саме ти змінив"},
+        },
+        "required": ["note"],
+    },
+}
+
+
+def build_revise_prompt(article, slide, feedback, others, mode="fix"):
+    """Матеріал для правки або для нового слайда: стаття, наявні слайди і
+    підказка. Наявні слайди показуються лише щоб не повторити те, що вже
+    сказано на інших екранах, — міняти їх не можна."""
+    lines = [
+        f"СТАТТЯ: {article.get('title') or '—'}",
+        f"ЛІД: {article.get('description') or '—'}",
+        "",
+    ]
+    quotes = article.get("quotes") or []
+    if quotes:
+        lines.append("ЦИТАТИ СТАТТІ (номер — quote_index):")
+        lines += [f"  [{i}] {q}" for i, q in enumerate(quotes)]
+        lines.append("")
+
+    text = "\n\n".join(article.get("paragraphs") or [])
+    lines += ["ТЕКСТ СТАТТІ:", text[:MAX_TEXT_CHARS] or "—", ""]
+
+    photos = article.get("images") or []
+    if mode == "new" and photos:
+        lines.append("ФОТО СТАТТІ (номер — photo_index):")
+        for i, im in enumerate(photos):
+            cap = (im.get("caption") or "").strip()
+            mark = "  ⚠ схоже на скриншот документа" \
+                if looks_like_document(cap) else ""
+            lines.append(f"  [{i}] {cap or 'без підпису'}{mark}")
+        lines.append("")
+
+    if slide:
+        lines.append(f"СЛАЙД, ЯКИЙ ТРЕБА ВИПРАВИТИ (тип {slide.get('type')}):")
+        for key in ("kicker", "title", "body", "quote", "attribution", "caption"):
+            if slide.get(key):
+                lines.append(f"  {key}: {slide[key]}")
+        lines.append("")
+
+    if others:
+        lines.append("СЛАЙДИ, ЩО ВЖЕ Є (лише щоб не повторюватись — НЕ чіпай їх):")
+        for n, other in others:
+            bits = " · ".join(str(other.get(k)) for k in
+                              ("title", "body", "quote", "caption") if other.get(k))
+            lines.append(f"  {n}. [{other.get('type')}] {bits[:160]}")
+        lines.append("")
+
+    if feedback.strip():
+        lines += ["ЩО КАЖЕ РЕДАКТОР:", feedback.strip(), ""]
+
+    if mode == "new":
+        lines += [
+            "ЗАВДАННЯ: додай ОДИН новий слайд до цієї каруселі.",
+            "Він мусить давати те, чого на наявних слайдах ЩЕ НЕМАЄ — не",
+            "переказувати вже сказане іншими словами. Обери тип сам (text,",
+            "quote або photo) і напиши його поля." ,
+        ]
+        if not feedback.strip():
+            lines.append("Редактор не сказав, про що саме — вирішуй за статтею: "
+                         "візьми найсильніше з того, що ще не використано.")
+        lines.append("Виклич інструмент slide_fix.")
+    else:
+        lines += [
+            "Виправ ЛИШЕ цей слайд і лише те, про що йдеться. Тип слайда не",
+            "міняй. Поля, яких правка не стосується, повертай без змін. Якщо",
+            "редактор каже, що думка хороша, — збережи її, зміни формулювання.",
+            "Виклич інструмент slide_fix.",
+        ]
+    return "\n".join(lines)
+
+
+async def revise_slide(article, slide, feedback, others=(), *, mode="fix",
+                       user_id=None, user_name=None):
+    """Агент править один слайд за підказкою (mode="fix") або складає один
+    новий (mode="new"). Повертає (поля, нотатка людині, зауваження)."""
+    from handlers.ai_messages import async_client
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError("агент вимкнений: немає ANTHROPIC_API_KEY")
+
+    msg = await async_client.messages.create(
+        model=PLAN_MODEL,
+        max_tokens=900,
+        thinking={"type": "disabled"},
+        system=load_prompt(),
+        tools=[_SLIDE_TOOL],
+        tool_choice={"type": "tool", "name": "slide_fix"},
+        messages=[{"role": "user",
+                   "content": build_revise_prompt(article, slide, feedback,
+                                                  others, mode)}],
+    )
+    _record_usage(msg.usage, user_id, user_name)
+    raw = next((b.input for b in msg.content if b.type == "tool_use"), None)
+    if not raw:
+        raise ValueError("агент не повернув правку")
+
+    # Беремо ЛИШЕ дозволені поля — решту відповіді ігноруємо мовчки
+    allowed = NEW_SLIDE_FIELDS if mode == "new" else REVISABLE_FIELDS
+    fixed = {k: raw[k] for k in allowed if k in raw}
+    note = (raw.get("note") or "").strip()
+
+    if mode == "new":
+        if fixed.get("type") not in NEW_SLIDE_TYPES:
+            fixed["type"] = "text"
+        photos = article.get("images") or []
+        idx = fixed.get("photo_index")
+        if not isinstance(idx, int) or not 0 <= idx < len(photos):
+            fixed["photo_index"] = None
+        slide = {"type": fixed["type"]}
+
+    notes = []
+    if slide.get("type") == "quote":
+        # Цитата проходить ту саму перевірку, що й у плані: текст ставить код
+        merged = dict(slide, **fixed)
+        if not isinstance(merged.get("quote_index"), int):
+            merged["quote_index"] = slide.get("quote_index")
+        checked, notes = apply_plan_quotes([merged], article.get("quotes") or [])
+        for key in ("quote", "quote_index", "attribution"):
+            if key in checked[0]:
+                fixed[key] = checked[0][key]
+        # Цитата не склалась — слайд деградував у текстовий, і в режимі
+        # «новий слайд» це має доїхати до сторінки, інакше вона намалює
+        # порожню цитату
+        if mode == "new" and checked[0].get("type") != "quote":
+            fixed["type"] = checked[0].get("type", "text")
+            fixed.pop("quote", None)
+    fixed.pop("quote_excerpt", None)
+
+    for key, limit in (("title", "title"), ("kicker", "kicker"),
+                       ("body", "body"), ("caption", "caption")):
+        if fixed.get(key):
+            fixed[key] = str(fixed[key]).strip()[:LIMITS[limit] * 2]
+    return fixed, note, notes
+
+
 async def make_plan(article, *, force=False, user_id=None, user_name=None):
     """Виклик агента → нормалізований план. Кидає винятки виклику назовні:
     вирішує ендпоінт (сторінка має відкритись і без плану)."""
@@ -847,6 +1024,50 @@ async def api_plan(request):
         "plan": plan,
         "source": source,
     })
+
+
+async def api_revise(request):
+    """POST /api/carousel/slide {url, slide, others, feedback} → правка ОДНОГО
+    слайда. Відповідь несе лише текстові поля — усе інше сторінка лишає своє."""
+    who = await _require_person(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "не JSON"}, status=400)
+
+    feedback = (body.get("feedback") or "").strip()
+    mode = "new" if body.get("mode") == "new" else "fix"
+    slide = body.get("slide") or {}
+    # Для нового слайда підказка НЕ обовʼязкова: «додай ще один» — теж завдання
+    if mode == "fix" and not feedback:
+        return web.json_response({"error": "Напиши, що саме поправити"}, status=400)
+    if mode == "fix" and (not isinstance(slide, dict)
+                          or slide.get("type") not in SLIDE_TYPES):
+        return web.json_response({"error": "не той слайд"}, status=400)
+
+    url = (body.get("url") or "").strip()
+    if not card_maker._host_allowed(url):
+        return web.json_response(
+            {"error": "Приймаються лише посилання nikvesti.com"}, status=400)
+
+    import requests
+    try:
+        article = await asyncio.to_thread(scrape_article, url)
+    except requests.RequestException as e:
+        return web.json_response(
+            {"error": f"Не вдалося прочитати статтю: {e}"}, status=502)
+
+    others = [(n, o) for n, o in enumerate(body.get("others") or [], 1)
+              if isinstance(o, dict)][:8]
+    try:
+        fixed, note, notes = await revise_slide(
+            article, slide if mode == "fix" else None, feedback, others,
+            mode=mode, user_id=who.get("tg_id"), user_name=who.get("person"))
+    except Exception as e:
+        print(f"carousel: правка слайда не вдалась — {e}")
+        return web.json_response({"error": f"Агент не впорався: {e}"}, status=502)
+
+    return web.json_response({"slide": fixed, "note": note, "notes": notes})
 
 
 def _public_article(article):
