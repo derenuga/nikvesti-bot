@@ -289,6 +289,12 @@ CREATE INDEX IF NOT EXISTS idx_commitments_subject ON commitments (subject_entit
 CREATE INDEX IF NOT EXISTS idx_commitments_subject_key ON commitments (subject_key);
 CREATE INDEX IF NOT EXISTS idx_commitments_topic ON commitments (topic_id);
 CREATE INDEX IF NOT EXISTS idx_commitments_deadline ON commitments (deadline);
+-- Схожість назв рахує ДЕТЕКТОР ДУБЛІВ, і без цього індексу вона рахується
+-- на всіх парах: 897 відкритих записів це 400 тисяч пар, по 7 секунд за
+-- прохід, а проходів у детекторі чотири. Екран дублів в апці відкривався
+-- 30–40 секунд (Олег, 18.08).
+CREATE INDEX IF NOT EXISTS idx_commitments_title_trgm
+    ON commitments USING gin (title gin_trgm_ops);
 
 -- Одна обіцянка може стосуватись кількох об'єктів одразу: «не дамо
 -- приватизувати» сказано про ТРИ дитсадки (§2.4). Зв'язок багато-до-багатьох,
@@ -2021,6 +2027,46 @@ GROUP_APART_SQL = GROUP_APART.replace("'", "''")
 # СПІЛЬНА СТАТТЯ-джерело (дроблення одного рішення живе в одній статті).
 # Спільна стаття рахується і за «спільний сигнал» унизу: у шматків однієї
 # ухвали предмет якраз різний — бо його різали.
+# Поріг для ІНДЕКСНОГО звуження. Оператор % порівнює СТРОГО більше, тому
+# ставимо трохи нижче найнижчого нашого порога — інакше пара рівно на 0.30
+# (а це поріг для двох записів з однієї статті) не пройшла б.
+TRGM_LIMIT = round(DUPE_SIM_SAME_ART - 0.01, 2)
+
+# Кандидатів спершу звужує ІНДЕКС, і лише потім рахується схожість.
+#
+# Доти детектор порівнював КОЖЕН запис із КОЖНИМ: 897 відкритих зобов'язань —
+# це 400 тисяч пар, і на кожній similarity() рахувалась до п'яти разів (три
+# пороги у WHERE, вивід і сортування). Один прохід — 7 секунд на живій норі,
+# а екран дублів в апці робить два запити (список і лічильник), тобто пів
+# хвилини очікування на порожньому місці.
+#
+# Пари, які СУДДЯ назвав однаковими, приєднуються окремо: у них схожість
+# написання буває нікчемною (0.08 у пари про гімназію №2), і саме заради них
+# суддя й потрібен — індексне звуження їх не побачило б ніколи.
+_DUPE_CAND = """
+WITH cand AS (
+    SELECT a.id AS aid, b.id AS bid
+    FROM commitments a
+    JOIN commitments b ON b.id > a.id AND a.title %% b.title
+    WHERE a.status = 'expected' AND b.status = 'expected'
+    UNION
+    SELECT v.a, v.b
+    FROM promise_pair_verdicts v
+    JOIN commitments ca ON ca.id = v.a AND ca.status = 'expected'
+    JOIN commitments cb ON cb.id = v.b AND cb.status = 'expected'
+    WHERE v.same IS TRUE
+)
+"""
+
+_DUPE_FROM = ("FROM cand JOIN commitments a ON a.id = cand.aid "
+              "JOIN commitments b ON b.id = cand.bid ")
+
+
+def _trgm_limit(cur):
+    """Поріг оператора % живе в налаштуванні сесії, а не в тексті запиту."""
+    cur.execute(f"SET pg_trgm.similarity_threshold = {TRGM_LIMIT}")
+
+
 _DUPE_WHERE = f"""
         WHERE a.status = 'expected' AND b.status = 'expected'
           AND NOT EXISTS (SELECT 1 FROM promise_pairs p
@@ -2082,14 +2128,16 @@ def dupe_pairs(cur, limit=40, sim=DUPE_SIM):
 
     Пари, про які людина вже сказала «різні», не повертаються ніколи.
     """
+    _trgm_limit(cur)
     cur.execute(
+        _DUPE_CAND +
         "SELECT a.id, b.id, similarity(a.title, b.title) AS sim, "
         "       a.title, b.title, a.revisions, b.revisions, "
         "       coalesce(a.owner_text, ''), a.deadline, "
         "       EXISTS (SELECT 1 FROM promise_pair_verdicts vy "
         "               WHERE vy.a = a.id AND vy.b = b.id AND vy.same IS TRUE) "
         "         AS judged_same "
-        "FROM commitments a JOIN commitments b ON b.id > a.id "
+        + _DUPE_FROM
         + _DUPE_WHERE +
         # Підтверджене суддею — ЗГОРИ. Інакше справжні дублі, які він знайшов
         # у контексті новини, тонуть під парами, схожими лише написанням.
@@ -2414,8 +2462,8 @@ def auto_merge_pairs(cur, who="Лис", limit=200, run=None):
 
 
 def dupe_count(cur, sim=DUPE_SIM):
-    cur.execute("SELECT count(*) FROM commitments a "
-                "JOIN commitments b ON b.id > a.id" + _DUPE_WHERE,
+    _trgm_limit(cur)
+    cur.execute(_DUPE_CAND + "SELECT count(*) " + _DUPE_FROM + _DUPE_WHERE,
                 (sim, DUPE_SIM_STRONG, DUPE_SIM_SAME_ART))
     return cur.fetchone()[0]
 
