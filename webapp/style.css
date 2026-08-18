@@ -2306,6 +2306,9 @@ body.no-scroll { overflow: hidden; }
   position: relative; margin-bottom: 14px;
   flex: 1; min-height: 0;              /* забирає весь лишок висоти екрана */
   touch-action: none;                  /* прокручувати нема куди — жест наш */
+  /* Стос стоїть ПОСЕРЕДИНІ вільного місця: картка короткого запису інакше
+     висіла б угорі, а під нею зяяла б смуга до кнопок. */
+  display: flex; align-items: center;
 }
 /* Глибина колоди — порожні плашки під верхньою карткою. Саме плашки, а не
    справжні картки: у карток різна висота, і сусідні визирали з-під верхньої
@@ -2315,6 +2318,7 @@ body.no-scroll { overflow: hidden; }
 .tr-slab {
   position: absolute; inset: 0; border-radius: var(--radius);
   background: var(--card); box-shadow: var(--shadow); opacity: .6;
+  border: 1px solid var(--line);
   /* Стискаємо лише по ГОРИЗОНТАЛІ й зсуваємо вниз: при рівномірному
      масштабуванні плашка ховалась рівно під карткою і глибини не було видно
      взагалі (перший скріншот). Тепер із-під картки визирає смужка — так
@@ -2322,16 +2326,45 @@ body.no-scroll { overflow: hidden; }
   transform: translateY(calc(var(--i) * 11px)) scaleX(calc(1 - var(--i) * .05));
   transform-origin: 50% 0;
 }
+/* Картка НЕ розтягується на всю колоду, а має висоту свого вмісту.
+
+   Доти вона займала весь відведений прямокутник, і запис без фотографії з
+   короткою цитатою давав півекрана порожнечі всередині картки — метадані
+   пришпилені до низу, текст угорі, між ними діра (Олег, 18.08). Порожнеча
+   нікуди не діласьcя, але тепер вона ЗА карткою, а не в ній: картка виглядає
+   карткою, а колода лишається на місці, бо стос притиснутий до верху. */
+.tr-stack { position: relative; width: 100%; max-height: 100%; }
 .tr-card {
-  position: absolute; inset: 0; z-index: 1;
+  position: relative; z-index: 1; max-height: 100%;
   display: flex; flex-direction: column;
   gap: 8px; text-align: left; background: var(--card);
+  border: 1px solid var(--line);
   border-radius: var(--radius); box-shadow: var(--shadow);
-  padding: 15px 16px 14px 18px; overflow: hidden;
+  padding: 14px 15px 13px 17px; overflow: hidden;
   transition: transform .22s cubic-bezier(.22, 1, .36, 1), opacity .2s;
   will-change: transform;
   cursor: grab;
 }
+/* У темній темі картка на чорному фоні зливалася з підкладкою: --card від
+   Telegram відрізняється від --paper на кілька відсотків яскравості, а тінь
+   на чорному не існує фізично — колода читалась як пляма (Олег, 18.08).
+   Підйом дає СВІТЛІША ПОВЕРХНЯ: тонка холодна плівка поверх --card плюс
+   виразніша межа. Плашки глибини тонуються так само, але слабше, щоб колода
+   лишалась колодою, а не трьома однаковими картками. */
+body.dark .tr-card {
+  background:
+    linear-gradient(180deg, rgba(158, 195, 238, .11), rgba(158, 195, 238, .035)),
+    var(--card);
+  border-color: rgba(158, 195, 238, .17);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, .55);
+}
+body.dark .tr-slab {
+  background:
+    linear-gradient(180deg, rgba(158, 195, 238, .055), rgba(158, 195, 238, .02)),
+    var(--card);
+  border-color: rgba(158, 195, 238, .10);
+}
+
 .tr-card::before {
   content: ""; position: absolute; inset: 0 auto 0 0; width: 4px;
   background: var(--sev, var(--line));
@@ -2368,16 +2401,22 @@ body.no-scroll { overflow: hidden; }
 }
 /* Довгий заголовок і довга цитата ОБРІЗАЮТЬСЯ, а не розтягують картку:
    екран має фіксовану висоту, і повний текст завжди є за «Відкрити». */
+/* Жоден текстовий рядок НЕ стискається флексом. Доти заголовок мав
+   flex-shrink за замовчуванням, і на невисокому екрані його різало посеред
+   слова — без крапок, бо різав не clamp, а overflow контейнера (Олег, 18.08:
+   «не видно заголовка из-за фикса высоту»). Поступається місцем лише
+   картинка, і саме тому в неї flex: 1. */
+.tr-kind, .tr-title, .tr-quote, .tr-who, .tr-meta, .tr-src { flex: 0 0 auto; }
 .tr-title {
   font-size: 17px; font-weight: 700; line-height: 1.3;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
   overflow: hidden;
 }
 .tr-img {
   display: block; width: 100%; border-radius: 12px;
   /* Картинка — та частина, що поступається місцем першою: на низькому екрані
      вона стискається, а текст лишається читабельним. */
-  flex: 1 1 90px; min-height: 0; object-fit: cover; background: var(--fill);
+  flex: 1 1 118px; min-height: 52px; object-fit: cover; background: var(--fill);
 }
 .tr-quote {
   font-size: 13.5px; line-height: 1.45; color: var(--ink); opacity: .82;
@@ -2385,6 +2424,12 @@ body.no-scroll { overflow: hidden; }
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* Картка БЕЗ фотографії: місце, яке мала б зайняти картинка, віддаємо
+   цитаті. Інакше посеред картки зяяла порожнеча — метадані пришпилені до
+   низу, і без картинки між ними й текстом лишалась діра в півекрана. Більше
+   цитати тут ще й корисно: свайп без доказу — вгадування. */
+.tr-card.noimg .tr-quote { -webkit-line-clamp: 9; }
+.tr-card.noimg .tr-meta { margin-top: 6px; }
 .tr-who { font-size: 12.5px; color: var(--muted); }
 .tr-meta { font-size: 12px; color: var(--muted); margin-top: auto; }
 .tr-src { font-size: 12.5px; color: var(--blue); text-decoration: none; }
@@ -2405,6 +2450,74 @@ body.no-scroll { overflow: hidden; }
   font-size: 11.5px; color: var(--muted); text-align: center;
   margin: 10px 0 0; line-height: 1.45;
 }
+
+/* ---------- Слід рішення: труха ліворуч, галочки праворуч ----------
+
+   Свайп має мати ВІДДАЧУ, інакше сотня карток перетворюється на роботу.
+   Ефект живе окремим фіксованим шаром над колодою, а не всередині неї: після
+   рішення колода перемальовується (наступна картка падає зверху), і будь-що,
+   покладене в неї, зникло б за 190 мс — рівно посеред анімації.
+
+   Емодзі тут немає свідомо: «шум» — це хмара пилу з хлопком, «лишити» —
+   галочки, які МАЛЮЮТЬСЯ штрихом і спливають. Обидва ефекти короткі (до
+   0.65 с) і нічого не блокують: рішення вже пішло на сервер. */
+.tr-fx {
+  position: fixed; pointer-events: none; z-index: 60; overflow: visible;
+}
+.tr-fx i { position: absolute; display: block; }
+
+/* Хлопок: кільце, що миттю розходиться і гасне. */
+.tr-fx .puff {
+  left: 50%; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px;
+  border-radius: 50%; border: 2px solid var(--muted); opacity: .55;
+  animation: trPuff .45s cubic-bezier(.2, .8, .3, 1) forwards;
+}
+@keyframes trPuff {
+  to { transform: scale(13); opacity: 0; border-width: .5px; }
+}
+
+/* Пилинки: розлітаються радіально й ОСІДАЮТЬ — саме осідання читається як
+   труха, а не як салют. Кут і відстань рахує JS, щоб рух був детермінований
+   (Math.random у розмітці — це різний екран у двох людей і неможливий тест). */
+.tr-fx .dust {
+  left: 50%; top: 50%; width: var(--s); height: var(--s); margin: 0;
+  border-radius: 50%; background: var(--muted); opacity: 0;
+  animation: trDust .62s cubic-bezier(.15, .7, .35, 1) var(--t) forwards;
+}
+.tr-fx .dust.warm { background: var(--ink); opacity: 0; }
+@keyframes trDust {
+  0% { opacity: .8; transform: translate(0, 0) scale(1); }
+  70% { opacity: .5; }
+  100% { opacity: 0; transform: translate(var(--dx), calc(var(--dy) + 30px)) scale(.35); }
+}
+
+/* Галочки: спершу малюється штрих, потім знак спливає і гасне. */
+.tr-fx .tick {
+  width: 26px; height: 26px; margin: -13px 0 0 -13px; color: var(--good);
+  opacity: 0; animation: trTick .6s cubic-bezier(.2, .9, .3, 1) var(--t) forwards;
+}
+.tr-fx .tick svg {
+  width: 100%; height: 100%; fill: none; stroke: currentColor;
+  stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round;
+  stroke-dasharray: 32; stroke-dashoffset: 32;
+  animation: trDraw .3s ease-out var(--t) forwards;
+}
+@keyframes trDraw { to { stroke-dashoffset: 0; } }
+@keyframes trTick {
+  0% { opacity: 0; transform: scale(.55); }
+  22% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: translateY(-30px) scale(1); }
+}
+
+/* Мʼяке зелене світло під галочками — воно й робить жест «теплим». */
+.tr-fx .glow {
+  inset: 0; border-radius: var(--radius); opacity: 0;
+  background: radial-gradient(circle at 50% 50%, var(--good-soft), transparent 62%);
+  animation: trGlow .5s ease-out forwards;
+}
+@keyframes trGlow { 25% { opacity: 1; } 100% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) { .tr-fx { display: none; } }
 
 .tr-empty { text-align: center; padding: 40px 24px; }
 .tr-empty-ic {

@@ -314,6 +314,42 @@ async def main():
                   await page.locator(".tr-card:last-child")
                   .get_attribute("data-tid") == "103")
 
+            # --- слід рішення: труха ліворуч, галочки праворуч ---
+            await page.evaluate("nav('triage')")
+            await page.wait_for_selector(".tr-card", timeout=5000)
+            await _settle(page)
+            await page.click('[data-swipe="noise"]')
+            await page.wait_for_timeout(60)
+            fx = await page.evaluate("""() => {
+              const f = document.querySelector('.tr-fx');
+              return f ? { dust: f.querySelectorAll('.dust').length,
+                           puff: f.querySelectorAll('.puff').length,
+                           tick: f.querySelectorAll('.tick').length } : null; }""")
+            check("свайп «шум» лишає хмару пилу з хлопком",
+                  fx and fx["dust"] > 10 and fx["puff"] == 1, str(fx))
+            check("…і жодної галочки — це інше рішення", fx and fx["tick"] == 0)
+            # Шар живе НАД колодою, а не в ній: колода перемальовується через
+            # 190 мс, і все, покладене всередину, зникло б посеред анімації.
+            check("слід не всередині колоди — інакше його стерло б перемальовування",
+                  await page.evaluate(
+                      "() => !document.querySelector('#tr-deck .tr-fx')"))
+            await page.wait_for_timeout(900)
+            check("слід прибирає себе сам",
+                  await page.evaluate("() => !document.querySelector('.tr-fx')"))
+
+            await _settle(page)
+            await page.click('[data-swipe="good"]')
+            await page.wait_for_timeout(60)
+            fx = await page.evaluate("""() => {
+              const f = document.querySelector('.tr-fx');
+              return f ? { tick: f.querySelectorAll('.tick svg').length,
+                           glow: f.querySelectorAll('.glow').length,
+                           dust: f.querySelectorAll('.dust').length } : null; }""")
+            check("свайп «лишити» малює галочки, а не емодзі",
+                  fx and fx["tick"] >= 4 and fx["glow"] == 1, str(fx))
+            check("…і жодної пилинки", fx and fx["dust"] == 0)
+            await page.wait_for_timeout(900)
+
             # --- «Відкрити» веде в картку, а не вирішує ---
             before = await page.evaluate("window.__triageCalls.length")
             await page.click('[data-swipe="open"]')
@@ -341,6 +377,36 @@ async def main():
                   .get_attribute("data-tid") == "101")
             check("і про збій сказано вголос",
                   not await page.locator("#toast.hidden").count())
+        finally:
+            await browser.close()
+
+        # ---------- розкладка: заголовок цілий, під колодою не порожньо ----------
+        browser, page = await _open(pw, ME_MANAGER, {
+            "items": [_card(301, "Встановити транспортні огородження та дорожні "
+                            "знаки на чотирьох вулицях Миколаєва через велогонку",
+                            "process", "процедурний крок",
+                            "рух папера, а не результат у місті",
+                            "Комунальному підприємству доручать встановити "
+                            "огородження та знаки")] + DECK["items"],
+            "offset": 5,
+            "counts": {"pending": 489, "noise": 3, "good": 6, "by_kind": {}}})
+        try:
+            await page.evaluate("nav('triage')")
+            await page.wait_for_selector(".tr-card", timeout=5000)
+            await _settle(page)
+            box = await page.evaluate("""() => {
+              const t = document.querySelector('.tr-title');
+              const s = document.querySelector('.tr-screen');
+              const n = document.getElementById('bottomnav');
+              return { cut: t.scrollHeight - t.clientHeight,
+                       gap: n.getBoundingClientRect().top
+                            - s.getBoundingClientRect().bottom }; }""")
+            # Заголовок різало НЕ обрізанням рядків, а флексом: у картки
+            # фіксована висота, і текст стискався разом із нею (Олег, 18.08).
+            check("довгий заголовок видно повністю, а не обрізаним флексом",
+                  box["cut"] == 0, f"сховано {box['cut']}px")
+            check("під колодою не лишається порожньої смуги",
+                  0 <= box["gap"] <= 24, f"{round(box['gap'])}px до меню")
         finally:
             await browser.close()
 
