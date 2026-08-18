@@ -1274,7 +1274,10 @@ async def promise_dupes_handler(update, context):
             pp.ensure_schema(conn)
             conn.autocommit = True
             with conn.cursor() as cur:
-                return pp.dupe_count(cur), pp.dupe_pairs(cur, limit=12)
+                # Ліміт 12 стояв, поки список їхав у чат. Тепер він у
+                # файлі, тож ховати роботу нема причини — беремо стільки,
+                # скільки детектор дає за прогін.
+                return pp.dupe_count(cur), pp.dupe_pairs(cur, limit=40)
         finally:
             conn.close()
 
@@ -1301,57 +1304,134 @@ async def promise_dupes_handler(update, context):
         await msg.edit_text(
             auto + "🦊 Спірних пар не лишилось.", parse_mode="HTML")
         return
-    confirmed = sum(1 for p in pairs if p.get("judged_same"))
-    lines = [auto + f"🦊 <b>Схоже на дублі: {total}</b>",
-             "<i>Згори — те, що суддя прочитав у контексті новини й назвав "
-             "одним записом; нижче — схожі за написанням, рішення твоє. "
-             "Злиття не видаляє: ревізії другого переходять у перший, "
-             "обидві цитати лишаються доказами.</i>", ""]
-    # Пари, які суддя назвав однаковими, ідуть ПАКЕТОМ: під повідомленням
-    # номерні кнопки й одне «злити обрані». Десять готових команд поспіль —
-    # це десять ручних вводів у чаті, і саме на цьому Олег зупинився
-    # (17.08). Обрані всі одразу: суддя вже сказав «так», людина знімає
-    # незгодні, а не проставляє згодні.
-    batch = []
-    for i, p in enumerate(pairs):
-        if p.get("judged_same") and i == 0:
-            lines.append("<b>Суддя каже — одне й те саме:</b>")
-        if not p.get("judged_same") and (i == confirmed) and confirmed:
-            lines.append("<b>Просто схожі назви — дивись сам:</b>")
-        mark = "✅ " if p.get("judged_same") else ""
-        # ПОРЯДОК ПОКАЗУ = порядок команди, і рахує його merge_winner — той
-        # самий, що в апці. Доти рядки друкувались як прийшли з детектора, і
-        # готова команда лишала не той запис: у парі «ремонт доріг Миколаєва»
-        # / «виділити 14 мільйонів» виживала назва, за якою нічого не
-        # відстежиш (Олег, 17.08).
+    # ЧИСЛА В ЧАТ, ПОВНИЙ СПИСОК ФАЙЛОМ — те саме правило, що в /roles_audit,
+    # /entity_junk і /promise_export. Спершу пари друкувались у чат: щоб знайти
+    # серед дванадцяти дві помилкові, доводилось читати простирадло з екрана,
+    # де не видно ні цитат, ні новин (Олег, 17.08: «вместо того чтоб прислать
+    # файл ты заставляешь меня читать?»). У файлі є все, за чим ухвалюють
+    # рішення, і номер кожної пари збігається з номером кнопки.
+    ordered = []
+    for p in pairs:
         keep, drop = pp.merge_winner(
             {"id": p["a"], "title": p.get("title_a"),
              "revisions": p.get("rev_a") or 0},
             {"id": p["b"], "title": p.get("title_b"),
              "revisions": p.get("rev_b") or 0})
-        if p.get("judged_same"):
-            batch.append([keep["id"], drop["id"]])
-            head = f"{mark}<b>{len(batch)}.</b> {escape_html(keep['title'] or '')}"
-            tail = (f"  <i>схожість {p['sim']} · строк "
-                    f"{pp.fmt_date(p['deadline'])}</i>")
-        else:
-            head = f"• {escape_html(keep['title'] or '')}"
-            tail = (f"  <i>схожість {p['sim']} · строк "
-                    f"{pp.fmt_date(p['deadline'])}</i> — "
-                    f"<code>/promise_merge {keep['id']} {drop['id']}</code>")
-        lines += [head, f"  {escape_html(drop['title'] or '')}", tail, ""]
+        ordered.append((p, keep, drop))
+    batch = [[k["id"], d["id"]] for p, k, d in ordered if p.get("judged_same")]
+
+    def details():
+        conn = ep.connect()
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                ids = [i for _, k, d in ordered for i in (k["id"], d["id"])]
+                revs = {}
+                for r in pp.revisions(cur, ids):
+                    revs.setdefault(r["commitment_id"], r)
+                links = _links_for(
+                    cur, {r.get("article_id") for r in revs.values()})
+                return revs, links, pp.load_verdicts(cur, pairs)
+        finally:
+            conn.close()
+
+    try:
+        revs, links, verds = await asyncio.to_thread(details)
+    except Exception:
+        revs, links, verds = {}, {}, {}
+
+    doc = _dupes_file(ordered, revs, links, verds)
+
     kb = None
+    tail = ""
     if batch:
-        lines.append("<i>Номер — це тап по кнопці внизу. Знімаєш ті, де "
-                     "суддя помилився, і тиснеш «злити обрані» — одним "
-                     "рухом замість десяти команд.</i>")
+        # Стеля кнопок. Тридцять номерів — це шість рядів, більше в екран не
+        # влазить, а гортати клавіатуру гірше, ніж прийти вдруге. Притримане
+        # НАЗВАНО числом: мовчазний зріз читався б як «оце й усе».
+        held = batch[BATCH_MAX:]
+        batch = batch[:BATCH_MAX]
         storage.save_promise_dupes(_dupes_dialog(update), {
             "pairs": batch, "off": [], "at": datetime.now().isoformat()})
         kb = _dupes_keyboard(batch, set())
-    lines.append("<i>Зручніше — в апці: /team → Утиліти → Банк тем → «Схоже "
-                 "на дублі». Там видно цитати обох.</i>")
-    await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML",
-                        disable_web_page_preview=True, reply_markup=kb)
+        tail = (f"\n\n<b>Суддя підтвердив {len(batch) + len(held)}</b> — "
+                f"вони у файлі з цитатами й лінками, пронумеровані як кнопки. "
+                f"Зніми ті, де він помилився, і тисни «злити обрані».")
+        if held:
+            tail += (f"\nКнопок на перші {len(batch)}; решта {len(held)} "
+                     f"прийде наступним /promise_dupes.")
+    caption = (auto + f"🦊 <b>Схоже на дублі: {total}</b>" + tail +
+               "\n\n<i>Злиття не видаляє: ревізії другого переходять у "
+               "перший, обидві цитати лишаються доказами в одній картці.</i>")
+    await msg.delete()
+    await update.message.reply_document(
+        document=BytesIO(doc.encode("utf-8")),
+        filename="promise_dupes.txt", caption=_clip(caption, 1000),
+        parse_mode="HTML", reply_markup=kb)
+
+
+def _dupes_file(ordered, revs, links, verds):
+    """Повний список пар текстом: обидві назви, ЦИТАТИ і лінки на новини.
+
+    Саме за цим ухвалюють рішення, і саме цього не було на екрані: щоб
+    знайти серед дванадцяти пар дві помилкові, доводилось читати простирадло
+    в чаті, де немає ні цитат, ні статей. Номер пари тут збігається з
+    номером кнопки під повідомленням.
+    """
+    def side(cid, label, skip_article=False):
+        rev = revs.get(cid) or {}
+        out = [f"   {label} #{cid}"]
+        if rev.get("quote"):
+            out.append(f"      цитата: «{rev['quote']}»")
+        art = links.get(rev.get("article_id")) or {}
+        if art.get("url") and not skip_article:
+            out.append(f"      новина: {art.get('title') or ''} {art['url']}")
+        return out
+
+    def one_article(a, b):
+        """Спільна стаття обох записів або None. Найчастіший дубль
+        народжується ВСЕРЕДИНІ однієї новини, і друкувати той самий лінк
+        двічі — шум рівно там, де читають найуважніше."""
+        ra, rb = revs.get(a) or {}, revs.get(b) or {}
+        art = ra.get("article_id")
+        return art if art and art == rb.get("article_id") else None
+
+    same = [(p, k, d) for p, k, d in ordered if p.get("judged_same")]
+    rest = [(p, k, d) for p, k, d in ordered if not p.get("judged_same")]
+    doc = ["ДУБЛІ БАНКУ ТЕМ — " + datetime.now().strftime("%d.%m.%Y %H:%M"), ""]
+    if same:
+        doc += [f"СУДДЯ ПІДТВЕРДИВ: {len(same)}",
+                "Номер пари = номер кнопки під повідомленням у чаті.",
+                "Знімаєш незгодні тапом по номеру, решту зливає одна кнопка.",
+                ""]
+    for n, (p, keep, drop) in enumerate(same, 1):
+        v = verds.get(tuple(sorted((p["a"], p["b"])))) or {}
+        shared = one_article(keep["id"], drop["id"])
+        doc.append(f"{n}. ЛИШИТЬСЯ: {keep.get('title') or ''}")
+        doc += side(keep["id"], "запис", skip_article=bool(shared))
+        doc.append(f"   ПРИЄДНАЄТЬСЯ: {drop.get('title') or ''}")
+        doc += side(drop["id"], "запис", skip_article=bool(shared))
+        if shared:
+            art = links.get(shared) or {}
+            doc.append(f"   обидва з новини: {art.get('title') or ''} "
+                       f"{art.get('url') or ''}".rstrip())
+        doc.append(f"   схожість {p['sim']} · строк {pp.fmt_date(p['deadline'])}")
+        if v.get("why"):
+            doc.append(f"   суддя: {v['why']}")
+        doc.append("")
+    if rest:
+        doc += ["", f"ПРОСТО СХОЖІ НАЗВИ: {len(rest)}",
+                "Суддя їх не підтверджував — кнопок немає, рішення твоє.", ""]
+        for p, keep, drop in rest:
+            doc += [f"• {keep.get('title') or ''}",
+                    f"  {drop.get('title') or ''}",
+                    f"  схожість {p['sim']} · строк {pp.fmt_date(p['deadline'])}",
+                    f"  /promise_merge {keep['id']} {drop['id']}", ""]
+    return "\n".join(doc)
+
+
+# Скільки пар отримують кнопку за раз. Файл несе всі, клавіатура — стільки,
+# скільки не доводиться гортати.
+BATCH_MAX = 30
 
 
 def _dupes_dialog(update):
