@@ -11,3 +11,6 @@ streets_with_mikroraion.json
 queue_clusters_with_mikroraion.json
 outage_streets_filial_15.csv
 webapp/*.gz
+
+# Службові файли сесій із персональними даними — ніколи не в публічне репо
+.local-private/
