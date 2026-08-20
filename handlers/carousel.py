@@ -101,7 +101,7 @@ SLIDE_TYPES = ("cover", "text", "quote", "photo", "cta")
 # «— зазначила вона» лишався на слайді ще довго після фіксу, бо новину вже
 # відкривали раніше. Міняти це число щоразу, коли міняється те, ЯК план
 # складається; записи іншої версії просто ігноруються.
-PLAN_VERSION = 5
+PLAN_VERSION = 6
 
 # Токен живе довго: СММ відкриває сторінку з закладки, і щоденне ходіння в
 # бота по свіжий лінк перетворило б інструмент на квест.
@@ -532,6 +532,26 @@ def clean_caption(text):
     return text[:POST_CAPTION_MAX]
 
 
+def caption_reach(caption, article):
+    """Чи знайде цей підпис /stat, коли по матеріалу спитають статистику.
+
+    У стрічці Instagram посилання на статтю НЕМАЄ — діляться візуалом, — тому
+    /stat зіставляє допис із новиною по смислу: рахує, наскільки підпис
+    перетинається із заголовком і лідом. Отже підпис, написаний повністю
+    своїми словами, красивий і мертвий: пост вийде, а порахувати його охоплення
+    буде нічим, і матеріал у звіті виглядатиме так, ніби в інсті його не було.
+
+    Рахуємо ТИМ САМИМ кодом (stat_instagram.caption_findability), а не схожим:
+    JSON-LD headline/description, які ми тут скрапимо, дослівно збігаються з
+    og:title і <meta name="description">, з яких /stat будує сигнатуру
+    (звірено 20.08 на трьох живих сторінках). Значить, і арифметика та сама.
+
+    None — сигнатури немає (нічим міряти), інакше {'score','verdict','missing'}."""
+    from handlers.stat_instagram import caption_findability
+    return caption_findability(caption, {"title": article.get("title") or "",
+                                         "lead": article.get("description") or ""})
+
+
 # ---------- Агент ----------
 
 # Підписи, за якими видно, що це не ілюстрація, а папір. Реальний привід
@@ -616,6 +636,42 @@ def build_prompt(article, force=False):
             "інший набір слайдів. Не переставляй слова в тому самому плані.",
         ]
     return "\n".join(lines)
+
+
+# Частка значущих слів абзацу, які ще не прозвучали на жодному слайді, щоб
+# вважати сам абзац невикористаним. 0.6 — не «нічого спільного» (тоді у
+# список не потрапить абзац, що згадує той самий об'єкт іншими фактами), але
+# й не «трохи інакше сказано» (тоді туди потрапить перефразований лід).
+FRESH_MIN = 0.6
+
+
+def unused_material(article, slides, limit=6):
+    """Абзаци статті, яких на наявних слайдах ЩЕ НЕМАЄ.
+
+    Привід (Олег, 20.08): «додай слайд» приносило абищо. Причина не в тому, що
+    модель ледача, а в тому, що ми ставили їй задачу, яку самі полінувались
+    порахувати: ось уся стаття, ось п'ять слайдів, знайди різницю — і все це
+    одним проходом без міркування (thinking вимкнено). Різницю множин рахує
+    код за мілісекунду; моделі лишається журналістський вибір, а не звірка.
+
+    Порядок — АВТОРСЬКИЙ, як у статті, а не за «новизною»: журналіст ставить
+    головне вгору, і сортування за часткою свіжих слів підняло б нагору
+    найдальший від теми абзац. Стемер спільний зі /stat — той самий, яким
+    міряється схожість підписів, іншого для української в проєкті немає."""
+    from handlers.stat_instagram import _norm_tokens
+
+    used = set()
+    for slide in slides:
+        for key in ("kicker", "title", "body", "quote", "attribution", "caption"):
+            used.update(_norm_tokens(slide.get(key) or ""))
+    out = []
+    for para in article.get("paragraphs") or []:
+        tokens = set(_norm_tokens(para))
+        if len(tokens) < 5:          # службові рядки на кшталт «Фото: …»
+            continue
+        if len(tokens - used) / len(tokens) >= FRESH_MIN:
+            out.append(para)
+    return out[:limit]
 
 
 def clip_words(text, limit):
@@ -706,6 +762,13 @@ _SLIDE_TOOL = {
                             "description": "лише для НОВОГО слайда: номер фото"},
             "post_caption": {"type": "string",
                              "description": "лише для правки підпису під постом"},
+            # Тема — не прикраса відповіді, а примус до вибору: назвавши її
+            # ОДНИМ рядком до того, як писати поля, агент мусить визначитись,
+            # про що цей слайд. Людині вона теж потрібна — з нею видно, що
+            # саме він вирішив додати, ще до того, як читати текст.
+            "topic": {"type": "string",
+                      "description": "лише для НОВОГО слайда: про що він, "
+                                     "одним коротким рядком"},
             "note": {"type": "string",
                      "description": "одне речення людині: що саме ти змінив"},
         },
@@ -723,10 +786,19 @@ def build_revise_prompt(article, slide, feedback, others, mode="fix"):
         f"ЛІД: {article.get('description') or '—'}",
         "",
     ]
+    # Що вже зайнято. Без цього агент пропонував цитату, яка вже стоїть
+    # слайдом поруч, — і формально мав рацію, бо звідки б він знав.
+    taken_quotes = {o.get("quote_index"): n for n, o in others
+                    if isinstance(o.get("quote_index"), int)}
+    taken_photos = {o.get("photo_index"): n for n, o in others
+                    if isinstance(o.get("photo_index"), int)}
+
     quotes = article.get("quotes") or []
     if quotes:
         lines.append("ЦИТАТИ СТАТТІ (номер — quote_index):")
-        lines += [f"  [{i}] {q}" for i, q in enumerate(quotes)]
+        for i, q in enumerate(quotes):
+            busy = f"  ← ВЖЕ на слайді {taken_quotes[i]}" if i in taken_quotes else ""
+            lines.append(f"  [{i}] {q}{busy}")
         lines.append("")
 
     text = "\n\n".join(article.get("paragraphs") or [])
@@ -739,6 +811,8 @@ def build_revise_prompt(article, slide, feedback, others, mode="fix"):
             cap = (im.get("caption") or "").strip()
             mark = "  ⚠ схоже на скриншот документа" \
                 if looks_like_document(cap) else ""
+            if i in taken_photos:
+                mark += f"  ← ВЖЕ на слайді {taken_photos[i]}"
             lines.append(f"  [{i}] {cap or 'без підпису'}{mark}")
         lines.append("")
 
@@ -746,6 +820,17 @@ def build_revise_prompt(article, slide, feedback, others, mode="fix"):
         lines.append("ПОТОЧНИЙ ПІДПИС ПІД ПОСТОМ:")
         lines.append((slide or {}).get("caption") or "(порожній)")
         lines.append("")
+        reach = caption_reach((slide or {}).get("caption") or "", article)
+        if reach and reach["verdict"] != "ok" and reach["missing"]:
+            lines += [
+                "ЗАМІР: із цим підписом бот НЕ ЗНАЙДЕ допис, коли рахуватиме "
+                "статистику матеріалу — у ньому не звучать слова, за якими "
+                "новина впізнається:",
+                "  " + ", ".join(reach["missing"]),
+                "Впиши предмет, місце й головне число живою мовою (не списком "
+                "і не хештегами) — решту пиши як писав.",
+                "",
+            ]
     elif slide:
         lines.append(f"СЛАЙД, ЯКИЙ ТРЕБА ВИПРАВИТИ (тип {slide.get('type')}):")
         for key in ("kicker", "title", "body", "quote", "attribution", "caption"):
@@ -756,9 +841,25 @@ def build_revise_prompt(article, slide, feedback, others, mode="fix"):
     if others:
         lines.append("СЛАЙДИ, ЩО ВЖЕ Є (лише щоб не повторюватись — НЕ чіпай їх):")
         for n, other in others:
-            bits = " · ".join(str(other.get(k)) for k in
-                              ("title", "body", "quote", "caption") if other.get(k))
-            lines.append(f"  {n}. [{other.get('type')}] {bits[:160]}")
+            lines.append(f"  {n}. [{other.get('type')}]")
+            for key in ("kicker", "title", "body", "quote", "attribution", "caption"):
+                if other.get(key):
+                    # Поле цілком, а не обрізаний склейкою хвіст: рівно тут
+                    # агент і має побачити, що думка вже сказана
+                    lines.append(f"       {key}: {str(other[key])[:300]}")
+        lines.append("")
+
+    if mode == "new":
+        fresh = unused_material(article, [o for _, o in others])
+        if fresh:
+            lines.append("ЩО ЗІ СТАТТІ ЩЕ НЕ ПРОЗВУЧАЛО НА ЖОДНОМУ СЛАЙДІ "
+                         "(порахували, не вгадали):")
+            lines += [f"  — {p}" for p in fresh]
+        else:
+            lines.append("УВАГА: значущого матеріалу, якого ще немає на "
+                         "слайдах, у статті не лишилось. Якщо новий слайд "
+                         "виходить переказом уже сказаного — так і напиши в "
+                         "topic і зроби найкорисніше з можливого.")
         lines.append("")
 
     if feedback.strip():
@@ -771,15 +872,23 @@ def build_revise_prompt(article, slide, feedback, others, mode="fix"):
             "Виклич інструмент slide_fix.",
         ]
     elif mode == "new":
+        nums = [n for n, o in others if o.get("type") != "cta"]
+        where = f"{max(nums) + 1 if nums else 1}-м" if nums else "єдиним"
         lines += [
             "ЗАВДАННЯ: додай ОДИН новий слайд до цієї каруселі.",
-            "Він мусить давати те, чого на наявних слайдах ЩЕ НЕМАЄ — не",
-            "переказувати вже сказане іншими словами. Обери тип сам (text,",
-            "quote або photo) і напиши його поля." ,
+            f"Він стане {where} — тобто останнім змістовним, перед закликом. "
+            "Це місце для того, що лишає читача з думкою: наслідок, цифра "
+            "підсумку, невідповідь влади. Не для розгону й не для вступу.",
+            "",
+            "Спочатку ОБЕРИ ТЕМУ і назви її в полі topic одним рядком "
+            "(«скільки платили за охорону»), і лише потім пиши текст. Тема "
+            "має братись зі списку непрозвучалого вище або з підказки "
+            "редактора — переказ сусіднього слайда іншими словами не тема.",
+            "Далі обери тип під цю тему (text, quote або photo) і напиши поля.",
         ]
         if not feedback.strip():
-            lines.append("Редактор не сказав, про що саме — вирішуй за статтею: "
-                         "візьми найсильніше з того, що ще не використано.")
+            lines.append("Редактор не сказав, про що саме — вибирай сам: бери "
+                         "найсильніше з непрозвучалого, а не перше за списком.")
         lines.append("Виклич інструмент slide_fix.")
     else:
         lines += [
@@ -825,6 +934,7 @@ async def revise_slide(article, slide, feedback, others=(), *, mode="fix",
     fixed = {k: raw[k] for k in allowed if k in raw}
     note = (raw.get("note") or "").strip()
 
+    notes = []
     if mode == "new":
         if fixed.get("type") not in NEW_SLIDE_TYPES:
             fixed["type"] = "text"
@@ -832,15 +942,36 @@ async def revise_slide(article, slide, feedback, others=(), *, mode="fix",
         idx = fixed.get("photo_index")
         if not isinstance(idx, int) or not 0 <= idx < len(photos):
             fixed["photo_index"] = None
+        # Зайняте не займають удруге. Список зайнятого агент бачить у промпті,
+        # але прохання — не гарантія: та сама цитата двома слайдами поспіль
+        # читається як збій верстки, і полагодити її людині нічим, крім як
+        # видалити слайд. Тому цитату-повтор знімаємо тут, і кажемо про це.
+        taken = {o.get("quote_index") for _, o in others
+                 if isinstance(o.get("quote_index"), int)}
+        if fixed.get("quote_index") in taken:
+            free = [i for i in range(len(article.get("quotes") or []))
+                    if i not in taken]
+            if free:
+                fixed["quote_index"] = free[0]
+                notes.append("Агент запропонував цитату, яка вже стоїть на "
+                             "іншому слайді, — поставив натомість вільну.")
+            else:
+                fixed["type"] = "text"
+                fixed.pop("quote_index", None)
+                notes.append("Усі цитати статті вже розібрані слайдами — "
+                             "новий зробив текстовим.")
+        if (raw.get("topic") or "").strip():
+            note = f"Тема: {raw['topic'].strip()}" + (f". {note}" if note else "")
         slide = {"type": fixed["type"]}
 
-    notes = []
     if slide.get("type") == "quote":
         # Цитата проходить ту саму перевірку, що й у плані: текст ставить код
         merged = dict(slide, **fixed)
         if not isinstance(merged.get("quote_index"), int):
             merged["quote_index"] = slide.get("quote_index")
-        checked, notes = apply_plan_quotes([merged], article.get("quotes") or [])
+        checked, quote_notes = apply_plan_quotes([merged],
+                                                 article.get("quotes") or [])
+        notes += quote_notes   # не «=»: вище вже могло лягти своє зауваження
         for key in ("quote", "quote_index", "attribution"):
             if key in checked[0]:
                 fixed[key] = checked[0][key]
@@ -1045,6 +1176,8 @@ async def api_plan(request):
                 "source": "cache",
                 "planned_at": cached.get("at"),
                 "planned_by": cached.get("person"),
+                "findability": caption_reach(
+                    cached["plan"].get("post_caption") or "", article),
             })
 
     try:
@@ -1073,7 +1206,47 @@ async def api_plan(request):
         "article": _public_article(article),
         "plan": plan,
         "source": source,
+        "findability": caption_reach(plan.get("post_caption") or "", article),
     })
+
+
+# ---------- Чи знайде цей підпис /stat ----------
+#
+# Модель тут не бере участі взагалі — це арифметика над двома рядками, тому
+# сторінка може питати на кожну паузу в наборі. Оцінка живе на СЕРВЕРІ, хоч
+# порахувати її можна було б у JS: стемер української в проєкті один
+# (stat_instagram._stem), і друга його копія в браузері розійшлася б із
+# першою тихо — гауж показував би зелене там, де /stat не знаходить нічого.
+# Той самий урок, що з role_norm, який живе двічі й тому звіряється тестом.
+
+async def api_findability(request):
+    """POST /api/carousel/findability {url, caption, remember} →
+    {score, verdict, missing}.
+
+    remember=true — людина натиснула «Скопіювати», тобто цей текст іде в
+    Instagram. Записуємо його за id новини: у /stat він стане другою
+    сигнатурою, і зіставлення допису з новиною перестане бути здогадом."""
+    who = await _require_person(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "не JSON"}, status=400)
+
+    caption = (body.get("caption") or "").strip()
+    title = (body.get("title") or "").strip()
+    lead = (body.get("lead") or "").strip()
+    if not title and not lead:
+        return web.json_response({"error": "немає сигнатури статті"}, status=400)
+
+    from handlers.stat_instagram import caption_findability
+    reach = caption_findability(caption, {"title": title, "lead": lead})
+
+    if body.get("remember") and caption:
+        article_id = article_id_from((body.get("url") or "").strip())
+        if article_id:
+            await asyncio.to_thread(storage.save_carousel_caption, article_id,
+                                    caption, who.get("person") or "")
+    return web.json_response(reach or {})
 
 
 # ---------- Чернетки ----------
@@ -1197,13 +1370,19 @@ async def api_revise(request):
               if isinstance(o, dict)][:8]
     try:
         fixed, note, notes = await revise_slide(
-            article, slide if mode == "fix" else None, feedback, others,
+            # Режим «підпис» теж передає slide — у ньому лежить ПОТОЧНИЙ
+            # підпис. Без цього агент бачив «(порожній)» і щоразу писав із
+            # нуля замість того, щоб доробити те, що вже є.
+            article, None if mode == "new" else slide, feedback, others,
             mode=mode, user_id=who.get("tg_id"), user_name=who.get("person"))
     except Exception as e:
         print(f"carousel: правка слайда не вдалась — {e}")
         return web.json_response({"error": f"Агент не впорався: {e}"}, status=502)
 
-    return web.json_response({"slide": fixed, "note": note, "notes": notes})
+    out = {"slide": fixed, "note": note, "notes": notes}
+    if mode == "caption":
+        out["findability"] = caption_reach(fixed.get("post_caption") or "", article)
+    return web.json_response(out)
 
 
 def _public_article(article):

@@ -122,6 +122,7 @@ async def start_server():
         web.post("/api/carousel/plan", carousel.api_plan),
         web.post("/api/carousel/slide", carousel.api_revise),
         web.get("/api/carousel/article", carousel.api_article),
+        web.post("/api/carousel/findability", carousel.api_findability),
         web.get("/api/carousel/drafts", carousel.api_drafts),
         web.post("/api/carousel/draft", carousel.api_draft_save),
         web.delete("/api/carousel/draft", carousel.api_draft_delete),
@@ -544,6 +545,44 @@ async def main():
                       "125" in await page.inner_text("#captionCount")
                       or "повністю" in await page.inner_text("#captionCount"),
                       await page.inner_text("#captionCount"))
+
+                # Гаудж «чи знайде цей допис /stat». Перевіряємо не текст, а
+                # те, що він РЕАГУЄ на зміну підпису: з назвами — зелений, без
+                # них — ні. Інакше індикатор, який завжди зелений, гірший за
+                # відсутній: він каже, що все гаразд, коли це не так.
+                await page.fill("#postCaption",
+                                "Депутати Одеської міськради вимагають прибрати "
+                                "мішки з Дюка — мерія кличе фахівців.")
+                await page.wait_for_timeout(900)
+                check("підпис із назвами світиться зеленим",
+                      "ok" in await page.get_attribute("#reach", "class"),
+                      await page.inner_text("#reach"))
+                await page.fill("#postCaption",
+                                "Сталася дивна історія. Люди обурені, "
+                                "а відповідальні мовчать. Гортай далі.")
+                await page.wait_for_timeout(900)
+                cls = await page.get_attribute("#reach", "class")
+                check("підпис без предмета попереджає, що допис загубиться",
+                      "ok" not in cls, cls)
+                check("названо, яких саме слів бракує",
+                      len(await page.inner_text("#reachText")) > 40,
+                      await page.inner_text("#reachText"))
+                # Саме is_visible, а не get_attribute("hidden"): відсутній
+                # атрибут віддає None, порожній — "", і `not` правдиве в обох
+                check("є кнопка вписати назви",
+                      await page.is_visible("#reachFix"))
+
+                # Копіювання — мить, коли відомо, ЩО саме поїде в Instagram.
+                # Записаний текст стає другою сигнатурою /stat, тож перевіряємо
+                # не «кнопка натиснулась», а що підпис справді ліг у стан.
+                mark = "Мішки з Дюка: депутати Одеської міськради вимагають прибрати."
+                await page.fill("#postCaption", mark)
+                await page.click("#copyCaption")
+                await page.wait_for_timeout(600)
+                check("скопійований підпис записався за новиною",
+                      storage.get_carousel_caption("322377") == mark,
+                      storage.get_carousel_caption("322377")[:60])
+
                 await page.fill("#postCaption", "Свій підпис під пост.")
                 await page.wait_for_timeout(150)
                 await page.click("#saveDraft")

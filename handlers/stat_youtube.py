@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 
 from handlers import youtube_analytics
 from handlers.stat_instagram import (
-    _norm_tokens, _score, get_article_signature, _judge,
+    make_scorer, get_article_signature, _judge,
     ACCEPT, NEAR, JUDGE_MIN, JUDGE_TOPK, MAX_MATCHES, FORWARD_DAYS,
 )
 
@@ -77,8 +77,8 @@ async def get_youtube_stat(article_url, pub_date=None, sig=None):
         sig = await asyncio.to_thread(get_article_signature, article_url)
     if not sig:
         return []
-    sig_tokens = _norm_tokens(f"{sig.get('title', '')} {sig.get('lead', '')}")
-    if not sig_tokens:
+    score_of = make_scorer(sig)
+    if not score_of.tokens:
         return []
 
     now = datetime.now()
@@ -103,7 +103,7 @@ async def get_youtube_stat(article_url, pub_date=None, sig=None):
         return []
 
     scored = sorted(
-        ((v, _score(sig_tokens, _caption(v))) for v in videos),
+        ((v, score_of(_caption(v))) for v in videos),
         key=lambda x: x[1], reverse=True,
     )
     best_s = scored[0][1]

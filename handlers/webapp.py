@@ -2182,6 +2182,7 @@ async def start_webapp(application):
         web.post("/api/carousel/plan", carousel.api_plan),
         web.post("/api/carousel/slide", carousel.api_revise),
         web.get("/api/carousel/article", carousel.api_article),
+        web.post("/api/carousel/findability", carousel.api_findability),
         web.get("/api/carousel/drafts", carousel.api_drafts),
         web.post("/api/carousel/draft", carousel.api_draft_save),
         web.delete("/api/carousel/draft", carousel.api_draft_delete),
