@@ -661,6 +661,11 @@ CAROUSEL_PLANS_MAX = 30
 # чернетку ще й текст статті означало б роздути файл стану, який
 # перечитується й переписується на КОЖНУ операцію.
 CAROUSEL_DRAFTS_MAX = 30
+# Підписи, скопійовані в Instagram, — друга сигнатура для матчингу в /stat.
+# Кап більший за решту каруселей: запис це кілька сотень байтів, а живе він
+# рівно доти, доки по матеріалу можуть спитати статистику. 200 підписів це
+# близько двох місяців роботи СММ.
+CAROUSEL_CAPTIONS_MAX = 200
 
 
 def get_carousel_tokens():
@@ -697,6 +702,33 @@ def save_carousel_plan(article_id, entry):
             oldest = sorted(plans, key=lambda k: plans[k].get("at", ""))
             for key in oldest[:len(plans) - CAROUSEL_PLANS_MAX]:
                 del plans[key]
+        _write_state(state)
+
+
+def get_carousel_caption(article_id):
+    """Підпис, який СММ забрала з генератора каруселей для цієї новини.
+    /stat дає його матчеру другою сигнатурою: у стрічці інсти посилання на
+    статтю немає, і зіставляти доводиться по смислу — а тут ми знаємо сам
+    текст, що поїхав у допис, тому здогадка стає звіркою."""
+    with _lock:
+        entry = _read_state().get("carousel_captions", {}).get(str(article_id))
+        return (entry or {}).get("text") or ""
+
+
+def save_carousel_caption(article_id, text, person=""):
+    """Записує підпис у мить копіювання — саме тоді відомо, що цей текст іде
+    в Instagram. Повторне копіювання перезаписує: в допис поїде остання
+    версія, а не перша."""
+    with _lock:
+        state = _read_state()
+        caps = state.setdefault("carousel_captions", {})
+        caps[str(article_id)] = {"text": (text or "").strip(),
+                                 "by": person,
+                                 "at": datetime.now().isoformat(timespec="seconds")}
+        if len(caps) > CAROUSEL_CAPTIONS_MAX:
+            oldest = sorted(caps, key=lambda k: caps[k].get("at", ""))
+            for key in oldest[:len(caps) - CAROUSEL_CAPTIONS_MAX]:
+                del caps[key]
         _write_state(state)
 
 

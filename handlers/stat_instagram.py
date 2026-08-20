@@ -114,6 +114,66 @@ def _score(sig_tokens, caption):
     return score
 
 
+def make_scorer(sig):
+    """Замикання «наскільки цей підпис про нашу новину» для одного матеріалу.
+    Спільне для Instagram/TikTok/YouTube — усі три міряють однаково.
+
+    Друга сигнатура: sig['caption'] — підпис, який СММ забрала з генератора
+    каруселей (storage.carousel_captions, пишеться в мить копіювання). Це не
+    здогад про формулювання, а сам текст, що поїхав в інсту, тож правильний
+    допис дає по ньому coverage ≈ 1.0, а чужий — стільки ж, скільки й раніше.
+    Беремо максимум, тому підпису НЕМАЄ — поведінка байт у байт колишня, і
+    жоден поріг не перекалібровується.
+
+    Повертає функцію score(caption); score.tokens — токени сигнатури статті
+    (порожні = сторінку не прочитали, шукати нічим)."""
+    base = _norm_tokens(f"{sig.get('title', '')} {sig.get('lead', '')}")
+    hint = _norm_tokens(sig.get("caption") or "")
+
+    def score(caption):
+        s = _score(base, caption)
+        return max(s, _score(hint, caption)) if hint else s
+
+    score.tokens = base
+    return score
+
+
+def caption_findability(caption, sig):
+    """Чи знайде /stat допис із ТАКИМ підписом — рахуємо ще до публікації.
+
+    Тримається на звірці (20.08, три живі сторінки): JSON-LD headline і
+    description, які скрапить генератор каруселей, дослівно збігаються з
+    og:title і <meta name="description">, з яких /stat будує сигнатуру. Отже
+    оцінка тут і матчинг там — та сама арифметика над тим самим текстом, а не
+    схожа. Тому й імпортується ЗВІДСИ: розійтись вони можуть лише разом.
+
+    Повертає {'score', 'verdict', 'missing'} або None, якщо сигнатури немає.
+    verdict: 'ok' — знайде сам · 'judge' — сіра зона, вирішить Haiku-суддя
+    (звичайно правильно, але це виклик моделі й не гарантія) · 'lost' — не
+    дійде навіть до судді. missing — слова статті, яких у підписі немає, у
+    ПОЧАТКОВОМУ написанні (людині показуємо слова, а не основи), власні назви
+    й числа першими: саме вони важать найбільше і саме їх найлегше вписати."""
+    title, lead = sig.get("title") or "", sig.get("lead") or ""
+    sig_tokens = _norm_tokens(f"{title} {lead}")
+    if not sig_tokens:
+        return None
+    have = set(_norm_tokens(caption))
+    missing, seen = [], set()
+    for surface in _WORD_RE.findall(f"{title} {lead}"):
+        low = surface.lower().replace("ё", "е")
+        if len(low) < 3 or low in _STOP:
+            continue
+        stem = _stem(low)
+        if stem in have or stem in seen:
+            continue
+        seen.add(stem)
+        missing.append(surface)
+    missing.sort(key=lambda w: 0 if (w[:1].isupper() or w[:1].isdigit()) else 1)
+    score = _score(sig_tokens, caption)
+    verdict = "ok" if score >= ACCEPT else ("judge" if score >= JUDGE_MIN else "lost")
+    return {"score": round(score, 3), "verdict": verdict, "missing": missing[:8]}
+
+
 # ---------- Сигнатура статті ----------
 
 def get_article_signature(article_url):
@@ -245,8 +305,8 @@ async def get_instagram_stat(article_url, pub_date=None, sig=None):
         sig = await asyncio.to_thread(get_article_signature, article_url)
     if not sig:
         return []
-    sig_tokens = _norm_tokens(f"{sig.get('title', '')} {sig.get('lead', '')}")
-    if not sig_tokens:
+    score_of = make_scorer(sig)
+    if not score_of.tokens:
         return []
 
     now = datetime.now()
@@ -264,7 +324,7 @@ async def get_instagram_stat(article_url, pub_date=None, sig=None):
         return []
 
     scored = sorted(
-        ((m, _score(sig_tokens, m.get("caption"))) for m in media),
+        ((m, score_of(m.get("caption"))) for m in media),
         key=lambda x: x[1], reverse=True,
     )
     best_s = scored[0][1]

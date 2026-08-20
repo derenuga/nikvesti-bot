@@ -468,6 +468,101 @@ def main():
     check("у статті без цитат чернетка не вигадує quote-слайдів",
           not any(s["type"] == "quote" for s in fake389["slides"]))
 
+    # ---------- 10. Чи знайде підпис /stat ----------
+    #
+    # Сенс перевірок: підпис, написаний цілком своїми словами, красивий і
+    # мертвий — пост вийде, а /stat його не знайде, бо в стрічці Instagram
+    # посилання на статтю немає і зіставляти доводиться по смислу.
+    print("\n— Підпис, який знайде /stat —")
+    from handlers import stat_instagram
+
+    named = ("Кінотеатр «Іскра» у Миколаєві не обстежували з 2019 року. "
+             "У травні частина фасаду просто впала. Коштів на протиаварійні "
+             "роботи не виділяли — але за охорону платили щороку.")
+    blind = ("Сім років будівля стоїть без жодного обстеження. "
+             "У травні впала частина фасаду.")
+    r_named = carousel.caption_reach(named, a371)
+    r_blind = carousel.caption_reach(blind, a371)
+    check("підпис із назвами й датою /stat знайде сам",
+          r_named["verdict"] == "ok", str(r_named))
+    check("підпис без предмета й міста сам не знаходиться",
+          r_blind["verdict"] != "ok", str(r_blind))
+    check("бракуючі слова названі, і власні назви першими",
+          r_blind["missing"] and r_blind["missing"][0][:1].isupper(),
+          str(r_blind["missing"]))
+    check("показуємо слова, а не основи (людині «Миколаєві», не «микола»)",
+          any(w in f"{a371['title']} {a371['description']}"
+              for w in r_blind["missing"]),
+          str(r_blind["missing"]))
+    check("порожній підпис не знайдеться взагалі",
+          carousel.caption_reach("", a371)["verdict"] == "lost")
+
+    # Та сама арифметика, що в /stat: інакше гаудж світив би зеленим там, де
+    # матчер не знаходить нічого
+    sig = {"title": a371["title"], "lead": a371["description"]}
+    check("оцінка рахується тим самим кодом, що матчинг /stat",
+          carousel.caption_reach(named, a371)["score"]
+          == stat_instagram.caption_findability(named, sig)["score"])
+
+    # Записаний підпис як ДРУГА сигнатура: допис, що дослівно повторює
+    # скопійований текст, має знаходитись навіть коли з заголовком і лідом
+    # у нього спільного мало
+    own_words = ("Сім років ніхто не перевіряв. Аварійна будівля в центрі "
+                 "міста, а гроші йшли лише на охорону. Гортай карусель.")
+    plain = stat_instagram.make_scorer(sig)
+    withhint = stat_instagram.make_scorer(dict(sig, caption=own_words))
+    check("без записаного підпису такий допис у сірій зоні",
+          plain(own_words) < stat_instagram.ACCEPT, f"{plain(own_words):.3f}")
+    check("із записаним підписом той самий допис знаходиться впевнено",
+          withhint(own_words) >= stat_instagram.ACCEPT,
+          f"{withhint(own_words):.3f}")
+    check("чужий допис записаний підпис не витягує",
+          withhint("Погода в Миколаєві на вихідні: очікується дощ") <
+          stat_instagram.ACCEPT)
+    check("без записаного підпису поведінка матчера не змінилась",
+          plain(named) == stat_instagram._score(
+              stat_instagram._norm_tokens(f"{sig['title']} {sig['lead']}"), named))
+
+    # ---------- 11. Додатковий слайд ----------
+    print("\n— «Додай слайд» бачить, що вже зайнято —")
+    slides = [
+        {"type": "cover", "kicker": "Миколаїв",
+         "title": "Будівлю «Іскри» не обстежували з 2019 року"},
+        {"type": "text",
+         "body": "У травні з покинутого кінотеатру обвалилася частина фасаду."},
+        {"type": "quote", "quote": a371["quotes"][0], "quote_index": 0},
+    ]
+    fresh = carousel.unused_material(a371, slides)
+    check("непрозвучале рахується, а не вгадується", len(fresh) >= 3,
+          f"{len(fresh)}")
+    check("сказане на слайдах у список не потрапляє",
+          not any("обвалилася частина фасаду" in p for p in fresh),
+          str([p[:60] for p in fresh]))
+    check("порядок авторський, як у статті",
+          [a371["paragraphs"].index(p) for p in fresh]
+          == sorted(a371["paragraphs"].index(p) for p in fresh))
+
+    others = list(enumerate([dict(s, photo_index=None) for s in slides], 1))
+    prompt = carousel.build_revise_prompt(a371, None, "", others, mode="new")
+    check("зайнята цитата позначена", "ВЖЕ на слайді 3" in prompt,
+          prompt[:0])
+    check("у промпті є список непрозвучалого",
+          "ЩЕ НЕ ПРОЗВУЧАЛО" in prompt)
+    check("агенту сказано, куди сяде слайд",
+          "перед закликом" in prompt)
+    check("сусідні слайди показані полями, а не обрізаною склейкою",
+          "body: У травні з покинутого кінотеатру обвалилася частина фасаду."
+          in prompt)
+    check("у режимі правки списку непрозвучалого немає (він там ні до чого)",
+          "ЩЕ НЕ ПРОЗВУЧАЛО" not in carousel.build_revise_prompt(
+              a371, slides[1], "коротше", others, mode="fix"))
+    cap_prompt = carousel.build_revise_prompt(
+        a371, {"caption": blind}, "", others, mode="caption")
+    check("переписуючи підпис, агент бачить ПОТОЧНИЙ текст",
+          blind in cap_prompt)
+    check("і бачить, яких слів у ньому бракує",
+          "НЕ ЗНАЙДЕ" in cap_prompt)
+
     print()
     if failures:
         print(f"Провалено: {len(failures)}")

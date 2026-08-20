@@ -160,6 +160,18 @@
   .sliders output { font-size: 12px; color: var(--muted); min-width: 42px; text-align: right; }
   input[type="range"] { width: 100%; accent-color: var(--brand); }
   .toolrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+  /* Чи знайде цей підпис /stat. Кольором тут світиться НАСЛІДОК, а не оцінка
+     тексту: зелене — статистика допису дійде у звіт, червоне — допис
+     загубиться. Тому рядок стоїть під самим полем, а не в підказці внизу. */
+  .reach { display: flex; align-items: center; gap: 8px; margin-top: 10px;
+           font-size: 13px; color: var(--muted); }
+  .reach[hidden] { display: none; }
+  .reach .dot { width: 9px; height: 9px; border-radius: 50%; flex: none;
+                background: var(--muted); }
+  .reach.ok .dot { background: #1a9f5a; }
+  .reach.judge .dot { background: #d99100; }
+  .reach.lost .dot { background: #d64545; }
+  .reach.lost, .reach.judge { color: var(--ink); }
 
   .preview { position: sticky; top: calc(var(--head-h) + 18px); }
   .canvas-wrap { position: relative; }
@@ -381,6 +393,11 @@
         </label>
         <textarea id="postCaption" class="tall" spellcheck="false"></textarea>
       </div>
+      <div class="reach" id="reach" hidden>
+        <span class="dot" id="reachDot"></span>
+        <span id="reachText"></span>
+        <button class="ghost tiny" id="reachFix" hidden>Вписати назви</button>
+      </div>
       <div class="toolrow">
         <button class="tiny" id="copyCaption">Скопіювати</button>
         <button class="ghost tiny" id="captionRedo">Переписати підпис</button>
@@ -556,7 +573,7 @@
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || resp.statusText);
       applyArticle(data.article);
-      if (data.plan) applyPlan(data.plan);
+      if (data.plan) applyPlan(data.plan, data.findability);
       else if (!S.slides.length) S.slides = [newSlide("cover")];
       if (data.error) showNote(data.error);
       $("planSource").textContent =
@@ -606,7 +623,7 @@
     if (!S.cta.text) setCtaPreset(S.cta.preset);
   }
 
-  function applyPlan(plan) {
+  function applyPlan(plan, reach) {
     S.slides = (plan.slides || []).map((raw) => {
       const s = newSlide(raw.type || "text");
       s.kicker = raw.kicker || "";
@@ -622,7 +639,7 @@
     });
     if (!S.slides.length) S.slides = [newSlide("cover")];
     S.active = 0;
-    if (plan.post_caption) setCaption(plan.post_caption);
+    if (plan.post_caption) setCaption(plan.post_caption, reach);
     if (plan.cta_suggestion) {
       S.cta.preset = plan.cta_suggestion;
       setCtaPreset(plan.cta_suggestion);
@@ -997,10 +1014,13 @@
   }
 
   // ---------- Підпис під постом ----------
-  function setCaption(text) {
+  function setCaption(text, reach) {
     S.caption = text || "";
     $("postCaption").value = S.caption;
     paintCaptionCount();
+    // Оцінку, яка приїхала разом із текстом, показуємо одразу; інакше
+    // перепитуємо сервер — щоб чернетка й ручна правка теж мали гаудж
+    if (reach) paintReach(reach); else checkReach();
   }
 
   function paintCaptionCount() {
@@ -1013,19 +1033,90 @@
     el.classList.toggle("over", n > 600);
   }
 
+  // ---------- Чи знайде цей підпис /stat ----------
+  //
+  // Рахує СЕРВЕР, і це не лінощі: стемер української в проєкті один, і його
+  // друга копія в браузері розійшлася б із першою мовчки — гаудж світив би
+  // зеленим там, де /stat не знаходить нічого. Виклик копійчаний (модель не
+  // задіяна), тому дозволяємо його на кожну паузу в наборі.
+  let reachTimer = null, lastMissing = [];
+
+  function paintReach(data) {
+    const box = $("reach");
+    box.classList.remove("ok", "judge", "lost");
+    if (!data || !data.verdict) { box.hidden = true; return; }
+    box.hidden = false;
+    box.classList.add(data.verdict);
+    lastMissing = data.missing || [];
+    $("reachFix").hidden = data.verdict === "ok" || !lastMissing.length;
+    if (data.verdict === "ok") {
+      $("reachText").textContent = "Бот знайде цей допис у звіті статистики";
+      return;
+    }
+    const words = lastMissing.slice(0, 5).join(", ");
+    $("reachText").textContent = data.verdict === "judge"
+      ? `Допис упізнається слабко — у підписі не звучать: ${words}`
+      : `Бот НЕ знайде цей допис: у підписі немає нічого з новини — ${words}`;
+  }
+
+  function checkReach() {
+    clearTimeout(reachTimer);
+    reachTimer = setTimeout(async () => {
+      const art = S.article;
+      if (!art || (!art.title && !art.description)) return;
+      try {
+        const resp = await api("/api/carousel/findability", {
+          method: "POST",
+          body: JSON.stringify({
+            url: art.url || $("url").value.trim(),
+            caption: $("postCaption").value,
+            title: art.title || "", lead: art.description || "",
+          }),
+        });
+        paintReach(await resp.json());
+      } catch (e) { /* гаудж — довідка, а не робота: мовчки лишаємо як було */ }
+    }, 400);
+  }
+
   $("postCaption").addEventListener("input", (e) => {
     S.caption = e.target.value;
     paintCaptionCount();
+    checkReach();
+  });
+
+  // Підказка агенту складається з ТИХ САМИХ слів, які показані людині, —
+  // інакше вона тапне кнопку й отримає щось, чого на екрані не бачила.
+  $("reachFix").addEventListener("click", () => {
+    $("reviseText").value =
+      "Впиши в підпис живими реченнями: " + lastMissing.slice(0, 6).join(", ") +
+      ". Не списком і не хештегами — думку лиши свою.";
+    $("captionRedo").click();
   });
 
   $("copyCaption").addEventListener("click", async () => {
+    const text = $("postCaption").value;
     try {
-      await navigator.clipboard.writeText($("postCaption").value);
+      await navigator.clipboard.writeText(text);
       $("captionNote").textContent = "Скопійовано";
     } catch (e) {
       $("postCaption").select();
       $("captionNote").textContent = "Виділив — копіюй Ctrl+C";
     }
+    // Копіювання — момент, коли ВІДОМО, що саме цей текст іде в Instagram.
+    // Запам'ятовуємо його за новиною: далі /stat зіставлятиме допис не з
+    // припущенням про формулювання, а з самим текстом підпису.
+    const art = S.article;
+    if (!text.trim() || !art) return;
+    try {
+      await api("/api/carousel/findability", {
+        method: "POST",
+        body: JSON.stringify({
+          url: art.url || $("url").value.trim(), caption: text,
+          title: art.title || "", lead: art.description || "",
+          remember: true,
+        }),
+      });
+    } catch (e) { /* не змогли записати — підпис однаково скопійовано */ }
   });
 
   $("captionRedo").addEventListener("click", async () => {
@@ -1050,8 +1141,10 @@
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || resp.statusText);
-      if (data.slide?.post_caption) setCaption(data.slide.post_caption);
+      if (data.slide?.post_caption)
+        setCaption(data.slide.post_caption, data.findability);
       $("captionNote").textContent = data.note || "готово";
+      $("reviseText").value = "";
     } catch (e) {
       $("captionNote").textContent = String(e.message || e);
     } finally {
@@ -1060,9 +1153,14 @@
     }
   });
 
+  // Що агент бачить про сусідні слайди. Номери цитати й фото тут не для
+  // краси: без них він пропонував «додати» цитату, яка вже стоїть екраном
+  // раніше, — і формально мав рацію, бо ми йому цього не сказали.
   const slideDigest = (s) => ({
-    type: s.type, title: s.title, body: s.body,
-    quote: s.quote, caption: s.caption,
+    type: s.type, kicker: s.kicker, title: s.title, body: s.body,
+    quote: s.quote, attribution: s.attribution, caption: s.caption,
+    quote_index: Number.isInteger(s.quote_index) ? s.quote_index : null,
+    photo_index: Number.isInteger(s.slot?.photoIdx) ? s.slot.photoIdx : null,
   });
 
   async function askAgent(mode, btn, working) {
