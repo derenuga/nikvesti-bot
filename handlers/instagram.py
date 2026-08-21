@@ -36,8 +36,28 @@ _route_cache = {"at": 0.0, "value": None}
 
 
 def stored_token():
-    """Токен інсти зі стану бота — джерело істини. Порожньо → env-сід."""
-    return (storage.get_ig_oauth() or {}).get("token") or INSTAGRAM_TOKEN
+    """Який токен інсти брати: зі стану бота чи зі змінної Railway.
+
+    ЗМІННА СИЛЬНІША за збережений — і це не дрібниця. Стан потрібен лише щоб
+    зберігати ПРОДОВЖЕНИЙ токен (у змінну Railway бот писати не може). Але
+    коли людина руками замінила INSTAGRAM_TOKEN — це свідоме рішення, і воно
+    мусить перебивати все, що бот накопичив. Інакше вийшло б найгірше:
+    Олег міняє токен, деплоїть, а бот далі тримається за старий зі стану і
+    каже, що інста мертва (21.08 — рівно та ситуація, у якій ми це вмикали).
+
+    Тому стан використовується, лише поки він ПОХОДИТЬ від нинішньої змінної:
+    у ньому лежить `seed` — той env-токен, з якого ланцюг продовжень почався.
+    Змінили змінну → seed розійшовся → стан викидаємо і починаємо з нової."""
+    state = storage.get_ig_oauth() or {}
+    token = state.get("token")
+    if not token:
+        return INSTAGRAM_TOKEN
+    if INSTAGRAM_TOKEN and state.get("seed") != INSTAGRAM_TOKEN:
+        # У змінній свіжий токен, не той, від якого росло збережене
+        print("instagram: INSTAGRAM_TOKEN змінили руками — беру його, стан скидаю")
+        storage.save_ig_oauth({})
+        return INSTAGRAM_TOKEN
+    return token
 
 
 def _token_by_name(name):
@@ -66,10 +86,17 @@ def refresh_token(force=False):
     (False, причина). Нічого не робить, поки токен молодший за
     REFRESH_AFTER_DAYS (Meta не продовжує токен, молодший за добу, а частіше
     ніж раз на місяць це просто марні запити)."""
-    state = storage.get_ig_oauth() or {}
-    token = state.get("token") or INSTAGRAM_TOKEN
+    token = stored_token()
     if not token:
         return False, "токена немає"
+    state = storage.get_ig_oauth() or {}
+    if not state.get("set_at"):
+        # Токен щойно зі змінної — віку не знаємо. Meta не продовжує молодший
+        # за добу, тож ставимо відлік від ЗАРАЗ і чекаємо REFRESH_AFTER_DAYS:
+        # спроба продовжити свіжозаведений однаково впаде.
+        storage.save_ig_oauth({"token": token, "seed": INSTAGRAM_TOKEN,
+                               "set_at": datetime.now().isoformat(timespec="seconds")})
+        return False, "щойно заведений"
     if not force:
         set_at = state.get("set_at")
         if set_at:
@@ -92,6 +119,7 @@ def refresh_token(force=False):
     expires_in = int(data.get("expires_in") or 0)
     storage.save_ig_oauth({
         **state, "token": new_token,
+        "seed": state.get("seed") or INSTAGRAM_TOKEN,
         "set_at": datetime.now().isoformat(timespec="seconds"),
         "expires_at": int(time.time()) + expires_in if expires_in else None,
     })
@@ -110,7 +138,7 @@ def adopt_token(token, by=""):
         ok, err = probe_route(base, token)
         if ok:
             storage.save_ig_oauth({
-                "token": token, "by": by,
+                "token": token, "by": by, "seed": INSTAGRAM_TOKEN,
                 "set_at": datetime.now().isoformat(timespec="seconds"),
             })
             credentials(force=True)

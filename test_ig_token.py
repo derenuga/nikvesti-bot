@@ -71,27 +71,51 @@ base, token = instagram.credentials()
 check("base лишається справжнім URL", (base or "").startswith("https://"), repr(base))
 check("а не рядком 'None'", "None" not in str(base), repr(base))
 
-print("\n3. Стан бота сильніший за env")
-storage.save_ig_oauth({"token": "IGQ-зі-стану",
+print("\n3. Змінна Railway сильніша за збережений токен")
+# Найнебезпечніший сценарій: людина замінила INSTAGRAM_TOKEN руками, а бот
+# далі тримається за старий зі стану і каже, що інста мертва. Тому стан живе,
+# лише поки походить від НИНІШНЬОЇ змінної (ключ seed).
+instagram.INSTAGRAM_TOKEN = "IGQ-нова-змінна"
+storage.save_ig_oauth({"token": "IGQ-продовжений", "seed": "IGQ-СТАРА-змінна",
                        "set_at": datetime.datetime.now().isoformat(timespec="seconds")})
-check("stored_token бере збережений", instagram.stored_token() == "IGQ-зі-стану",
-      instagram.stored_token())
-check("і саме він іде в маршрут INSTAGRAM_TOKEN",
-      instagram._token_by_name("INSTAGRAM_TOKEN") == "IGQ-зі-стану")
+check("змінили змінну → беремо її, а не збережене",
+      instagram.stored_token() == "IGQ-нова-змінна", instagram.stored_token())
+check("і застарілий ланцюг продовжень викинуто",
+      not storage.get_ig_oauth().get("token"), repr(storage.get_ig_oauth()))
+
+storage.save_ig_oauth({"token": "IGQ-продовжений", "seed": "IGQ-нова-змінна",
+                       "set_at": datetime.datetime.now().isoformat(timespec="seconds")})
+check("а поки seed збігається — живе продовжений",
+      instagram.stored_token() == "IGQ-продовжений", instagram.stored_token())
+check("саме він іде в маршрут INSTAGRAM_TOKEN",
+      instagram._token_by_name("INSTAGRAM_TOKEN") == "IGQ-продовжений")
 check("а FACEBOOK_PAGE_TOKEN не підмінюється",
-      instagram._token_by_name("FACEBOOK_PAGE_TOKEN") != "IGQ-зі-стану")
+      instagram._token_by_name("FACEBOOK_PAGE_TOKEN") != "IGQ-продовжений")
 
 print("\n4. Продовження не смикає Meta даремно")
+storage.save_ig_oauth({"token": "IGQ-продовжений", "seed": "IGQ-нова-змінна",
+                       "set_at": datetime.datetime.now().isoformat(timespec="seconds")})
 ok, why = instagram.refresh_token()
 check("свіжий токен не продовжуємо", not ok and "рано" in str(why), repr(why))
 check("вік рахується днями, а не здогадом", "0 дн." in str(why), repr(why))
-storage.save_ig_oauth({"token": "IGQ-старий", "set_at": (
+storage.save_ig_oauth({"token": "IGQ-старий", "seed": "IGQ-нова-змінна", "set_at": (
     datetime.datetime.now() - datetime.timedelta(days=instagram.REFRESH_AFTER_DAYS - 1)
 ).isoformat(timespec="seconds")})
 ok, why = instagram.refresh_token()
 check("за день до порога — ще рано", not ok and "рано" in str(why), repr(why))
 check("поріг заздалегідь, а не в останній день (протухлий не рятує ніщо)",
       instagram.REFRESH_AFTER_DAYS <= 45, str(instagram.REFRESH_AFTER_DAYS))
+
+# Щойно заведений руками токен: віку не знаємо, Meta молодший за добу не
+# продовжує — ставимо відлік від зараз і чекаємо, а не б'ємось у стіну
+storage.save_ig_oauth({})
+ok, why = instagram.refresh_token()
+check("щойно зі змінної — відлік ставимо, Meta не смикаємо",
+      not ok and "щойно" in str(why), repr(why))
+check("і seed закріплено за нинішньою змінною",
+      storage.get_ig_oauth().get("seed") == "IGQ-нова-змінна",
+      repr(storage.get_ig_oauth()))
+check("а відлік почався", bool(storage.get_ig_oauth().get("set_at")))
 
 print("\n5. Порожній токен у стані не осідає")
 before = storage.get_ig_oauth().get("token")
