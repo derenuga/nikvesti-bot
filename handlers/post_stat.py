@@ -1,131 +1,70 @@
 """
 Команда /post <лінк на пост> — метрики САМЕ ЦЬОГО поста в соцмережі.
 
-Зворотний бік /stat. Там дають лінк матеріалу, і бот шукає, де ми його
-постили; тут дають лінк ПОСТА, і бот має спершу впізнати, який це наш об'єкт
-у Graph API. Без цього кроку метрик не буде взагалі: перегляди, охоплення,
-поширення й збереження віддає тільки Graph і тільки на об'єкт, який ми
-адмініструємо — з самої публічної сторінки не читається нічого.
+Зворотний бік /stat: там дають лінк матеріалу і бот шукає, де ми його
+постили; тут дають лінк ПОСТА, і бот віддає його числа.
 
-ЧОМУ ЦЕ НЕ ОДИН ЗАПИТ. Половина лінків, якими діляться в чаті, id об'єкта не
-містить узагалі. Заміряно на живих лінках Олега 21.08.2026, із серверної
-адреси (не з ноутбука — це різні відповіді):
+ГОЛОВНИЙ УРОК МОДУЛЯ (21.08.2026). Половина лінків, якими діляться в чаті,
+числового id не містить: `share/p/CODE` редиректить на pfbid-адресу, а pfbid —
+непрозорий токен. Перша версія зробила з цього висновок «отже, пост треба
+ВПІЗНАВАТИ за вмістом» і збудувала сходинки: читання og-тегів сторінки,
+підбір User-Agent, фото → page_story_id, повнотекстовий пошук у норі, перебір
+стрічки, схожість текстів. Дві сторінки коду трималися на ОДНОМУ
+неперевіреному припущенні — що Graph API не приймає pfbid. Перевірка (Олег,
+Graph API Explorer, 21.08) зайняла два запити:
 
-  • `facebook.com/share/p/1AmpyiGUfk/` → 302 на
-    `facebook.com/nikvesti/posts/pfbid02nabJowuvNoET…?rdid=…` — тобто шортлінк
-    просто ХОВАЄ pfbid, а не несе інший ідентифікатор. Отже редирект треба
-    пройти, але сам по собі він нічого не вирішує;
-  • сторінка pfbid віддає `og:description` (текст поста, ~250 символів) і
-    `og:image` — Facebook малює логін-волл, УЖЕ розв'язавши pfbid у себе, і
-    лишає нам рівно те, за чим пост можна впізнати у власній стрічці. Іноді
-    це приходить із HTTP 400, тому тіло читається попри код відповіді;
-  • АЛЕ віддає не всім: із повним браузерним User-Agent та сама адреса дає
-    HTTP 400 і порожню сторінку на 1542 байти БЕЗ жодного og, а без UA, з
-    чесним ботівським або з `facebookexternalhit` — 200 і всі теги на місці.
-    Тобто ріжуть не бота, а запит із дата-центру, що ПРИКИДАЄТЬСЯ людиною.
-    Перша версія модуля робила саме це — і перший же /post у проді відповів
-    порожнечею (Олег, 21.08). Звідси UA_LADDER нижче;
-  • pfbid не розкодовується: це непрозорий токен, а не кодування id. Спокуса
-    «взяти найдовше число зі сторінки» — пастка: число 1509803480261504 лежить
-    у КОЖНІЙ такій сторінці однаково (перевірено на трьох різних постах), тобто
-    це чужий лічильник, а не наш пост;
-  • `og:type` бреше: на фото-пості про тендер Facebook віддав `video.other`.
-    Тип беремо з вкладень об'єкта в Graph, а не зі сторінки;
-  • `graph.facebook.com/oembed_post` без токена віддає лише заглушку з тим
-    самим href — жодного id. Тупик, перевірено;
-  • `instagram.com/<нік>/p/<shortcode>/` віддає нашому серверу порожню
-    оболонку без жодного og. З інсти зі сторінки не витягти НІЧОГО — і не
-    треба: shortcode стоїть у полі `permalink` кожного нашого медіа, тобто
-    зіставляється точно й без здогадів;
-  • shortcode розкодовується в 19-значне число (`DcEW0bgDE2U` →
-    3964393931957620116), але це pk внутрішнього API, а НЕ id Graph API
-    (там 17-18 знаків). Тому декодування тут свідомо не використовується —
-    воно дало б впевнений на вигляд, але чужий ідентифікатор.
+    GET pfbid02nab…?fields=id           → (#12) singular statuses API is
+                                          deprecated — тобто об'єкт ЗНАЙДЕНО,
+                                          відмова стосується лише форми запиту
+    GET {page_id}_pfbid02nab…?fields=id → {"id": "301719373180657_1715521640576310"}
 
-ЗВІДСИ СХОДИНКИ. Кожна наступна дорожча за попередню, і на кожній видно, чим
-саме впізнали (поле `method` — та сама діагностика, що в /stat):
+Graph РОЗУМІЄ pfbid у складеній формі `{page_id}_{pfbid}` — так само, як
+голий числовий id поста. Тож увесь шлях: пройти редирект share-лінка →
+приклеїти page_id → один запит у Graph. Сходинки впізнавання видалені як
+непотрібні. Урок на майбутнє: СПЕРШУ міряти найдешевший шлях, і лише коли він
+довів свою неможливість — будувати обхід.
 
-  1. `direct`  — id є прямо в лінку (`/posts/123`, `story_fbid=`, `/reel/123`,
-     `?fbid=`). Один запит, точно.
-  2. `photo`   — pfbid: id фото з `og:image` → `page_story_id` фото. Один
-     запит, і відповідь САМА себе перевіряє: page_story_id має початись з
-     нашого page_id, інакше сходинка не зарахована.
-  3. `nora`    — текст поста з `og:description` шукаємо в норі повнотекстово,
-     беремо дату матеріалу і дивимось стрічку саме біля неї. Дві-три сторінки
-     замість десятка.
-  4. `feed`    — сліпий прохід стрічки від найновіших, із межею FEED_SCAN_PAGES.
-     Наша сторінка дає 15-20 постів на добу, тобто 12 сторінок ≈ два місяці.
+pfbid чужої сторінки відпадає сам: із нашим page_id Graph такого об'єкта не
+знайде. А чужий нік у лінку відсікається ще раніше, на словах: інсайти
+чужого поста Graph не віддає нікому ззовні, тож і питати нічого.
 
-Не впізнали — так і кажемо, разом із текстом поста, який усе-таки прочитали:
-знати, ПРО ЩО пост, і не знати цифр — чесніше, ніж мовчазне «не знайдено».
+Instagram: shortcode з лінка стоїть дослівно в полі `permalink` кожного
+нашого медіа — зіставлення точне, листинг гортається до збігу. Розкодовувати
+shortcode в число не можна (`DcEW0bgDE2U` → 3964393931957620116 — це pk
+внутрішнього API, а не id Graph).
 
-Межа модуля: рахуються лише НАШІ сторінки (@nikvesti у Facebook та Instagram).
-Чужий пост метрик не має і мати не може — Graph API віддає інсайти лише
-адміністратору сторінки, а публічна сторінка конкурента нашому серверу
-показує логін-волл. Тому чужий лінк відсікається одразу й на словах, а не
-після десяти запитів у порожнечу.
+Відмова API — не «не знайшли»: причина доїжджає до людини, а протухлий токен
+називається токеном і смикає сторож (12.08 INSTAGRAM_TOKEN помер, і дев'ять
+днів про це не казав ніхто).
 """
 
 import asyncio
-import html as html_mod
 import os
 import re
 import requests
-import time
-from itertools import islice
-from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs
 
 from handlers import fb_token
 from handlers import instagram
 from handlers import stat_instagram
 from handlers.facebook import (
-    FACEBOOK_PAGE_SLUG, POST_LIST_FIELDS, fix_permalink,
+    FACEBOOK_PAGE_SLUG, fix_permalink,
     graph_get as _graph, get_post_metrics as _get_post_metrics,
     get_reel_insights,
 )
-from handlers.stat import _fb_date, _get_reel_views, _post_keys
+from handlers.stat import _fb_date, _get_reel_views
 
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
 
-# Скільки сторінок стрічки гортати сліпим проходом. 100 постів на сторінку,
-# 15-20 постів на добу → 12 сторінок ≈ два місяці. Глибше сліпо не лізем:
-# запити коштують часу, а для давнього поста є сходинка `nora`, яка приводить
-# одразу до потрібного тижня.
-FEED_SCAN_PAGES = 12
-# Стільки ж для інсти. Там 2-5 дописів на добу, тож 100 медіа ≈ місяць,
-# а 12 сторінок покривають більше року.
+# Скільки сторінок листингу інсти гортати в пошуку shortcode. Там 2-5 дописів
+# на добу, тож 12 сторінок по 100 покривають більше року.
 MEDIA_SCAN_PAGES = 12
 
-# Вікно навколо дати матеріалу для сходинки `nora`: пост зазвичай виходить у
-# день публікації, але буває й наступного дня, і за день до (анонс).
-NORA_WINDOW_DAYS = 3
-
-# Поріг збігу тексту поста з og:description. Скоринг спільний зі /stat
-# (stat_instagram.make_scorer) — той самий стемер і та сама арифметика, тож
-# розійтись вони можуть лише разом. Поріг вищий за ACCEPT інсти (0.50): там
-# підпис переписують своїми словами, а тут ми порівнюємо текст поста САМ ІЗ
-# СОБОЮ, просто обрізаний фейсбуком, і законний збіг близький до одиниці.
-TEXT_MATCH_MIN = 0.60
-
-# Хто ми для Facebook. ПОРЯДОК ТУТ — НЕ СМАК, А ЗАМІР (21.08.2026, та сама
-# адреса, той самий сервер, підряд):
-#     повний Chrome/126.0.0.0 → HTTP 400, сторінка на 1542 байти, og НЕМАЄ
-#     NikVesti-Bot/1.0        → HTTP 200, og на місці
-#     без User-Agent          → HTTP 200, og на місці
-#     facebookexternalhit/1.1 → HTTP 200, og на місці
-# Тобто вдавати браузер — рівно те, через що нічого не працює: Facebook ріже
-# не ботів, а запит із дата-центру, що ПРИКИДАЄТЬСЯ людиною. У першій версії
-# тут стояв браузерний UA з коментарем, що інакше og не дають, — і перший же
-# /post у проді відповів порожнечею (Олег, 21.08). Пробуємо по черзі й беремо
-# перший захід, що приніс og: одна зачинена форма не має гасити всю команду.
-UA_LADDER = (
-    "NikVesti-Bot/1.0 (+https://nikvesti.com)",
-    None,
-    "facebookexternalhit/1.1",
-)
-BASE_HEADERS = {"Accept-Language": "uk-UA,uk;q=0.9,en;q=0.8"}
+# UA для проходу редиректу share-лінка. Заміряно 21.08.2026: редирект
+# віддається і чесному ботові (тіло сторінки нам не потрібне взагалі —
+# лише фінальна адреса).
+REDIRECT_UA = "NikVesti-Bot/1.0 (+https://nikvesti.com)"
 
 FB_HOSTS = ("facebook.com", "www.facebook.com", "m.facebook.com", "web.facebook.com",
             "mbasic.facebook.com", "fb.com", "www.fb.com", "fb.watch", "www.fb.watch")
@@ -153,9 +92,9 @@ def parse_link(url):
     """URL → опис лінка або None, якщо це не пост FB/IG.
 
     Ключі: net ('fb'|'ig'), object_id (готовий id Graph, якщо він у лінку),
-    kind ('post'|'video'|'photo'), shortcode (IG), shortlink (треба пройти
-    редирект), pfbid (треба впізнавати за вмістом), owner (нік сторінки з
-    лінка, щоб одразу відсікти чужий пост)."""
+    kind ('post'|'video'|'photo'), pfbid, shortcode (IG), shortlink (треба
+    пройти редирект), owner (нік сторінки з лінка — щоб одразу відсікти
+    чужий пост)."""
     if not url or not isinstance(url, str):
         return None
     url = url.strip()
@@ -177,7 +116,7 @@ def _parse_fb(url):
     low = [s.lower() for s in segs]
 
     # fb.watch/CODE і facebook.com/share/{p,v,r}/CODE — шортлінки: id немає,
-    # треба пройти редирект (він, як заміряно, веде на pfbid)
+    # редирект приведе на pfbid-адресу
     if _host(url).endswith("fb.watch") and segs:
         return {"net": "fb", "shortlink": True, "url": url}
     if low[:1] == ["share"]:
@@ -243,8 +182,7 @@ def _parse_ig(url):
 
 
 def foreign_owner(link):
-    """Нік зі лінка, якщо це ЧУЖА сторінка. None — наша або нік не вказаний.
-    Дає відсікти чужий пост словами, а не десятком марних запитів у порожнечу."""
+    """Нік зі лінка, якщо це ЧУЖА сторінка. None — наша або нік не вказаний."""
     owner = ((link or {}).get("owner") or "").strip().lower()
     if not owner:
         return None
@@ -255,91 +193,25 @@ def foreign_owner(link):
     return None if owner in ours else owner
 
 
-# ---------- Сторінка поста: редирект + og ----------
-
-def fetch_page(url):
-    """Сторінку поста читаємо ОДНИМ запитом: він і проходить редирект
-    шортлінка, і приносить og-теги. Тіло беремо навіть при HTTP 400 — Facebook
-    буває віддає og саме так.
-
-    Заходимо по черзі (UA_LADDER) і беремо ПЕРШИЙ захід, що приніс og. Дві
-    різні причини порожнечі лікуються тим самим ходом: Facebook або ріже
-    конкретну форму запиту назавжди, або тимчасово підсовує сторінку «Sorry,
-    something went wrong» — і в обох випадках наступна спроба інакшим заходом
-    коштує один запит.
-
-    Повертає (final_url, html) останньої спроби; порожній html = не дали."""
-    last = ("", "")
-    for i, ua in enumerate(UA_LADDER):
-        if i:
-            time.sleep(0.8)
-        headers = dict(BASE_HEADERS)
-        if ua:
-            headers["User-Agent"] = ua
-        try:
-            resp = requests.get(url, headers=headers, timeout=25,
-                                allow_redirects=True)
-        except Exception as e:
-            print(f"post_stat: {url} ({ua or 'без UA'}) — {e}")
-            continue
-        got = (resp.url, resp.text or "")
-        if parse_og(got[1]).get("description"):
-            return got
-        print(f"post_stat: {ua or 'без UA'} → HTTP {resp.status_code}, "
-              f"{len(got[1])} байт, og немає")
-        last = got
-    return last
+def follow_redirect(url):
+    """Фінальна адреса share-лінка. Тіло сторінки не читаємо взагалі — усе,
+    що треба (pfbid), лежить у самій адресі після редиректу. None = мережа
+    не відповіла."""
+    try:
+        resp = requests.get(url, headers={"User-Agent": REDIRECT_UA},
+                            timeout=20, allow_redirects=True)
+        return resp.url
+    except Exception as e:
+        print(f"post_stat: редирект {url} — {e}")
+        return None
 
 
-_OG_RE = re.compile(
-    r'<meta\s+property=["\']og:(?P<key>[a-z:]+)["\']\s+content=["\'](?P<val>.*?)["\']',
-    re.IGNORECASE | re.DOTALL)
-
-
-def parse_og(html):
-    """og-теги сторінки → dict. Значення розекрановані (Facebook віддає
-    кирилицю HTML-ентитями: &#x41c;&#x438; …), інакше жоден текст не
-    зіставиться."""
-    out = {}
-    for m in _OG_RE.finditer(html or ""):
-        key = m.group("key").lower()
-        if key not in out:
-            out[key] = html_mod.unescape(m.group("val")).strip()
-    return out
-
-
-def image_object_ids(og_image):
-    """Числові id з імені файлу og:image. Формат fbcdn — «…/775298449_1726257
-    996169341_2084948746_n.jpg», і котрий із них вузол фото, наперед не
-    відомо. Тому віддаємо всі кандидати: перевірка безкоштовна й САМА себе
-    підтверджує (page_story_id має початись із нашого page_id), тож помилитись
-    тут неможливо — можна лише не вгадати й піти далі."""
-    if not og_image:
-        return []
-    name = urlparse(og_image).path.rsplit("/", 1)[-1]
-    ids = re.findall(r"\d{10,}", name)
-    # найдовші першими: id фото довші за службові числа розміру
-    return sorted(dict.fromkeys(ids), key=len, reverse=True)[:4]
-
-
-# ---------- Facebook: впізнавання об'єкта ----------
-
-def _note_api_error(state, message, where):
-    """Причина відмови API мусить ДОЇХАТИ до людини, а не лишитись у логах.
-
-    Перша версія ковтала її: листинг тихо спинявся, і відповідь виходила
-    «схоже, пост давніший». А 21.08 виявилось, що INSTAGRAM_TOKEN протух ще
-    12-го — тобто бот дев'ять днів міг би так брехати. Порожній результат і
-    відмова доступу — це різні речі, і плутати їх не можна ніде."""
-    text = message or "невідома помилка"
-    print(f"post_stat: {where} — {text}")
-    if state is not None and not state.get("api_error"):
-        state["api_error"] = text
-
+# ---------- Facebook ----------
 
 def _full_id(object_id):
-    """Короткий id поста → `{page}_{post}`. Уже складений або id відео/фото
-    лишаємо як є."""
+    """Id → складена форма `{page_id}_{id}`. Саме вона робить прямий шлях
+    можливим: Graph відповідає нею і на числовий id, і на pfbid (замір у
+    шапці модуля). Уже складений лишаємо як є."""
     oid = str(object_id)
     if "_" in oid or not FACEBOOK_PAGE_ID:
         return oid
@@ -367,46 +239,6 @@ def _read_object(object_id):
     return None, tried[0] if tried else "не прочиталось"
 
 
-def _story_id_from_photo(photo_id):
-    """Фото → пост, у якому воно лежить (`page_story_id`). Відповідь
-    перевіряємо на належність НАШІЙ сторінці — інакше це чуже фото."""
-    data, err = _graph(str(photo_id), {"fields": "page_story_id"})
-    if err or not data:
-        return None
-    story = str(data.get("page_story_id") or "")
-    if FACEBOOK_PAGE_ID and story.startswith(f"{FACEBOOK_PAGE_ID}_"):
-        return story
-    return None
-
-
-def _iter_feed_pages(since_ts=None, until_ts=None, max_pages=FEED_SCAN_PAGES,
-                     state=None):
-    """Сторінки стрічки від найновіших, лінивo. Генератор, а не список: щойно
-    пост знайшовся, гортання спиняється — сліпий прохід інакше коштував би всі
-    12 запитів завжди."""
-    url = f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}/posts"
-    params = {"fields": POST_LIST_FIELDS, "limit": 100,
-              "access_token": FACEBOOK_PAGE_TOKEN}
-    if since_ts:
-        params["since"] = since_ts
-    if until_ts:
-        params["until"] = until_ts
-    for _ in range(max_pages):
-        try:
-            data = requests.get(url, params=params, timeout=30).json()
-        except Exception as e:
-            _note_api_error(state, str(e), "стрічка постів")
-            return
-        if "error" in data:
-            _note_api_error(state, data["error"].get("message"), "стрічка постів")
-            return
-        yield data.get("data", [])
-        next_url = data.get("paging", {}).get("next")
-        if not next_url:
-            return
-        url, params = next_url, None
-
-
 def _post_text(post):
     """Текст об'єкта. Три поля, бо їх заповнюють різні типи: message — пости,
     story — службові («сторінка змінила фото»), description — відео й рілзи."""
@@ -414,119 +246,12 @@ def _post_text(post):
                                 post.get("description")) if x).strip()
 
 
-def find_in_feed(og, pages):
-    """Пост у стрічці за вмістом сторінки pfbid. Два незалежні сигнали:
-
-    - id фото з og:image серед id вкладень поста — точний збіг, без порогів;
-    - текст: og:description проти тексту поста, скорингом /stat.
-
-    `pages` — ітерабельне зі сторінками стрічки (генератор, який спиняється,
-    щойно пост знайшовся). Параметром, а не всередині, свідомо: так матчинг
-    перевіряється на живих сторінках БЕЗ мережі й токена.
-
-    Повертає (post, method, scanned). Текстовий шлях бере НАЙКРАЩИЙ збіг
-    сторінки, а не перший над порогом: сусідні пости про ту саму подію схожі,
-    і «перший, що пройшов» — це лотерея."""
-    img_ids = set(image_object_ids(og.get("image")))
-    score = stat_instagram.make_scorer(
-        {"title": "", "lead": og.get("description") or ""})
-    scanned = 0
-    best, best_score = None, 0.0
-    for page in pages:
-        for post in page:
-            scanned += 1
-            if img_ids and (_post_keys(post) & img_ids):
-                return post, "photo", scanned
-            if score.tokens:
-                s = score(_post_text(post))
-                if s > best_score:
-                    best, best_score = post, s
-        if best_score >= TEXT_MATCH_MIN:
-            return best, "text", scanned
-    if best_score >= TEXT_MATCH_MIN:
-        return best, "text", scanned
-    return None, None, scanned
-
-
-def _nora_dates(text):
-    """Дати матеріалів нори, схожих на текст поста. Пост зазвичай переказує лід
-    статті, тож повнотекстовий пошук приводить до потрібного тижня одним
-    безкоштовним запитом — замість десятка сторінок стрічки."""
-    if not text:
-        return []
-    try:
-        from handlers import archive_search
-        items = archive_search.search_items(text[:300], limit=3)
-    except Exception as e:
-        print(f"post_stat: нора не відповіла — {e}")
-        return []
-    out = []
-    for it in items:
-        ts = it.get("published")
-        if ts:
-            out.append(datetime.fromtimestamp(int(ts)))
-    return out
-
-
-def resolve_facebook(link, og=None):
-    """Лінк → (object_id, method, diag). method — якою сходинкою впізнали."""
-    diag = {"scanned": 0}
-    if link.get("object_id"):
-        return link["object_id"], "direct", diag
-
-    og = og or {}
-    # Сходинка 2: фото з og:image знає свій пост
-    for pid in image_object_ids(og.get("image")):
-        story = _story_id_from_photo(pid)
-        if story:
-            return story, "photo", diag
-
-    text = og.get("description") or ""
-    if not text and not og.get("image"):
-        # Сторінку не прочитали (Facebook притримав запити або лінк мертвий) —
-        # упізнавати нічим. Сліпий прохід тут коштував би дванадцять запитів і
-        # гарантовано нічого не дав би: у стрічці немає з чим порівнювати.
-        return None, None, diag
-
-    # Сходинка 3: дві найновіші сторінки стрічки — ≈10-12 днів нашого темпу.
-    # Стоять ПЕРЕД норою свідомо: лінк, який кидають у чат, майже завжди
-    # свіжий, і тоді відповідь коштує ОДИН запит замість трьох. Генератор
-    # спільний із сходинкою 5 — там він продовжиться з місця зупинки, тож
-    # межа в FEED_SCAN_PAGES лишається спільною, а не подвоюється.
-    feed = _iter_feed_pages(state=diag)
-    post, _, scanned = find_in_feed(og, islice(feed, 2))
-    diag["scanned"] += scanned
-    if post:
-        return post["id"], "feed", diag
-
-    # Сходинка 4: нора дає дату матеріалу → дивимось стрічку саме біля неї.
-    # Дві найкращі здогадки, не всі: кожна коштує до трьох запитів, а хибна
-    # здогадка нічого не дасть і на десятій.
-    for dt in _nora_dates(text)[:2]:
-        since = int((dt - timedelta(days=NORA_WINDOW_DAYS)).timestamp())
-        until = int((dt + timedelta(days=NORA_WINDOW_DAYS)).timestamp())
-        post, _, scanned = find_in_feed(
-            og, _iter_feed_pages(since, until, max_pages=3, state=diag))
-        diag["scanned"] += scanned
-        if post:
-            return post["id"], "nora", diag
-
-    # Сходинка 5: решта стрічки — той самий генератор, з місця зупинки
-    post, _, scanned = find_in_feed(og, feed)
-    diag["scanned"] += scanned
-    if post:
-        return post["id"], "feed", diag
-    return None, None, diag
-
-
-def facebook_post_stat(link, og=None):
+def facebook_post_stat(link):
     """Метрики поста Facebook. Повертає dict як у /stat (type/permalink/date/
-    views/…) плюс text і method, або {'error': …} з людською причиною."""
-    object_id, method, diag = resolve_facebook(link, og)
+    views/…) плюс text, або {'error': …} з людською причиною."""
+    object_id = link.get("object_id") or link.get("pfbid")
     if not object_id:
-        if diag.get("api_error"):
-            return {"net": "fb", "error": "api", "detail": diag["api_error"]}
-        return {"net": "fb", "error": "not_found", "scanned": diag.get("scanned", 0)}
+        return {"net": "fb", "error": "unresolved"}
 
     data, err = _read_object(object_id)
     if not data:
@@ -535,9 +260,8 @@ def facebook_post_stat(link, og=None):
     oid = str(data["id"])
     attachments = (data.get("attachments", {}) or {}).get("data", [])
     media_type = (attachments[0].get("media_type") if attachments else "") or ""
-    # Тип беремо з ДВОХ джерел: вкладення (для постів) і сам лінк (для голого
-    # `/reel/123` вкладень немає взагалі). og:type сюди не входить свідомо —
-    # він назвав `video.other` фото-пост про тендер.
+    # Тип — із вкладень (для постів) і з самого лінка (у голого `/reel/123`
+    # вкладень немає взагалі)
     is_video = "video" in media_type.lower() or link.get("kind") == "video"
 
     metrics = _get_post_metrics(oid)
@@ -574,12 +298,20 @@ def facebook_post_stat(link, og=None):
         "comments": comments,
         "shares": shares,
         "eng_note": metrics.get("note"),
-        "method": method,
-        "scanned": diag.get("scanned", 0),
     }
 
 
 # ---------- Instagram ----------
+
+def _note_api_error(state, message, where):
+    """Причина відмови API мусить ДОЇХАТИ до людини, а не лишитись у логах.
+    Перша версія ковтала її: листинг тихо спинявся, і відповідь виходила
+    «схоже, пост давніший», хоча токен був мертвий із 12.08."""
+    text = message or "невідома помилка"
+    print(f"post_stat: {where} — {text}")
+    if state is not None and not state.get("api_error"):
+        state["api_error"] = text
+
 
 def _iter_media_pages(max_pages=MEDIA_SCAN_PAGES, state=None):
     base, token = instagram.credentials()
@@ -607,9 +339,8 @@ def _iter_media_pages(max_pages=MEDIA_SCAN_PAGES, state=None):
 
 def find_media_by_shortcode(shortcode, max_pages=MEDIA_SCAN_PAGES):
     """Медіа за shortcode. Зіставляємо з permalink — це ТОЧНИЙ збіг: shortcode
-    із лінка стоїть у ньому дослівно. Розкодовувати shortcode в число не можна
-    (див. шапку модуля), тому листинг тут не «на безриб'ї», а єдиний правильний
-    шлях. Повертає (media, scanned)."""
+    із лінка стоїть у ньому дослівно. Повертає (media, scanned, причина
+    відмови API або None)."""
     needle = f"/{shortcode}/"
     scanned = 0
     state = {}
@@ -635,12 +366,7 @@ def instagram_post_stat(link):
     if not media:
         return {"net": "ig", "error": "not_found", "scanned": scanned}
     packed = stat_instagram._pack(media, "shortcode")
-    packed.update({
-        "net": "ig",
-        "text": media.get("caption") or "",
-        "method": "shortcode",
-        "scanned": scanned,
-    })
+    packed.update({"net": "ig", "text": media.get("caption") or ""})
     return packed
 
 
@@ -657,44 +383,24 @@ def collect(url):
     if stranger:
         return {"error": "foreign", "owner": stranger}
 
-    og = {}
-    # Шортлінк і pfbid читаються ЗІ СТОРІНКИ: перший — щоб пройти редирект,
-    # другий — щоб дістати текст і фото, за якими пост упізнається у стрічці.
-    if link.get("shortlink") or link.get("pfbid") or (
-            link["net"] == "fb" and not link.get("object_id")):
-        try:
-            final_url, html = fetch_page(link["url"])
-            og = parse_og(html)
-            resolved = parse_link(final_url)
-            if resolved and (resolved.get("object_id") or resolved.get("shortcode")):
-                resolved["owner"] = resolved.get("owner") or link.get("owner")
-                stranger = foreign_owner(resolved)
-                if stranger:
-                    return {"error": "foreign", "owner": stranger}
-                link = resolved
-            elif resolved and resolved.get("pfbid"):
-                link = {**resolved, "owner": resolved.get("owner") or link.get("owner")}
-        except Exception as e:
-            print(f"post_stat: сторінка {link['url']} не прочиталась — {e}")
+    # Шортлінк: редирект розкриває pfbid прямо в адресі. Тіло не читаємо.
+    if link.get("shortlink") and link["net"] == "fb":
+        final_url = follow_redirect(link["url"])
+        resolved = parse_link(final_url) if final_url else None
+        if resolved and not resolved.get("shortlink"):
+            stranger = foreign_owner(resolved)
+            if stranger:
+                return {"error": "foreign", "owner": stranger}
+            link = resolved
 
     if link["net"] == "ig":
-        if link.get("shortlink") and not link.get("shortcode"):
-            return {"error": "ig_shortlink"}
+        if link.get("shortlink"):
+            return {"net": "ig", "error": "ig_shortlink"}
         return instagram_post_stat(link)
 
     if not FACEBOOK_PAGE_TOKEN:
-        return {"error": "not_configured"}
-    out = facebook_post_stat(link, og)
-    if out.get("error") == "not_found" and not og.get("description"):
-        # Три різні нулі не мають виглядати однаково: «сторінку не дали»,
-        # «дали, але пост не наш» і «не знайшли у стрічці» — це різні поради
-        # людині. Тут перший.
-        out["error"] = "no_page"
-    elif out.get("error") and og.get("description"):
-        # Не впізнали — але текст поста в руках. Знати, ПРО ЩО пост, і не мати
-        # цифр чесніше за німе «не знайдено»
-        out["og_text"] = og["description"]
-    return out
+        return {"net": "fb", "error": "not_configured"}
+    return facebook_post_stat(link)
 
 
 # ---------- Вивід ----------
@@ -715,19 +421,8 @@ def _preview(text, limit=280):
     return text[:limit].rsplit(" ", 1)[0] + "…"
 
 
-# `method` (direct/photo/nora/feed/shortcode) лишається В ДАНИХ — він у логах і
-# в діагностиці. Але НЕ на екрані: «id у лінку не було — знайшов у стрічці за
-# датою матеріалу з нори» це розповідь бота про себе, а людина відкрила
-# повідомлення заради цифр (Олег, 21.08: «??????»). Коли числа є — вони і є
-# відповідь.
-
-
 # Тексти відмов. Правило одне (CLAUDE.md §9): людина спитала СТАТИСТИКУ, тож
-# і відповідь — про статистику, а не про те, як бот її шукав. «Не знайшов цей
-# пост серед наших публікацій» — це переказ власного алгоритму, і Олег
-# справедливо спитав 21.08: «я що просив шукати цей пост? я просив
-# статистику». Причина лишається, але як пояснення, чому цифр немає, і разом
-# із тим, що можна зробити.
+# і відповідь — про статистику, а не про те, як бот її шукав.
 ERROR_TEXT = {
     "not_a_post": ("Це не схоже на лінк поста.\n"
                    "Приймаю Facebook (пост, рілз, share-лінк) та Instagram "
@@ -738,12 +433,12 @@ ERROR_TEXT = {
     "ig_shortlink": ("Instagram не розкриває свої share-лінки нашому серверу.\n"
                      "Відкрий допис у застосунку і скопіюй адресу вигляду "
                      "<code>instagram.com/p/…</code> — за нею дам статистику."),
+    "unresolved": ("Статистики не дістав — Facebook не розкрив це посилання "
+                   "(редирект не привів до поста).\n\n"
+                   "Спробуй ще раз за хвилину. Або надішли лінк вигляду "
+                   "<code>facebook.com/nikvesti/posts/&lt;число&gt;</code> — "
+                   "за ним цифри беруться одразу."),
 }
-
-# Лінк, за яким статистика береться напряму, без жодного впізнавання
-DIRECT_HINT = ("Надішли лінк вигляду "
-               "<code>facebook.com/nikvesti/posts/&lt;число&gt;</code> — "
-               "за ним цифри беруться одразу.")
 
 
 def format_message(res):
@@ -760,36 +455,16 @@ def format_message(res):
         net = "Instagram" if res.get("net") == "ig" else "Facebook"
         detail = str(res.get("detail") or "")
         if fb_token.is_token_error(detail):
-            # Найдорожча помилка цієї команди: рівно так протухлий токен інсти
-            # переказувався людині як «схоже, пост давніший» (21.08). Протухлий
-            # токен сам не оживає, тож «спробуй ще раз» тут було б брехнею.
+            # Протухлий токен сам не оживає — «спробуй ще раз» тут брехня
             return (f"Статистики не дістав — <b>протух токен {net}</b>.\n\n"
                     "Це не тимчасово. Надіслав тобі в приват інструкцію заміни; "
                     "як заміниш — бот сам скаже, що токен знову живий.")
         return (f"Статистики не дістав: {net} відмовив.\n"
                 f"<i>{_esc(detail[:180])}</i>")
-    if err == "no_page":
-        return ("Статистики не дістав — Facebook не віддав нашому серверу "
-                "сторінку цього поста.\n\n"
-                "Спробуй ще раз за хвилину, таке буває тимчасовим. Або "
-                + DIRECT_HINT[0].lower() + DIRECT_HINT[1:])
     if err == "not_found":
-        # Підказка мусить бути про ТУ мережу, з якої прийшов лінк: на допис
-        # інсти радити «дай лінк facebook.com/...» — знущання (21.08)
-        if res.get("net") == "ig":
-            where = ("Серед дописів @nikvesti в Instagram, які видно ботові, "
-                     "його немає — схоже, він давніший за рік.")
-            hint = ""
-        else:
-            where = ("А от серед постів @nikvesti за останні два місяці його "
-                     "немає — схоже, він давніший.")
-            hint = " " + DIRECT_HINT
-        lines = ["Статистики по цьому посту не дістав."]
-        if res.get("og_text"):
-            lines += ["", "Сам пост прочитав, ось про що він:",
-                      f"<i>{_esc(_preview(res['og_text']))}</i>"]
-        lines += ["", where + hint]
-        return "\n".join(lines)
+        return ("Статистики по цьому посту не дістав.\n\n"
+                "Серед дописів @nikvesti в Instagram, які видно ботові, його "
+                "немає — схоже, він давніший за рік.")
     if err:
         return ERROR_TEXT.get(err, "Статистики по цьому посту не дістав.")
 
@@ -826,7 +501,6 @@ def format_message(res):
                                   ("views", "reactions", "comments", "shares")):
         lines.append(f'<i>частину метрик Facebook не віддав: '
                      f'{_esc(str(res["eng_note"])[:120])}</i>')
-
     return "\n".join(lines)
 
 
