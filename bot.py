@@ -22,6 +22,7 @@ from handlers.documents import check_documents, test_documents, rebaseline_docum
 from handlers.competitors import check_competitors
 from handlers.law_enforcement import check_law_enforcement
 from handlers.stat import stat_handler, stat_forget_handler
+from handlers import post_stat
 from handlers.query_router import handle_natural_language_query, reset_dialog
 from handlers.reactions import handle_message_reaction
 from handlers.english_report import english_report_handler
@@ -552,6 +553,35 @@ async def _reply_saved_contact(msg, saved, is_new):
 # кількість цифр, а не «схожість»: інакше «що було 2026-07-29» ловилось би як
 # контакт. Не схоже на номер — тихо віддаємо повідомлення Лису, як і раніше.
 _PHONE_RE = re.compile(r"\+?\d[\d\s\-()]{7,}\d")
+_URL_RE = re.compile(r"https?://\S+")
+
+
+_POST_LINK_RE = re.compile(
+    r"https?://(?:[\w-]+\.)*(?:facebook\.com|fb\.com|fb\.watch|instagram\.com|instagr\.am)/\S+",
+    re.IGNORECASE)
+
+
+async def maybe_post_link_handler(update, context):
+    """Голий лінк на пост у приваті — це прохання про його статистику
+    («я боту даю ссылку — и он мне выдает аналитику», Олег 21.08).
+
+    Обережний так само, як телефонний хендлер: усе, що не впізналось постом,
+    іде далі в природномовний шар. Лінк має бути СУТТЮ повідомлення, а не
+    ілюстрацією до питання — «а чому в цього поста так мало охоплення?»
+    лишається питанням до Лиса, і відповідати на нього таблицею неправильно.
+    """
+    msg = update.effective_message
+    text = (msg.text or "").strip()
+    match = _POST_LINK_RE.search(text)
+    if not match:
+        await handle_natural_language_query(update, context)
+        return
+    url = match.group(0)
+    rest = (text[:match.start()] + text[match.end():]).strip(" ,.—–-:\n")
+    if len(rest) > 30 or not post_stat.is_post_link(url):
+        await handle_natural_language_query(update, context)
+        return
+    await post_stat.reply_post_stat(msg, url)
 
 
 async def maybe_contact_text_handler(update, context):
@@ -565,6 +595,13 @@ async def maybe_contact_text_handler(update, context):
     match = _PHONE_RE.search(text)
     digits = "".join(c for c in (match.group(0) if match else "") if c.isdigit())
     if not match or not (9 <= len(digits) <= 15):
+        await handle_natural_language_query(update, context)
+        return
+    # Довге число ВСЕРЕДИНІ посилання — не номер. Id поста у Facebook має
+    # 15-16 цифр і проходив цю перевірку як «телефон», тобто кинутий у приват
+    # лінк міг завести контакт із іменем «https://www.facebook.com/…»
+    if any(match.start() >= m.start() and match.end() <= m.end()
+           for m in _URL_RE.finditer(text)):
         await handle_natural_language_query(update, context)
         return
     user = update.effective_user
@@ -737,6 +774,7 @@ def main():
     app.add_handler(CommandHandler("competitors", competitors_check))
     app.add_handler(CommandHandler("law", law_check))
     app.add_handler(CommandHandler("stat", stat_handler))
+    app.add_handler(CommandHandler("post", post_stat.post_stat_handler))
     app.add_handler(CommandHandler("stat_forget", stat_forget_handler))
     app.add_handler(CommandHandler("english", english_report_handler))
     app.add_handler(CommandHandler("traffic", traffic_handler))
@@ -763,6 +801,13 @@ def main():
     # Переслана в приват картка контакту → у базу редакції. Ставимо ПЕРЕД
     # текстовим NLQ: contact — не текст, тож перехопити його інакше нема де.
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, shared_contact_handler))
+    # Голий лінк на пост FB/IG — статистика цього поста. Стоїть ПЕРЕД
+    # телефонним хендлером свідомо: id поста у Facebook це 15-16 цифр, тобто
+    # рівно те, що телефонний фільтр вважає номером. Усе, що постом не є,
+    # хендлер віддає далі сам (див. maybe_post_link_handler).
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND
+        & filters.Regex(_POST_LINK_RE), maybe_post_link_handler))
     # Текст із телефонним номером — теж контакт (коли абонента немає в
     # Telegram і карткою його не переслати). Хендлер сам вирішує: не схоже на
     # номер — передає далі в природномовний шар, тож NLQ нічого не втрачає.

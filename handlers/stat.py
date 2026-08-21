@@ -805,7 +805,17 @@ async def stat_handler(update, context):
 
     article_url = context.args[0]
     if "nikvesti.com" not in article_url:
-        await update.message.reply_text("Вкажіть посилання на матеріал nikvesti.com")
+        # Лінк на САМ пост — це задача /post (метрики одного поста), але
+        # промахнутись командою людина не мусить: віддаємо мовчки туди.
+        # Імпорт локальний — post_stat бере службові функції звідси, і на
+        # рівні модуля це був би цикл.
+        from handlers import post_stat
+        if post_stat.is_post_link(article_url):
+            await post_stat.reply_post_stat(update.message, article_url)
+            return
+        await update.message.reply_text(
+            "Вкажіть посилання на матеріал nikvesti.com — або на сам пост у "
+            "Facebook чи Instagram, і віддам статистику саме того поста.")
         return
 
     article_id = _extract_article_id(article_url)
