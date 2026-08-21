@@ -514,6 +514,27 @@ def save_fb_token_state(fb_token_state):
     save_token_state("fb", fb_token_state)
 
 
+def get_ig_oauth():
+    """Живий токен Instagram: {"token", "set_at", "expires_at", "by"}.
+
+    Лежить у стані бота, а не лише в env, з тієї ж причини, що й TikTok:
+    токен Instagram Login живе 60 днів, але ПРОДОВЖУЄТЬСЯ сам, без секрета
+    застосунку — а продовжений треба десь зберегти. У змінну Railway бот
+    писати не може, тож джерело істини тут; env INSTAGRAM_TOKEN лишається
+    сідом на перший запуск. Порожній dict = ще не заводили."""
+    with _lock:
+        state = _read_state()
+        return state.get("ig_oauth", {})
+
+
+def save_ig_oauth(oauth):
+    """Записати живий токен Instagram (див. get_ig_oauth)."""
+    with _lock:
+        state = _read_state()
+        state["ig_oauth"] = oauth
+        _write_state(state)
+
+
 def get_tiktok_oauth():
     """OAuth-стан TikTok: {"refresh_token", "access_token", "access_expires_at"}.
     TikTok РОТУЄ refresh token на кожному оновленні (старий протухає), тому

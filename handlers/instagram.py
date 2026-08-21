@@ -4,10 +4,12 @@ import time
 
 import requests
 from datetime import datetime, timedelta
+from handlers import storage
 from handlers.helpers import parse_month_arg
 
 INSTAGRAM_TOKEN = os.environ.get("INSTAGRAM_TOKEN")
 FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
+FACEBOOK_PAGE_ID = os.environ.get("FACEBOOK_PAGE_ID")
 INSTAGRAM_USER_ID = "17841400860799899"
 
 # ---------- Якими дверима заходити в інсту ----------
@@ -33,8 +35,88 @@ _ROUTE_TTL = 600          # секунд; двері не міняються щ�
 _route_cache = {"at": 0.0, "value": None}
 
 
+def stored_token():
+    """Токен інсти зі стану бота — джерело істини. Порожньо → env-сід."""
+    return (storage.get_ig_oauth() or {}).get("token") or INSTAGRAM_TOKEN
+
+
 def _token_by_name(name):
-    return INSTAGRAM_TOKEN if name == "INSTAGRAM_TOKEN" else FACEBOOK_PAGE_TOKEN
+    return stored_token() if name == "INSTAGRAM_TOKEN" else FACEBOOK_PAGE_TOKEN
+
+
+# ---------- Щоб токен більше не вмирав ----------
+#
+# Токен Instagram Login живе 60 днів, АЛЕ його можна продовжити самим
+# токеном — без app secret, без людини:
+#     GET graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token
+# Умови Meta: токен має бути довгоживучим, старшим за добу і ще не протухлим.
+# Тому продовжуємо ЗАЗДАЛЕГІДЬ (REFRESH_AFTER_DAYS), а не в останній день:
+# протухлий не продовжується вже нічим, і тоді знову потрібна людина.
+#
+# Це і є відповідь на питання Олега «як зробити, щоб код не залежав від
+# токена» (21.08). Зовсім без токена Meta цифр не дає нікому — але залежність
+# «раз на два місяці хтось мусить згадати» знімається повністю: людина
+# заводить токен ОДИН раз, далі бот тримає його живим сам.
+REFRESH_AFTER_DAYS = 30
+_REFRESH_URL = "https://graph.instagram.com/refresh_access_token"
+
+
+def refresh_token(force=False):
+    """Продовжити токен інсти на нові 60 днів. → (True, коли протухне) або
+    (False, причина). Нічого не робить, поки токен молодший за
+    REFRESH_AFTER_DAYS (Meta не продовжує токен, молодший за добу, а частіше
+    ніж раз на місяць це просто марні запити)."""
+    state = storage.get_ig_oauth() or {}
+    token = state.get("token") or INSTAGRAM_TOKEN
+    if not token:
+        return False, "токена немає"
+    if not force:
+        set_at = state.get("set_at")
+        if set_at:
+            try:
+                age = datetime.now() - datetime.fromisoformat(set_at)
+                if age < timedelta(days=REFRESH_AFTER_DAYS):
+                    return False, f"ще рано ({age.days} дн.)"
+            except ValueError:
+                pass
+    try:
+        data = requests.get(_REFRESH_URL, params={
+            "grant_type": "ig_refresh_token", "access_token": token}, timeout=20).json()
+    except Exception as e:
+        return False, str(e)
+    if "error" in data:
+        return False, data["error"].get("message") or "невідома помилка"
+    new_token = data.get("access_token")
+    if not new_token:
+        return False, "Meta не віддала новий токен"
+    expires_in = int(data.get("expires_in") or 0)
+    storage.save_ig_oauth({
+        **state, "token": new_token,
+        "set_at": datetime.now().isoformat(timespec="seconds"),
+        "expires_at": int(time.time()) + expires_in if expires_in else None,
+    })
+    credentials(force=True)
+    return True, expires_in // 86400
+
+
+def adopt_token(token, by=""):
+    """Прийняти токен від людини: спершу ПЕРЕВІРИТИ, і лише потім зберегти —
+    інакше в стані осідає щось неробоче, а справжня причина ховається.
+    → (True, None) | (False, причина)."""
+    token = (token or "").strip()
+    if not token:
+        return False, "порожньо"
+    for base, _ in IG_ROUTES:
+        ok, err = probe_route(base, token)
+        if ok:
+            storage.save_ig_oauth({
+                "token": token, "by": by,
+                "set_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            credentials(force=True)
+            return True, None
+        last = err
+    return False, last
 
 
 def probe_route(base, token):
@@ -74,6 +156,28 @@ def credentials(force=False):
     fallback = (IG_ROUTES[0][0], _token_by_name(IG_ROUTES[0][1]))
     _route_cache.update(at=now, value=fallback)
     return fallback
+
+
+def linked_ig_account():
+    """Який IG-акаунт бачить сторінка Facebook. Питання не риторичне: помилка
+    «Object with ID '178414…' does not exist» має ДВІ причини — токену бракує
+    прав АБО в змінній стоїть чужий id. Розрізняє їх лише ця відповідь."""
+    if not (FACEBOOK_PAGE_ID and FACEBOOK_PAGE_TOKEN):
+        return None, "немає FACEBOOK_PAGE_ID/TOKEN"
+    try:
+        data = requests.get(
+            f"https://graph.facebook.com/v25.0/{FACEBOOK_PAGE_ID}",
+            params={"fields": "instagram_business_account,connected_instagram_account",
+                    "access_token": FACEBOOK_PAGE_TOKEN}, timeout=15).json()
+    except Exception as e:
+        return None, str(e)
+    if "error" in data:
+        return None, data["error"].get("message") or "невідома помилка"
+    for key in ("instagram_business_account", "connected_instagram_account"):
+        node = data.get(key)
+        if isinstance(node, dict) and node.get("id"):
+            return node["id"], None
+    return None, "сторінка не віддала привʼязаного IG-акаунта"
 
 
 def route_report():
@@ -307,34 +411,80 @@ def short_caption(caption, words=5):
 
 async def ig_token_handler(update, context):
     """/ig_token — ЯКІ двері в інсту відкриті просто зараз.
+    /ig_token <токен> — прийняти новий токен без Railway й редеплою.
 
-    Потрібна тому, що «зроби новий токен» — порада, яку неможливо виконати, не
-    знаючи, ЯКОГО типу токен потрібен: Meta має два продукти на ті самі дані,
-    і в Graph API Explorer вибір не тієї гілки дає «Invalid platform app»
-    (Олег, 21.08). Команда нічого не змінює й не показує значень токенів —
-    лише назви змінних і те, що відповіла Meta."""
+    Потрібна тому, що «зроби новий токен» — порада, яку неможливо виконати,
+    не знаючи, ЯКОГО типу токен потрібен: Meta має два продукти на ті самі
+    дані, і в Graph API Explorer вибір не тієї гілки дає «Invalid platform
+    app» (Олег, 21.08). Значень токенів команда не друкує НІКОЛИ — лише
+    назви змінних і те, що відповіла Meta."""
+    if context.args:
+        # Токен у чаті живе рівно до цього рядка: прийняли — і прибрали
+        # повідомлення. Перевіряємо ПЕРЕД збереженням, щоб у стані не осів
+        # неробочий рядок, який потім видаватиме себе за налаштований доступ.
+        token = context.args[0]
+        user = update.effective_user
+        by = f"{user.full_name}" if user else ""
+        msg = await update.message.reply_text("⏳ Перевіряю токен…")
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        ok, err = await asyncio.to_thread(adopt_token, token, by)
+        if not ok:
+            await msg.edit_text(
+                "❌ Цей токен інста не приймає:\n"
+                f"<i>{(err or '')[:200]}</i>\n\n"
+                "Повідомлення з токеном я прибрав.", parse_mode="HTML")
+            return
+        await msg.edit_text(
+            "✅ Токен прийнято — інста знову читається.\n\n"
+            "Лежить у стані бота, не в змінній Railway, тож переживе редеплой. "
+            f"Далі продовжуватиму його сам раз на {REFRESH_AFTER_DAYS} днів — "
+            "більше ніхто про нього не згадує.\n\n"
+            "Повідомлення з токеном прибрав. Перевірка — /instagram.",
+            parse_mode="HTML")
+        return
+
     msg = await update.message.reply_text("⏳ Стукаю в усі двері інсти…")
-    rows = await asyncio.to_thread(route_report)
+    rows, (linked, link_err) = await asyncio.gather(
+        asyncio.to_thread(route_report), asyncio.to_thread(linked_ig_account))
     lines = ["<b>Доступ до Instagram</b>", ""]
     for r in rows:
         host = "graph.instagram.com" if "graph.instagram" in r["base"] else "graph.facebook.com"
-        mark = "✅" if r["ok"] else "❌"
-        lines.append(f"{mark} {host} + {r['token']}")
+        lines.append(("✅ " if r["ok"] else "❌ ") + f"{host} + {r['token']}")
         if not r["ok"]:
             lines.append(f"   <i>{(r['error'] or '')[:110]}</i>")
+
+    lines.append("")
+    if linked:
+        same = "✅ той самий" if linked == INSTAGRAM_USER_ID else "⚠️ ІНШИЙ"
+        lines.append(f"Сторінка ФБ бачить IG-акаунт <code>{linked}</code> — {same}, "
+                     f"що в боті (<code>{INSTAGRAM_USER_ID}</code>).")
+    else:
+        lines.append(f"<i>Привʼязаний IG-акаунт не дізнався: {(link_err or '')[:90]}</i>")
+
+    state = storage.get_ig_oauth() or {}
+    if state.get("set_at"):
+        lines.append(f"Токен у стані бота, заведений {state['set_at'][:16].replace('T', ' ')}"
+                     + (f" ({state['by']})" if state.get("by") else "")
+                     + f"; продовжую сам раз на {REFRESH_AFTER_DAYS} днів.")
+
     lines.append("")
     if any(r["ok"] for r in rows):
         good = next(r for r in rows if r["ok"])
-        lines.append(f"Читаю інсту через <b>{good['token']}</b> — усе працює, "
-                     "міняти нічого не треба.")
+        lines.append(f"Читаю інсту через <b>{good['token']}</b> — усе працює.")
     else:
-        lines.append("Жодні двері не відкриті — цифр з інсти зараз немає ніде: "
+        lines.append("Жодні двері не відкриті — цифр з інсти немає ніде: "
                      "ні в /stat, ні в /instagram, ні в недільному звіті.")
         lines.append("")
-        lines.append("Потрібен ОДИН токен сторінки Facebook, якому додано права "
-                     "<code>instagram_basic</code> і "
-                     "<code>instagram_manage_insights</code>. Інстаграмний логін "
-                     "не потрібен — саме він дає «Invalid platform app».")
+        lines.append("<b>Найкоротший шлях</b> (одна кнопка, без Railway):")
+        lines.append("developers.facebook.com/apps → <b>nikvesti-bot</b> → "
+                     "Instagram → «API setup with Instagram business login» → "
+                     "біля акаунта <b>Generate token</b> → скопіювати.")
+        lines.append("Далі надішли мені сюди: <code>/ig_token &lt;токен&gt;</code> — "
+                     "перевірю, збережу і далі триматиму живим сам. "
+                     "Повідомлення з токеном одразу приберу.")
     await msg.edit_text("\n".join(lines), parse_mode="HTML",
                         disable_web_page_preview=True)
 

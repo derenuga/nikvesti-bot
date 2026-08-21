@@ -248,6 +248,14 @@ async def check_meta_tokens(bot):
     if FACEBOOK_PAGE_TOKEN and FACEBOOK_PAGE_ID:
         await _check_one(bot, "fb", probe_token, FACEBOOK_PAGE_TOKEN)
     if INSTAGRAM_TOKEN or FACEBOOK_PAGE_TOKEN:
+        # Спершу ПРОДОВЖИТИ, потім перевіряти. Токен Instagram Login
+        # продовжується сам, без людини й без app secret, але лише поки живий:
+        # протухлий не рятує вже ніщо. Виклик копійчаний — він сам мовчки
+        # виходить, поки токен молодший за instagram.REFRESH_AFTER_DAYS.
+        from handlers import instagram as ig
+        ok, info = await asyncio.to_thread(ig.refresh_token)
+        if ok:
+            print(f"fb_token: токен інсти продовжено, ще ~{info} дн.")
         await _check_one(bot, "ig", probe_instagram_token, INSTAGRAM_TOKEN)
 
 
