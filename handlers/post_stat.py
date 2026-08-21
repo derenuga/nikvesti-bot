@@ -15,11 +15,16 @@
     `facebook.com/nikvesti/posts/pfbid02nabJowuvNoET…?rdid=…` — тобто шортлінк
     просто ХОВАЄ pfbid, а не несе інший ідентифікатор. Отже редирект треба
     пройти, але сам по собі він нічого не вирішує;
-  • сторінка pfbid відповідає HTTP 400 (!), АЛЕ в тілі відповіді лежать
-    справжні `og:description` (текст поста, ~250 символів) і `og:image`.
-    Facebook малює логін-волл, УЖЕ розв'язавши pfbid у себе, і лишає нам рівно
-    те, за чим пост можна впізнати у власній стрічці. Тому 400 тут не помилка,
-    і тіло читається попри код;
+  • сторінка pfbid віддає `og:description` (текст поста, ~250 символів) і
+    `og:image` — Facebook малює логін-волл, УЖЕ розв'язавши pfbid у себе, і
+    лишає нам рівно те, за чим пост можна впізнати у власній стрічці. Іноді
+    це приходить із HTTP 400, тому тіло читається попри код відповіді;
+  • АЛЕ віддає не всім: із повним браузерним User-Agent та сама адреса дає
+    HTTP 400 і порожню сторінку на 1542 байти БЕЗ жодного og, а без UA, з
+    чесним ботівським або з `facebookexternalhit` — 200 і всі теги на місці.
+    Тобто ріжуть не бота, а запит із дата-центру, що ПРИКИДАЄТЬСЯ людиною.
+    Перша версія модуля робила саме це — і перший же /post у проді відповів
+    порожнечею (Олег, 21.08). Звідси UA_LADDER нижче;
   • pfbid не розкодовується: це непрозорий токен, а не кодування id. Спокуса
     «взяти найдовше число зі сторінки» — пастка: число 1509803480261504 лежить
     у КОЖНІЙ такій сторінці однаково (перевірено на трьох різних постах), тобто
@@ -103,13 +108,23 @@ NORA_WINDOW_DAYS = 3
 # СОБОЮ, просто обрізаний фейсбуком, і законний збіг близький до одиниці.
 TEXT_MATCH_MIN = 0.60
 
-BROWSER_HEADERS = {
-    # Facebook віддає og-теги лише «браузерному» запиту; чесний бот-UA дістає
-    # голий логін-волл без жодного og (перевірено 21.08.2026).
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
-    "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.8",
-}
+# Хто ми для Facebook. ПОРЯДОК ТУТ — НЕ СМАК, А ЗАМІР (21.08.2026, та сама
+# адреса, той самий сервер, підряд):
+#     повний Chrome/126.0.0.0 → HTTP 400, сторінка на 1542 байти, og НЕМАЄ
+#     NikVesti-Bot/1.0        → HTTP 200, og на місці
+#     без User-Agent          → HTTP 200, og на місці
+#     facebookexternalhit/1.1 → HTTP 200, og на місці
+# Тобто вдавати браузер — рівно те, через що нічого не працює: Facebook ріже
+# не ботів, а запит із дата-центру, що ПРИКИДАЄТЬСЯ людиною. У першій версії
+# тут стояв браузерний UA з коментарем, що інакше og не дають, — і перший же
+# /post у проді відповів порожнечею (Олег, 21.08). Пробуємо по черзі й беремо
+# перший захід, що приніс og: одна зачинена форма не має гасити всю команду.
+UA_LADDER = (
+    "NikVesti-Bot/1.0 (+https://nikvesti.com)",
+    None,
+    "facebookexternalhit/1.1",
+)
+BASE_HEADERS = {"Accept-Language": "uk-UA,uk;q=0.9,en;q=0.8"}
 
 FB_HOSTS = ("facebook.com", "www.facebook.com", "m.facebook.com", "web.facebook.com",
             "mbasic.facebook.com", "fb.com", "www.fb.com", "fb.watch", "www.fb.watch")
@@ -243,27 +258,35 @@ def foreign_owner(link):
 
 def fetch_page(url):
     """Сторінку поста читаємо ОДНИМ запитом: він і проходить редирект
-    шортлінка, і приносить og-теги. Тіло беремо навіть при HTTP 400 — саме так
-    Facebook віддає og на pfbid-адресах (заміряно 21.08.2026).
+    шортлінка, і приносить og-теги. Тіло беремо навіть при HTTP 400 — Facebook
+    буває віддає og саме так.
 
-    Один тихий повтор, якщо og не приїхали: на кількох запитах поспіль
-    Facebook підсовує сторінку «Sorry, something went wrong» — не помилку
-    доступу, а тимчасове притримування. Заміряно того ж дня: та сама адреса,
-    що двічі віддала og, на третьому запиті дала цю заглушку. Повторюємо один
-    раз — далі це вже справді «не читається»."""
+    Заходимо по черзі (UA_LADDER) і беремо ПЕРШИЙ захід, що приніс og. Дві
+    різні причини порожнечі лікуються тим самим ходом: Facebook або ріже
+    конкретну форму запиту назавжди, або тимчасово підсовує сторінку «Sorry,
+    something went wrong» — і в обох випадках наступна спроба інакшим заходом
+    коштує один запит.
+
+    Повертає (final_url, html) останньої спроби; порожній html = не дали."""
     last = ("", "")
-    for attempt in range(2):
-        if attempt:
-            time.sleep(1.5)
+    for i, ua in enumerate(UA_LADDER):
+        if i:
+            time.sleep(0.8)
+        headers = dict(BASE_HEADERS)
+        if ua:
+            headers["User-Agent"] = ua
         try:
-            resp = requests.get(url, headers=BROWSER_HEADERS, timeout=25,
+            resp = requests.get(url, headers=headers, timeout=25,
                                 allow_redirects=True)
         except Exception as e:
-            print(f"post_stat: {url} — {e}")
+            print(f"post_stat: {url} ({ua or 'без UA'}) — {e}")
             continue
-        last = (resp.url, resp.text or "")
-        if parse_og(last[1]).get("description"):
-            return last
+        got = (resp.url, resp.text or "")
+        if parse_og(got[1]).get("description"):
+            return got
+        print(f"post_stat: {ua or 'без UA'} → HTTP {resp.status_code}, "
+              f"{len(got[1])} байт, og немає")
+        last = got
     return last
 
 
@@ -640,7 +663,12 @@ def collect(url):
     if not FACEBOOK_PAGE_TOKEN:
         return {"error": "not_configured"}
     out = facebook_post_stat(link, og)
-    if out.get("error") and og.get("description"):
+    if out.get("error") == "not_found" and not og.get("description"):
+        # Три різні нулі не мають виглядати однаково: «сторінку не дали»,
+        # «дали, але пост не наш» і «не знайшли у стрічці» — це різні поради
+        # людині. Тут перший.
+        out["error"] = "no_page"
+    elif out.get("error") and og.get("description"):
         # Не впізнали — але текст поста в руках. Знати, ПРО ЩО пост, і не мати
         # цифр чесніше за німе «не знайдено»
         out["og_text"] = og["description"]
@@ -673,6 +701,12 @@ METHOD_NOTE = {
     "shortcode": None,
 }
 
+# Тексти відмов. Правило одне (CLAUDE.md §9): людина спитала СТАТИСТИКУ, тож
+# і відповідь — про статистику, а не про те, як бот її шукав. «Не знайшов цей
+# пост серед наших публікацій» — це переказ власного алгоритму, і Олег
+# справедливо спитав 21.08: «я що просив шукати цей пост? я просив
+# статистику». Причина лишається, але як пояснення, чому цифр немає, і разом
+# із тим, що можна зробити.
 ERROR_TEXT = {
     "not_a_post": ("Це не схоже на лінк поста.\n"
                    "Приймаю Facebook (пост, рілз, share-лінк) та Instagram "
@@ -682,8 +716,13 @@ ERROR_TEXT = {
     "no_shortcode": "З лінка Instagram не читається код допису.",
     "ig_shortlink": ("Instagram не розкриває свої share-лінки нашому серверу.\n"
                      "Відкрий допис у застосунку і скопіюй адресу вигляду "
-                     "<code>instagram.com/p/…</code> — за нею знайду."),
+                     "<code>instagram.com/p/…</code> — за нею дам статистику."),
 }
+
+# Лінк, за яким статистика береться напряму, без жодного впізнавання
+DIRECT_HINT = ("Надішли лінк вигляду "
+               "<code>facebook.com/nikvesti/posts/&lt;число&gt;</code> — "
+               "за ним цифри беруться одразу.")
 
 
 def format_message(res):
@@ -691,27 +730,32 @@ def format_message(res):
     числа, просто взяті з іншого боку."""
     err = res.get("error")
     if err == "foreign":
-        return (f"Це пост чужої сторінки (<b>{_esc(res.get('owner'))}</b>).\n\n"
-                "Метрики поста віддає лише Graph API і лише адміністратору "
-                "сторінки — чужі перегляди й охоплення не бачить ніхто ззовні. "
-                "Рахую тільки наші @nikvesti у Facebook та Instagram.")
+        return (f"Статистики по цьому посту немає — він не наш "
+                f"(<b>{_esc(res.get('owner'))}</b>).\n\n"
+                "Перегляди й охоплення чужого поста не бачить ніхто ззовні: "
+                "Facebook і Instagram віддають їх лише адміністратору "
+                "сторінки. Рахую наші @nikvesti.")
     if err == "graph":
-        return ("Пост упізнав, але Facebook не віддав його: "
+        return ("Статистики не дістав: Facebook відмовив на цей пост.\n"
                 f"<i>{_esc(str(res.get('detail'))[:180])}</i>")
+    if err == "no_page":
+        return ("Статистики не дістав — Facebook не віддав нашому серверу "
+                "сторінку цього поста.\n\n"
+                "Спробуй ще раз за хвилину, таке буває тимчасовим. Або "
+                + DIRECT_HINT[0].lower() + DIRECT_HINT[1:])
     if err == "not_found":
-        lines = ["Не знайшов цей пост серед наших публікацій."]
-        scanned = res.get("scanned") or 0
-        if scanned:
-            lines.append(f"Перебрав {scanned} останніх публікацій сторінки.")
+        lines = ["Статистики по цьому посту не дістав."]
         if res.get("og_text"):
-            lines += ["", "Сторінку поста прочитав, ось його текст:",
+            lines += ["", "Сам пост прочитав, ось про що він:",
                       f"<i>{_esc(_preview(res['og_text']))}</i>", "",
-                      "Якщо пост давніший — дай лінк вигляду "
-                      "<code>facebook.com/nikvesti/posts/&lt;число&gt;</code>, "
-                      "за ним знайду одразу."]
+                      "А от серед постів @nikvesti за останні два місяці його "
+                      "немає — схоже, він давніший. " + DIRECT_HINT]
+        else:
+            lines += ["", "Серед постів @nikvesti за останні два місяці його "
+                          "немає — схоже, він давніший. " + DIRECT_HINT]
         return "\n".join(lines)
     if err:
-        return ERROR_TEXT.get(err, "Не вдалося зібрати статистику поста.")
+        return ERROR_TEXT.get(err, "Статистики по цьому посту не дістав.")
 
     if res["net"] == "fb":
         head = "🎬 <b>Рілз у Facebook</b>" if res["type"] == "reel" else "📘 <b>Пост у Facebook</b>"

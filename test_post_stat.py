@@ -183,12 +183,25 @@ check("прочерк замість нуля, коли метрики нема�
           "views": None, "reactions": None, "comments": None, "shares": None,
           "method": "direct"}))
 
-print("\n11. Не знайшли — але текст поста показуємо")
+print("\n11. Відмова говорить про СТАТИСТИКУ, а не про пошук бота")
+# Олег, 21.08: «я що просив шукати цей пост? я просив статистику». Перша
+# версія відповідала «Не знайшов цей пост серед наших публікацій» — це переказ
+# власного алгоритму, а не відповідь на питання (CLAUDE.md §9).
 lost = post_stat.format_message({"error": "not_found", "scanned": 900,
                                  "og_text": og_a["description"]})
-check("сказано, скільки перебрав", "900" in lost, lost)
+check("починається зі статистики", lost.startswith("Статистики"), lost[:60])
+check("переказу алгоритму немає", "серед наших публікацій" not in lost, lost)
+check("числа перебраних постів на екран не йдуть", "900" not in lost, lost)
 check("текст поста в руках — і він на екрані", "гуртожит" in lost)
-check("підказано точну форму лінка", "posts/" in lost)
+check("сказано, що робити далі", "posts/" in lost)
+
+no_page = post_stat.format_message({"error": "no_page"})
+check("«сторінку не дали» — окрема причина, а не те саме «не знайшов»",
+      "не віддав" in no_page and "два місяці" not in no_page, no_page)
+check("і вона теж починається зі статистики", no_page.startswith("Статистики"))
+foreign = post_stat.format_message({"error": "foreign", "owner": "newspn"})
+check("чужий пост — пояснено, ЧОМУ цифр немає",
+      "не бачить ніхто ззовні" in foreign, foreign)
 
 print("\n12. Дірки, знайдені перечитуванням власного коду")
 check("текст рілза беремо з description (message у відео немає)",
@@ -243,6 +256,17 @@ try:
           calls["pages"] == post_stat.FEED_SCAN_PAGES, str(calls["pages"]))
 finally:
     post_stat._iter_feed_pages, post_stat._nora_dates = real_feed, real_nora
+
+print("\n14. User-Agent: вдавати браузер — саме те, що ламало все")
+# Замір 21.08 із серверної адреси, підряд: повний Chrome/126.0.0.0 → HTTP 400
+# і 1542 байти без жодного og; NikVesti-Bot, без UA і facebookexternalhit →
+# 200 з тегами. Це не стиль, це умова роботи модуля.
+uas = post_stat.UA_LADDER
+check("першим іде чесний бот", (uas[0] or "").startswith("NikVesti-Bot"), repr(uas[0]))
+check("є захід зовсім без UA", None in uas, repr(uas))
+check("жоден захід не вдає браузер",
+      not any("Mozilla" in (u or "") or "Chrome" in (u or "") for u in uas), repr(uas))
+check("заходів кілька — одна зачинена форма не гасить команду", len(uas) >= 3)
 
 print("\n" + ("❌ ВПАЛО: " + ", ".join(FAILS) if FAILS else "✅ Усі перевірки пройдено"))
 sys.exit(1 if FAILS else 0)
