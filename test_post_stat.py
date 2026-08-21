@@ -176,7 +176,11 @@ check("сирого «<5%» у повідомленні немає", "<5%" not i
 check("екрановане на місці", "&lt;5%" in msg and "&amp; Ко" in msg)
 check("перегляди з нерозривним пробілом", "12 480" in msg, msg)
 check("лінк на пост є", 'href="https://www.facebook.com/nikvesti/posts/333"' in msg)
-check("сказано, як саме знайшов", "нори" in msg, msg)
+# Олег, 21.08: «??????» — на трейлінг «id у лінку не було, знайшов у стрічці
+# за датою матеріалу з нори» під готовими цифрами. Коли числа є, вони і є
+# відповідь; як бот їх дістав — його справа й логи.
+check("розповіді бота про себе в цифрах немає",
+      "нор" not in msg and "стрічці" not in msg and "лінку не було" not in msg, msg)
 check("прочерк замість нуля, коли метрики немає",
       "—" in post_stat.format_message({
           "net": "fb", "type": "post", "permalink": "u", "date": "d", "text": "",
@@ -224,7 +228,8 @@ print("\n13. Порядок сходинок: свіжий пост не має 
 calls = {"nora": 0, "pages": 0}
 
 
-def fake_feed(since_ts=None, until_ts=None, max_pages=post_stat.FEED_SCAN_PAGES):
+def fake_feed(since_ts=None, until_ts=None, max_pages=post_stat.FEED_SCAN_PAGES,
+              state=None):
     for i in range(max_pages):
         calls["pages"] += 1
         if i == 0:
@@ -254,10 +259,54 @@ try:
     check("у нору сходили", calls["nora"] == 1, str(calls["nora"]))
     check("стрічку гортали рівно до межі, а не двічі",
           calls["pages"] == post_stat.FEED_SCAN_PAGES, str(calls["pages"]))
+
+    # Відмова API — це НЕ «не знайшли». Саме на цьому /post збрехав про
+    # протухлий токен інсти: листинг тихо спинявся, і виходило «пост давніший»
+    def dead_feed(since_ts=None, until_ts=None, max_pages=0, state=None):
+        post_stat._note_api_error(state, "Session has expired", "стрічка постів")
+        return
+        yield  # pragma: no cover — генератор, що нічого не віддає
+
+    post_stat._iter_feed_pages = dead_feed
+    oid3, _, diag3 = post_stat.resolve_facebook({"net": "fb"}, og_a)
+    check("причина відмови доїхала з листингу", diag3.get("api_error"), repr(diag3))
+    out3 = post_stat.facebook_post_stat({"net": "fb"}, og_a)
+    check("і стала окремою причиною, а не «не знайшли»",
+          out3.get("error") == "api", repr(out3))
 finally:
     post_stat._iter_feed_pages, post_stat._nora_dates = real_feed, real_nora
 
-print("\n14. User-Agent: вдавати браузер — саме те, що ламало все")
+print("\n14. Протухлий токен: бот КАЖЕ сам, а не переказує як «пост давніший»")
+# 21.08 INSTAGRAM_TOKEN лежав мертвим із 12-го, і /post переказав це людині
+# як «схоже, він давніший». Помилка доступу і порожній результат — різні речі.
+IG_EXPIRED = ("Error validating access token: Session has expired on "
+              "Wednesday, 12-Aug-26 04:43:10 PDT.")
+check("текст помилки інсти впізнається як токен",
+      post_stat.fb_token.is_token_error(IG_EXPIRED))
+tok = post_stat.format_message({"net": "ig", "error": "api", "detail": IG_EXPIRED})
+check("названо саме токен Instagram", "протух токен Instagram" in tok, tok)
+check("сказано, що це НЕ тимчасово", "не тимчасово" in tok, tok)
+check("обіцяно інструкцію в приват", "інструкцію заміни" in tok, tok)
+check("жодного «пост давніший»", "давніш" not in tok, tok)
+fbtok = post_stat.format_message({"net": "fb", "error": "api", "detail": IG_EXPIRED})
+check("для ФБ — свій токен у тексті", "протух токен Facebook" in fbtok, fbtok)
+
+ig_lost = post_stat.format_message({"net": "ig", "error": "not_found"})
+check("порожньому інста-результату не радять лінк фейсбука",
+      "facebook.com" not in ig_lost, ig_lost)
+check("а сказано про Instagram", "Instagram" in ig_lost, ig_lost)
+
+# Сторож тепер один на два токени, і в інсти свої слова й своя інструкція
+specs = post_stat.fb_token.SPECS
+check("сторож знає обидва токени", set(specs) == {"fb", "ig"}, repr(list(specs)))
+check("в алерті інсти названо саме INSTAGRAM_TOKEN",
+      "INSTAGRAM_TOKEN" in post_stat.fb_token._dead_alert_text("ig", "x"))
+check("і в ньому є, де міняти",
+      "Railway" in post_stat.fb_token._dead_alert_text("ig", "x"))
+check("інструкції для ФБ та інсти різні",
+      post_stat.fb_token.renew_text("fb") != post_stat.fb_token.renew_text("ig"))
+
+print("\n15. User-Agent: вдавати браузер — саме те, що ламало все")
 # Замір 21.08 із серверної адреси, підряд: повний Chrome/126.0.0.0 → HTTP 400
 # і 1542 байти без жодного og; NikVesti-Bot, без UA і facebookexternalhit →
 # 200 з тегами. Це не стиль, це умова роботи модуля.

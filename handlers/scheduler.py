@@ -32,7 +32,7 @@ from handlers.report_reminders import check_report_deadlines
 from handlers.team_matching import run_matching_scan
 from handlers import team_tasks
 from handlers.social_sheet import run_monthly_snapshot, check_tiktok_health
-from handlers.fb_token import check_fb_token
+from handlers.fb_token import check_meta_tokens
 from handlers.social_store import run_weekly_capture
 from handlers import analytics_store
 from datetime import datetime, timedelta
@@ -301,7 +301,7 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # протух о 17:21, і бот мовчав до ранкового /stat — fb_missing трактує
     # помилку API як «unknown» і правильно робить, тижневий звіт ковтає
     # виняток, тож без окремого сторожа про це не каже НІХТО
-    scheduler.add_job(check_fb_token, "cron", minute=3, args=[bot])
+    scheduler.add_job(check_meta_tokens, "cron", minute=3, args=[bot])
     # Монітор білдера головної — у робочі години (9–21 Києвом), :10 і :40,
     # щоб не збігатися з рештою задач на :00/:05/:15/:30/:35
     scheduler.add_job(check_builder_staleness, "cron", hour="9-21", minute="10,40", args=[bot])

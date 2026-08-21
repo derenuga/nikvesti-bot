@@ -76,6 +76,7 @@ from itertools import islice
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs
 
+from handlers import fb_token
 from handlers import instagram
 from handlers import stat_instagram
 from handlers.facebook import (
@@ -323,6 +324,19 @@ def image_object_ids(og_image):
 
 # ---------- Facebook: впізнавання об'єкта ----------
 
+def _note_api_error(state, message, where):
+    """Причина відмови API мусить ДОЇХАТИ до людини, а не лишитись у логах.
+
+    Перша версія ковтала її: листинг тихо спинявся, і відповідь виходила
+    «схоже, пост давніший». А 21.08 виявилось, що INSTAGRAM_TOKEN протух ще
+    12-го — тобто бот дев'ять днів міг би так брехати. Порожній результат і
+    відмова доступу — це різні речі, і плутати їх не можна ніде."""
+    text = message or "невідома помилка"
+    print(f"post_stat: {where} — {text}")
+    if state is not None and not state.get("api_error"):
+        state["api_error"] = text
+
+
 def _full_id(object_id):
     """Короткий id поста → `{page}_{post}`. Уже складений або id відео/фото
     лишаємо як є."""
@@ -365,7 +379,8 @@ def _story_id_from_photo(photo_id):
     return None
 
 
-def _iter_feed_pages(since_ts=None, until_ts=None, max_pages=FEED_SCAN_PAGES):
+def _iter_feed_pages(since_ts=None, until_ts=None, max_pages=FEED_SCAN_PAGES,
+                     state=None):
     """Сторінки стрічки від найновіших, лінивo. Генератор, а не список: щойно
     пост знайшовся, гортання спиняється — сліпий прохід інакше коштував би всі
     12 запитів завжди."""
@@ -380,10 +395,10 @@ def _iter_feed_pages(since_ts=None, until_ts=None, max_pages=FEED_SCAN_PAGES):
         try:
             data = requests.get(url, params=params, timeout=30).json()
         except Exception as e:
-            print(f"post_stat: стрічка постів — {e}")
+            _note_api_error(state, str(e), "стрічка постів")
             return
         if "error" in data:
-            print(f"post_stat: стрічка постів — {data['error'].get('message')}")
+            _note_api_error(state, data["error"].get("message"), "стрічка постів")
             return
         yield data.get("data", [])
         next_url = data.get("paging", {}).get("next")
@@ -478,7 +493,7 @@ def resolve_facebook(link, og=None):
     # свіжий, і тоді відповідь коштує ОДИН запит замість трьох. Генератор
     # спільний із сходинкою 5 — там він продовжиться з місця зупинки, тож
     # межа в FEED_SCAN_PAGES лишається спільною, а не подвоюється.
-    feed = _iter_feed_pages()
+    feed = _iter_feed_pages(state=diag)
     post, _, scanned = find_in_feed(og, islice(feed, 2))
     diag["scanned"] += scanned
     if post:
@@ -490,7 +505,8 @@ def resolve_facebook(link, og=None):
     for dt in _nora_dates(text)[:2]:
         since = int((dt - timedelta(days=NORA_WINDOW_DAYS)).timestamp())
         until = int((dt + timedelta(days=NORA_WINDOW_DAYS)).timestamp())
-        post, _, scanned = find_in_feed(og, _iter_feed_pages(since, until, max_pages=3))
+        post, _, scanned = find_in_feed(
+            og, _iter_feed_pages(since, until, max_pages=3, state=diag))
         diag["scanned"] += scanned
         if post:
             return post["id"], "nora", diag
@@ -508,11 +524,13 @@ def facebook_post_stat(link, og=None):
     views/…) плюс text і method, або {'error': …} з людською причиною."""
     object_id, method, diag = resolve_facebook(link, og)
     if not object_id:
-        return {"error": "not_found", "scanned": diag.get("scanned", 0)}
+        if diag.get("api_error"):
+            return {"net": "fb", "error": "api", "detail": diag["api_error"]}
+        return {"net": "fb", "error": "not_found", "scanned": diag.get("scanned", 0)}
 
     data, err = _read_object(object_id)
     if not data:
-        return {"error": "graph", "detail": err, "scanned": diag.get("scanned", 0)}
+        return {"net": "fb", "error": "api", "detail": err}
 
     oid = str(data["id"])
     attachments = (data.get("attachments", {}) or {}).get("data", [])
@@ -563,7 +581,7 @@ def facebook_post_stat(link, og=None):
 
 # ---------- Instagram ----------
 
-def _iter_media_pages(max_pages=MEDIA_SCAN_PAGES):
+def _iter_media_pages(max_pages=MEDIA_SCAN_PAGES, state=None):
     url = f"https://graph.instagram.com/v21.0/{instagram.INSTAGRAM_USER_ID}/media"
     params = {
         "fields": "id,caption,media_type,permalink,timestamp,like_count,comments_count",
@@ -574,10 +592,10 @@ def _iter_media_pages(max_pages=MEDIA_SCAN_PAGES):
         try:
             data = requests.get(url, params=params, timeout=20).json()
         except Exception as e:
-            print(f"post_stat: стрічка інсти — {e}")
+            _note_api_error(state, str(e), "стрічка інсти")
             return
         if "error" in data:
-            print(f"post_stat: стрічка інсти — {data['error'].get('message')}")
+            _note_api_error(state, data["error"].get("message"), "стрічка інсти")
             return
         yield data.get("data", [])
         next_url = data.get("paging", {}).get("next")
@@ -593,25 +611,28 @@ def find_media_by_shortcode(shortcode, max_pages=MEDIA_SCAN_PAGES):
     шлях. Повертає (media, scanned)."""
     needle = f"/{shortcode}/"
     scanned = 0
-    for page in _iter_media_pages(max_pages):
+    state = {}
+    for page in _iter_media_pages(max_pages, state=state):
         for media in page:
             scanned += 1
             permalink = media.get("permalink") or ""
             if needle in permalink or permalink.rstrip("/").endswith("/" + shortcode):
-                return media, scanned
-    return None, scanned
+                return media, scanned, None
+    return None, scanned, state.get("api_error")
 
 
 def instagram_post_stat(link):
     """Метрики допису Instagram за shortcode з лінка."""
     shortcode = link.get("shortcode")
     if not shortcode:
-        return {"error": "no_shortcode"}
+        return {"net": "ig", "error": "no_shortcode"}
     if not instagram.INSTAGRAM_TOKEN:
-        return {"error": "not_configured"}
-    media, scanned = find_media_by_shortcode(shortcode)
+        return {"net": "ig", "error": "not_configured"}
+    media, scanned, api_error = find_media_by_shortcode(shortcode)
+    if api_error:
+        return {"net": "ig", "error": "api", "detail": api_error}
     if not media:
-        return {"error": "not_found", "scanned": scanned}
+        return {"net": "ig", "error": "not_found", "scanned": scanned}
     packed = stat_instagram._pack(media, "shortcode")
     packed.update({
         "net": "ig",
@@ -693,13 +714,12 @@ def _preview(text, limit=280):
     return text[:limit].rsplit(" ", 1)[0] + "…"
 
 
-METHOD_NOTE = {
-    "direct": None,  # id був просто в лінку — пояснювати нічого
-    "photo": "впізнав за фото поста",
-    "nora": "id у лінку не було — знайшов у стрічці за датою матеріалу з нори",
-    "feed": "id у лінку не було — знайшов, перебравши стрічку сторінки",
-    "shortcode": None,
-}
+# `method` (direct/photo/nora/feed/shortcode) лишається В ДАНИХ — він у логах і
+# в діагностиці. Але НЕ на екрані: «id у лінку не було — знайшов у стрічці за
+# датою матеріалу з нори» це розповідь бота про себе, а людина відкрила
+# повідомлення заради цифр (Олег, 21.08: «??????»). Коли числа є — вони і є
+# відповідь.
+
 
 # Тексти відмов. Правило одне (CLAUDE.md §9): людина спитала СТАТИСТИКУ, тож
 # і відповідь — про статистику, а не про те, як бот її шукав. «Не знайшов цей
@@ -735,24 +755,39 @@ def format_message(res):
                 "Перегляди й охоплення чужого поста не бачить ніхто ззовні: "
                 "Facebook і Instagram віддають їх лише адміністратору "
                 "сторінки. Рахую наші @nikvesti.")
-    if err == "graph":
-        return ("Статистики не дістав: Facebook відмовив на цей пост.\n"
-                f"<i>{_esc(str(res.get('detail'))[:180])}</i>")
+    if err == "api":
+        net = "Instagram" if res.get("net") == "ig" else "Facebook"
+        detail = str(res.get("detail") or "")
+        if fb_token.is_token_error(detail):
+            # Найдорожча помилка цієї команди: рівно так протухлий токен інсти
+            # переказувався людині як «схоже, пост давніший» (21.08). Протухлий
+            # токен сам не оживає, тож «спробуй ще раз» тут було б брехнею.
+            return (f"Статистики не дістав — <b>протух токен {net}</b>.\n\n"
+                    "Це не тимчасово. Надіслав тобі в приват інструкцію заміни; "
+                    "як заміниш — бот сам скаже, що токен знову живий.")
+        return (f"Статистики не дістав: {net} відмовив.\n"
+                f"<i>{_esc(detail[:180])}</i>")
     if err == "no_page":
         return ("Статистики не дістав — Facebook не віддав нашому серверу "
                 "сторінку цього поста.\n\n"
                 "Спробуй ще раз за хвилину, таке буває тимчасовим. Або "
                 + DIRECT_HINT[0].lower() + DIRECT_HINT[1:])
     if err == "not_found":
+        # Підказка мусить бути про ТУ мережу, з якої прийшов лінк: на допис
+        # інсти радити «дай лінк facebook.com/...» — знущання (21.08)
+        if res.get("net") == "ig":
+            where = ("Серед дописів @nikvesti в Instagram, які видно ботові, "
+                     "його немає — схоже, він давніший за рік.")
+            hint = ""
+        else:
+            where = ("А от серед постів @nikvesti за останні два місяці його "
+                     "немає — схоже, він давніший.")
+            hint = " " + DIRECT_HINT
         lines = ["Статистики по цьому посту не дістав."]
         if res.get("og_text"):
             lines += ["", "Сам пост прочитав, ось про що він:",
-                      f"<i>{_esc(_preview(res['og_text']))}</i>", "",
-                      "А от серед постів @nikvesti за останні два місяці його "
-                      "немає — схоже, він давніший. " + DIRECT_HINT]
-        else:
-            lines += ["", "Серед постів @nikvesti за останні два місяці його "
-                          "немає — схоже, він давніший. " + DIRECT_HINT]
+                      f"<i>{_esc(_preview(res['og_text']))}</i>"]
+        lines += ["", where + hint]
         return "\n".join(lines)
     if err:
         return ERROR_TEXT.get(err, "Статистики по цьому посту не дістав.")
@@ -791,9 +826,6 @@ def format_message(res):
         lines.append(f'<i>частину метрик Facebook не віддав: '
                      f'{_esc(str(res["eng_note"])[:120])}</i>')
 
-    note = METHOD_NOTE.get(res.get("method"))
-    if note:
-        lines += ["", f"<i>{note}</i>"]
     return "\n".join(lines)
 
 
@@ -813,6 +845,16 @@ async def reply_post_stat(message, url):
         return
     await msg.edit_text(format_message(res), parse_mode="HTML",
                         disable_web_page_preview=True)
+
+    # Правило редакції: про протухлий токен бот КАЖЕ САМ і з інструкцією
+    # заміни. Сторож перевіряє щогодини, але людина, яка спіткнулась просто
+    # зараз, не має чекати до :03 — той самий шлях, що у /stat
+    detail = str(res.get("detail") or "")
+    if res.get("error") == "api" and fb_token.is_token_error(detail):
+        if res.get("net") == "ig":
+            await fb_token.alert_ig_token_dead(message.get_bot(), detail, source="/post")
+        else:
+            await fb_token.alert_token_dead(message.get_bot(), detail, source="/post")
 
 
 async def post_stat_handler(update, context):

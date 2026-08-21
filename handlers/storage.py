@@ -482,22 +482,36 @@ def save_fb_missing_state(fb_missing_state):
         _write_state(state)
 
 
-def get_fb_token_state():
-    """Стан сторожа токена Facebook (fb_token.py):
+def get_token_state(name):
+    """Стан сторожа токена Meta (fb_token.py) — name: "fb" | "ig".
     {"down_since": iso, "last_alert_at": iso, "warned_expiry": unix}.
     down_since — токен зараз мертвий і про це алертили (щоб помітити одужання);
     last_alert_at — дедуп нагадувань (раз на добу); warned_expiry — за який
-    саме expires_at уже попереджали заздалегідь. Порожній dict = усе гаразд."""
+    саме expires_at уже попереджали заздалегідь. Порожній dict = усе гаразд.
+
+    Ключ у стані — f"{name}_token", тож "fb" читає й пише той самий "fb_token",
+    що й до появи інсти: сторож розширився, а накопичений стан не загубився."""
     with _lock:
         state = _read_state()
-        return state.get("fb_token", {})
+        return state.get(f"{name}_token", {})
+
+
+def save_token_state(name, token_state):
+    """Записати стан сторожа токена (див. get_token_state)."""
+    with _lock:
+        state = _read_state()
+        state[f"{name}_token"] = token_state
+        _write_state(state)
+
+
+def get_fb_token_state():
+    """Сумісність: те саме, що get_token_state("fb")."""
+    return get_token_state("fb")
 
 
 def save_fb_token_state(fb_token_state):
-    with _lock:
-        state = _read_state()
-        state["fb_token"] = fb_token_state
-        _write_state(state)
+    """Сумісність: те саме, що save_token_state("fb", …)."""
+    save_token_state("fb", fb_token_state)
 
 
 def get_tiktok_oauth():
