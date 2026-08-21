@@ -1,17 +1,96 @@
 import asyncio
 import os
+import time
+
 import requests
 from datetime import datetime, timedelta
 from handlers.helpers import parse_month_arg
 
 INSTAGRAM_TOKEN = os.environ.get("INSTAGRAM_TOKEN")
+FACEBOOK_PAGE_TOKEN = os.environ.get("FACEBOOK_PAGE_TOKEN")
 INSTAGRAM_USER_ID = "17841400860799899"
 
+# ---------- Якими дверима заходити в інсту ----------
+#
+# Meta має ДВА продукти на ті самі дані, і токен від одного не завжди годиться
+# другому: «Instagram API with Instagram Login» живе на graph.instagram.com, а
+# «Instagram API with Facebook Login» — на graph.facebook.com, і в другому
+# випадку читати наш IG-акаунт може ЗВИЧАЙНИЙ токен сторінки Facebook, бо
+# акаунт до неї прив'язаний. Модуль роками ходив лише в перші двері.
+#
+# 21.08.2026 це стало дорогим: INSTAGRAM_TOKEN протух 12 серпня, і на питання
+# «як зробити новий» чесна відповідь була «спершу з'ясуй, якого він типу» —
+# тобто людина мусила розбиратись у продуктовій плутанині Meta, щоб бот
+# порахував лайки. Тому двері тепер ПІДБИРАЮТЬСЯ: пробуємо по черзі, беремо
+# перші, що відповіли, і кешуємо. Поки INSTAGRAM_TOKEN живий, вибір той
+# самий, що й був, — поведінка не змінюється ні на байт.
+IG_ROUTES = (
+    ("https://graph.instagram.com/v21.0", "INSTAGRAM_TOKEN"),
+    ("https://graph.facebook.com/v21.0", "INSTAGRAM_TOKEN"),
+    ("https://graph.facebook.com/v21.0", "FACEBOOK_PAGE_TOKEN"),
+)
+_ROUTE_TTL = 600          # секунд; двері не міняються щохвилини
+_route_cache = {"at": 0.0, "value": None}
+
+
+def _token_by_name(name):
+    return INSTAGRAM_TOKEN if name == "INSTAGRAM_TOKEN" else FACEBOOK_PAGE_TOKEN
+
+
+def probe_route(base, token):
+    """Чи відкриваються ці двері: найдешевший запит по нашому IG-акаунту.
+    → (True, None) | (False, текст помилки)."""
+    if not token:
+        return False, "змінної немає"
+    try:
+        data = requests.get(f"{base}/{INSTAGRAM_USER_ID}",
+                            params={"fields": "id", "access_token": token},
+                            timeout=15).json()
+    except Exception as e:
+        return False, str(e)
+    if isinstance(data, dict) and "error" in data:
+        return False, data["error"].get("message") or "невідома помилка"
+    return True, None
+
+
+def credentials(force=False):
+    """(base_url, token) — двері, якими інста читається ЗАРАЗ.
+    Кешується на _ROUTE_TTL: підбір коштує один запит, а всі виклики модуля
+    ходять тими самими дверима, поки кеш живий."""
+    now = time.time()
+    if not force and _route_cache["value"] and now - _route_cache["at"] < _ROUTE_TTL:
+        return _route_cache["value"]
+    for base, token_name in IG_ROUTES:
+        token = _token_by_name(token_name)
+        ok, err = probe_route(base, token)
+        if ok:
+            _route_cache.update(at=now, value=(base, token))
+            return base, token
+        print(f"instagram: {base} + {token_name} — {err}")
+    # Жодні двері не відкрились. Повертаємо ПЕРШІ, а не (None, None): виклик
+    # усе одно впаде, але впаде з РЕАЛЬНИМ текстом Meta («Session has
+    # expired»), який можна показати людині, а не з «Invalid URL 'None/…'»
+    # від urllib. Пояснювати треба причину, а не наслідок нашої заглушки.
+    fallback = (IG_ROUTES[0][0], _token_by_name(IG_ROUTES[0][1]))
+    _route_cache.update(at=now, value=fallback)
+    return fallback
+
+
+def route_report():
+    """Діагностика для /ig_token: які двері відкрились, а які ні. Значень
+    токенів НЕ показує — лише назви змінних і відповідь Meta."""
+    rows = []
+    for base, token_name in IG_ROUTES:
+        ok, err = probe_route(base, _token_by_name(token_name))
+        rows.append({"base": base, "token": token_name, "ok": ok, "error": err})
+    return rows
+
 def get_instagram_profile():
-    url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}"
+    base, token = credentials()
+    url = f"{base}/{INSTAGRAM_USER_ID}"
     params = {
         "fields": "followers_count,media_count",
-        "access_token": INSTAGRAM_TOKEN
+        "access_token": token
     }
     return requests.get(url, params=params).json()
 
@@ -22,12 +101,13 @@ def get_instagram_stats(since_ts=None, until_ts=None):
     get_follows_week давно ходить у проді. УВАГА: reach за вікно Meta рахує
     сумою денних охоплень — людина, що заходила в різні дні, порахується
     повторно; для чесного порівняння це треба озвучувати."""
-    url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/insights"
+    base, token = credentials()
+    url = f"{base}/{INSTAGRAM_USER_ID}/insights"
     params = {
         "metric": "reach,views,total_interactions,accounts_engaged",
         "period": "week",
         "metric_type": "total_value",
-        "access_token": INSTAGRAM_TOKEN
+        "access_token": token
     }
     if since_ts:
         params["period"] = "day"
@@ -46,7 +126,8 @@ def get_follows_week(since=None, until=None):
         since = int((datetime.now() - timedelta(days=7)).timestamp())
     if until is None:
         until = int(datetime.now().timestamp())
-    url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/insights"
+    base, token = credentials()
+    url = f"{base}/{INSTAGRAM_USER_ID}/insights"
     params = {
         "metric": "follows_and_unfollows",
         "period": "day",
@@ -54,7 +135,7 @@ def get_follows_week(since=None, until=None):
         "breakdown": "follow_type",
         "since": since,
         "until": until,
-        "access_token": INSTAGRAM_TOKEN
+        "access_token": token
     }
     data = requests.get(url, params=params).json()
     try:
@@ -76,11 +157,12 @@ def get_top_media(since=None, until=None, max_pages=3):
     приходять у самому листингу, тож догортати дешево."""
     if since is None:
         since = int((datetime.now() - timedelta(days=7)).timestamp())
-    url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/media"
+    base, token = credentials()
+    url = f"{base}/{INSTAGRAM_USER_ID}/media"
     params = {
         "fields": "id,media_type,permalink,like_count,comments_count,caption,timestamp",
         "since": since,
-        "access_token": INSTAGRAM_TOKEN,
+        "access_token": token,
         "limit": 100
     }
     if until:
@@ -106,13 +188,14 @@ def get_media_in_window(since_ts, until_ts, max_pages=6):
     /media за timestamp дописа; віддає найновіші перші, тому гортаємо
     paging.next. Поля — ті, що потрібні для зіставлення (caption) і виводу.
     Помилку ковтаємо (повертаємо що встигли), як у стрічці постів FB."""
-    url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/media"
+    base, token = credentials()
+    url = f"{base}/{INSTAGRAM_USER_ID}/media"
     params = {
         "fields": "id,caption,media_type,media_url,permalink,timestamp,like_count,comments_count",
         "since": since_ts,
         "until": until_ts,
         "limit": 100,
-        "access_token": INSTAGRAM_TOKEN,
+        "access_token": token,
     }
     out = []
     for _ in range(max_pages):
@@ -135,10 +218,11 @@ def get_media_item(media_id):
     /stat: коли media_id вже відомий з індексу (article_stats), минаємо
     листинг вікна і скоринг. Кидає RuntimeError, якщо медіа недоступне
     (видалене) — виклик фолбекне на збережений снімок."""
-    url = f"https://graph.instagram.com/v21.0/{media_id}"
+    base, token = credentials()
+    url = f"{base}/{media_id}"
     params = {
         "fields": "id,caption,media_type,permalink,timestamp,like_count,comments_count",
-        "access_token": INSTAGRAM_TOKEN,
+        "access_token": token,
     }
     data = requests.get(url, params=params, timeout=15).json()
     if "error" in data:
@@ -154,8 +238,9 @@ def get_media_insights(media_id, media_type=None):
     shares, saved) або порожній dict, якщо інсайти недоступні."""
     def _fetch(metric):
         try:
-            url = f"https://graph.instagram.com/v21.0/{media_id}/insights"
-            params = {"metric": metric, "access_token": INSTAGRAM_TOKEN}
+            base, token = credentials()
+            url = f"{base}/{media_id}/insights"
+            params = {"metric": metric, "access_token": token}
             data = requests.get(url, params=params, timeout=15).json()
             if "error" in data:
                 return None
@@ -187,11 +272,12 @@ def get_media_counts(since=None, until=None, max_pages=3):
     влазить в одну сторінку (limit=100) і лічильник брехав би в менший бік."""
     if since is None:
         since = int((datetime.now() - timedelta(days=7)).timestamp())
-    url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_USER_ID}/media"
+    base, token = credentials()
+    url = f"{base}/{INSTAGRAM_USER_ID}/media"
     params = {
         "fields": "media_type",
         "since": since,
-        "access_token": INSTAGRAM_TOKEN,
+        "access_token": token,
         "limit": 100
     }
     if until:
@@ -218,6 +304,40 @@ def short_caption(caption, words=5):
     if len(w) <= words:
         return caption
     return " ".join(w[:words]) + "..."
+
+async def ig_token_handler(update, context):
+    """/ig_token — ЯКІ двері в інсту відкриті просто зараз.
+
+    Потрібна тому, що «зроби новий токен» — порада, яку неможливо виконати, не
+    знаючи, ЯКОГО типу токен потрібен: Meta має два продукти на ті самі дані,
+    і в Graph API Explorer вибір не тієї гілки дає «Invalid platform app»
+    (Олег, 21.08). Команда нічого не змінює й не показує значень токенів —
+    лише назви змінних і те, що відповіла Meta."""
+    msg = await update.message.reply_text("⏳ Стукаю в усі двері інсти…")
+    rows = await asyncio.to_thread(route_report)
+    lines = ["<b>Доступ до Instagram</b>", ""]
+    for r in rows:
+        host = "graph.instagram.com" if "graph.instagram" in r["base"] else "graph.facebook.com"
+        mark = "✅" if r["ok"] else "❌"
+        lines.append(f"{mark} {host} + {r['token']}")
+        if not r["ok"]:
+            lines.append(f"   <i>{(r['error'] or '')[:110]}</i>")
+    lines.append("")
+    if any(r["ok"] for r in rows):
+        good = next(r for r in rows if r["ok"])
+        lines.append(f"Читаю інсту через <b>{good['token']}</b> — усе працює, "
+                     "міняти нічого не треба.")
+    else:
+        lines.append("Жодні двері не відкриті — цифр з інсти зараз немає ніде: "
+                     "ні в /stat, ні в /instagram, ні в недільному звіті.")
+        lines.append("")
+        lines.append("Потрібен ОДИН токен сторінки Facebook, якому додано права "
+                     "<code>instagram_basic</code> і "
+                     "<code>instagram_manage_insights</code>. Інстаграмний логін "
+                     "не потрібен — саме він дає «Invalid platform app».")
+    await msg.edit_text("\n".join(lines), parse_mode="HTML",
+                        disable_web_page_preview=True)
+
 
 async def instagram_handler(update, context):
     try:

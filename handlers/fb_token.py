@@ -154,10 +154,18 @@ def probe_token():
 
 
 def probe_instagram_token():
-    """Те саме для INSTAGRAM_TOKEN. Адреса інша (graph.instagram.com), а
-    родина помилок та сама — «Session has expired» саме звідти й прийшло."""
-    return _probe("https://graph.instagram.com/v21.0/" + str(INSTAGRAM_USER_ID),
-                  INSTAGRAM_TOKEN)
+    """Чи читається інста ВЗАГАЛІ — будь-якими з дверей, які підбирає
+    instagram.credentials(). Питання саме таке, а не «чи живий INSTAGRAM_TOKEN»:
+    той самий акаунт читається і токеном сторінки Facebook, і смикати людину
+    через мертву змінну, коли дані доступні, — брехня навпаки."""
+    from handlers import instagram as ig
+    rows = ig.route_report()
+    if any(r["ok"] for r in rows):
+        return "ok", None
+    for r in rows:
+        if r["error"] and is_token_error(r["error"]):
+            return "token", r["error"]
+    return "other", (rows[0]["error"] if rows else "інста не відповідає")
 
 
 def _probe(url, token):
@@ -239,7 +247,7 @@ async def check_meta_tokens(bot):
     здоровий Facebook і навпаки."""
     if FACEBOOK_PAGE_TOKEN and FACEBOOK_PAGE_ID:
         await _check_one(bot, "fb", probe_token, FACEBOOK_PAGE_TOKEN)
-    if INSTAGRAM_TOKEN:
+    if INSTAGRAM_TOKEN or FACEBOOK_PAGE_TOKEN:
         await _check_one(bot, "ig", probe_instagram_token, INSTAGRAM_TOKEN)
 
 

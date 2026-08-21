@@ -14,7 +14,7 @@ from handlers.social_import import social_import_sheet_handler
 from handlers.social_sheet import sheet_snapshot_handler, sheet_backfill_handler, sheet_format_handler, youtube_backfill_handler, tiktok_auth_handler
 from handlers.social_sheet_legacy import sheet_migrate_legacy_handler
 from handlers.scheduler import setup_scheduler, send_daily_report, check_email
-from handlers.instagram import instagram_handler, send_weekly_instagram_report
+from handlers.instagram import instagram_handler, ig_token_handler as instagram_ig_token_handler, send_weekly_instagram_report
 from handlers.facebook import facebook_handler, send_weekly_facebook_report
 from handlers.morning import morning_handler, send_morning_message
 from handlers.prozorro import check_prozorro_tenders, diagnose_offset_jump, confirm_offset_jump
@@ -760,6 +760,7 @@ def main():
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("checkmail", checkmail))
     app.add_handler(CommandHandler("instagram", instagram_handler))
+    app.add_handler(CommandHandler("ig_token", instagram_ig_token_handler))
     app.add_handler(CommandHandler("igreport", igreport))
     app.add_handler(CommandHandler("facebook", facebook_handler))
     app.add_handler(CommandHandler("fbreport", fbreport))

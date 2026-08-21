@@ -582,11 +582,12 @@ def facebook_post_stat(link, og=None):
 # ---------- Instagram ----------
 
 def _iter_media_pages(max_pages=MEDIA_SCAN_PAGES, state=None):
-    url = f"https://graph.instagram.com/v21.0/{instagram.INSTAGRAM_USER_ID}/media"
+    base, token = instagram.credentials()
+    url = f"{base}/{instagram.INSTAGRAM_USER_ID}/media"
     params = {
         "fields": "id,caption,media_type,permalink,timestamp,like_count,comments_count",
         "limit": 100,
-        "access_token": instagram.INSTAGRAM_TOKEN,
+        "access_token": token,
     }
     for _ in range(max_pages):
         try:
@@ -626,7 +627,7 @@ def instagram_post_stat(link):
     shortcode = link.get("shortcode")
     if not shortcode:
         return {"net": "ig", "error": "no_shortcode"}
-    if not instagram.INSTAGRAM_TOKEN:
+    if not (instagram.INSTAGRAM_TOKEN or instagram.FACEBOOK_PAGE_TOKEN):
         return {"net": "ig", "error": "not_configured"}
     media, scanned, api_error = find_media_by_shortcode(shortcode)
     if api_error:
