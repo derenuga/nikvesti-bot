@@ -322,6 +322,13 @@ def test_schema_shape():
           set(with_enum) == {"polarity", "modality", "source_type",
                              "kind", "scope"},
           str(with_enum))
+    # Витяг мусить бути ВІДТВОРЮВАНИМ, інакше приймання не міряє нічого.
+    # Два прогони /promise_eval на одному коді дали різні набори червоних, бо
+    # температура не задавалась і діяв дефолт 1.0. Той самий розкид ламає
+    # ідемпотентність банку: ключ «стаття + цитата», а цитата гуляла.
+    check("витяг детермінований — температура задана нулем",
+          api.request_params().get("temperature") == 0,
+          str(api.request_params().get("temperature")))
     described = [f for f, spec in api.COMMITMENT_ITEM["properties"].items()
                  if f in ("audience", "deadline_precision", "verification_method")
                  and spec.get("description")]
