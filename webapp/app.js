@@ -3558,6 +3558,7 @@ async function renderPromise() {
       ${p.condition ? `<div class="pr-field"><b>Умова:</b> ${esc(p.condition)}
         <span class="pr-dim">— умовна обіцянка не прострочується</span></div>` : ""}
       <div class="pr-chain">${chainGroups(d.chain).map(chainNews).join("")}</div>
+      ${closureBlock(p)}
       ${d.siblings.length ? `<div class="pr-sib">
         <div class="pr-sib-h">Та сама тема</div>
         ${d.siblings.map((s) => `<button class="pr-sib-r" data-sib="${s.id}">
@@ -3573,6 +3574,39 @@ async function renderPromise() {
       ${mgr ? `<button class="pr-drop" id="pr-drop">Не наша тема — прибрати з банку</button>` : ""}
     </div>`;
   wirePromiseCard(d);
+}
+
+/* Новина, ЯКОЮ обіцянку закрили.
+
+   Доказ виконання ревізією не є — ревізія переформульовує саму обіцянку, а
+   тут новина про те, що її зробили, — тож у ланцюг він не потрапляє. До
+   22.08.2026 його не було видно ніде: бек віддавав `check_note`, фронт це
+   поле не читав, і закрита обіцянка виглядала так, ніби статус змінився сам
+   собою, з однією-єдиною публікацією в картці — тією, що обіцянку відкрила
+   (питання Олега: «как могло случиться, что закрывается обещание, в котором
+   только одна новость залинкована?»).
+
+   Блок стоїть ПІД ланцюгом, а не над ним: спершу історія питання, потім
+   те, чим її закрили. І він завжди називає, ХТО вирішив, — рішення бота
+   перевіряють і відкочують, рішення людини поважають. */
+function closureBlock(p) {
+  const c = p && p.closure;
+  if (!c) return "";
+  const bot = (c.by || "") === "Лис";
+  const word = c.outcome === "failed" ? "зірваною" : "виконаною";
+  const head = bot
+    ? `Лис визнав обіцянку ${word} за цією новиною`
+    : `${esc(c.by || "Редакція")} — обіцянку визнано ${word}`;
+  return `
+    <div class="pr-closed${bot ? " bot" : ""}">
+      <div class="pr-closed-h">${icon("check", "ic")}<span>${head}</span>
+        ${c.when ? `<span class="pr-closed-when">${esc(c.when)}</span>` : ""}</div>
+      ${c.url ? `<a class="pr-closed-a" href="${esc(c.url)}" target="_blank" rel="noopener">
+          ${esc(c.article_title || c.url)}</a>` : ""}
+      ${c.why ? `<div class="pr-closed-why">${esc(c.why)}</div>` : ""}
+      ${bot ? `<div class="pr-closed-note">Це рішення бота, а не людини.
+        Не згодна — відкрий тему знову: <code>/promise_reopen ${p.id}</code></div>` : ""}
+    </div>`;
 }
 
 /* Ланцюг групується ПО НОВИНАХ, а не по фактах.

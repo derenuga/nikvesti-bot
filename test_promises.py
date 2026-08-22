@@ -2570,12 +2570,100 @@ def test_fulfil_detector():
             check("закрита виходить із фасета «схоже, виконано»",
                   cid not in pp.closure_ids(cur))
 
+            # Доказ виконання МУСИТЬ доїжджати до картки. Ревізією він не є
+            # (ревізія переформульовує саму обіцянку), тож у ланцюг не
+            # потрапляє — і до 22.08.2026 не було видно взагалі нічого:
+            # закрита обіцянка показувала одну публікацію, ту, що її
+            # відкрила, і рішення бота виглядало як «статус змінився сам».
+            ev = pp.closure_evidence(cur, cid)
+            check("картка бачить новину, ЯКОЮ закрито",
+                  ev and ev["article_id"] == 730002, str(ev))
+            check("…і пояснення судді разом із нею",
+                  ev and "встановили" in (ev.get("why") or ""), str(ev))
+
             # Відкат — головний запобіжник автоматичного рішення
             pp.reopen(cur, cid, "Олег")
             row = pp.get(cur, cid)
             check("відкат повертає обіцянку в чергу",
                   row["status"] == "expected" and not row.get("checked_at"),
                   str(row["status"]))
+
+            # ---- Картка міста пари НЕ робить, скільки б її не згадували ----
+            #
+            # Замір 22.08.2026: поріг частоти відсікав РІВНО ОДНУ картку в
+            # усій норі («Миколаїв», 11 990), а всі райцентри проходили як
+            # «предмет» — Південноукраїнськ (600), Вознесенськ (826),
+            # Баштанка (385). Наслідок: 59 обіцянок, чий єдиний обʼєкт —
+            # місто чи район, зʼїли 1659 пар із 2480 і дали 0.66% влучань
+            # проти 5.2% у конкретної картки. Тому ознака одна — ПІДТИП.
+            cur.execute("INSERT INTO entities (kind, subtype, name_ua, mentions) "
+                        "VALUES ('place','settlement','Південноукраїнськ',600) "
+                        "RETURNING id")
+            town = cur.fetchone()[0]
+            cur.execute("INSERT INTO entities (kind, subtype, name_ua, mentions) "
+                        "VALUES ('place','street','проспект Центральний',9999) "
+                        "RETURNING id")
+            street = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO articles (id, published, status, title_ua, slug,"
+                " category, kind, region, text_ua) VALUES "
+                "(730010,1783000000,1,'Вода на пляжах','ful10',"
+                "'public','news',1,'Проби показали кишкову паличку.') "
+                "ON CONFLICT (id) DO NOTHING")
+            for e in (town, street):
+                cur.execute("INSERT INTO article_entities (article_id, entity_id) "
+                            "VALUES (730010, %s) ON CONFLICT DO NOTHING", (e,))
+            ptown = pp.prepare(cur, case_item(
+                320276, title="Забезпечити стабільну роботу служб",
+                quote="Переконаний, що працюватимемо ефективно",
+                subject="управління громадою", objects=[],
+                promiser="міська ВА", deadline=None))
+            town_cid = pp.record(cur, {"id": 730001, "published": 1780000000,
+                                       "title_ua": "Стаття"}, ptown)[0]
+            cur.execute("UPDATE commitments SET subject_entity_id = NULL, "
+                        "kind = 'commitment' WHERE id = %s", (town_cid,))
+            cur.execute("INSERT INTO commitment_objects (commitment_id, entity_id) "
+                        "VALUES (%s, %s) ON CONFLICT DO NOTHING", (town_cid, town))
+            pairs = {(c["commitment_id"], c["article_id"])
+                     for c in pp.fulfil_candidates(cur, 0)}
+            check("обіцянка, чий єдиний обʼєкт — місто, пар по картках не має",
+                  (town_cid, 730010) not in pairs, str(sorted(pairs)))
+
+            # А вулиця лишається предметом за БУДЬ-ЯКОЇ частоти: «проспект
+            # Центральний» згадують часто, але обіцянка «укласти покриття на
+            # проспекті» — саме про нього.
+            cur.execute("INSERT INTO commitment_objects (commitment_id, entity_id) "
+                        "VALUES (%s, %s) ON CONFLICT DO NOTHING", (town_cid, street))
+            pairs = {(c["commitment_id"], c["article_id"])
+                     for c in pp.fulfil_candidates(cur, 0)}
+            check("картка вулиці робить пару навіть при 9999 згадках",
+                  (town_cid, 730010) in pairs, str(sorted(pairs)))
+
+            # ---- Риторику детектор не судить узагалі ----
+            #
+            # «Переконаний, що ВА працюватиме ефективно» (обіцянка 1972):
+            # предмета немає, тож підтвердити може будь-яка добра новина —
+            # і саме так вона й закрилась новиною про те, що ВА почала
+            # працювати. З ЧЕРГИ риторика не зникає: забороняється лише
+            # автоматичне рішення по ній.
+            cur.execute("UPDATE commitments SET kind = 'rhetoric' WHERE id = %s",
+                        (town_cid,))
+            pairs = {(c["commitment_id"], c["article_id"])
+                     for c in pp.fulfil_candidates(cur, 0)}
+            check("риторика в кандидати не потрапляє навіть із карткою вулиці",
+                  (town_cid, 730010) not in pairs, str(sorted(pairs)))
+            cur.execute("UPDATE commitments SET kind = 'commitment' WHERE id = %s",
+                        (town_cid,))
+            pairs = {(c["commitment_id"], c["article_id"])
+                     for c in pp.fulfil_candidates(cur, 0)}
+            check("а зобовʼязання з тією ж карткою — потрапляє",
+                  (town_cid, 730010) in pairs, str(sorted(pairs)))
+            check("риторика лишається в РОБОЧОМУ шарі черги — ховається лише детектор",
+                  pp.is_working({"kind": "rhetoric", "micro": False}))
+            check("запобіжник у памʼяті ловить те саме, що SQL",
+                  pf.rhetoric_only({"kind": "rhetoric"})
+                  and not pf.rhetoric_only({"kind": "commitment"})
+                  and not pf.rhetoric_only({"kind": None}))
     finally:
         conn.close()
 
