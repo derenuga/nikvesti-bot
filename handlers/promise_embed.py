@@ -45,6 +45,7 @@ API це один POST.
 
 import math
 import os
+import time
 
 import entity_pipeline as ep
 import promise_pipeline as pp
@@ -91,6 +92,7 @@ PROVIDERS = {
         "body": lambda ts: {"model": "text-embedding-3-small", "input": list(ts)},
         "parse": lambda d: [row["embedding"] for row in d["data"]],
         "chunk": 256,
+        "pace": 0.0,
     },
     "Voyage · voyage-4 (симетрично)": {
         "env": ["VOYAGE_KEY", "VOYAGE_API_KEY"],
@@ -107,7 +109,11 @@ PROVIDERS = {
         # їх не розрізняє.
         "body": lambda ts: {"model": "voyage-4", "input": list(ts)},
         "parse": lambda d: [row["embedding"] for row in d["data"]],
-        "chunk": 128,
+        # Без картки в білінгу Voyage дає 3 запити й 10 тисяч токенів на
+        # хвилину. Весь банк це ~30 тисяч токенів, тобто менші порції і
+        # витримка між ними — інакше замір гарантовано впаде на 429.
+        "chunk": 64,
+        "pace": 21.0,
     },
     # У Gemini тип задачі задається ЯВНО і міняє самі вектори. SEMANTIC_
     # SIMILARITY — рівно наш випадок: «чи про одне й те саме ці два тексти».
@@ -125,6 +131,10 @@ PROVIDERS = {
              "content": {"parts": [{"text": t}]}} for t in ts]},
         "parse": lambda d: [e["values"] for e in d["embeddings"]],
         "chunk": 50,
+        # Безкоштовний тариф Gemini впирається не в запити, а в ТОКЕНИ за
+        # хвилину, і весь банк лягає рівно в цю стелю — тож розтягуємо його
+        # приблизно на дві хвилини.
+        "pace": 7.0,
     },
     "Google · gemini-embedding-001 (retrieval, як міряли вперше)": {
         "env": ["GEMINI_KEY", "GEMINI_API_KEY"],
@@ -137,6 +147,7 @@ PROVIDERS = {
              "content": {"parts": [{"text": t}]}} for t in ts]},
         "parse": lambda d: [e["values"] for e in d["embeddings"]],
         "chunk": 50,
+        "pace": 7.0,
         "extra": True,
     },
 }
@@ -183,17 +194,36 @@ def corpus(cur):
 
 
 def _embed(name, texts):
+    """Порції з витримкою і терпінням до 429.
+
+    Перший повний прогін 22.08 упав на обох безкоштовних тарифах: Voyage без
+    картки в білінгу дає 3 запити на хвилину, Gemini має стелю в токенах за
+    хвилину, а весь банк — близько тридцяти тисяч токенів. Це не «провайдер
+    не годиться», це наш замір ішов так швидко, як умів. Тому між порціями
+    стоїть витримка, а 429 не валить прогін, а чекає й пробує знову.
+    """
     import requests
 
     p = PROVIDERS[name]
     headers = {"Content-Type": "application/json", **p["auth"](_key(name))}
-    out, step = [], p["chunk"]
+    out, step, pace = [], p["chunk"], p.get("pace", 0.0)
     for i in range(0, len(texts), step):
-        r = requests.post(p["url"], headers=headers,
-                          json=p["body"](texts[i:i + step]), timeout=180)
-        if r.status_code >= 400:
-            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
-        out.extend(p["parse"](r.json()))
+        if i and pace:
+            time.sleep(pace)
+        part = texts[i:i + step]
+        for attempt in range(5):
+            r = requests.post(p["url"], headers=headers,
+                              json=p["body"](part), timeout=180)
+            if r.status_code == 429 and attempt < 4:
+                # Провайдер часто сам каже, скільки чекати; коли мовчить —
+                # подвоюємо, починаючи з хвилини (обидві стелі хвилинні).
+                wait = float(r.headers.get("retry-after") or 0) or 60 * (attempt + 1)
+                time.sleep(min(wait, 180))
+                continue
+            if r.status_code >= 400:
+                raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+            out.extend(p["parse"](r.json()))
+            break
     if len(out) != len(texts):
         raise RuntimeError(f"провайдер віддав {len(out)} векторів на "
                            f"{len(texts)} текстів")

@@ -4443,6 +4443,10 @@ async def promise_embed_test_handler(update, context):
     arg = (context.args[0].lower() if context.args else "")
     do_pairs = arg != "sweep"
     do_sweep = arg != "pairs"
+    # Контрольна картка (той самий провайдер у другому режимі) з'являється
+    # лише на явне `all`: свою роботу вона зробила 22.08 — показала, що
+    # taskType коштує 0.15 схожості, — і платити за неї щоразу нема за що.
+    have = pe.available(extras=(arg == "all"))
 
     msg = await update.message.reply_text(f"🦊 Рахую ({' · '.join(have)})…")
     first = msg
@@ -4469,10 +4473,9 @@ async def promise_embed_test_handler(update, context):
         return [f"<b>{escape_html(name)}</b>", f"❌ {escape_html(body)[:400]}{hint}"]
 
     if do_pairs:
-        await send(["🦊 <b>Чи розводять ембединги те, що треба</b>", "",
-                    "<i>Одна справа різними словами мусить стояти БЛИЗЬКО, "
-                    "пастки — різні обіцянки однієї людини й різні роботи на "
-                    "одному обʼєкті — ДАЛЕКО.</i>"])
+        intro = ["🦊 <b>Чи розводять ембединги те, що треба</b>",
+                 "<i>Одна справа різними словами мусить стояти БЛИЗЬКО, "
+                 "пастки — ДАЛЕКО. Нічого не записано.</i>", ""]
         for name in have:
             try:
                 rows, missing = await asyncio.to_thread(pe.run, name)
@@ -4480,7 +4483,8 @@ async def promise_embed_test_handler(update, context):
                 await send(fail(name, e))
                 continue
             v = pe.verdict(rows)
-            out = [f"<b>{escape_html(name)}</b>"]
+            out = intro + [f"<b>{escape_html(name)}</b>"]
+            intro = []
             for kind, head in (("same", "Одна справа"), ("apart", "Різні справи")):
                 out.append(f"<i>{head}:</i>")
                 for r in [x for x in rows if x["kind"] == kind]:
@@ -4508,18 +4512,17 @@ async def promise_embed_test_handler(update, context):
             await send(out)
 
     if do_sweep:
-        await send(["🦊 <b>Скільки роботи це дало б судді</b>", "",
-                    "<i>Поріг дає обсяг, залежний від банку; «K найближчих» — "
-                    "обсяг, заданий наперед. Головне число тут не схожість, а "
-                    "МІСЦЕ справжньої пари серед сусідів: найгірше з дев\u2019яти "
-                    "і є потрібне K.</i>"])
+        intro = ["🦊 <b>Скільки роботи це дало б судді</b>",
+                 "<i>Головне число тут не схожість, а МІСЦЕ справжньої пари "
+                 "серед сусідів: найгірше з дев\u2019яти і є потрібне K."
+                 + ("" if do_pairs else " Нічого не записано.") + "</i>", ""]
         for name in pe.available(extras=False):
             try:
                 sw = await asyncio.to_thread(pe.sweep, name)
             except Exception as e:
                 await send(fail(name, e))
                 continue
-            out = [f"<b>{escape_html(name)}</b>",
+            out = intro + [f"<b>{escape_html(name)}</b>",
                    f"Записів {sw['n']}, усіх пар {sw['total']}",
                    f"Нинішній детектор (букви) віддає <b>{sw['trgm']}</b> пар",
                    "<i>Порогом:</i>"]
@@ -4539,9 +4542,8 @@ async def promise_embed_test_handler(update, context):
             if miss:
                 out.append(f"⚠️ {len(miss)} справжніх пар не видно навіть у "
                            f"шістдесяти сусідах")
+            intro = []
             await send(out)
-
-    await update.message.reply_text("🦊 Нічого не записано.")
 
 
 # ---------- /promise_audit ----------
