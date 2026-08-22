@@ -4416,13 +4416,15 @@ async def promise_embed_test_handler(update, context):
        — бо саме це, а не поріг, вирішує, чи годяться ембединги у ВІДБІР
        кандидатів замість trgm-індексу.
 
-    **Кожен блок іде ОКРЕМИМ повідомленням.** Перший прогін 22.08 склався в
-    одне, і другий замір — той, заради якого все й рахувалось, — просто не
-    влiз у ліміт Telegram: «…далі обрізано». Одне повідомлення на провайдера
-    тримає межу саме там, де читач і так робить паузу.
+    **Повний звіт іде ФАЙЛОМ, у чат — самі висновки.** Прохання Олега 22.08
+    після двох прогонів поспіль, від яких у нього в руках лишалась половина:
+    таблиця на чотири провайдери в ліміт Telegram не влазить у принципі, а
+    те, що влізло, він мусив копіювати руками й неминуче обрізав. Це те саме
+    правило, за яким живуть /roles_audit і /entity_junk — числа в чат, деталі
+    у файл.
 
     Аргумент `pairs` лишає тільки перший замір (швидкий), `sweep` — тільки
-    другий.
+    другий, `all` додає контрольну картку провайдера в другому режимі.
     """
     if not _allowed(update):
         await update.message.reply_text("⛔ Тільки для редакції.")
@@ -4432,8 +4434,7 @@ async def promise_embed_test_handler(update, context):
         return
     from handlers import promise_embed as pe
 
-    have = pe.available()
-    if not have:
+    if not pe.available():
         await update.message.reply_text(
             "🦊 Ключів немає. Поклади в Railway <b>OPENAI_KEY</b> "
             "(окремий від сайту!), <b>VOYAGE_KEY</b> або <b>GEMINI_KEY</b> — "
@@ -4448,102 +4449,100 @@ async def promise_embed_test_handler(update, context):
     # taskType коштує 0.15 схожості, — і платити за неї щоразу нема за що.
     have = pe.available(extras=(arg == "all"))
 
-    msg = await update.message.reply_text(f"🦊 Рахую ({' · '.join(have)})…")
-    first = msg
-
-    async def send(lines):
-        """Блок — окремим повідомленням; перший займає місце заглушки."""
-        nonlocal first
-        text = _clip("\n".join(lines))
-        if first is not None:
-            await first.edit_text(text, parse_mode="HTML")
-            first = None
-        else:
-            await update.message.reply_text(text, parse_mode="HTML")
+    msg = await update.message.reply_text(
+        f"🦊 Рахую ({' · '.join(have)})…\n"
+        "<i>Безкоштовні тарифи хвилинні, тож увесь банк іде порціями з "
+        "витримкою — це кілька хвилин.</i>", parse_mode="HTML")
+    rep, short = [], []          # rep — у файл, short — у чат
 
     def fail(name, e):
-        body = f"{type(e).__name__}: {str(e)}"
+        body = f"{type(e).__name__}: {e}"
+        rep.append(f"{name}\n  ПОМИЛКА: {body[:600]}")
         hint = ""
         # 403 Voyage після реєстрації через MongoDB Atlas — не наша помилка і
         # не про модель: Atlas видає СВІЙ ключ, який ендпоінт Voyage не
         # приймає. Провайдер каже це прямо, тож просто не ховаємо його слова.
         if "Atlas" in body or "cannot access this endpoint" in body:
-            hint = ("\n<i>Ключ Atlas ендпоінту Voyage не підходить — потрібен "
-                    "ключ із самого кабінету Voyage AI.</i>")
-        return [f"<b>{escape_html(name)}</b>", f"❌ {escape_html(body)[:400]}{hint}"]
+            hint = " — потрібен ключ із кабінету Voyage AI, не з Atlas"
+        elif "429" in body:
+            hint = " — тариф не пустив навіть із витримкою"
+        short.append(f"❌ <b>{escape_html(name)}</b>: збій{hint}")
 
     if do_pairs:
-        intro = ["🦊 <b>Чи розводять ембединги те, що треба</b>",
-                 "<i>Одна справа різними словами мусить стояти БЛИЗЬКО, "
-                 "пастки — ДАЛЕКО. Нічого не записано.</i>", ""]
+        rep += ["=" * 60, "ЗАМІР 1. ЧИ РОЗВОДЯТЬ ЕМБЕДИНГИ ТЕ, ЩО ТРЕБА",
+                "Одна справа різними словами мусить стояти БЛИЗЬКО, "
+                "пастки — ДАЛЕКО.", "=" * 60, ""]
         for name in have:
             try:
                 rows, missing = await asyncio.to_thread(pe.run, name)
             except Exception as e:
-                await send(fail(name, e))
+                fail(name, e)
                 continue
             v = pe.verdict(rows)
-            out = intro + [f"<b>{escape_html(name)}</b>"]
-            intro = []
+            rep.append(name)
             for kind, head in (("same", "Одна справа"), ("apart", "Різні справи")):
-                out.append(f"<i>{head}:</i>")
+                rep.append(f"  {head}:")
                 for r in [x for x in rows if x["kind"] == kind]:
-                    out.append(f"  {r['sim']:.2f} <i>(букви {r['trgm']:.2f})</i> "
-                               f"— {escape_html(r['label'])}")
+                    rep.append(f"    {r['sim']:.2f} (букви {r['trgm']:.2f}) "
+                               f"— {r['label']}")
             if v:
-                out.append("")
-                if v["separates"]:
-                    out.append(f"✅ <b>Поріг існує</b>: усе «одне» вище "
-                               f"{v['min_same']:.2f}, усе «різне» нижче "
-                               f"{v['max_apart']:.2f} (запас {v['gap']:.2f})")
-                else:
-                    out.append(f"❌ <b>Одним порогом не розділити</b>: найгірше "
-                               f"«одне» {v['min_same']:.2f} нижче за найгірше "
-                               f"«різне» {v['max_apart']:.2f}")
-                # Головне число — не «так/ні», а ціна найдобрішого порога.
-                out.append(f"🔎 Поріг {v['cut']:.2f} (найнижча справжня пара) "
-                           f"ловить <b>{v['same_n']}/{v['same_n']}</b> справжніх "
-                           f"і пропускає <b>{len(v['leaked'])}/{v['apart_n']}</b> "
-                           f"пасток"
-                           + (": " + ", ".join(escape_html(x) for x in v["leaked"])
-                              if v["leaked"] else ""))
+                rep.append(f"  порогом не розділити: найгірше «одне» "
+                           f"{v['min_same']:.2f}, найгірше «різне» "
+                           f"{v['max_apart']:.2f}"
+                           if not v["separates"] else
+                           f"  поріг існує, запас {v['gap']:.2f}")
+                rep.append(f"  поріг {v['cut']:.2f} → {v['same_n']}/{v['same_n']} "
+                           f"справжніх, {len(v['leaked'])}/{v['apart_n']} пасток"
+                           + (": " + "; ".join(v["leaked"]) if v["leaked"] else ""))
+                short.append(f"<b>{escape_html(name)}</b>\n"
+                             f"  поріг {v['cut']:.2f} → "
+                             f"<b>{v['same_n']}/{v['same_n']}</b> справжніх, "
+                             f"{len(v['leaked'])}/{v['apart_n']} пасток")
             if missing:
-                out.append(f"<i>Не знайшлось у банку: {missing}</i>")
-            await send(out)
+                rep.append(f"  не знайшлось у банку: {missing}")
+            rep.append("")
 
     if do_sweep:
-        intro = ["🦊 <b>Скільки роботи це дало б судді</b>",
-                 "<i>Головне число тут не схожість, а МІСЦЕ справжньої пари "
-                 "серед сусідів: найгірше з дев\u2019яти і є потрібне K."
-                 + ("" if do_pairs else " Нічого не записано.") + "</i>", ""]
+        rep += ["=" * 60, "ЗАМІР 2. СКІЛЬКИ РОБОТИ ЦЕ ДАЛО Б СУДДІ", "=" * 60, ""]
         for name in pe.available(extras=False):
             try:
                 sw = await asyncio.to_thread(pe.sweep, name)
             except Exception as e:
-                await send(fail(name, e))
+                fail(name, e)
                 continue
-            out = intro + [f"<b>{escape_html(name)}</b>",
-                   f"Записів {sw['n']}, усіх пар {sw['total']}",
-                   f"Нинішній детектор (букви) віддає <b>{sw['trgm']}</b> пар",
-                   "<i>Порогом:</i>"]
-            for c, cnt in sw["cuts"]:
-                out.append(f"  ≥{c:.2f} → {cnt} пар")
-            out.append("<i>K найближчих:</i>")
+            rep += [name, f"  записів {sw['n']}, усіх пар {sw['total']}",
+                    f"  нинішній детектор (букви) віддає {sw['trgm']} пар",
+                    "  порогом:"]
+            for c in sw["cuts"]:
+                rep.append(f"    >={c['cut']:.2f} -> {c['pairs']} пар · "
+                           f"справжніх {c['same']}/9 · пасток {c['apart']}/6")
+            rep.append("  K найближчих:")
             for k in sw["ks"]:
-                out.append(f"  K={k['k']} → {k['pairs']} пар · "
-                           f"справжніх {k['same']}/{k['same_total']} · "
-                           f"пасток {k['apart']}/{k['apart_total']}")
+                rep.append(f"    K={k['k']} -> {k['pairs']} пар · справжніх "
+                           f"{k['same']}/{k['same_total']} · пасток "
+                           f"{k['apart']}/{k['apart_total']}")
             real = [r for r in sw["ref"] if r["kind"] == "same"]
-            miss = [r for r in real if not r["rank"]]
-            out.append("<i>Місце справжніх пар серед сусідів:</i>")
+            rep.append("  місце справжніх пар серед сусідів:")
             for r in sorted(real, key=lambda x: (x["rank"] is None, -(x["rank"] or 0))):
                 place = f"#{r['rank']}" if r["rank"] else "поза 60"
-                out.append(f"  {place} ({r['sim']:.2f}) — {escape_html(r['label'])}")
-            if miss:
-                out.append(f"⚠️ {len(miss)} справжніх пар не видно навіть у "
-                           f"шістдесяти сусідах")
-            intro = []
-            await send(out)
+                rep.append(f"    {place} ({r['sim']:.2f}) — {r['label']}")
+            rep.append("")
+            # У чат — рядок, заради якого все й рахувалось: найдешевший поріг,
+            # що ловить найбільше справжніх пар, проти нинішнього детектора.
+            best = max(sw["cuts"], key=lambda c: (c["same"], -c["pairs"]))
+            short.append(f"<b>{escape_html(name)}</b>\n"
+                         f"  букви: {sw['trgm']} пар · ембединг ≥{best['cut']:.2f}: "
+                         f"<b>{best['pairs']}</b> пар "
+                         f"({best['same']}/9 справжніх)")
+
+    body = "\n".join(rep).encode("utf-8")
+    await msg.edit_text(
+        "🦊 <b>Ембединги: замір</b>\n\n" + "\n".join(short) +
+        "\n\n<i>Повна таблиця — файлом нижче. Нічого не записано.</i>",
+        parse_mode="HTML")
+    await update.message.reply_document(
+        document=BytesIO(body), filename="promise-embed.txt",
+        caption="Повний замір — числа по кожній парі й по кожному порогу.")
 
 
 # ---------- /promise_audit ----------
