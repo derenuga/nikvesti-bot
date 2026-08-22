@@ -4405,6 +4405,66 @@ async def promise_topics_undo_handler(update, context):
         f"під свої теми." if n else "🦊 Такого прогону немає.")
 
 
+# ---------- /promise_embed_test ----------
+
+async def promise_embed_test_handler(update, context):
+    """/promise_embed_test — чи бачить СМИСЛ те, чого не бачать букви.
+
+    Замір, а не продукт: фіксований набір реальних пар банку проти того
+    провайдера, чий ключ лежить у Railway. Деталі — handlers/promise_embed.py.
+    """
+    if not _allowed(update):
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Потрібна нора.")
+        return
+    from handlers import promise_embed as pe
+
+    have = pe.available()
+    if not have:
+        await update.message.reply_text(
+            "🦊 Ключів немає. Поклади в Railway <b>OPENAI_API_KEY</b> "
+            "(окремий від сайту!) або <b>GEMINI_API_KEY</b> — і поклич знову.\n"
+            "Є обидва — порахую обидва й покажу поруч.", parse_mode="HTML")
+        return
+    msg = await update.message.reply_text(
+        f"🦊 Рахую ({' · '.join(have)})…")
+    out = ["🦊 <b>Чи розводять ембединги те, що треба</b>\n",
+           "<i>Ліворуч — одна справа різними словами (мусить бути БЛИЗЬКО), "
+           "нижче — пастки Олега: різні обіцянки однієї людини й різні роботи "
+           "на одному обʼєкті (мусять бути ДАЛЕКО).</i>\n"]
+    for name in have:
+        try:
+            rows, missing = await asyncio.to_thread(pe.run, name)
+        except Exception as e:
+            out.append(f"<b>{escape_html(name)}</b>\n❌ {type(e).__name__}: "
+                       f"{escape_html(str(e))[:200]}\n")
+            continue
+        v = pe.verdict(rows)
+        out.append(f"<b>{escape_html(name)}</b>")
+        for kind, head in (("same", "Одна справа"), ("apart", "Різні справи")):
+            out.append(f"<i>{head}:</i>")
+            for r in [x for x in rows if x["kind"] == kind]:
+                out.append(f"  {r['sim']:.2f} <i>(букви {r['trgm']:.2f})</i> "
+                           f"— {escape_html(r['label'])}")
+        if v:
+            if v["separates"]:
+                out.append(f"✅ <b>Поріг існує</b>: усе «одне» вище "
+                           f"{v['min_same']:.2f}, усе «різне» нижче "
+                           f"{v['max_apart']:.2f} (запас {v['gap']:.2f})")
+            else:
+                out.append(f"❌ <b>Порога немає</b>: найгірше «одне» "
+                           f"{v['min_same']:.2f} нижче за найгірше «різне» "
+                           f"{v['max_apart']:.2f} — списки перетинаються")
+        if missing:
+            out.append(f"<i>Не знайшлось у банку: {missing}</i>")
+        out.append("")
+    out.append("<i>Нічого не записано. «Букви» — та сама пара за нинішнім "
+               "правилом детектора.</i>")
+    await msg.edit_text(_clip("\n".join(out)), parse_mode="HTML")
+
+
 # ---------- /promise_audit ----------
 #
 # Питання Олега 22.08.2026, і воно справедливе: «почему находки нахожу я, когда
