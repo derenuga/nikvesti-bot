@@ -92,7 +92,7 @@ PROVIDERS = {
         "parse": lambda d: [row["embedding"] for row in d["data"]],
         "chunk": 256,
     },
-    "Voyage · voyage-3-large (симетрично)": {
+    "Voyage · voyage-4 (симетрично)": {
         "env": ["VOYAGE_KEY", "VOYAGE_API_KEY"],
         "url": "https://api.voyageai.com/v1/embeddings",
         "auth": lambda k: {"Authorization": f"Bearer {k}"},
@@ -100,7 +100,12 @@ PROVIDERS = {
         # пошуку (короткий запит проти довгого тексту), а в нас задача
         # симетрична: два однакові за природою записи банку. Саме так
         # провайдер і радить робити для similarity та кластеризації.
-        "body": lambda ts: {"model": "voyage-3-large", "input": list(ts)},
+        #
+        # Модель — voyage-4, як назвав Олег із власного кабінету. Перший
+        # прогін упав на 403, і саме тому помилка тепер несе ТІЛО відповіді:
+        # ключ, права й назва моделі дають різні тексти, а голий код статусу
+        # їх не розрізняє.
+        "body": lambda ts: {"model": "voyage-4", "input": list(ts)},
         "parse": lambda d: [row["embedding"] for row in d["data"]],
         "chunk": 128,
     },
