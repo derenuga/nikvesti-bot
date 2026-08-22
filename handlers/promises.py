@@ -4557,7 +4557,8 @@ async def promise_embed_test_handler(update, context):
                     "  порогом:"]
             for c in sw["cuts"]:
                 rep.append(f"    >={c['cut']:.2f} -> {c['pairs']} пар · "
-                           f"справжніх {c['same']}/9 · пасток {c['apart']}/6")
+                           f"справжніх {c['same']}/{len(pe.SAME)} · "
+                           f"пасток {c['apart']}/{len(pe.APART)}")
             rep.append("  K найближчих:")
             for k in sw["ks"]:
                 rep.append(f"    K={k['k']} -> {k['pairs']} пар · справжніх "
@@ -4579,7 +4580,7 @@ async def promise_embed_test_handler(update, context):
             short.append(f"<b>{escape_html(name)}</b>\n"
                          f"  букви: {sw['trgm']} пар · ембединг ≥{best['cut']:.2f}: "
                          f"<b>{best['pairs']}</b> пар "
-                         f"({best['same']}/9 справжніх)"
+                         f"({best['same']}/{len(pe.SAME)} справжніх)"
                          + (f"\n  ⚠️ {blind} не видно й у 60 сусідах" if blind else ""))
 
     body = "\n".join(rep).encode("utf-8")
