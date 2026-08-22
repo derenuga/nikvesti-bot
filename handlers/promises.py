@@ -4400,6 +4400,142 @@ async def promise_topics_undo_handler(update, context):
         f"під свої теми." if n else "🦊 Такого прогону немає.")
 
 
+# ---------- /promise_polarity ----------
+#
+# Замір 22.08.2026 (Олег відкрив колоду й показав картку «Відключити фонтан у
+# сквері Металургів» із полярністю not_do): з 11 записів `not_do` у банку
+# перевернутих ВІСІМ. Механізм один — модель читає негативне звучання
+# результату («припинити», «мораторій», «заборона», «відключити») замість
+# форми зобовʼязання.
+#
+# Чому це не косметика: `not_do` за побудовою ніколи не буває простроченим,
+# тож усі вісім не прозвонять НІКОЛИ — а в трьох є справжній строк, і в 2236
+# він минув 14.08. Плюс логіка перевірки інвертується: виконання читається як
+# зрив, а хибне «зірвано» дає редакції неправдивий факт у наступний текст.
+#
+# Правило вже виправлене у промпті й в описі поля, але це діє лише на нових
+# статтях — накопичене лікується перечитом, як у /promise_resplit. Тією самою
+# машинерією: відбір → безкоштовна оцінка → кнопка → батч, старе знімається
+# рівно перед вставкою нового.
+
+def _polarity_targets():
+    """Статті, з яких вийшли підозрілі `not_do`. Судить pp.polarity_suspect."""
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT c.id, c.title, c.polarity, "
+                "       (SELECT r.article_id FROM commitment_revisions r "
+                "         WHERE r.commitment_id = c.id ORDER BY r.id LIMIT 1) "
+                # Перевірене людиною не чіпаємо — як і в /promise_resplit.
+                "FROM commitments c WHERE c.polarity = 'not_do' "
+                "  AND c.status = 'expected' AND c.checked_at IS NULL "
+                "ORDER BY c.id")
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    bad = [{"id": r[0], "title": r[1], "article_id": r[3]} for r in rows
+           if pp.polarity_suspect({"title": r[1], "polarity": r[2]}) and r[3]]
+    ids = sorted({b["article_id"] for b in bad})
+    return ids, bad
+
+
+async def promise_polarity_handler(update, context):
+    """/promise_polarity — перечитати записи з перевернутою полярністю."""
+    if not _allowed(update):
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not os.environ.get("ANTHROPIC_API_KEY") or not bot_db.is_configured():
+        await update.message.reply_text("🦊 Потрібні нора і ANTHROPIC_API_KEY.")
+        return
+    if await asyncio.to_thread(_load_state):
+        await update.message.reply_text(
+            "Уже є незавершений прогін. Стан і полінг — /promise_resume.")
+        return
+    msg = await update.message.reply_text("🦊 Шукаю (безкоштовно)…")
+    try:
+        ids, bad = await asyncio.to_thread(_polarity_targets)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не порахувалось: {type(e).__name__}: {e}")
+        return
+    if not ids:
+        await msg.edit_text(
+            "🦊 Перевернутої полярності не знайшлось — усі `not_do` справді "
+            "про утримання від дії.")
+        return
+    cost, _tin, _tout = api.estimate(len(ids))
+    lines = [f"🦊 <b>Перевернута полярність</b>\n",
+             f"Записів: <b>{len(bad)}</b> · статей до перечиту: "
+             f"<b>{len(ids)}</b> · <b>≈ ${cost:.2f}</b>\n",
+             "<b>not_do</b> означає «зобовʼязався НЕ робити»: порушенням є "
+             "ДІЯ, а мовчання значить, що обіцянку тримають. У цих записах "
+             "пообіцяли саме ДІЯТИ:\n"]
+    for b in bad[:12]:
+        lines.append(f"• {escape_html(b['title'][:70])}")
+    if len(bad) > 12:
+        lines.append(f"…та ще {len(bad) - 12}")
+    lines.append(
+        "\n<i>Такий запис не буває простроченим — він «чекає події», тобто не "
+        "прозвонить ніколи. І перевірка в нього інвертована: виконання "
+        "читається як зрив.</i>\n"
+        "<i>Перевірене людиною не чіпається; старі записи знімаються рівно "
+        "перед вставкою нових.</i>")
+    await msg.edit_text(
+        "\n".join(lines), parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+            f"Перечитати {len(ids)} ≈ ${cost:.2f}", callback_data="prp:go")]]))
+
+
+async def promise_polarity_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not _allowed(update):
+        return
+    if await asyncio.to_thread(_load_state):
+        await query.edit_message_text("Уже є незавершений прогін — /promise_resume.")
+        return
+    await query.edit_message_text("🦊 Вивантажую статті й відправляю батчі…")
+    state = {"month": "полярність", "drop_first": True, "batch_ids": [],
+             "done": [], "chat_id": query.message.chat_id,
+             "started": int(time.time()), "articles": 0}
+
+    def submit():
+        import anthropic
+        client = anthropic.Anthropic()
+        ids, _ = _polarity_targets()
+        arts = api.fetch_ids(ids)
+        if not arts:
+            return 0
+        state["articles"] = len(arts)
+        _save_state(state)
+        sys_len = len(api.get_system_prompt().encode("utf-8"))
+        for chunk in api.chunk_articles(arts, sys_len):
+            batch = client.messages.batches.create(
+                requests=[api._make_request(client, a) for a in chunk])
+            state["batch_ids"].append(batch.id)
+            _save_state(state)
+        return len(arts)
+
+    try:
+        n = await asyncio.to_thread(submit)
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ Збій відправки: {e}"
+            + ("\nСтворені батчі не загубляться — /promise_resume."
+               if state["batch_ids"] else ""))
+        return
+    if not n:
+        await asyncio.to_thread(_clear_state)
+        await query.edit_message_text("🦊 Статей не знайшлось.")
+        return
+    await query.edit_message_text(
+        f"🦊 Відправив {n} статей. Звіт прийде сюди; після редеплою "
+        f"полінг піднімає /promise_resume.")
+    asyncio.create_task(_poll_batches(context.bot, state))
+
+
 # ---------- /promise_resplit ----------
 #
 # Замір 03.08 (Олег): 919 зобов'язань у банку, з них 770 — із 286 статей, що
