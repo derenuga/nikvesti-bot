@@ -2723,6 +2723,63 @@ def test_polarity_suspect():
                          now) == "overdue")
 
 
+def test_audit():
+    """Ревізія банку: дані проти власних правил.
+
+    Питання Олега 22.08.2026 — «почему находки нахожу я, когда у тебя есть
+    доступ к базе?» — і відповідь на нього має бути механізмом, а не
+    обіцянкою бути уважнішим. Банк несе всі свої правила (полярність,
+    дослівність цитати, клас перевірки, наявність обіцяльника), і кожне
+    звіряється з даними БЕЗ моделі.
+
+    Тест стереже дві речі: що кожен SQL перевірки виконується (перевірка, яка
+    падає, — це та сама тиха дірка, тільки в ревізорі) і що вона ловить
+    підозріле, не чіпаючи здорове.
+    """
+    from handlers import promises as ph
+    conn = ep.connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+            cur.execute(
+                "INSERT INTO commitments (title, status, polarity, kind, scope, "
+                "  source_type) VALUES ('Відключити фонтан у сквері', 'expected', "
+                "  'not_do', 'commitment', 'city', 'official_statement') RETURNING id")
+            bad = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO commitments (title, status, polarity, kind, scope, "
+                "  source_type) VALUES ('Не демонтувати лежачі поліцейські', "
+                "  'expected', 'not_do', 'commitment', 'city', 'official_statement') "
+                "RETURNING id")
+            good = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO commitment_revisions (commitment_id, article_id, "
+                "  quote, quote_verified, created) VALUES (%s, 1, %s, FALSE, 1)",
+                (bad, "переказ, а не дослівна цитата"))
+        found = ph._run_audit()
+        by_key = {f["key"]: [r[0] for r in f["rows"]] for f in found}
+        check("ревізія ловить перевернуту полярність",
+              by_key.get("polarity") == [bad], str(by_key.get("polarity")))
+        check("справжнє «не робити» вона не чіпає",
+              good not in by_key.get("polarity", []))
+        check("ревізія ловить цитату, якої немає в статті",
+              by_key.get("quote") == [bad], str(by_key.get("quote")))
+        check("кожна перевірка називає не лише число, а й ЦІНУ і чим лікувати",
+              all(c.get("why") and c.get("fix") for c in ph.AUDIT_CHECKS))
+
+        # Головне: жоден SQL не падає навіть на порожньому банку — інакше
+        # ревізор сам стає тихою діркою.
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM commitment_revisions")
+            cur.execute("DELETE FROM commitments")
+        check("на порожньому банку ревізія мовчить, а не падає",
+              ph._run_audit() == [])
+    finally:
+        conn.close()
+
+
 def test_working_layer():
     """Робочий шар: що бачить журналіст, а що йде в тінь (ревізія 17.08).
 
@@ -3069,6 +3126,7 @@ def main():
     test_judge_memory()
     test_resplit_ingest()
     test_polarity_suspect()
+    test_audit()
     test_fulfil_detector()
     test_working_layer()
     test_triage_deck()

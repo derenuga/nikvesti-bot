@@ -81,6 +81,7 @@ from handlers.promises import (
     promise_topics_undo_handler,
     promise_resplit_handler, promise_resplit_callback,
     promise_polarity_handler, promise_polarity_callback,
+    promise_audit_handler,
     promise_mine_handler, promise_same_handler,
     promise_classify_handler, promise_classify_callback,
 )
@@ -696,6 +697,7 @@ def main():
     app.add_handler(CommandHandler("promise_topics", promise_topics_handler))
     app.add_handler(CommandHandler("promise_resplit", promise_resplit_handler))
     app.add_handler(CommandHandler("promise_polarity", promise_polarity_handler))
+    app.add_handler(CommandHandler("promise_audit", promise_audit_handler))
     app.add_handler(CommandHandler("promise_fulfil", promise_fulfil_handler))
     app.add_handler(CommandHandler("promise_mine", promise_mine_handler))
     app.add_handler(CommandHandler("promise_same", promise_same_handler))

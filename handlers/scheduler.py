@@ -27,6 +27,7 @@ from handlers.promise_stars import hourly as promise_stars_hourly
 from handlers.notifier import notify_error
 from handlers.ai_usage import send_monthly_ai_cost
 from handlers.usage_report import send_daily_usage_report
+from handlers.promises import weekly_audit
 from handlers.weekly_digest import send_weekly_digest
 from handlers.report_reminders import check_report_deadlines
 from handlers.team_matching import run_matching_scan
@@ -281,6 +282,14 @@ def setup_scheduler(bot, last_channel_post_time=None):
     # (:25 — вільна хвилина: :00 тендери, :05/:35 сплески, :15 конкуренти,
     # :20 fb_missing, :30 документи, :50/:55 синк архіву/сутностей)
     scheduler.add_job(send_daily_usage_report, "cron", hour=9, minute=25, args=[bot])
+    # Тижнева ревізія банку тем — понеділок 09:35, у приват Олегу і ТИХО, коли
+    # чисто. Питання Олега 22.08: «почему находки нахожу я, когда у тебя есть
+    # доступ к базе?» Команда /promise_audit розвʼязує половину («звірку можна
+    # зробити»), розклад — другу («її хтось робить»). Мовчання при чистому
+    # результаті — за зразком сторожа токенів: щотижневе «усе гаразд» привчає
+    # не читати звіти.
+    scheduler.add_job(weekly_audit, "cron", day_of_week="mon", hour=9, minute=35,
+                      args=[bot])
     # Вартість AI за попередній місяць — 1-го числа о 10:00, в особистий чат Олегу
     scheduler.add_job(monthly_ai_cost, "cron", day=1, hour=10, minute=0, args=[bot])
     # Місячний знімок аналітики в Google-таблицю — 1-го числа о 10:30
