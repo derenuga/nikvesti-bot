@@ -103,6 +103,60 @@ KIND = ("commitment", "rhetoric", "process", "routine", "offtopic")
 # краще пропустити в тінь спірний процедурний крок (свайп праворуч поверне),
 # ніж лишити чергу, яку ніхто не відкриває.
 WORKING_KINDS = ("commitment", "rhetoric")
+
+# ---------- ЗОНА ПЕРЕВІРКИ (друга вісь тіні) ----------
+#
+# Управлінське рішення Олега 22.08.2026: редакція припиняє перевіряти
+# обіцянки міст і громад області — Вознесенська, Баштанки, Південноукраїнська
+# й решти, — бо їздити туди й дотискати їхню владу вона не буде. Лишається
+# те, за що редакція справді береться:
+#
+#   `city`   — предмет самé МІСТО Миколаїв або його мешканці, хто б не
+#              обіцяв: міськрада, виконком, департамент, райадміністрація,
+#              КП міста, а так само держава, Кабмін чи донор, коли гроші й
+#              роботи йдуть МИКОЛАЄВУ;
+#   `oblast` — АБО обіцяльник обласного рівня (ОВА та її департаменти,
+#              обласна рада, обласні КП і установи) — кому б не обіцяв, бо
+#              «Кім пообіцяв Вознесенську 40 шкільних автобусів» ми
+#              перевірятимемо саме з боку області; АБО предметом є
+#              Миколаївщина в цілому — землі полігонів, ліси, обласні
+#              дороги, — хто б не обіцяв;
+#   `local`   — і лише коли не підійшло жодне з двох: предмет — ІНША громада
+#              області, а обіцяльник не обласного рівня. Коблівська сільрада
+#              про свій садок, Вознесенська міськрада про своє житло.
+#              ЦЕ Й ТІЛЬКИ ЦЕ йде в тінь.
+#
+# Третє значення пишеться ОСТАННІМ саме тому, що перші два ширші, ніж
+# здається. Перша ж звірка на еталонних статтях знайшла дірку в наївному
+# формулюванні: у 322324 київський суддя звертається до Кабміну через землі
+# полігонів НА МИКОЛАЇВЩИНІ — це ні місто, ні обласний обіцяльник, і за
+# правилом «усе інше — local» найбільша земельна історія року пішла б у
+# тінь. Предмет-область тримає її видимою.
+#
+# Чому окрема вісь, а не ще одне значення `kind`. `offtopic` означає «не наша
+# тема ВЗАГАЛІ» (приватні плани, хабарі з судових справ, інші області) — це
+# журналістська межа й вона не зміниться. А зона перевірки — рішення
+# УПРАВЛІНСЬКЕ: зʼявиться грант на область, і його відіграють назад. Змішавши
+# їх, ми зробили б відкат переклассифікацією всього банку; порізно він
+# лишається одним рядком у WORKING_SQL.
+#
+# Чому вирішує МОДЕЛЬ, а не код. Заміряно 22.08 на трьох джерелах, і жодне не
+# годиться: рубрика сайту тематична (`public`, `municipal`…), а region=1 — це
+# вся область; теги непослідовні (з пʼяти свіжих новин про Вознесенськ тег
+# «Вознесенськ» стоїть у трьох); сутнісний шар мовчить або бреше — з 456
+# робочих обіцянок картку-місце мають 116, якоря немає взагалі у 285, і в
+# купі «ні Миколаєва, ні райцентру» лежать «ремонт трамвайної колії на
+# вулиці Захисників Миколаєва» (Миколаївелектротранс) та «замінити колектор
+# по вулиці Ігоря Бедзая» (Миколаївводоканал) — картки «Миколаїв» на цих
+# статтях немає, бо витяг записав вулицю й КП. Отже це ВЛАСТИВІСТЬ ТЕКСТУ,
+# як modality й kind, і читає її та сама модель на тому самому проході.
+#
+# NULL = ВИДНО (fail-open), як і в kind: інакше деплой сховав би банк до
+# кінця переоцінки, а збій класифікатора зʼїдав би записи мовчки.
+SCOPE = ("city", "oblast", "local")
+# Що з цього лишається в черзі редакції.
+WORKING_SCOPES = ("city", "oblast")
+
 # Рішення людини зі свайпа: noise — «прибрати з очей», good — «лишити в
 # черзі, хай і process/routine». Вічне, як promise_pairs; NULL = ще не
 # дивились, і це НЕ блокує нічого — модельний kind працює й без свайпів.
@@ -415,6 +469,10 @@ ALTER TABLE commitments ADD COLUMN IF NOT EXISTS kind TEXT;
 -- Дрібність предмета (окремо від kind, бо це незалежна вісь: «відремонтувати
 -- ОДИН під'їзд» — commitment, але micro). TRUE ховає з робочого шару.
 ALTER TABLE commitments ADD COLUMN IF NOT EXISTS micro BOOLEAN;
+-- Зона перевірки (див. SCOPE): місто / область / місцева влада іншої
+-- громади. Окремою колонкою і окремою віссю від kind — межа тут
+-- управлінська, а не журналістська, і її відіграють одним рядком коду.
+ALTER TABLE commitments ADD COLUMN IF NOT EXISTS scope TEXT;
 ALTER TABLE commitments ADD COLUMN IF NOT EXISTS triage TEXT;
 ALTER TABLE commitments ADD COLUMN IF NOT EXISTS triage_by TEXT;
 ALTER TABLE commitments ADD COLUMN IF NOT EXISTS triage_at BIGINT;
@@ -573,13 +631,22 @@ def rings(row):
 #   • triage='noise' — людина свайпнула «прибрати»: не видно, хай там що;
 #   • інакше вирішує модельний kind: commitment і rhetoric видно, process/
 #     routine/offtopic — ні; micro=TRUE ховає незалежно від kind;
-#   • kind IS NULL — ще не класифіковано → ВИДНО (fail-open: деплой не має
-#     ховати банк до кінця переоцінки, а збій класифікатора — губити записи).
+#   • і ДРУГА вісь — зона перевірки (див. SCOPE): `local`, тобто місцева
+#     влада іншої громади про свій предмет, у чергу не йде;
+#   • kind IS NULL і scope IS NULL — ще не класифіковано → ВИДНО (fail-open:
+#     деплой не має ховати банк до кінця переоцінки, а збій класифікатора —
+#     губити записи).
+#
+# Свайп людини лишається сильнішим за ОБИДВІ осі одразу: `good` повертає в
+# чергу і процедурний крок, і обіцянку сусідньої громади. Так і задумано —
+# рішення про зону перевірки управлінське, і виняток із нього ухвалює людина,
+# а не переговори з промптом.
 
 WORKING_SQL = """(
     coalesce(c.triage, '') = 'good'
     OR (coalesce(c.triage, '') <> 'noise'
         AND (c.kind IS NULL OR c.kind = ANY(%s::text[]))
+        AND (c.scope IS NULL OR c.scope = ANY(%s::text[]))
         AND coalesce(c.micro, false) = false)
 )"""
 
@@ -593,8 +660,8 @@ FULFIL_SKIP_SQL = "c.kind IS DISTINCT FROM 'rhetoric'"
 
 
 def working_params():
-    """Параметри під WORKING_SQL — рівно один: список видимих kind."""
-    return [list(WORKING_KINDS)]
+    """Параметри під WORKING_SQL: видимі kind і видимі scope, у цьому порядку."""
+    return [list(WORKING_KINDS), list(WORKING_SCOPES)]
 
 
 def is_working(row):
@@ -607,6 +674,9 @@ def is_working(row):
         return False
     kind = row.get("kind")
     if kind is not None and kind not in WORKING_KINDS:
+        return False
+    scope = row.get("scope")
+    if scope is not None and scope not in WORKING_SCOPES:
         return False
     return not bool(row.get("micro"))
 
@@ -988,6 +1058,7 @@ def prepare(cur, item):
             out[f] = clean_text(out[f])
     out["modality"] = _enum(item.get("modality"), MODALITY)
     out["kind"] = _enum(item.get("kind"), KIND)
+    out["scope"] = _enum(item.get("scope"), SCOPE)
     # micro строго булеве: рядок «false» від моделі став би істиною в bool().
     out["micro"] = item.get("micro") if isinstance(item.get("micro"), bool) else None
     out["source_type"] = _enum(item.get("source_type"), SOURCE_TYPE)
@@ -1300,7 +1371,7 @@ COMMITMENT_FIELDS = (
     "trigger_event", "deadline", "deadline_precision", "criterion",
     "verification_method", "condition", "condition_self_judged", "actor_hidden",
     "framed_as_promise", "based_on_document", "amount", "modality", "source_type",
-    "kind", "micro",
+    "kind", "micro", "scope",
 )
 
 
@@ -1359,7 +1430,7 @@ def record(cur, article, prepared, commitment_id=None, link_confidence=None):
             bool(prepared.get("actor_hidden")), bool(prepared.get("framed_as_promise")),
             prepared.get("based_on_document"), prepared.get("amount"),
             prepared.get("modality"), prepared.get("source_type"),
-            prepared.get("kind"), prepared.get("micro"),
+            prepared.get("kind"), prepared.get("micro"), prepared.get("scope"),
         ]
         cur.execute(
             f"INSERT INTO commitments ({', '.join(COMMITMENT_FIELDS)}, status, created) "
@@ -1397,8 +1468,10 @@ def record(cur, article, prepared, commitment_id=None, link_confidence=None):
     if outcome == "revision" and prepared.get("kind"):
         cur.execute(
             "UPDATE commitments SET kind = coalesce(kind, %s), "
-            "  micro = coalesce(micro, %s) WHERE id = %s",
-            (prepared.get("kind"), prepared.get("micro"), commitment_id))
+            "  micro = coalesce(micro, %s), scope = coalesce(scope, %s) "
+            "WHERE id = %s",
+            (prepared.get("kind"), prepared.get("micro"),
+             prepared.get("scope"), commitment_id))
     refresh(cur, commitment_id)
     return commitment_id, outcome
 
@@ -1474,7 +1547,7 @@ COMMITMENT_COLS = """
     c.verification_method, c.condition, c.condition_self_judged, c.actor_hidden,
     c.framed_as_promise, c.based_on_document, c.amount, c.modality, c.source_type,
     c.revisions, c.first_seen, c.last_seen, c.checked_at, c.checked_by,
-    c.check_note, c.kind, c.micro, c.triage, c.triage_by, c.triage_at
+    c.check_note, c.kind, c.micro, c.scope, c.triage, c.triage_by, c.triage_at
 """
 
 _COMMITMENT_KEYS = [s.strip().split(".")[-1]
@@ -1802,10 +1875,14 @@ _TRIAGE_BUCKET = """CASE
     WHEN coalesce(c.micro, false) AND (c.kind IS NULL OR c.kind = ANY(%s::text[])) THEN 1
     WHEN c.kind = 'routine' THEN 2
     WHEN c.kind = 'offtopic' THEN 3
+    -- Громада області питається ОСТАННЬОЮ: тут межу провело управлінське
+    -- рішення, а не здогад моделі, тож правка найменш імовірна з усіх.
+    WHEN c.scope IS NOT NULL AND NOT c.scope = ANY(%s::text[]) THEN 4
     ELSE 2 END"""
 
 _TRIAGE_PENDING = """c.status = 'expected' AND c.triage IS NULL
   AND ((c.kind IS NOT NULL AND NOT c.kind = ANY(%s::text[]))
+       OR (c.scope IS NOT NULL AND NOT c.scope = ANY(%s::text[]))
        OR coalesce(c.micro, false))"""
 
 
@@ -1829,9 +1906,15 @@ def triage_pending(cur, limit=30, offset=0, skip_ids=None):
     """
     skip = [int(i) for i in (skip_ids or [])]
     where = _TRIAGE_PENDING + (" AND NOT c.id = ANY(%s)" if skip else "")
-    params = [list(WORKING_KINDS), list(WORKING_KINDS)]
+    # Порядок параметрів — ТЕКСТОВИЙ: спершу %s із WHERE (правило тіні, далі
+    # список відкладених), і лише потім %s із ORDER BY. Раніше skip
+    # приклеювався в кінець, тобто при непорожньому списку дублів у
+    # `ANY(%s)` їхав список kind — а це різні типи, і колода падала рівно
+    # тоді, коли в банку є невирішені дублі, тобто майже завжди.
+    params = [list(WORKING_KINDS), list(WORKING_SCOPES)]
     if skip:
         params.append(skip)
+    params += [list(WORKING_KINDS), list(WORKING_SCOPES)]
     # Беремо ширше за ліміт, бо далі згортаємо колоду ПО ТЕМАХ.
     cur.execute(
         f"SELECT {COMMITMENT_COLS} FROM commitments c "
@@ -1859,7 +1942,7 @@ def triage_pending(cur, limit=30, offset=0, skip_ids=None):
         cur.execute(
             f"SELECT c.topic_id, count(*) FROM commitments c WHERE {_TRIAGE_PENDING} "
             "AND c.topic_id = ANY(%s) GROUP BY c.topic_id",
-            (list(WORKING_KINDS), topics))
+            (list(WORKING_KINDS), list(WORKING_SCOPES), topics))
         sib = {r[0]: r[1] for r in cur.fetchall()}
     now = int(time.time())
     for r in out:
@@ -1880,13 +1963,14 @@ def triage_counts(cur, skip_ids=None):
     """
     skip = [int(i) for i in (skip_ids or [])]
     cur.execute(f"SELECT count(*) FROM commitments c WHERE {_TRIAGE_PENDING}",
-                (list(WORKING_KINDS),))
+                (list(WORKING_KINDS), list(WORKING_SCOPES)))
     pending = cur.fetchone()[0]
     held = 0
     if skip:
         cur.execute(
             f"SELECT count(*) FROM commitments c WHERE {_TRIAGE_PENDING} "
-            "AND c.id = ANY(%s)", (list(WORKING_KINDS), skip))
+            "AND c.id = ANY(%s)",
+            (list(WORKING_KINDS), list(WORKING_SCOPES), skip))
         held = cur.fetchone()[0]
         pending -= held
     cur.execute(
@@ -1897,9 +1981,15 @@ def triage_counts(cur, skip_ids=None):
         "SELECT coalesce(c.kind, '—'), count(*) FROM commitments c "
         "WHERE c.status = 'expected' GROUP BY 1")
     by_kind = {k: n for k, n in cur.fetchall()}
+    # Друга вісь окремим числом: у шапці колоди має бути видно, скільки
+    # карток там через тип акту, а скільки — через зону перевірки.
+    cur.execute(
+        "SELECT coalesce(c.scope, '—'), count(*) FROM commitments c "
+        "WHERE c.status = 'expected' GROUP BY 1")
+    by_scope = {k: n for k, n in cur.fetchall()}
     return {"pending": pending, "noise": decided.get("noise", 0),
             "good": decided.get("good", 0), "by_kind": by_kind,
-            "held_dupes": held}
+            "by_scope": by_scope, "held_dupes": held}
 
 
 def set_triage(cur, commitment_id, verdict, who=None):
@@ -3484,7 +3574,7 @@ def fulfil_candidates(cur, since, limit=200):
     нема кому — таке закриття ніхто не побачить. Свайп «лишити» повертає
     запис у шар, і детектор підхоплює його наступним прогоном.
     """
-    wk = working_params()[0]
+    wk = working_params()          # [видимі kind, видимі scope] — по парі на гілку
     cur.execute(
         f"""
         WITH origin AS (
@@ -3546,8 +3636,8 @@ def fulfil_candidates(cur, since, limit=200):
         ORDER BY p.published DESC
         LIMIT %s
         """,
-        (list(CONTAINER_PLACE_SUBTYPES),
-         wk, int(since), wk, int(since), wk, int(since), int(limit)))
+        ([list(CONTAINER_PLACE_SUBTYPES)]
+         + wk + [int(since)] + wk + [int(since)] + wk + [int(since), int(limit)]))
     return [{"commitment_id": r[0], "article_id": r[1], "published": r[2]}
             for r in cur.fetchall()]
 

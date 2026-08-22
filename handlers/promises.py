@@ -2972,9 +2972,21 @@ async def promise_status_handler(update, context):
         lines.append("За типом акту: " + " · ".join(
             f"{kind_word.get(k, k)} {n}"
             for k, n in sorted(sh["by_kind"].items(), key=lambda x: -x[1])))
-        if sh.get("by_kind", {}).get("—"):
-            lines.append("<i>«Ще без типу» видно в черзі (fail-open) — "
-                         "переоцінити накопичене: /promise_classify</i>")
+        # Друга вісь окремим рядком, а не змішана з типом акту: тут межу
+        # провело управлінське рішення (22.08 — громади області ми більше не
+        # перевіряємо), і в одному переліку з «рутиною» воно читалось би як
+        # ще один здогад моделі.
+        scope_word = {"city": "місто Миколаїв", "oblast": "область",
+                      "local": "громади області", "—": "ще без зони"}
+        by_scope = sh.get("by_scope") or {}
+        if any(k != "—" for k in by_scope):
+            lines.append("За зоною перевірки: " + " · ".join(
+                f"{scope_word.get(k, k)} {n}"
+                for k, n in sorted(by_scope.items(), key=lambda x: -x[1])))
+        if sh.get("by_kind", {}).get("—") or by_scope.get("—"):
+            lines.append("<i>«Ще без типу» і «ще без зони» видно в черзі "
+                         "(fail-open) — переоцінити накопичене: "
+                         "/promise_classify</i>")
         if sh.get("pending"):
             lines.append(f"Чекає розбору свайпами: <b>{sh['pending']}</b>"
                          + (f" · уже розібрано: {sh['noise'] + sh['good']}"
@@ -3027,6 +3039,8 @@ async def promise_status_handler(update, context):
 # самим запитом.
 
 CLASSIFY_CHUNK = 20
+# Зони перевірки — щоб _classify_reset розумів, яку саме вісь скидати.
+SCOPE_VALUES = set(pp.SCOPE)
 
 _CLASSIFY_SCHEMA = {
     "type": "object",
@@ -3039,8 +3053,9 @@ _CLASSIFY_SCHEMA = {
                     "id": {"type": "integer"},
                     "kind": {"type": "string", "enum": list(pp.KIND)},
                     "micro": {"type": "boolean"},
+                    "scope": {"type": "string", "enum": list(pp.SCOPE)},
                 },
-                "required": ["id", "kind", "micro"],
+                "required": ["id", "kind", "micro", "scope"],
                 "additionalProperties": False,
             },
         },
@@ -3056,13 +3071,15 @@ def _classify_system():
     витягу вони не можуть."""
     kind_desc = api.COMMITMENT_ITEM["properties"]["kind"]["description"]
     micro_desc = api.COMMITMENT_ITEM["properties"]["micro"]["description"]
+    scope_desc = api.COMMITMENT_ITEM["properties"]["scope"]["description"]
     return (
         "Ти класифікуєш записи банку тем міського медіа (Миколаїв) за типом "
-        "мовленнєвого акту. Дам масив записів (id, назва, предмет, обіцяльник, "
-        "дослівна цитата, документ-підстава). Для КОЖНОГО поверни kind і "
-        "micro.\n\n"
+        "мовленнєвого акту і за зоною перевірки. Дам масив записів (id, "
+        "назва, предмет, обіцяльник, його посада, дослівна цитата, "
+        "документ-підстава). Для КОЖНОГО поверни kind, micro і scope.\n\n"
         f"kind: {kind_desc}\n\n"
         f"micro: {micro_desc}\n\n"
+        f"scope: {scope_desc}\n\n"
         "Сумніваєшся між commitment і process — дивись, ЩО зміниться в місті, "
         "коли дію виконають: якщо лише статус документа — це process. "
         "Сумніваєшся між routine і commitment — питай, чи відбувалося б це й "
@@ -3087,6 +3104,12 @@ def _classify_reset(cur, kind):
     Рішення ЛЮДИНИ (свайпи) не чіпаємо ніколи: вони сильніші за модель і
     вічні, тож запис зі свайпом лишається як є.
     """
+    if kind in SCOPE_VALUES:
+        cur.execute(
+            "UPDATE commitments SET scope = NULL "
+            "WHERE scope = %s AND triage IS NULL AND status = 'expected'",
+            (kind,))
+        return cur.rowcount or 0
     cur.execute(
         "UPDATE commitments SET kind = NULL, micro = NULL "
         "WHERE kind = %s AND triage IS NULL AND status = 'expected'", (kind,))
@@ -3104,7 +3127,8 @@ def _classify_pending(cur, limit=None):
         "         WHERE r.commitment_id = c.id ORDER BY r.id LIMIT 1), "
         "       (SELECT r.quote FROM commitment_revisions r "
         "         WHERE r.commitment_id = c.id ORDER BY r.id LIMIT 1) "
-        "FROM commitments c WHERE c.kind IS NULL AND c.status = 'expected' "
+        "FROM commitments c "
+        "WHERE (c.kind IS NULL OR c.scope IS NULL) AND c.status = 'expected' "
         "ORDER BY c.id" + (" LIMIT %s" if limit else ""),
         ([int(limit)] if limit else []))
     keys = ("id", "title", "subject", "owner", "deadline", "based_on_document",
@@ -3140,19 +3164,34 @@ def _classify_chunk(client, rows):
 
 
 def _classify_apply(cur, items, known_ids):
-    """Записати вердикти. `kind IS NULL` у WHERE — щоб гонка зі свіжим витягом
-    чи повторний прогін нічого не переписали."""
+    """Записати вердикти. `IS NULL` у WHERE — щоб гонка зі свіжим витягом чи
+    повторний прогін нічого не переписали.
+
+    Осі пишуться ОКРЕМИМИ запитами, бо запис може мати одну з них і не мати
+    другої: після появи `scope` (22.08) у банку лежали сотні записів із
+    готовим `kind`, і спільний UPDATE з умовою `kind IS NULL` не проставив би
+    їм зону перевірки ніколи.
+    """
     done = 0
     for it in items:
         cid = it.get("id")
-        kind = pp._enum(it.get("kind"), pp.KIND)
-        if cid not in known_ids or not kind:
+        if cid not in known_ids:
             continue
-        cur.execute(
-            "UPDATE commitments SET kind = %s, micro = %s "
-            "WHERE id = %s AND kind IS NULL",
-            (kind, bool(it.get("micro")), int(cid)))
-        done += cur.rowcount or 0
+        touched = 0
+        kind = pp._enum(it.get("kind"), pp.KIND)
+        if kind:
+            cur.execute(
+                "UPDATE commitments SET kind = %s, micro = %s "
+                "WHERE id = %s AND kind IS NULL",
+                (kind, bool(it.get("micro")), int(cid)))
+            touched += cur.rowcount or 0
+        scope = pp._enum(it.get("scope"), pp.SCOPE)
+        if scope:
+            cur.execute(
+                "UPDATE commitments SET scope = %s WHERE id = %s AND scope IS NULL",
+                (scope, int(cid)))
+            touched += cur.rowcount or 0
+        done += 1 if touched else 0
     return done
 
 
@@ -3307,11 +3346,16 @@ async def promise_classify_handler(update, context):
         await update.message.reply_text("🦊 Потрібні нора і ANTHROPIC_API_KEY.")
         return
     arg = (context.args or [""])[0].strip().lower()
-    target = arg if arg in pp.KIND else None
+    # Аргументом може бути і клас акту (`process`, `offtopic`…), і зона
+    # перевірки (`city`, `oblast`, `local`) — помиляється модель класом, і
+    # це однаково правда для обох осей.
+    target = arg if arg in pp.KIND or arg in pp.SCOPE else None
     if arg and not target:
         await update.message.reply_text(
             "Клас має бути один із: " + " · ".join(pp.KIND)
-            + "\nБез аргументу — переоцінка записів, які ще не мають типу.")
+            + "\nАбо зона перевірки: " + " · ".join(pp.SCOPE)
+            + "\nБез аргументу — переоцінка записів, які ще не мають типу "
+              "чи зони.")
         return
     msg = await update.message.reply_text("🦊 Рахую (безкоштовно)…")
 
@@ -3322,12 +3366,14 @@ async def promise_classify_handler(update, context):
             conn.autocommit = True
             with conn.cursor() as cur:
                 if target:
+                    col = "scope" if target in pp.SCOPE else "kind"
                     cur.execute(
-                        "SELECT count(*) FROM commitments WHERE kind = %s "
+                        f"SELECT count(*) FROM commitments WHERE {col} = %s "
                         "AND triage IS NULL AND status = 'expected'", (target,))
                 else:
                     cur.execute("SELECT count(*) FROM commitments "
-                                "WHERE kind IS NULL AND status = 'expected'")
+                                "WHERE (kind IS NULL OR scope IS NULL) "
+                                "AND status = 'expected'")
                 return cur.fetchone()[0]
         finally:
             conn.close()
@@ -3354,14 +3400,15 @@ async def promise_classify_handler(update, context):
                 f"промахнулась не поштучно, а цілим класом.\n"
                 f"<i>Свайпи не чіпаються: рішення людини сильніше за модель.</i>")
     else:
-        head = (f"🦊 <b>Переоцінка банку за типом акту</b>\n\n"
-                f"Записів без типу: <b>{n}</b> (усі зараз видимі — fail-open)\n"
+        head = (f"🦊 <b>Переоцінка банку: тип акту + зона перевірки</b>\n\n"
+                f"Записів без типу чи зони: <b>{n}</b> (усі зараз видимі — "
+                f"fail-open)\n"
                 f"Вартість: <b>≈ ${cost:.2f}</b> (Haiku, пачками по "
                 f"{CLASSIFY_CHUNK})\n\n"
                 f"Після переоцінки в черзі журналістів лишаться зобов'язання і "
-                f"риторика; процедурне, рутина й чужі актори підуть у тінь — її "
-                f"розбирають свайпами в апці, і БУДЬ-ЩО повертається одним "
-                f"свайпом.\n"
+                f"риторика ПРО МИКОЛАЇВ І ОБЛАСТЬ; процедурне, рутина, чужі "
+                f"актори й обіцянки міст області підуть у тінь — її розбирають "
+                f"свайпами в апці, і БУДЬ-ЩО повертається одним свайпом.\n"
                 f"<i>Нічого не видаляється. Перерваний прогін продовжується "
                 f"повторним викликом. Рішення людини (свайпи) модель не чіпає.</i>")
     await msg.edit_text(
@@ -3378,7 +3425,7 @@ async def promise_classify_callback(update, context):
     if not _allowed(update):
         return
     target = query.data.split(":", 1)[1]
-    target = target if target in pp.KIND else None
+    target = target if target in pp.KIND or target in pp.SCOPE else None
     if target:
         def reset():
             conn = ep.connect()

@@ -93,6 +93,14 @@ CHECKS = {
         ("джерело — коментар у соцмережі, а не брифінг",
          lambda its: _has(its, source_type="social_comment"),
          "вага заяви інша, ніж у слів із трибуни"),
+        # Зона перевірки (рішення Олега 22.08): громади області ми більше не
+        # перевіряємо, АЛЕ обіцянку ОВА перевіряємо однаково, кому б вона не
+        # була дана. Коблеве тут — предмет, Кім — голова ОВА, і це рівно та
+        # пара, на якій найлегше прочитати «область → не місто → в тінь».
+        ("обіцянка ОВА про громаду області не ховається",
+         lambda its: all(it.get("scope") != "local" for it in its),
+         "scope=local сховав би заяву голови ОВА — а область лишається "
+         "нашою зоною перевірки, кому б вона не обіцяла"),
     ],
     294413: [
         ("модель не поїхала за заголовком",
@@ -245,6 +253,15 @@ CHECKS = {
          "щонайбільше два-три записи. У банку з цієї статті лежало ШІСТЬ: "
          "аудит · припинення · стягнення · притягнення винних · порядок "
          "передачі · податок — тобто перелік вимог одного документа"),
+        # Друга діра осі `scope`, і саме ця стаття її показала. Тут ні
+        # міського предмета, ні обласного обіцяльника: київський суддя пише
+        # Кабміну про землі полігонів НА МИКОЛАЇВЩИНІ. За наївним правилом
+        # «усе інше — local» найбільша земельна історія року пішла б у тінь.
+        ("предмет-область тримає запис видимим",
+         lambda its: all(it.get("scope") != "local" for it in its),
+         "Миколаївщина в цілому — наша зона перевірки незалежно від того, "
+         "хто обіцяє: scope=local тут ховає 4,2 тисячі гектарів земель "
+         "оборони, бо обіцяльник виявився не обласним"),
     ],
 }
 
@@ -318,7 +335,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": "умови тендеру на реставрацію", "amount": 145500000,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "Згідно з умовами тендеру, підрядник мав виконати роботи до 31 грудня 2024 року, включаючи облаштування укриття та відновлення будівлі після обстрілів.",
         },
         {
@@ -336,7 +353,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "Основну частину робіт планується завершити до кінця цього року, але остаточне завершення може бути відкладене до 2025 року",
         },
         {
@@ -354,7 +371,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": 149500000,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "Роботи виконуватимуться протягом 2024-2025 років. Основну частину робіт планується завершити до кінця цього року, але остаточне завершення може бути відкладене до 2025 року",
         },
         {
@@ -371,7 +388,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": False,
             "based_on_document": None, "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "в гімназії №2 до кінця 2021 року планують зробити поточний ремонт, а капітальні роботи поки що відкладуть",
         },
     ],
@@ -388,7 +405,7 @@ REFERENCE = {
             "condition": "після завершення війни", "condition_self_judged": False,
             "trigger_event": None, "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
-            "kind": "rhetoric", "micro": False,
+            "kind": "rhetoric", "micro": False, "scope": "oblast",
             "quote": "Ми все повернемо краще ніж було! Трохи залишилось",
         },
     ],
@@ -406,7 +423,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "Ми розглянули можливість відкрити апаратні наради для журналістів, плануємо з нового року це зробити. У нас буде відкрита апаратна нарада, яку ми проводимо раз на місяць",
         },
         {
@@ -423,7 +440,7 @@ REFERENCE = {
             "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "Я дам вам обіцянку при всіх і на онлайн-трансляції, що як тільки закінчиться військовий стан, до всіх апаратних нарад, які будуть проводитися, ми будемо залучати журналістів",
         },
         {
@@ -439,7 +456,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": False,
             "based_on_document": None, "amount": None,
-            "kind": "rhetoric", "micro": False,
+            "kind": "rhetoric", "micro": False, "scope": "city",
             "quote": "Я хочу, щоб місто Миколаїв було номер один по відкритості в Україні. Щоб ми були там, щоб я отримав цю статуетку і записав собі в карму «номер один по прозорості»",
         },
     ],
@@ -457,7 +474,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "Власники зупинкового комплексу громадського транспорту «Соборна» пообіцяли, що за вихідні самостійно демонтують незаконно встановлену огорожу.",
         },
         {
@@ -476,7 +493,7 @@ REFERENCE = {
             # Процедурний крок: результат (демонтаж) робитиме ІНШИЙ орган,
             # Поляков обіцяє лише рух папера. Запис лишається — свайп чи kind
             # це видимість, а не існування.
-            "kind": "process", "micro": False,
+            "kind": "process", "micro": False, "scope": "city",
             "quote": "Водночас посадовець пообіцяв звернутись до повноважного органу, який перевірить даний факт і проведе демонтаж.",
         },
         {
@@ -495,7 +512,7 @@ REFERENCE = {
             "trigger_event": "власники не демонтували огорожу за вихідні",
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "Якщо вони за вихідні цього не зроблять, значить зріжемо самі",
         },
     ],
@@ -516,7 +533,7 @@ REFERENCE = {
             "trigger_event": "винесення приватизації цих будівель на сесію міськради",
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "Ми ніколи не підтримаємо приватизацію цього приміщення під когось або під щось, окрім того, щоб зберегти його як майбутній дитячий садочок",
         },
         {
@@ -533,7 +550,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": True, "framed_as_promise": False,
             "based_on_document": None, "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "У 2017 році фінансували проєктування закладу, тоді ж планували завершити будівництво до 2019 року, проте будівельний етап знову не розпочався.",
         },
         {
@@ -550,7 +567,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": True, "framed_as_promise": False,
             "based_on_document": None, "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "Тоді запуск будівництва анонсували на 2021 рік, однак і цей термін виконано не було.",
         },
     ],
@@ -575,7 +592,7 @@ REFERENCE = {
             "actor_hidden": True, "framed_as_promise": True,
             "based_on_document": "розпорядження від 27 липня, підписав Віталій Луков",
             "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "У Миколаєві створили робочу групу, яка має розробити житлову стратегію громади та план її реалізації.",
         },
         {
@@ -594,7 +611,7 @@ REFERENCE = {
             "based_on_document": None, "amount": None,
             # Стадія ПІСЛЯ розробки зі своїм обіцяльником — тому окремий
             # запис; але за типом це рух папера, process.
-            "kind": "process", "micro": False,
+            "kind": "process", "micro": False, "scope": "city",
             "quote": "Після розроблення документ мають винести на громадське обговорення, а потім — на розгляд депутатів міської ради.",
         },
     ],
@@ -613,7 +630,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "голова Миколаївської ОВА Віталій Кім гарантував, що у 2026 році вдасться завершити відновлення гімназії",
         },
         {
@@ -630,7 +647,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": None, "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "На нараді в КМУ нам пообіцяли на два об'єкта (ліцей №60 та ліцей №2, — прим.) фінансування на 2026 рік за рахунок коштів відновлення. Чекаємо",
         },
         {
@@ -647,7 +664,7 @@ REFERENCE = {
             "condition": None, "condition_self_judged": False, "trigger_event": None,
             "actor_hidden": False, "framed_as_promise": True,
             "based_on_document": "умови тендеру на реставрацію", "amount": 145500000,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "city",
             "quote": "Підрядник мав виконати роботи до 31 грудня 2024 року, включаючи облаштування укриття та відновлення будівлі після обстрілів.",
         },
     ],
@@ -668,7 +685,7 @@ REFERENCE = {
             "based_on_document": "окрема ухвала судді Господарського суду Києва "
                                  "від 10 серпня у справі №910/8859/26",
             "amount": None,
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "oblast",
             "quote": "Уряд має розробити та прийняти рішення щодо можливості передачі земель оборони для господарського використання, а також знайти комплексне рішення щодо земельного податку за користування такими землями в умовах воєнного стану.",
         },
         {
@@ -690,7 +707,7 @@ REFERENCE = {
             # ОДИН запис на всю ухвалу до цього адресата, хоч вимог у ній
             # п'ять: аудит · припинення · звільнення земель · притягнення
             # винних · стягнення збитків. Саме тут витяг дав шість записів.
-            "kind": "commitment", "micro": False,
+            "kind": "commitment", "micro": False, "scope": "oblast",
             "quote": "Відомство просять провести аудит та інвентаризацію земель оборони, які передавалися або зараз передані у користування, припинити незаконне користування ними та забезпечити звільнення таких земель, ініціювати притягнення винних осіб до відповідальності, а також забезпечити стягнення завданих збитків і недоотриманих Міноборони доходів.",
         },
     ],

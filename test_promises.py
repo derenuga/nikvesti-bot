@@ -2688,11 +2688,11 @@ def test_working_layer():
             cur.execute("DELETE FROM commitments")
             cur.execute("DELETE FROM topics")
 
-            def put(aid, title, kind=None, micro=None, triage=None):
+            def put(aid, title, kind=None, micro=None, triage=None, scope=None):
                 p = pp.prepare(cur, case_item(
                     320276, title=title, subject=title, objects=[],
                     quote=f"Цитата для «{title}», достатньо довга для запису",
-                    kind=kind, micro=micro))
+                    kind=kind, micro=micro, scope=scope))
                 cid = pp.record(cur, {"id": aid, "published": 1780000000,
                                       "title_ua": f"Стаття {aid}"}, p)[0]
                 if triage:
@@ -2710,6 +2710,17 @@ def test_working_layer():
                         "process", None, "good")
             buried = put(760109, "Провести засідання робочої групи",
                          "commitment", None, "noise")
+            # Друга вісь тіні — зона перевірки (рішення Олега 22.08). Громади
+            # області редакція більше не перевіряє, АЛЕ обіцянка ОВА лишається,
+            # кому б вона не була дана, і обіцянка про область — теж.
+            other_town = put(760110, "Приєднати садок «Васильок» до ліцею",
+                             "commitment", None, None, "local")
+            ova_to_town = put(760111, "Придбати 40 шкільних автобусів громадам",
+                              "commitment", None, None, "oblast")
+            no_scope = put(760112, "Запис без зони — ще не класифікований",
+                           "commitment")
+            kept_local = put(760113, "Відремонтувати клуб у Березанці",
+                             "commitment", None, "good", "local")
 
             rows = pp.list_queue(cur, limit=None)
             ids = {r["id"] for r in rows}
@@ -2724,13 +2735,21 @@ def test_working_layer():
                   saved in ids)
             check("свайп «шум» ховає навіть зобов'язання",
                   buried not in ids, "останнє слово за людиною")
+            check("обіцянка громади області йде в тінь",
+                  other_town not in ids, str(sorted(ids)))
+            check("а обіцянка ОВА тій самій громаді лишається в черзі",
+                  ova_to_town in ids, "перевіряти будемо саме область")
+            check("запис БЕЗ зони лишається видимим (fail-open і тут)",
+                  no_scope in ids)
+            check("свайп «лишити» сильніший і за зону перевірки",
+                  kept_local in ids, "виняток ухвалює людина, а не промпт")
 
             # ТЕ САМЕ правило в пам'яті. Беремо ВЕСЬ банк і звіряємо два шляхи
             # запис за записом: розбіжність тут — це майбутня тиха розсинхронка
             # черги й фасетів.
             everything = pp.list_queue(cur, limit=None, working=False)
             check("повний банк доступний окремим прапорцем",
-                  len(everything) == 9, str(len(everything)))
+                  len(everything) == 13, str(len(everything)))
             mismatch = [r["id"] for r in everything
                         if pp.is_working(r) != (r["id"] in ids)]
             check("SQL і Python рахують робочий шар однаково",
@@ -2745,7 +2764,8 @@ def test_working_layer():
             due = pr._due(cur, True, NOW, True)
             rung = {r["id"] for rows_ in due.values() for r in rows_}
             check("нагадування не беруть нічого з тіні",
-                  not (rung & {process, routine, alien, micro, buried}),
+                  not (rung & {process, routine, alien, micro, buried,
+                               other_town}),
                   str(sorted(rung)))
     finally:
         conn.close()
@@ -2767,11 +2787,11 @@ def test_triage_deck():
             cur.execute("DELETE FROM commitments")
             cur.execute("DELETE FROM topics")
 
-            def put(aid, title, kind, micro=None):
+            def put(aid, title, kind, micro=None, scope=None):
                 p = pp.prepare(cur, case_item(
                     320276, title=title, subject=title, objects=[],
                     quote=f"Цитата для «{title}», достатньо довга для запису",
-                    kind=kind, micro=micro))
+                    kind=kind, micro=micro, scope=scope))
                 return pp.record(cur, {"id": aid, "published": 1780000000,
                                        "title_ua": f"Стаття {aid}"}, p)[0]
 
@@ -2780,16 +2800,54 @@ def test_triage_deck():
             alien = put(770103, "Ферма планує розширення", "offtopic")
             small = put(770104, "Замінити одну лавку в сквері", "commitment", True)
             work = put(770105, "Збудувати школу в Північному", "commitment")
+            town = put(770106, "Купити квартири для ВПО у Вознесенську",
+                       "commitment", None, "local")
 
             deck = pp.triage_pending(cur, limit=20)
             deck_ids = [r["id"] for r in deck]
             check("у колоді лише те, що модель прибрала з черги",
-                  set(deck_ids) == {proc, routine, alien, small},
+                  set(deck_ids) == {proc, routine, alien, small, town},
                   str(deck_ids))
+            check("громада області теж їде в колоду — Олег відсіє її свайпом",
+                  town in deck_ids)
+            check("і питається ОСТАННЬОЮ: тут межу провело рішення, не модель",
+                  deck_ids[-1] == town, str(deck_ids))
+
+            # Підпис картки. Причина тіні тут НЕ модельна, і сказати це треба
+            # прямо: інакше свайп перетворюється на суперечку з моделлю про
+            # те, чого вона не вирішувала. Зона старша за тип акту в підписі.
+            cur.execute("UPDATE commitments SET kind = 'routine' WHERE id = %s",
+                        (town,))
+            from handlers import promise_app as pa
+            card = next((it for it in pa.triage_deck(limit=20)["items"]
+                         if it["id"] == town), None)
+            check("картка громади підписана зоною, а не типом акту",
+                  card and card["kind_word"] == "громада області", str(card))
+            check("…і причина названа чесно — це рішення редакції",
+                  card and "не перевіряємо" in (card["why"] or ""),
+                  str(card and card["why"]))
+            cur.execute("UPDATE commitments SET kind = 'commitment' WHERE id = %s",
+                        (town,))
             check("робоче в колоду не потрапляє", work not in deck_ids)
+
+            # Колода зі СПИСКОМ ВІДКЛАДЕНИХ (записи в невирішених дублях) —
+            # окремий шлях, і він падав. Порядок параметрів у psycopg2
+            # ТЕКСТОВИЙ: спершу %s із WHERE, потім із ORDER BY, — а skip
+            # приклеювався в самий кінець, тож у `ANY(%s)` їхав список kind
+            # («operator does not exist: bigint = text»). Тобто розбір ламався
+            # рівно тоді, коли в банку є невирішені дублі, тобто майже завжди,
+            # і мовчки — падінням запиту, а не порожньою колодою.
+            held = [r["id"] for r in pp.triage_pending(cur, limit=20,
+                                                       skip_ids=[proc])]
+            check("колода зі списком відкладених не падає",
+                  proc not in held and routine in held, str(held))
+            check("…і числа для шапки рахуються з тим самим списком",
+                  pp.triage_counts(cur, skip_ids=[proc])["held_dupes"] == 1)
             check("процедурне питається першим — там рішення найімовірніше",
                   deck_ids[0] == proc, str(deck_ids))
-            check("чужий актор питається останнім", deck_ids[-1] == alien,
+            check("чужий актор питається останнім СЕРЕД типів акту",
+                  deck_ids.index(alien) > deck_ids.index(routine)
+                  and deck_ids.index(alien) < deck_ids.index(town),
                   str(deck_ids))
 
             # ОДНЕ ПИТАННЯ НА СПРАВУ. Записи однієї теми — та сама справа, і
@@ -2832,12 +2890,17 @@ def test_triage_deck():
 
             counts = pp.triage_counts(cur)
             check("колода рахується числом для дверей",
-                  counts["pending"] == 4 and counts["noise"] == 0,
+                  counts["pending"] == 5 and counts["noise"] == 0,
                   str(counts))
             check("розклад за типом акту віддається назовні",
                   counts["by_kind"].get("process") == 1
-                  and counts["by_kind"].get("commitment") == 2,
+                  and counts["by_kind"].get("commitment") == 3,
                   str(counts["by_kind"]))
+            # Друга вісь окремим числом: у шапці має бути видно, скільки
+            # карток тут через тип акту, а скільки — через зону перевірки.
+            check("зона перевірки рахується окремо від типу акту",
+                  counts["by_scope"].get("local") == 1,
+                  str(counts["by_scope"]))
 
             pp.set_triage(cur, proc, "good", "Олег")
             pp.set_triage(cur, routine, "noise", "Катя")
@@ -2859,7 +2922,7 @@ def test_triage_deck():
             check("скасування свайпа повертає картку в колоду", proc in back,
                   str(back))
             cur.execute("SELECT count(*) FROM commitments")
-            check("розбір нічого не видаляє", cur.fetchone()[0] == 5)
+            check("розбір нічого не видаляє", cur.fetchone()[0] == 6)
 
             # Модель не має права переписувати рішення людини: ревізія
             # доклассифіковує лише порожній kind.
