@@ -687,6 +687,14 @@ KIND_WHY = {
     "offtopic": "редакція не перевіряє цього обіцяльника",
 }
 
+# Друга вісь тіні — зона перевірки. Підпис інший за тоном і за змістом: тут
+# запис прибрала не модель зі своїм читанням тексту, а управлінське рішення
+# (22.08: громади області ми більше не перевіряємо). Людині це треба сказати
+# прямо, інакше свайп перетворюється на суперечку з моделлю про те, що вона
+# нічого не вирішувала.
+SCOPE_WORD = {"local": "громада області"}
+SCOPE_WHY = {"local": "не Миколаїв і не область — цю владу ми не перевіряємо"}
+
 TRIAGE_PAGE = 12
 
 
@@ -719,11 +727,21 @@ def triage_deck(offset=0, limit=TRIAGE_PAGE):
                 it = _item(r, rev, now)
                 it["image"] = images.get(aid)
                 it["kind"] = r.get("kind")
-                it["kind_word"] = KIND_WORD.get(r.get("kind"),
-                                                "дрібний предмет")
-                it["why"] = (KIND_WHY.get(r.get("kind"))
-                             if not r.get("micro") or r.get("kind") in KIND_WHY
-                             else "предмет дрібніший за об'єкт")
+                # Зона перевірки старша за тип акту в підписі: коли запис
+                # ховає управлінське рішення, називати причиною «планова
+                # рутина» означало б показати людині не ту межу.
+                out_of_scope = (r.get("scope") in SCOPE_WORD
+                                and r.get("scope") not in pp.WORKING_SCOPES)
+                if out_of_scope:
+                    it["kind_word"] = SCOPE_WORD[r["scope"]]
+                    it["why"] = SCOPE_WHY[r["scope"]]
+                else:
+                    it["kind_word"] = KIND_WORD.get(r.get("kind"),
+                                                    "дрібний предмет")
+                    it["why"] = (KIND_WHY.get(r.get("kind"))
+                                 if not r.get("micro") or r.get("kind") in KIND_WHY
+                                 else "предмет дрібніший за об'єкт")
+                it["scope"] = r.get("scope")
                 it["micro"] = bool(r.get("micro"))
                 link = links.get(aid) or {}
                 if link.get("url"):
