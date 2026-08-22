@@ -64,17 +64,32 @@ APART = [
     ((2059, 2256), "14 млн: ямковий ремонт доріг / сонячні електростанції"),
 ]
 
+# Імена змінних — ТІ, ЯКІ ПОКЛАВ ОЛЕГ (`OPENAI_KEY`, `VOYAGE_KEY`), а не
+# канонічні з документації провайдерів. Кожне поле — список, бо друге ім'я
+# лишається запасним: перейменувати змінну в Railway дорожче, ніж прочитати
+# два ключі.
 PROVIDERS = {
     "OpenAI · text-embedding-3-small": {
-        "env": "OPENAI_API_KEY",
+        "env": ["OPENAI_KEY", "OPENAI_API_KEY"],
         "url": "https://api.openai.com/v1/embeddings",
         "auth": lambda k: {"Authorization": f"Bearer {k}"},
         "body": lambda texts: {"model": "text-embedding-3-small", "input": texts},
         "parse": lambda d: [row["embedding"] for row in d["data"]],
         "batched": True,
     },
+    "Voyage · voyage-4": {
+        "env": ["VOYAGE_KEY", "VOYAGE_API_KEY"],
+        "url": "https://api.voyageai.com/v1/embeddings",
+        "auth": lambda k: {"Authorization": f"Bearer {k}"},
+        # input_type=document — саме той режим, у якому провайдер радить
+        # ембедити те, що потім шукають (у нас це записи банку).
+        "body": lambda texts: {"model": "voyage-4", "input": texts,
+                               "input_type": "document"},
+        "parse": lambda d: [row["embedding"] for row in d["data"]],
+        "batched": True,
+    },
     "Google · gemini-embedding-001": {
-        "env": "GEMINI_API_KEY",
+        "env": ["GEMINI_KEY", "GEMINI_API_KEY"],
         "url": ("https://generativelanguage.googleapis.com/v1beta/models/"
                 "gemini-embedding-001:embedContent"),
         "auth": lambda k: {"x-goog-api-key": k},
@@ -87,9 +102,18 @@ PROVIDERS = {
 }
 
 
+def _key(name):
+    """Ключ провайдера — з першої змінної, яка справді заповнена."""
+    for env in PROVIDERS[name]["env"]:
+        val = (os.environ.get(env) or "").strip()
+        if val:
+            return val
+    return None
+
+
 def available():
     """Провайдери, ключ яких справді лежить у середовищі."""
-    return [n for n, p in PROVIDERS.items() if os.environ.get(p["env"])]
+    return [n for n in PROVIDERS if _key(n)]
 
 
 def _texts(cur, ids):
@@ -104,7 +128,7 @@ def _embed(name, texts):
     import requests
 
     p = PROVIDERS[name]
-    key = os.environ[p["env"]]
+    key = _key(name)
     headers = {"Content-Type": "application/json", **p["auth"](key)}
     if p["batched"]:
         r = requests.post(p["url"], headers=headers,

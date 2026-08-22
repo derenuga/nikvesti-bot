@@ -4424,9 +4424,10 @@ async def promise_embed_test_handler(update, context):
     have = pe.available()
     if not have:
         await update.message.reply_text(
-            "🦊 Ключів немає. Поклади в Railway <b>OPENAI_API_KEY</b> "
-            "(окремий від сайту!) або <b>GEMINI_API_KEY</b> — і поклич знову.\n"
-            "Є обидва — порахую обидва й покажу поруч.", parse_mode="HTML")
+            "🦊 Ключів немає. Поклади в Railway <b>OPENAI_KEY</b> "
+            "(окремий від сайту!), <b>VOYAGE_KEY</b> або <b>GEMINI_KEY</b> — "
+            "і поклич знову.\nЄ кілька — порахую всі й покажу поруч.",
+            parse_mode="HTML")
         return
     msg = await update.message.reply_text(
         f"🦊 Рахую ({' · '.join(have)})…")
