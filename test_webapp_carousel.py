@@ -564,13 +564,27 @@ async def main():
                 cls = await page.get_attribute("#reach", "class")
                 check("підпис без предмета попереджає, що допис загубиться",
                       "ok" not in cls, cls)
-                check("названо, яких саме слів бракує",
+                check("сказано, що саме не так",
                       len(await page.inner_text("#reachText")) > 40,
                       await page.inner_text("#reachText"))
                 # Саме is_visible, а не get_attribute("hidden"): відсутній
                 # атрибут віддає None, порожній — "", і `not` правдиве в обох
-                check("є кнопка вписати назви",
+                check("є кнопка «Почати заголовком»",
                       await page.is_visible("#reachFix"))
+
+                # Тап ставить заголовок і НЕ кличе модель: правило каже
+                # «першим рядком заголовок», а заголовок у нас уже є
+                await page.click("#reachFix")
+                await page.wait_for_timeout(900)
+                cap = await page.input_value("#postCaption")
+                title = await page.evaluate("() => __carousel.S.article.title")
+                check("заголовок став першим рядком підпису",
+                      cap.startswith(title), cap[:80])
+                check("написане людиною не загубилось",
+                      "Сталася дивна історія" in cap, cap[-60:])
+                check("після цього гаудж зеленіє",
+                      "ok" in await page.get_attribute("#reach", "class"),
+                      await page.inner_text("#reach"))
 
                 # Копіювання — мить, коли відомо, ЩО саме поїде в Instagram.
                 # Записаний текст стає другою сигнатурою /stat, тож перевіряємо
