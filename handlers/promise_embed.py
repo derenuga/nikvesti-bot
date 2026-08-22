@@ -313,9 +313,12 @@ def sweep(provider):
         with conn.cursor() as cur:
             ids, texts = corpus(cur)
             pp._trgm_limit(cur)
+            # Оператор пишеться ОДНИМ відсотком: подвоєння потрібне лише
+            # там, де psycopg2 сам підставляє параметри, а тут їх немає —
+            # рядок їде в базу як є, і «%%» стало б синтаксичною помилкою.
             cur.execute(
                 "SELECT count(*) FROM commitments a JOIN commitments b "
-                "  ON b.id > a.id AND b.title %% a.title "
+                "  ON b.id > a.id AND b.title % a.title "
                 "WHERE a.status = 'expected' AND b.status = 'expected'")
             trgm_pairs = int(cur.fetchone()[0])
     finally:
