@@ -359,13 +359,20 @@ def sweep(provider):
     pos = {pid: i for i, pid in enumerate(ids)}
     n = len(ids)
 
+    # Поріг рахується РАЗОМ із тим, скільки еталонних пар він ловить: обсяг
+    # без повноти нічого не означає (нуль пар теж «дешево»).
+    ref_sims = [(kind, float(s[pos[a]][pos[b]]))
+                for kind, pairs in (("same", SAME), ("apart", APART))
+                for (a, b), _ in pairs if a in pos and b in pos]
     cuts = []
     for c in CUTS:
         if np is not None:
             cnt = int((np.triu(s, 1) >= c).sum())
         else:
             cnt = sum(1 for i in range(n) for j in range(i + 1, n) if s[i][j] >= c)
-        cuts.append((c, cnt))
+        cuts.append({"cut": c, "pairs": cnt,
+                     "same": sum(1 for k, v in ref_sims if k == "same" and v >= c),
+                     "apart": sum(1 for k, v in ref_sims if k == "apart" and v >= c)})
 
     # Місце кожної еталонної пари в сусідах — беремо кращий з двох напрямів
     # (кандидат народжується, щойно ОДИН із записів побачив другого).
