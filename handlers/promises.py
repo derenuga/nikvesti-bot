@@ -4410,8 +4410,16 @@ async def promise_topics_undo_handler(update, context):
 async def promise_embed_test_handler(update, context):
     """/promise_embed_test — чи бачить СМИСЛ те, чого не бачать букви.
 
-    Замір, а не продукт: фіксований набір реальних пар банку проти того
-    провайдера, чий ключ лежить у Railway. Деталі — handlers/promise_embed.py.
+    Замір, а не продукт, і ДВА заміри одним прогоном, бо питання два:
+    1) чи розводять ембединги наші пари (відповідь 22.08 — ні, глобального
+       порога немає в жодного провайдера);
+    2) скільки пар доведеться показати судді, щоб жодна справжня не загубилась,
+       — бо саме це, а не поріг, вирішує, чи годяться ембединги у ВІДБІР
+       кандидатів замість trgm-індексу.
+
+    Другий замір платний лише в теорії: весь банк це ~30 тисяч токенів, тобто
+    безкоштовний тариф у Gemini й два центи в OpenAI. Аргумент `pairs` лишає
+    тільки перший (швидкий), `sweep` — тільки другий.
     """
     if not _allowed(update):
         await update.message.reply_text("⛔ Тільки для редакції.")
@@ -4429,40 +4437,82 @@ async def promise_embed_test_handler(update, context):
             "і поклич знову.\nЄ кілька — порахую всі й покажу поруч.",
             parse_mode="HTML")
         return
-    msg = await update.message.reply_text(
-        f"🦊 Рахую ({' · '.join(have)})…")
-    out = ["🦊 <b>Чи розводять ембединги те, що треба</b>\n",
-           "<i>Ліворуч — одна справа різними словами (мусить бути БЛИЗЬКО), "
-           "нижче — пастки Олега: різні обіцянки однієї людини й різні роботи "
-           "на одному обʼєкті (мусять бути ДАЛЕКО).</i>\n"]
-    for name in have:
-        try:
-            rows, missing = await asyncio.to_thread(pe.run, name)
-        except Exception as e:
-            out.append(f"<b>{escape_html(name)}</b>\n❌ {type(e).__name__}: "
-                       f"{escape_html(str(e))[:200]}\n")
-            continue
-        v = pe.verdict(rows)
-        out.append(f"<b>{escape_html(name)}</b>")
-        for kind, head in (("same", "Одна справа"), ("apart", "Різні справи")):
-            out.append(f"<i>{head}:</i>")
-            for r in [x for x in rows if x["kind"] == kind]:
-                out.append(f"  {r['sim']:.2f} <i>(букви {r['trgm']:.2f})</i> "
-                           f"— {escape_html(r['label'])}")
-        if v:
-            if v["separates"]:
-                out.append(f"✅ <b>Поріг існує</b>: усе «одне» вище "
-                           f"{v['min_same']:.2f}, усе «різне» нижче "
-                           f"{v['max_apart']:.2f} (запас {v['gap']:.2f})")
-            else:
-                out.append(f"❌ <b>Порога немає</b>: найгірше «одне» "
-                           f"{v['min_same']:.2f} нижче за найгірше «різне» "
-                           f"{v['max_apart']:.2f} — списки перетинаються")
-        if missing:
-            out.append(f"<i>Не знайшлось у банку: {missing}</i>")
-        out.append("")
-    out.append("<i>Нічого не записано. «Букви» — та сама пара за нинішнім "
-               "правилом детектора.</i>")
+    arg = (context.args[0].lower() if context.args else "")
+    do_pairs = arg != "sweep"
+    do_sweep = arg != "pairs"
+
+    msg = await update.message.reply_text(f"🦊 Рахую ({' · '.join(have)})…")
+    out = []
+
+    if do_pairs:
+        out += ["🦊 <b>Чи розводять ембединги те, що треба</b>\n",
+                "<i>Ліворуч — одна справа різними словами (мусить бути "
+                "БЛИЗЬКО), нижче — пастки: різні обіцянки однієї людини й "
+                "різні роботи на одному обʼєкті (мусять бути ДАЛЕКО).</i>\n"]
+        for name in have:
+            try:
+                rows, missing = await asyncio.to_thread(pe.run, name)
+            except Exception as e:
+                out.append(f"<b>{escape_html(name)}</b>\n❌ {type(e).__name__}: "
+                           f"{escape_html(str(e))[:200]}\n")
+                continue
+            v = pe.verdict(rows)
+            out.append(f"<b>{escape_html(name)}</b>")
+            for kind, head in (("same", "Одна справа"), ("apart", "Різні справи")):
+                out.append(f"<i>{head}:</i>")
+                for r in [x for x in rows if x["kind"] == kind]:
+                    out.append(f"  {r['sim']:.2f} <i>(букви {r['trgm']:.2f})</i> "
+                               f"— {escape_html(r['label'])}")
+            if v:
+                if v["separates"]:
+                    out.append(f"✅ <b>Поріг існує</b>: усе «одне» вище "
+                               f"{v['min_same']:.2f}, усе «різне» нижче "
+                               f"{v['max_apart']:.2f} (запас {v['gap']:.2f})")
+                else:
+                    out.append(f"❌ <b>Порога немає</b>: найгірше «одне» "
+                               f"{v['min_same']:.2f} нижче за найгірше «різне» "
+                               f"{v['max_apart']:.2f} — списки перетинаються")
+            if missing:
+                out.append(f"<i>Не знайшлось у банку: {missing}</i>")
+            out.append("")
+
+    if do_sweep:
+        out += ["🦊 <b>Скільки роботи це дало б судді</b>\n",
+                "<i>Поріг дає обсяг, який залежить від банку; «K найближчих» — "
+                "обсяг, заданий наперед. Головне число тут не схожість, а "
+                "МІСЦЕ справжньої пари серед сусідів: найгірше з дев\u2019яти "
+                "і є потрібне K.</i>\n"]
+        for name in pe.available(extras=False):
+            try:
+                sw = await asyncio.to_thread(pe.sweep, name)
+            except Exception as e:
+                out.append(f"<b>{escape_html(name)}</b>\n❌ {type(e).__name__}: "
+                           f"{escape_html(str(e))[:200]}\n")
+                continue
+            out.append(f"<b>{escape_html(name)}</b>")
+            out.append(f"Записів {sw['n']}, усіх пар {sw['total']:,}".replace(",", " "))
+            out.append(f"Нинішній детектор (букви) віддає <b>{sw['trgm']}</b> пар")
+            out.append("<i>Порогом:</i>")
+            for c, cnt in sw["cuts"]:
+                out.append(f"  ≥{c:.2f} → {cnt} пар")
+            out.append("<i>K найближчих:</i>")
+            for k in sw["ks"]:
+                out.append(f"  K={k['k']} → {k['pairs']} пар · "
+                           f"справжніх {k['same']}/{k['same_total']} · "
+                           f"пасток {k['apart']}/{k['apart_total']}")
+            worst = [r for r in sw["ref"] if r["kind"] == "same"]
+            miss = [r for r in worst if not r["rank"]]
+            out.append("<i>Місце справжніх пар серед сусідів:</i>")
+            for r in sorted(worst, key=lambda x: (x["rank"] is None,
+                                                  -(x["rank"] or 0))):
+                place = f"#{r['rank']}" if r["rank"] else "поза 60"
+                out.append(f"  {place} ({r['sim']:.2f}) — {escape_html(r['label'])}")
+            if miss:
+                out.append(f"⚠️ {len(miss)} справжніх пар не видно навіть у "
+                           f"шістдесяти сусідах")
+            out.append("")
+
+    out.append("<i>Нічого не записано.</i>")
     await msg.edit_text(_clip("\n".join(out)), parse_mode="HTML")
 
 
