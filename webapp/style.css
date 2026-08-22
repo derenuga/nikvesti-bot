@@ -2072,6 +2072,31 @@ body.dark { --stale: #a596e0; --stale-soft: rgba(165, 150, 224, .18);
 .pr-pop-why { font-size: 12.5px; color: var(--muted); }
 .pr-pop-note { font-size: 12px; color: var(--muted); font-style: italic; }
 
+/* Новина, якою обіцянку закрили. Окремий блок, а не крок ланцюга: ланцюг —
+   це історія самої обіцянки, а тут доказ того, що її зробили. Рішення бота
+   підписане прямо, з командою відкату — автоматичне закриття ховає тему з
+   черги редакції, і людина мусить мати змогу з ним не погодитись. */
+.pr-closed {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 14px; border-radius: 12px;
+  background: var(--good-soft); border: 1px solid transparent;
+}
+.pr-closed.bot { background: var(--blue-soft); }
+.pr-closed-h {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  font-size: 13.5px; font-weight: 700; color: var(--good);
+}
+.pr-closed.bot .pr-closed-h { color: var(--blue); }
+.pr-closed-h .ic { width: 16px; height: 16px; flex: none; }
+.pr-closed-when { font-weight: 500; color: var(--muted); font-size: 12.5px; }
+.pr-closed-a { font-size: 14px; line-height: 1.35; color: var(--text); }
+.pr-closed-why { font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.pr-closed-note { font-size: 12px; color: var(--muted); font-style: italic; }
+.pr-closed-note code {
+  font-style: normal; font-size: 11.5px; padding: 1px 5px;
+  border-radius: 5px; background: var(--card); color: var(--text);
+}
+
 /* ---------- картка обіцянки ---------- */
 
 .pr-detail {

@@ -482,6 +482,13 @@ def card(commitment_id, person=None):
             head["condition"] = row.get("condition")
             head["checked_at"] = row.get("checked_at")
             head["check_note"] = row.get("check_note")
+            # Новина, ЯКОЮ закрито. Ревізією доказ виконання не є (ревізія —
+            # це переформулювання самої обіцянки), тож у ланцюг він не
+            # потрапляв, а `check_note` фронт не малював узагалі — у картці
+            # лишалась одна публікація, джерело обіцянки, і рішення бота
+            # виглядало як «закрилось саме собою». Лінк на доказ і є та
+            # єдина річ, з якої це рішення можна перевірити.
+            head["closure"] = _closure_block(cur, row)
             head["status"] = row.get("status")
             head["starred"] = int(row["id"]) in pp.starred_ids(cur, person)
             return {
@@ -495,6 +502,31 @@ def card(commitment_id, person=None):
             }
     finally:
         conn.close()
+
+
+def _closure_block(cur, row):
+    """Підпис «закрито за цією новиною» — лінк, заголовок і пояснення судді.
+
+    Пояснення беремо з promise_closures, а не з `check_note`: у нотатці воно
+    обрізане до 120 символів і закінчується сирим «[матеріал 322726]», тобто
+    id без лінка. Людині потрібен саме лінк — картку відкривають, щоб
+    вирішити, погодитись із ботом чи натиснути відкат.
+    """
+    ev = pp.closure_evidence(cur, row["id"])
+    if not ev:
+        return None
+    from handlers.promises import _links_for
+    link = (_links_for(cur, [ev["article_id"]]) or {}).get(ev["article_id"]) or {}
+    return {
+        "url": link.get("url"),
+        "article_title": link.get("title"),
+        "why": ev.get("why"),
+        # Хто саме вирішив: бот сам чи людина після перевірки. Різниця не
+        # косметична — рішення бота відкочують, рішення людини поважають.
+        "by": row.get("checked_by"),
+        "when": pp.fmt_date(row.get("checked_at")) if row.get("checked_at") else None,
+        "outcome": ev.get("state"),
+    }
 
 
 def _tags(row, now):

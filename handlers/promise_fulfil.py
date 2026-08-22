@@ -63,6 +63,20 @@
 Межа проходить по МІСЦЮ, а не по паперу: техніка вийшла — так; оголосили
 тендер, виділили кошти, затвердили проєкт — ні.
 
+**Дві межі, за які детектор не заходить** (обидві заміряні 22.08 на
+обіцянці 1972 «Забезпечити безперервне управління громадою»):
+
+1. **Картка населеного пункту пари не робить.** Предметом тієї обіцянки
+   записано ціле місто — «Південноукраїнськ», — тож будь-яка новина про
+   Южноукраїнськ формально «про той самий обʼєкт»: вода на пляжах, ДТП,
+   самокати, затримання за продаж зброї. Суддя 22 рази чесно сказав «ні» і
+   на 22-й закрив обіцянку новиною про те, що адміністрація почала
+   працювати. Раніше контейнер ловили підтипом ПЛЮС частотою, і поріг
+   відсікав рівно одну картку в усій норі («Миколаїв»), а всі райцентри
+   проходили як предмет. Тепер ознака одна — підтип; деталі й розклад
+   влучань за джерелом пари — у pp.CONTAINER_PLACE_SUBTYPES.
+2. **Риторику детектор не судить узагалі** — див. `rhetoric_only`.
+
 **Відкат є завжди** — `/promise_reopen <id>`: статус назад у «чекаємо», ознаки
 знімаються. Будь-яке автоматичне рішення мусить мати одну кнопку відкату,
 інакше помилка ховає живу тему назавжди й мовчки.
@@ -111,6 +125,28 @@ def unfalsifiable(promise):
     рішення про такі заяви ухвалює людина.
     """
     return (promise or {}).get("verifiability") == "unfalsifiable"
+
+
+def rhetoric_only(promise):
+    """Риторика — заява без предмета, і закрити її може будь-яка добра новина.
+
+    «Переконаний, що новостворена військова адміністрація працюватиме
+    ефективно» (обіцянка 1972): предмета в ній немає, тому детектор
+    послідовно шукав його по картці «Південноукраїнськ» — тобто по цілому
+    місту — і 22 рази платив судді за відповідь «ні», поки на 22-й не
+    закрив обіцянку новиною про те, що адміністрація почала працювати.
+
+    З черги редакції риторика НЕ зникає: людина сама вирішує, писати про неї
+    чи ні. Не зникає й межа між нею та обіцянкою — її ставить витяг полем
+    `kind`, як і `modality`. Забороняється рівно одне — АВТОМАТИЧНЕ рішення
+    по ній, бо ціна помилки несиметрична: хибне «виконано» ховає тему з
+    черги, і робить це мовчки.
+
+    Твін SQL-правила pp.FULFIL_SKIP_SQL. Тримається тут другим шаром не для
+    краси: /promise_fulfil_test ходить повз пре-фільтр, а `kind` у записа
+    буває проставлений уже після того, як пара потрапила в чергу.
+    """
+    return (promise or {}).get("kind") in pp.FULFIL_SKIP_KINDS
 
 
 def too_early(verdict, promise, now=None):
@@ -190,6 +226,9 @@ def _load(since, limit):
                         "deadline": row.get("deadline"),
                         "polarity": row.get("polarity"),
                         "verifiability": row.get("verifiability"),
+                        # Не для судді, а для запобіжника rhetoric_only:
+                        # у промпт це поле не йде.
+                        "kind": row.get("kind"),
                         "quote": (quotes.get(p["commitment_id"]) or "")[:400]},
             "article": art,
         })
@@ -245,7 +284,8 @@ async def scan(days=DEFAULT_DAYS, limit=MAX_PAIRS, on_progress=None):
                     settled = (v.get("state") not in ("done", "failed")
                                or conf not in ("high", "medium")
                                or too_early(v, p["promise"])
-                               or unfalsifiable(p["promise"]))
+                               or unfalsifiable(p["promise"])
+                               or rhetoric_only(p["promise"]))
                     if settled:
                         pp.record_closure(cur, p["commitment_id"],
                                           p["article_id"],
@@ -741,7 +781,8 @@ async def promise_fulfil_test_handler(update, context):
                     break
                 # Чи бачить їх ПРЕ-ФІЛЬТР: спільна картка сутності
                 cur.execute(
-                    "SELECT e.id, coalesce(e.name_ua, e.name_ru) FROM entities e "
+                    "SELECT e.id, coalesce(e.name_ua, e.name_ru), e.kind, "
+                    "       coalesce(e.subtype, '') FROM entities e "
                     "JOIN article_entities ae ON ae.entity_id = e.id "
                     "WHERE ae.article_id = %s AND (e.id = %s OR e.id IN "
                     "  (SELECT entity_id FROM commitment_objects WHERE commitment_id = %s))",
@@ -786,14 +827,31 @@ async def promise_fulfil_test_handler(update, context):
     lines.append(f"{'❌' if is_source else '✅'} "
                  + ("це стаття, з якої обіцянку й записали — доказом бути не може"
                     if is_source else "стаття не є джерелом самої обіцянки"))
-    if shared:
+    # Спільна картка міста парою НЕ є (див. pp.CONTAINER_PLACE_SUBTYPES), і
+    # діагностика мусить це показувати окремо — інакше вона каже «спільна
+    # картка ✅» там, де пре-фільтр пари не зробить, тобто бреше рівно в тому
+    # місці, заради якого її й викликають.
+    subject = [(i, n) for i, n, k, st in shared
+               if not (k == "place" and st in pp.CONTAINER_PLACE_SUBTYPES)]
+    background = [(i, n) for i, n, k, st in shared
+                  if (k == "place" and st in pp.CONTAINER_PLACE_SUBTYPES)]
+    if subject:
         lines.append("✅ Спільна картка: "
-                     + ", ".join(escape_html(n or "—") for _i, n in shared[:5]))
+                     + ", ".join(escape_html(n or "—") for _i, n in subject[:5]))
     else:
-        lines.append(f"❌ <b>Спільної картки немає</b> — пре-фільтр цю пару не "
-                     f"побачить. Сутностей у статті: {art_entities}"
+        lines.append(f"❌ <b>Спільної картки-предмета немає</b> — пре-фільтр цю "
+                     f"пару не побачить. Сутностей у статті: {art_entities}"
                      + ("" if art_entities else " (стаття ще не розібрана "
                         "сутнісним шаром)"))
+    if background:
+        lines.append("➖ Спільне лише тло: "
+                     + ", ".join(escape_html(n or "—") for _i, n in background[:5])
+                     + " — населений пункт чи район відповідає на питання «де», "
+                       "а не «що», і пари не робить")
+    if rhetoric_only(row):
+        lines.append("➖ Це <b>риторика</b> (kind=rhetoric) — детектор такі "
+                     "обіцянки не судить узагалі: предмета в них немає, тож "
+                     "підтвердити їх може будь-яка добра новина")
     if already:
         lines.append(f"ℹ️ Пару вже судили: {already[0]}/{already[1]} — "
                      f"{escape_html(already[2] or '')}")
@@ -816,7 +874,13 @@ async def promise_fulfil_test_handler(update, context):
         mark = {"done": "✅", "failed": "🚫", "none": "➖"}.get(v.get("state"), "•")
         lines.append(f"\n{mark} <b>{v.get('state')}/{v.get('confidence')}</b>: "
                      f"{escape_html(v.get('why') or '')}")
-        if v.get("state") == "done" and v.get("confidence") == "high":
+        blocked = ("риторика" if rhetoric_only(row)
+                   else "обіцянку нема чим підтвердити (unfalsifiable)"
+                   if unfalsifiable(row)
+                   else "строк ще не минув" if too_early(v, row) else None)
+        if blocked:
+            lines.append(f"<i>Але записаний він не був би: {blocked}.</i>")
+        elif v.get("state") == "done" and v.get("confidence") == "high":
             lines.append("<i>Такий вердикт закрив би обіцянку сам.</i>")
         elif v.get("state") in ("done", "failed"):
             lines.append("<i>Такий вердикт пішов би Каті на підтвердження.</i>")

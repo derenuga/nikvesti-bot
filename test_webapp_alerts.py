@@ -218,7 +218,13 @@ window.fetch = async (url, opts = {}) => {
     return json({ commitment: { id: +m[1], cls: "checked", starred: false,
         title: "Відновити газопостачання по вул. Шосейній", tags: [],
         who: null, image: null, found: "", populism: null, criterion: null,
-        based_on: null, condition: null },
+        based_on: null, condition: null,
+        // Новина, ЯКОЮ закрито. Ревізією доказ виконання не є, тож у
+        // ланцюг не потрапляє — і саме тому його треба показати окремо.
+        closure: { url: "https://nikvesti.com/news/city/900123-gaz",
+                   article_title: "Газ подали в будинки на Шосейній",
+                   why: "У новині сказано, що газопостачання відновили.",
+                   by: "Лис", when: "21.08.2026", outcome: "done" } },
       chain: [], siblings: [] });
   }
   // Картка завдання зі стрічки подій: таск 71 закритий давно, у bootstrap
@@ -426,6 +432,37 @@ async def main():
                   await page.evaluate("window.__opened") == [])
             check("це саме та обіцянка",
                   "Відновити газопостачання" in await page.inner_text("#content"))
+
+            # --- чим саме закрито ---
+            #
+            # Питання Олега 22.08 на обіцянці 1972: «как могло случиться, что
+            # закрывается обещание, в котором только одна новость залинкована?»
+            # Доказ виконання лежав у promise_closures і в `check_note`, фронт
+            # це поле не читав узагалі, і закрита обіцянка виглядала так, ніби
+            # статус змінився сам. Тепер доказ — окремий блок ПІД ланцюгом.
+            closed = page.locator(".pr-closed")
+            check("картка каже, ЧИМ закрито обіцянку",
+                  await closed.count() == 1)
+            check("новина-доказ клікабельна, а не id у дужках",
+                  await closed.locator("a.pr-closed-a").count() == 1
+                  and await closed.locator("a.pr-closed-a").get_attribute("href")
+                      == "https://nikvesti.com/news/city/900123-gaz")
+            text = await closed.inner_text()
+            check("видно заголовок новини і пояснення судді",
+                  "Газ подали" in text and "газопостачання відновили" in text)
+            check("сказано, що це рішення БОТА, а не людини",
+                  "Лис" in text and await closed.evaluate(
+                      "el => el.classList.contains('bot')"))
+            check("і одразу дано, чим відкотити",
+                  "/promise_reopen 551" in text)
+            check("доказ стоїть ПІД ланцюгом, а не над ним",
+                  await page.evaluate(
+                      "!!document.querySelector('.pr-chain').compareDocumentPosition("
+                      "document.querySelector('.pr-closed')) "
+                      "&& (document.querySelector('.pr-chain')"
+                      ".compareDocumentPosition(document.querySelector('.pr-closed'))"
+                      " & Node.DOCUMENT_POSITION_FOLLOWING) > 0"))
+            await page.screenshot(path="/tmp/alerts-promise-closed.png")
             await page.screenshot(path="/tmp/alerts-promise-card.png")
             # «Назад» повертає рівно туди, звідки прийшли — у «Сповіщення»
             await page.click("#content .back")
