@@ -396,7 +396,7 @@
       <div class="reach" id="reach" hidden>
         <span class="dot" id="reachDot"></span>
         <span id="reachText"></span>
-        <button class="ghost tiny" id="reachFix" hidden>Вписати назви</button>
+        <button class="ghost tiny" id="reachFix" hidden>Почати заголовком</button>
       </div>
       <div class="toolrow">
         <button class="tiny" id="copyCaption">Скопіювати</button>
@@ -1048,15 +1048,23 @@
     box.hidden = false;
     box.classList.add(data.verdict);
     lastMissing = data.missing || [];
-    $("reachFix").hidden = data.verdict === "ok" || !lastMissing.length;
+    // Кнопка є завжди, поки не зелено: «не зелено» тепер практично завжди
+    // означає «підпис не починається заголовком», і це полагоджується без
+    // моделі — саме тому кнопка не залежить від списку слів
+    $("reachFix").hidden = data.verdict === "ok" || !(S.article || {}).title;
     if (data.verdict === "ok") {
       $("reachText").textContent = "Бот знайде цей допис у звіті статистики";
       return;
     }
+    // Порада лише тоді, коли є що радити: бракувати можуть самі дієслова й
+    // займенники, і рядок «допиши: свої, роки, йому» гірший за мовчання
     const words = lastMissing.slice(0, 5).join(", ");
+    const tip = words ? ` — у підписі не звучать: ${words}` : "";
     $("reachText").textContent = data.verdict === "judge"
-      ? `Допис упізнається слабко — у підписі не звучать: ${words}`
-      : `Бот НЕ знайде цей допис: у підписі немає нічого з новини — ${words}`;
+      ? (words
+          ? `Допис упізнається слабко${tip}`
+          : "Допис упізнається слабко. Найпростіше — почати підпис заголовком новини")
+      : `Бот НЕ знайде цей допис${tip || ": у підписі немає нічого з новини"}`;
   }
 
   function checkReach() {
@@ -1084,13 +1092,15 @@
     checkReach();
   });
 
-  // Підказка агенту складається з ТИХ САМИХ слів, які показані людині, —
-  // інакше вона тапне кнопку й отримає щось, чого на екрані не бачила.
+  // Модель тут не потрібна: правило каже «першим рядком заголовок статті», а
+  // заголовок у нас уже є. Тап ставить його — миттєво, безкоштовно, і людина
+  // одразу бачить результат у полі, а не чекає відповіді агента.
   $("reachFix").addEventListener("click", () => {
-    $("reviseText").value =
-      "Впиши в підпис живими реченнями: " + lastMissing.slice(0, 6).join(", ") +
-      ". Не списком і не хештегами — думку лиши свою.";
-    $("captionRedo").click();
+    const title = ((S.article || {}).title || "").trim();
+    if (!title) return;
+    const rest = $("postCaption").value.trim();
+    setCaption(rest ? `${title}\n\n${rest}` : title);
+    $("captionNote").textContent = "Заголовок поставив першим рядком";
   });
 
   $("copyCaption").addEventListener("click", async () => {

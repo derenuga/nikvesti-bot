@@ -114,6 +114,30 @@ def _score(sig_tokens, caption):
     return score
 
 
+# Підпис несе САМ заголовок статті. Поріг високий і з підлогою на довжину:
+# «Обстріл Миколаєва: є поранені» після чистки лишає три основи, і сусідня
+# новина про той самий обстріл покрила б їх випадково. Від пʼяти основ
+# випадкове покриття 80% практично неможливе — заголовки в нас довгі й з
+# власними назвами.
+TITLE_MIN_TOKENS = 5
+TITLE_COVER = 0.8
+
+
+def _headline_hit(title_tokens, caption):
+    """1.0, якщо підпис переказує заголовок майже цілком, інакше 0.
+
+    Потрібне тому, що `_score` міряє заголовок і лід ОДНИМ мішком, і підпис,
+    який починається ДОСЛІВНИМ заголовком, тонув у ліді: замір 22.08 на
+    статті про Арахамію дав 0.478 при порозі 0.5, тобто найнадійніший з
+    можливих підписів ішов до судді. Заголовок — найдовший точний збіг, який
+    узагалі буває; питати про нього модель нема про що."""
+    ts = set(title_tokens)
+    if len(ts) < TITLE_MIN_TOKENS:
+        return 0.0
+    covered = len(ts & set(_norm_tokens(caption))) / len(ts)
+    return 1.0 if covered >= TITLE_COVER else 0.0
+
+
 def make_scorer(sig):
     """Замикання «наскільки цей підпис про нашу новину» для одного матеріалу.
     Спільне для Instagram/TikTok/YouTube — усі три міряють однаково.
@@ -122,16 +146,16 @@ def make_scorer(sig):
     каруселей (storage.carousel_captions, пишеться в мить копіювання). Це не
     здогад про формулювання, а сам текст, що поїхав в інсту, тож правильний
     допис дає по ньому coverage ≈ 1.0, а чужий — стільки ж, скільки й раніше.
-    Беремо максимум, тому підпису НЕМАЄ — поведінка байт у байт колишня, і
-    жоден поріг не перекалібровується.
+    Беремо максимум, тому підпису НЕМАЄ — поведінка колишня.
 
     Повертає функцію score(caption); score.tokens — токени сигнатури статті
     (порожні = сторінку не прочитали, шукати нічим)."""
     base = _norm_tokens(f"{sig.get('title', '')} {sig.get('lead', '')}")
+    title = _norm_tokens(sig.get("title") or "")
     hint = _norm_tokens(sig.get("caption") or "")
 
     def score(caption):
-        s = _score(base, caption)
+        s = max(_score(base, caption), _headline_hit(title, caption))
         return max(s, _score(hint, caption)) if hint else s
 
     score.tokens = base
@@ -150,9 +174,15 @@ def caption_findability(caption, sig):
     Повертає {'score', 'verdict', 'missing'} або None, якщо сигнатури немає.
     verdict: 'ok' — знайде сам · 'judge' — сіра зона, вирішить Haiku-суддя
     (звичайно правильно, але це виклик моделі й не гарантія) · 'lost' — не
-    дійде навіть до судді. missing — слова статті, яких у підписі немає, у
-    ПОЧАТКОВОМУ написанні (людині показуємо слова, а не основи), власні назви
-    й числа першими: саме вони важать найбільше і саме їх найлегше вписати."""
+    дійде навіть до судді.
+
+    missing — слова статті, яких у підписі немає, у ПОЧАТКОВОМУ написанні
+    (людині показуємо слова, а не основи). Сюди йде НЕ все, чого бракує, а
+    лише те, що варто вписати: власні назви й числа. Урок 22.08 — на статті
+    про Арахамію підпис назвав і його, і Миколаїв, і 1992 рік, і «Слугу
+    народу», а порада радила дописати «розповів, свої, молоді, роки, йому».
+    Такі слова нічого не впізнають, а виконана порада зіпсувала б підпис:
+    гірше за мовчання лише порада, якої не можна послухатись."""
     title, lead = sig.get("title") or "", sig.get("lead") or ""
     sig_tokens = _norm_tokens(f"{title} {lead}")
     if not sig_tokens:
@@ -163,15 +193,22 @@ def caption_findability(caption, sig):
         low = surface.lower().replace("ё", "е")
         if len(low) < 3 or low in _STOP:
             continue
+        # Впізнає новину власна назва або число, а не дієслово й займенник
+        if not (surface[:1].isupper() or surface[:1].isdigit()):
+            continue
         stem = _stem(low)
         if stem in have or stem in seen:
             continue
         seen.add(stem)
         missing.append(surface)
-    missing.sort(key=lambda w: 0 if (w[:1].isupper() or w[:1].isdigit()) else 1)
-    score = _score(sig_tokens, caption)
+    # Рівно те, що порахує /stat, — тим самим замиканням, інакше гаудж
+    # обіцяв би одне, а матчинг робив інше
+    score = make_scorer({"title": title, "lead": lead})(caption)
     verdict = "ok" if score >= ACCEPT else ("judge" if score >= JUDGE_MIN else "lost")
-    return {"score": round(score, 3), "verdict": verdict, "missing": missing[:8]}
+    return {"score": round(score, 3), "verdict": verdict,
+            # Коли й так знайдеться, радити нема чого: список слів під
+            # зеленою крапкою читався б як «усе одно щось не так»
+            "missing": [] if verdict == "ok" else missing[:8]}
 
 
 # ---------- Сигнатура статті ----------
