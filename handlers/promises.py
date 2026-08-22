@@ -4506,6 +4506,7 @@ async def promise_embed_test_handler(update, context):
         short.append(f"❌ <b>{escape_html(name)}</b>: збій{hint}")
 
     if do_pairs:
+        short.append("<u>Чи розводять пари</u>")
         rep += ["=" * 60, "ЗАМІР 1. ЧИ РОЗВОДЯТЬ ЕМБЕДИНГИ ТЕ, ЩО ТРЕБА",
                 "Одна справа різними словами мусить стояти БЛИЗЬКО, "
                 "пастки — ДАЛЕКО.", "=" * 60, ""]
@@ -4539,6 +4540,7 @@ async def promise_embed_test_handler(update, context):
             rep.append("")
 
     if do_sweep:
+        short.append("\n<u>Скільки пар це дало б судді</u>")
         rep += ["=" * 60, "ЗАМІР 2. СКІЛЬКИ РОБОТИ ЦЕ ДАЛО Б СУДДІ", "=" * 60, ""]
         for name in pe.available(extras=False):
             if got[name]["err"] is not None:
@@ -4570,10 +4572,15 @@ async def promise_embed_test_handler(update, context):
             # У чат — рядок, заради якого все й рахувалось: найдешевший поріг,
             # що ловить найбільше справжніх пар, проти нинішнього детектора.
             best = max(sw["cuts"], key=lambda c: (c["same"], -c["pairs"]))
+            # Пара, якої не видно навіть у шістдесяти сусідах, — це не «трохи
+            # гірше», а втрачений дубль, тож вона згадується в чаті, а не лише
+            # рядком у файлі.
+            blind = sum(1 for r in real if not r["rank"])
             short.append(f"<b>{escape_html(name)}</b>\n"
                          f"  букви: {sw['trgm']} пар · ембединг ≥{best['cut']:.2f}: "
                          f"<b>{best['pairs']}</b> пар "
-                         f"({best['same']}/9 справжніх)")
+                         f"({best['same']}/9 справжніх)"
+                         + (f"\n  ⚠️ {blind} не видно й у 60 сусідах" if blind else ""))
 
     body = "\n".join(rep).encode("utf-8")
     await msg.edit_text(
