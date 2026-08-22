@@ -4411,15 +4411,18 @@ async def promise_embed_test_handler(update, context):
     """/promise_embed_test — чи бачить СМИСЛ те, чого не бачать букви.
 
     Замір, а не продукт, і ДВА заміри одним прогоном, бо питання два:
-    1) чи розводять ембединги наші пари (відповідь 22.08 — ні, глобального
-       порога немає в жодного провайдера);
+    1) чи розводять ембединги наші пари;
     2) скільки пар доведеться показати судді, щоб жодна справжня не загубилась,
        — бо саме це, а не поріг, вирішує, чи годяться ембединги у ВІДБІР
        кандидатів замість trgm-індексу.
 
-    Другий замір платний лише в теорії: весь банк це ~30 тисяч токенів, тобто
-    безкоштовний тариф у Gemini й два центи в OpenAI. Аргумент `pairs` лишає
-    тільки перший (швидкий), `sweep` — тільки другий.
+    **Кожен блок іде ОКРЕМИМ повідомленням.** Перший прогін 22.08 склався в
+    одне, і другий замір — той, заради якого все й рахувалось, — просто не
+    влiз у ліміт Telegram: «…далі обрізано». Одне повідомлення на провайдера
+    тримає межу саме там, де читач і так робить паузу.
+
+    Аргумент `pairs` лишає тільки перший замір (швидкий), `sweep` — тільки
+    другий.
     """
     if not _allowed(update):
         await update.message.reply_text("⛔ Тільки для редакції.")
@@ -4442,57 +4445,84 @@ async def promise_embed_test_handler(update, context):
     do_sweep = arg != "pairs"
 
     msg = await update.message.reply_text(f"🦊 Рахую ({' · '.join(have)})…")
-    out = []
+    first = msg
+
+    async def send(lines):
+        """Блок — окремим повідомленням; перший займає місце заглушки."""
+        nonlocal first
+        text = _clip("\n".join(lines))
+        if first is not None:
+            await first.edit_text(text, parse_mode="HTML")
+            first = None
+        else:
+            await update.message.reply_text(text, parse_mode="HTML")
+
+    def fail(name, e):
+        body = f"{type(e).__name__}: {str(e)}"
+        hint = ""
+        # 403 Voyage після реєстрації через MongoDB Atlas — не наша помилка і
+        # не про модель: Atlas видає СВІЙ ключ, який ендпоінт Voyage не
+        # приймає. Провайдер каже це прямо, тож просто не ховаємо його слова.
+        if "Atlas" in body or "cannot access this endpoint" in body:
+            hint = ("\n<i>Ключ Atlas ендпоінту Voyage не підходить — потрібен "
+                    "ключ із самого кабінету Voyage AI.</i>")
+        return [f"<b>{escape_html(name)}</b>", f"❌ {escape_html(body)[:400]}{hint}"]
 
     if do_pairs:
-        out += ["🦊 <b>Чи розводять ембединги те, що треба</b>\n",
-                "<i>Ліворуч — одна справа різними словами (мусить бути "
-                "БЛИЗЬКО), нижче — пастки: різні обіцянки однієї людини й "
-                "різні роботи на одному обʼєкті (мусять бути ДАЛЕКО).</i>\n"]
+        await send(["🦊 <b>Чи розводять ембединги те, що треба</b>", "",
+                    "<i>Одна справа різними словами мусить стояти БЛИЗЬКО, "
+                    "пастки — різні обіцянки однієї людини й різні роботи на "
+                    "одному обʼєкті — ДАЛЕКО.</i>"])
         for name in have:
             try:
                 rows, missing = await asyncio.to_thread(pe.run, name)
             except Exception as e:
-                out.append(f"<b>{escape_html(name)}</b>\n❌ {type(e).__name__}: "
-                           f"{escape_html(str(e))[:200]}\n")
+                await send(fail(name, e))
                 continue
             v = pe.verdict(rows)
-            out.append(f"<b>{escape_html(name)}</b>")
+            out = [f"<b>{escape_html(name)}</b>"]
             for kind, head in (("same", "Одна справа"), ("apart", "Різні справи")):
                 out.append(f"<i>{head}:</i>")
                 for r in [x for x in rows if x["kind"] == kind]:
                     out.append(f"  {r['sim']:.2f} <i>(букви {r['trgm']:.2f})</i> "
                                f"— {escape_html(r['label'])}")
             if v:
+                out.append("")
                 if v["separates"]:
                     out.append(f"✅ <b>Поріг існує</b>: усе «одне» вище "
                                f"{v['min_same']:.2f}, усе «різне» нижче "
                                f"{v['max_apart']:.2f} (запас {v['gap']:.2f})")
                 else:
-                    out.append(f"❌ <b>Порога немає</b>: найгірше «одне» "
-                               f"{v['min_same']:.2f} нижче за найгірше «різне» "
-                               f"{v['max_apart']:.2f} — списки перетинаються")
+                    out.append(f"❌ <b>Одним порогом не розділити</b>: найгірше "
+                               f"«одне» {v['min_same']:.2f} нижче за найгірше "
+                               f"«різне» {v['max_apart']:.2f}")
+                # Головне число — не «так/ні», а ціна найдобрішого порога.
+                out.append(f"🔎 Поріг {v['cut']:.2f} (найнижча справжня пара) "
+                           f"ловить <b>{v['same_n']}/{v['same_n']}</b> справжніх "
+                           f"і пропускає <b>{len(v['leaked'])}/{v['apart_n']}</b> "
+                           f"пасток"
+                           + (": " + ", ".join(escape_html(x) for x in v["leaked"])
+                              if v["leaked"] else ""))
             if missing:
                 out.append(f"<i>Не знайшлось у банку: {missing}</i>")
-            out.append("")
+            await send(out)
 
     if do_sweep:
-        out += ["🦊 <b>Скільки роботи це дало б судді</b>\n",
-                "<i>Поріг дає обсяг, який залежить від банку; «K найближчих» — "
-                "обсяг, заданий наперед. Головне число тут не схожість, а "
-                "МІСЦЕ справжньої пари серед сусідів: найгірше з дев\u2019яти "
-                "і є потрібне K.</i>\n"]
+        await send(["🦊 <b>Скільки роботи це дало б судді</b>", "",
+                    "<i>Поріг дає обсяг, залежний від банку; «K найближчих» — "
+                    "обсяг, заданий наперед. Головне число тут не схожість, а "
+                    "МІСЦЕ справжньої пари серед сусідів: найгірше з дев\u2019яти "
+                    "і є потрібне K.</i>"])
         for name in pe.available(extras=False):
             try:
                 sw = await asyncio.to_thread(pe.sweep, name)
             except Exception as e:
-                out.append(f"<b>{escape_html(name)}</b>\n❌ {type(e).__name__}: "
-                           f"{escape_html(str(e))[:200]}\n")
+                await send(fail(name, e))
                 continue
-            out.append(f"<b>{escape_html(name)}</b>")
-            out.append(f"Записів {sw['n']}, усіх пар {sw['total']:,}".replace(",", " "))
-            out.append(f"Нинішній детектор (букви) віддає <b>{sw['trgm']}</b> пар")
-            out.append("<i>Порогом:</i>")
+            out = [f"<b>{escape_html(name)}</b>",
+                   f"Записів {sw['n']}, усіх пар {sw['total']}",
+                   f"Нинішній детектор (букви) віддає <b>{sw['trgm']}</b> пар",
+                   "<i>Порогом:</i>"]
             for c, cnt in sw["cuts"]:
                 out.append(f"  ≥{c:.2f} → {cnt} пар")
             out.append("<i>K найближчих:</i>")
@@ -4500,20 +4530,18 @@ async def promise_embed_test_handler(update, context):
                 out.append(f"  K={k['k']} → {k['pairs']} пар · "
                            f"справжніх {k['same']}/{k['same_total']} · "
                            f"пасток {k['apart']}/{k['apart_total']}")
-            worst = [r for r in sw["ref"] if r["kind"] == "same"]
-            miss = [r for r in worst if not r["rank"]]
+            real = [r for r in sw["ref"] if r["kind"] == "same"]
+            miss = [r for r in real if not r["rank"]]
             out.append("<i>Місце справжніх пар серед сусідів:</i>")
-            for r in sorted(worst, key=lambda x: (x["rank"] is None,
-                                                  -(x["rank"] or 0))):
+            for r in sorted(real, key=lambda x: (x["rank"] is None, -(x["rank"] or 0))):
                 place = f"#{r['rank']}" if r["rank"] else "поза 60"
                 out.append(f"  {place} ({r['sim']:.2f}) — {escape_html(r['label'])}")
             if miss:
                 out.append(f"⚠️ {len(miss)} справжніх пар не видно навіть у "
                            f"шістдесяти сусідах")
-            out.append("")
+            await send(out)
 
-    out.append("<i>Нічого не записано.</i>")
-    await msg.edit_text(_clip("\n".join(out)), parse_mode="HTML")
+    await update.message.reply_text("🦊 Нічого не записано.")
 
 
 # ---------- /promise_audit ----------

@@ -241,15 +241,25 @@ def run(provider):
 
 
 def verdict(rows):
-    """Чи існує поріг, який розділяє списки. Це і є відповідь на питання
-    «чи вирішують ембединги задачу», і вона або так, або ні — середні
-    значення тут нічого не варті."""
-    same = [r["sim"] for r in rows if r["kind"] == "same"]
-    apart = [r["sim"] for r in rows if r["kind"] == "apart"]
+    """Що саме показали пари.
+
+    Питання «чи існує поріг» дає відповідь «так/ні», і 22.08 вона виявилась
+    надто грубою: списки перетинає ОДНА пара з пʼятнадцяти, і бінарне «ні»
+    ховає це так само надійно, як бінарне «так» сховало б провал. Тому крім
+    відповіді рахується САМИЙ ДОБРИЙ поріг — найнижча справжня пара, тобто
+    той, що не губить жодної, — і скільки пасток він при цьому пропускає.
+    Саме ця пара чисел і каже, годяться ембединги у ВІДБІР кандидатів.
+    """
+    same = [r for r in rows if r["kind"] == "same"]
+    apart = [r for r in rows if r["kind"] == "apart"]
     if not same or not apart:
         return None
-    lo, hi = min(same), max(apart)
-    return {"min_same": lo, "max_apart": hi, "gap": lo - hi, "separates": lo > hi}
+    lo = min(r["sim"] for r in same)
+    hi = max(r["sim"] for r in apart)
+    leaked = [r["label"] for r in apart if r["sim"] >= lo]
+    return {"min_same": lo, "max_apart": hi, "gap": lo - hi,
+            "separates": lo > hi, "cut": lo, "leaked": leaked,
+            "same_n": len(same), "apart_n": len(apart)}
 
 
 # ---------- замір другий: обсяг роботи для судді ----------
