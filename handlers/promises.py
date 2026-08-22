@@ -60,6 +60,11 @@ import entity_pipeline as ep
 import promise_extract_api as api
 import promise_pipeline as pp
 
+# Перший у списку ALLOWED_USER_IDS — Олег (та сама конвенція, що в notifier
+# і usage_report). Адресат тижневої ревізії банку.
+ADMIN_USER_ID = int(os.environ.get("ALLOWED_USER_IDS", "").split(",")[0]
+                    or 56631818) if os.environ.get("ALLOWED_USER_IDS", "").strip() \
+    else 56631818
 _ALLOWED_USER_IDS = {
     int(uid) for uid in os.environ.get("ALLOWED_USER_IDS", "").split(",") if uid.strip()
 }
@@ -4398,6 +4403,183 @@ async def promise_topics_undo_handler(update, context):
     await update.message.reply_text(
         f"↩️ Повернув {n} {pp.plural(n, 'зобовʼязання', 'зобовʼязання', 'зобовʼязань')} "
         f"під свої теми." if n else "🦊 Такого прогону немає.")
+
+
+# ---------- /promise_audit ----------
+#
+# Питання Олега 22.08.2026, і воно справедливе: «почему находки нахожу я, когда
+# у тебя есть доступ к базе?» Доступ був увесь день, і всі запити були
+# РЕАКТИВНІ — підтвердити знайдене людиною. Перевернуту полярність видно одним
+# запитом по одинадцяти записах; його ніхто не зробив, бо не просили.
+#
+# Тому знахідка не має залежати від того, чи відкриє хтось картку. Банк уже
+# несе всі свої правила — полярність, дослівність цитати, клас перевірки,
+# наявність обіцяльника, — і кожне з них можна звірити з даними БЕЗ моделі.
+# Ця команда рахує саме розбіжності «дані проти власних правил»: безкоштовно,
+# read-only, за секунди.
+#
+# Правило додавання: КОЖНА перевірка мусить називати не лише число, а й ЦІНУ —
+# що саме зламано в продукті, поки вона червона. Перевірка без ціни («записів
+# із порожнім полем 12») не варта рядка: вона не каже, чи це проблема.
+
+AUDIT_CHECKS = [
+    {
+        "key": "polarity",
+        "title": "Перевернута полярність",
+        "why": "«not_do» за побудовою НЕ буває простроченим — такий запис "
+               "не прозвонить ніколи; плюс перевірка в нього інвертована, "
+               "тобто виконання читається як зрив",
+        "fix": "/promise_polarity",
+        # Предикат живе в pp — SQL тут лише відбирає кандидатів.
+        "sql": "SELECT id, title FROM commitments "
+               "WHERE status = 'expected' AND polarity = 'not_do' "
+               "  AND checked_at IS NULL ORDER BY id",
+        "filter": lambda row: pp.polarity_suspect(
+            {"title": row[1], "polarity": "not_do"}),
+    },
+    {
+        "key": "quote",
+        "title": "Цитата не знайшлась у статті дослівно",
+        "why": "дослівна цитата — головний запобіжник від реєстру "
+               "галюцинацій (§3). Тут витяг переказав або вигадав: у 1183 "
+               "навіть друкарська помилка «аба», у 2209 «Миськрада»",
+        "fix": "/promise_retest <id статті> на кожну",
+        "sql": "SELECT DISTINCT c.id, c.title FROM commitments c "
+               "JOIN commitment_revisions r ON r.commitment_id = c.id "
+               "WHERE c.status = 'expected' AND r.quote_verified IS FALSE "
+               "ORDER BY c.id",
+    },
+    {
+        "key": "stale_waiting",
+        "title": "Строк минув, а запис «чекає події»",
+        "why": "клас `event_triggered` не прострочується, тож ці записи "
+               "мовчать попри те, що дата вже позаду — редакція не дізнається",
+        "fix": "перевірити руками: /promise_show <id>",
+        "sql": "SELECT id, title FROM commitments "
+               "WHERE status = 'expected' AND deadline IS NOT NULL "
+               "  AND deadline < extract(epoch from now()) "
+               "  AND verifiability = 'event_triggered' ORDER BY deadline",
+    },
+    {
+        "key": "no_actor",
+        "title": "Зобовʼязання без обіцяльника з коментаря в соцмережі",
+        "why": "найімовірніше це БАЖАННЯ мешканця, а не обіцянка влади "
+               "(живий випадок — лавки в Матвіївці, 322676). Реєстр "
+               "приписує зобовʼязання тому, хто нічого не казав",
+        "fix": "розбір у docs/PROMISES_BANK.md §6.10.2",
+        "sql": "SELECT c.id, c.title FROM commitments c "
+               "WHERE c.status = 'expected' AND c.owner_text IS NULL "
+               "  AND c.source_type = 'social_comment' "
+               "  AND NOT EXISTS (SELECT 1 FROM commitment_revisions r "
+               "                  WHERE r.commitment_id = c.id "
+               "                    AND r.promiser_text IS NOT NULL) "
+               "ORDER BY c.id",
+    },
+    {
+        "key": "unclassified",
+        "title": "Записи без типу акту або без зони перевірки",
+        "why": "правило fail-open показує їх у черзі, тобто до переоцінки "
+               "черга виглядає ширшою, ніж є",
+        "fix": "/promise_classify",
+        "sql": "SELECT id, title FROM commitments "
+               "WHERE status = 'expected' AND (kind IS NULL OR scope IS NULL) "
+               "ORDER BY id",
+    },
+]
+
+
+def _run_audit():
+    """Порахувати всі перевірки. Read-only, без моделі."""
+    out = []
+    conn = ep.connect()
+    try:
+        pp.ensure_schema(conn)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            for chk in AUDIT_CHECKS:
+                cur.execute(chk["sql"])
+                rows = cur.fetchall()
+                keep = chk.get("filter")
+                if keep:
+                    rows = [r for r in rows if keep(r)]
+                if rows:
+                    out.append({**chk, "rows": rows})
+    finally:
+        conn.close()
+    return out
+
+
+async def weekly_audit(bot):
+    """Тижнева ревізія в приват Олегу. ТИХА, коли розбіжностей немає.
+
+    Команда `/promise_audit` розвʼязує половину задачі: звірку тепер можна
+    зробити. Другу половину — щоб її ХТОСЬ зробив — розвʼязує саме розклад.
+    Інакше знахідка й далі залежала б від того, чи згадає про команду людина
+    (або сесія, яка про неї не знає).
+
+    Мовчить, коли чисто — за зразком сторожа токенів Meta: звіт «усе гаразд»
+    щотижня привчає не читати звіти.
+    """
+    try:
+        found = await asyncio.to_thread(_run_audit)
+    except Exception as e:
+        await notify_error(bot, "ревізія банку тем", e)
+        return
+    if not found:
+        return
+    lines = ["🦊 <b>Тижнева ревізія банку тем</b>",
+             "<i>дані розійшлись із власними правилами банку</i>\n"]
+    for chk in found:
+        rows = chk["rows"]
+        lines.append(f"<b>{escape_html(chk['title'])} · {len(rows)}</b>")
+        lines.append(f"<i>{escape_html(chk['why'])}</i>")
+        for cid, title in rows[:3]:
+            lines.append(f"• {cid} — {escape_html((title or '—')[:60])}")
+        if len(rows) > 3:
+            lines.append(f"…та ще {len(rows) - 3}")
+        lines.append(f"Лікується: {escape_html(chk['fix'])}\n")
+    lines.append("<i>Повний список — /promise_audit. Нічого не змінено.</i>")
+    try:
+        await bot.send_message(ADMIN_USER_ID, _clip("\n".join(lines)),
+                               parse_mode="HTML")
+    except Exception as e:
+        await notify_error(bot, "ревізія банку тем: відправка", e)
+
+
+async def promise_audit_handler(update, context):
+    """/promise_audit — звірка банку з його ж правилами. Безкоштовно."""
+    if not _allowed(update):
+        await update.message.reply_text("⛔ Тільки для редакції.")
+        return
+    if not bot_db.is_configured():
+        await update.message.reply_text("🦊 Потрібна нора.")
+        return
+    msg = await update.message.reply_text("🦊 Звіряю (безкоштовно)…")
+    try:
+        found = await asyncio.to_thread(_run_audit)
+    except Exception as e:
+        await msg.edit_text(f"❌ Не звірилось: {type(e).__name__}: {e}")
+        return
+    if not found:
+        await msg.edit_text(
+            "🦊 <b>Ревізія банку</b>\n\nРозбіжностей із власними правилами "
+            "не знайшлось.\n<i>Це не «все ідеально» — це значить, що ті "
+            "помилки, які ми вміємо ловити механічно, зараз не трапляються. "
+            "Нову перевірку додають у AUDIT_CHECKS, коли знаходять новий "
+            "клас помилок.</i>", parse_mode="HTML")
+        return
+    lines = ["🦊 <b>Ревізія банку — дані проти власних правил</b>\n"]
+    for chk in found:
+        rows = chk["rows"]
+        lines.append(f"<b>{escape_html(chk['title'])} · {len(rows)}</b>")
+        lines.append(f"<i>{escape_html(chk['why'])}</i>")
+        for cid, title in rows[:4]:
+            lines.append(f"• {cid} — {escape_html((title or '—')[:64])}")
+        if len(rows) > 4:
+            lines.append(f"…та ще {len(rows) - 4}")
+        lines.append(f"Лікується: {escape_html(chk['fix'])}\n")
+    lines.append("<i>Нічого не змінено — це лише звірка.</i>")
+    await msg.edit_text(_clip("\n".join(lines)), parse_mode="HTML")
 
 
 # ---------- /promise_polarity ----------
