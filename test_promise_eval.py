@@ -315,11 +315,12 @@ def test_schema_shape():
         check(f"{name}: жодне nullable-поле не несе enum", not bad, str(bad))
     with_enum = [f for f, spec in api.COMMITMENT_ITEM["properties"].items()
                  if "enum" in spec]
-    # `kind` (тип мовленнєвого акту) приєднався до списку 17.08: він
-    # обов'язковий і null не приймає, тобто enum на ньому законний — саме
-    # такі поля тут і мають бути.
+    # `kind` (тип мовленнєвого акту) приєднався до списку 17.08, `scope`
+    # (зона перевірки) — 22.08: обидва обов'язкові й null не приймають, тобто
+    # enum на них законний — саме такі поля тут і мають бути.
     check("словники обов'язкових полів не загублені разом із фіксом",
-          set(with_enum) == {"polarity", "modality", "source_type", "kind"},
+          set(with_enum) == {"polarity", "modality", "source_type",
+                             "kind", "scope"},
           str(with_enum))
     described = [f for f, spec in api.COMMITMENT_ITEM["properties"].items()
                  if f in ("audience", "deadline_precision", "verification_method")
