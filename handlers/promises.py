@@ -4449,11 +4449,48 @@ async def promise_embed_test_handler(update, context):
     # taskType коштує 0.15 схожості, — і платити за неї щоразу нема за що.
     have = pe.available(extras=(arg == "all"))
 
-    msg = await update.message.reply_text(
-        f"🦊 Рахую ({' · '.join(have)})…\n"
-        "<i>Безкоштовні тарифи хвилинні, тож увесь банк іде порціями з "
-        "витримкою — це кілька хвилин.</i>", parse_mode="HTML")
+    msg = await update.message.reply_text(f"🦊 Рахую ({' · '.join(have)})…")
     rep, short = [], []          # rep — у файл, short — у чат
+
+    # Провайдери рахуються ПАРАЛЕЛЬНО і з видимим лічильником. Послідовно це
+    # була сума їхніх витримок — Voyage без картки в білінгу тягне хвилин
+    # пʼять, — і всі ці хвилини екран мовчав рядком «Рахую…», тобто нічим не
+    # відрізнявся від зависання (Олег, 22.08: «жду уже 5 минут»). Тепер чекаємо
+    # рівно найповільнішого, і видно, хто саме це.
+    state = {n: "⏳" for n in have}
+    started = time.monotonic()
+
+    async def paint():
+        while True:
+            await asyncio.sleep(10)
+            lines = [f"🦊 Рахую… {int(time.monotonic() - started)} с"]
+            lines += [f"{state[n]} {escape_html(n)}" for n in have]
+            try:
+                await msg.edit_text("\n".join(lines), parse_mode="HTML")
+            except Exception:
+                pass          # «message is not modified» і ліміти — не подія
+
+    async def job(name):
+        res = {"name": name, "pairs": None, "sweep": None, "err": None}
+        try:
+            if do_pairs:
+                state[name] = "⏳ пари"
+                res["pairs"] = await asyncio.to_thread(pe.run, name)
+            if do_sweep and not pe.PROVIDERS[name].get("extra"):
+                state[name] = "⏳ банк"
+                res["sweep"] = await asyncio.to_thread(pe.sweep, name)
+            state[name] = "✅"
+        except Exception as e:
+            res["err"] = e
+            state[name] = "❌"
+        return res
+
+    ticker = asyncio.create_task(paint())
+    try:
+        done = await asyncio.gather(*[job(n) for n in have])
+    finally:
+        ticker.cancel()
+    got = {r["name"]: r for r in done}
 
     def fail(name, e):
         body = f"{type(e).__name__}: {e}"
@@ -4473,11 +4510,10 @@ async def promise_embed_test_handler(update, context):
                 "Одна справа різними словами мусить стояти БЛИЗЬКО, "
                 "пастки — ДАЛЕКО.", "=" * 60, ""]
         for name in have:
-            try:
-                rows, missing = await asyncio.to_thread(pe.run, name)
-            except Exception as e:
-                fail(name, e)
+            if got[name]["err"] is not None:
+                fail(name, got[name]["err"])
                 continue
+            rows, missing = got[name]["pairs"]
             v = pe.verdict(rows)
             rep.append(name)
             for kind, head in (("same", "Одна справа"), ("apart", "Різні справи")):
@@ -4505,11 +4541,15 @@ async def promise_embed_test_handler(update, context):
     if do_sweep:
         rep += ["=" * 60, "ЗАМІР 2. СКІЛЬКИ РОБОТИ ЦЕ ДАЛО Б СУДДІ", "=" * 60, ""]
         for name in pe.available(extras=False):
-            try:
-                sw = await asyncio.to_thread(pe.sweep, name)
-            except Exception as e:
-                fail(name, e)
+            if got[name]["err"] is not None:
+                # Про збій уже сказано першим заміром — але коли його не
+                # просили, сказати нікому.
+                if not do_pairs:
+                    fail(name, got[name]["err"])
                 continue
+            if not got[name]["sweep"]:
+                continue
+            sw = got[name]["sweep"]
             rep += [name, f"  записів {sw['n']}, усіх пар {sw['total']}",
                     f"  нинішній детектор (букви) віддає {sw['trgm']} пар",
                     "  порогом:"]
